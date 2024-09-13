@@ -27,7 +27,7 @@ except AttributeError:
 		def cache_decorator(func):
 			return func
 		
-version = '4.73'
+version = '4.74'
 VERSION = version
 
 DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
@@ -42,6 +42,7 @@ DEFAULT_REPEAT = 1
 DEFAULT_INTERVAL = 0
 DEFAULT_IPMI = False
 DEFAULT_INTERFACE_IP_PREFIX = None
+DEFAULT_IPMI_INTERFACE_IP_PREFIX = None
 DEFAULT_QUIET = False
 DEFAULT_ERROR_ONLY = False
 DEFAULT_NO_OUTPUT = False
@@ -92,6 +93,8 @@ class Host:
 wildCharacters = ['*','?','x']
 
 gloablUnavailableHosts = set()
+
+ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
 
 keyPressesIn = [[]]
 
@@ -511,7 +514,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 				extraargs = host.extraargs.split()
 			else:
 				extraargs = []
-			host.interface_ip_prefix = '192' if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
+			if ipmiiInterfaceIPPrefix:
+				host.interface_ip_prefix = ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
 			if host.interface_ip_prefix:
 				try:
 					hostOctets = getIP(host.address,local=False).split('.')
@@ -1400,6 +1404,7 @@ if __name__ == "__main__":
 	parser.add_argument("-r","--repeat", type=int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
 	parser.add_argument("-i","--interval", type=int, help=f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})", default=DEFAULT_INTERVAL)
 	parser.add_argument("--ipmi", action='store_true', help=f"Use ipmitool to run the command. (default: {DEFAULT_IPMI})", default=DEFAULT_IPMI)
+	parser.add_argument("-mpre","--ipmi_interface_ip_prefix", type=str, help=f"The prefix of the IPMI interfaces (default: {DEFAULT_IPMI_INTERFACE_IP_PREFIX})", default=DEFAULT_IPMI_INTERFACE_IP_PREFIX)
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})", default=DEFAULT_INTERFACE_IP_PREFIX)
 	parser.add_argument("-q","--quiet", action='store_true', help=f"Quiet mode, no curses, only print the output. (default: {DEFAULT_QUIET})", default=DEFAULT_QUIET)
 	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_CURSES_MINIMUM_CHAR_LEN})", default=DEFAULT_CURSES_MINIMUM_CHAR_LEN)
@@ -1439,6 +1444,8 @@ if __name__ == "__main__":
 		else:
 			sys.exit(0)
 	
+	ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
+
 	if not args.greppable and not args.json and not args.nooutput:
 		global_suppress_printout = False
 
