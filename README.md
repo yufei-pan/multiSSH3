@@ -96,3 +96,194 @@ options:
                         Skip the hosts in the list. (default: )
   -V, --version         show program's version number and exit
 ```
+
+Following document is generated courtesy of Mr.ChatGPT-o1 Preview:
+
+# multissh
+
+`multissh` is a powerful Python script that allows you to run commands on multiple hosts concurrently over SSH. It supports various features such as copying files, handling IP address ranges, using IPMI, and more. It's designed to simplify the management of multiple remote systems by automating command execution and file synchronization.
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Basic Syntax](#basic-syntax)
+  - [Command-Line Options](#command-line-options)
+- [Examples](#examples)
+  - [Running a Command on Multiple Hosts](#running-a-command-on-multiple-hosts)
+  - [Copying Files to Multiple Hosts](#copying-files-to-multiple-hosts)
+  - [Using Hostname Ranges](#using-hostname-ranges)
+  - [Using IPMI](#using-ipmi)
+  - [Using Password Authentication](#using-password-authentication)
+  - [Skipping Unreachable Hosts](#skipping-unreachable-hosts)
+  - [JSON Output](#json-output)
+  - [Quiet Mode](#quiet-mode)
+- [Environment Variables](#environment-variables)
+- [Notes](#notes)
+- [License](#license)
+
+## Features
+
+- **Concurrent Execution**: Run commands on multiple hosts concurrently with controlled parallelism.
+- **File Transfer**: Copy files or synchronize directories to multiple hosts using `rsync` or `scp`.
+- **Hostname Expansion**: Support for hostname ranges and wildcards for easy targeting of multiple hosts.
+- **IPMI Support**: Execute IPMI commands on remote hosts.
+- **Authentication**: Support for SSH password authentication and key-based authentication.
+- **Custom SSH Options**: Pass extra arguments to SSH, `rsync`, or `scp` commands.
+- **Skip Unreachable Hosts**: Option to skip hosts that are unreachable.
+- **Output Formats**: Supports JSON and greppable output formats.
+- **Interactive Mode**: Run interactive commands with curses-based UI for monitoring.
+- **Quiet Mode**: Suppress output for cleaner automation scripts.
+
+## Installation
+
+1. **Clone the Repository**
+
+   ```bash
+   git clone https://github.com/yourusername/multissh.git
+   ```
+
+2. **Navigate to the Directory**
+
+   ```bash
+   cd multissh
+   ```
+
+3. **Make the Script Executable**
+
+   ```bash
+   chmod +x multissh.py
+   ```
+
+4. **Install Dependencies**
+
+   Ensure you have Python 3 and the required modules installed. You may need to install `curses` and `ipaddress` modules if they are not already available.
+
+## Usage
+
+### Basic Syntax
+
+```bash
+./multissh.py [options] <hosts> <commands>
+```
+
+- `<hosts>`: Comma-separated list of target hosts. Supports ranges and wildcards.
+- `<commands>`: Command(s) to execute on the target hosts.
+
+### Command-Line Options
+
+| Short Option | Long Option               | Description                                                                                               |
+|--------------|---------------------------|-----------------------------------------------------------------------------------------------------------|
+| `-u`         | `--username`              | Username for SSH connections.                                                                             |
+| `-ea`        | `--extraargs`             | Extra arguments for SSH/rsync/scp commands.                                                               |
+| `-p`         | `--password`              | Password for SSH authentication. Requires `sshpass`.                                                      |
+| `-11`        | `--oneonone`              | Run one command per host (commands and hosts lists must have the same length).                            |
+| `-f`         | `--file`                  | File(s) to copy to the hosts. Can be used multiple times.                                                 |
+|              | `--file_sync`             | Synchronize directories instead of copying files.                                                         |
+|              | `--scp`                   | Use `scp` instead of `rsync` for file transfer.                                                           |
+| `-t`         | `--timeout`               | Command execution timeout in seconds.                                                                     |
+| `-r`         | `--repeat`                | Number of times to repeat the command execution.                                                          |
+| `-i`         | `--interval`              | Interval between command repetitions in seconds.                                                          |
+|              | `--ipmi`                  | Use IPMI to execute commands.                                                                             |
+| `-pre`       | `--interface_ip_prefix`   | IP prefix for interface selection.                                                                        |
+| `-q`         | `--quiet`                 | Suppress output.                                                                                          |
+| `-ww`        | `--window_width`          | Minimum character width for the curses window.                                                            |
+| `-wh`        | `--window_height`         | Minimum line height for the curses window.                                                                |
+| `-sw`        | `--single_window`         | Use a single window for all hosts in curses mode.                                                         |
+| `-eo`        | `--error_only`            | Only display error outputs.                                                                               |
+| `-no`        | `--nooutput`              | Do not print any output.                                                                                  |
+|              | `--no_env`                | Do not load environment variables from files.                                                             |
+|              | `--env_file`              | Specify a custom environment file.                                                                        |
+| `-m`         | `--maxconnections`        | Maximum number of concurrent SSH connections.                                                             |
+| `-j`         | `--json`                  | Output results in JSON format.                                                                            |
+|              | `--success_hosts`         | Also display hosts where commands succeeded.                                                              |
+| `-g`         | `--greppable`             | Output results in a greppable format.                                                                     |
+| `-nw`        | `--nowatch`               | Do not use curses mode; use simple output instead.                                                        |
+| `-su`        | `--skipunreachable`       | Skip hosts that are unreachable.                                                                          |
+| `-sh`        | `--skiphosts`             | Comma-separated list of hosts to skip.                                                                    |
+| `-V`         | `--version`               | Display the script version and exit.                                                                      |
+
+## Examples
+
+### Running a Command on Multiple Hosts
+
+```bash
+./multissh.py "host1,host2,host3" "uptime"
+```
+
+This command runs `uptime` on `host1`, `host2`, and `host3`.
+
+### Copying Files to Multiple Hosts
+
+```bash
+./multissh.py -f "/path/to/local/file.txt" "host1,host2,host3" "/remote/path/"
+```
+
+This command copies `file.txt` to `/remote/path/` on the specified hosts.
+
+### Using Hostname Ranges
+
+```bash
+./multissh.py "host[01-05]" "hostname"
+```
+
+This expands to `host01`, `host02`, `host03`, `host04`, `host05` and runs `hostname` on each.
+
+### Using IPMI
+
+```bash
+./multissh.py --ipmi "192.168.1.[100-105]" "chassis power status"
+```
+
+Runs `ipmitool chassis power status` on the specified IPMI interfaces.
+
+### Using Password Authentication
+
+```bash
+./multissh.py -p "yourpassword" "host1,host2" "whoami"
+```
+
+Uses `sshpass` to provide the password for SSH authentication.
+
+### Skipping Unreachable Hosts
+
+```bash
+./multissh.py -su "host1,host2,host3" "date"
+```
+
+Skips hosts that are unreachable during execution.
+
+### JSON Output
+
+```bash
+./multissh.py -j "host1,host2" "uname -a"
+```
+
+Outputs the results in JSON format, suitable for parsing.
+
+### Quiet Mode
+
+```bash
+./multissh.py -q "host1,host2" "ls /nonexistent"
+```
+
+Suppresses all output, useful for scripts where you only care about exit codes.
+
+## Environment Variables
+
+- The script can load environment variables from a file (default: `/etc/profile.d/hosts.sh`) to resolve hostnames.
+- Use the `--env_file` option to specify a custom environment file.
+- Use `--no_env` to prevent loading any environment variables from files.
+
+## Notes
+
+- **SSH Configuration**: The script modifies `~/.ssh/config` to disable `StrictHostKeyChecking`. Ensure this is acceptable in your environment.
+- **Dependencies**: Requires Python 3, `sshpass` (if using password authentication), and standard Unix utilities like `ssh`, `scp`, and `rsync`.
+- **Signal Handling**: Supports graceful termination with `Ctrl+C`.
+
+## License
+
+This script is provided "as is" without any warranty. Use it at your own risk.
+
+---
