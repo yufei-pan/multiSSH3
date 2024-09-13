@@ -27,7 +27,7 @@ except AttributeError:
 		def cache_decorator(func):
 			return func
 		
-version = '4.74'
+version = '4.75'
 VERSION = version
 
 DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
@@ -1385,7 +1385,7 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 			allHosts += hosts
 		return allHosts
 
-if __name__ == "__main__":
+def main():
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments
@@ -1502,3 +1502,8 @@ if __name__ == "__main__":
 		# os._exit(mainReturnCode)
 	
 	sys.exit(mainReturnCode)
+
+
+
+if __name__ == "__main__":
+	main()
