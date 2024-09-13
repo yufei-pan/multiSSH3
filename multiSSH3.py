@@ -1386,6 +1386,18 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 		return allHosts
 
 def main():
+	global emo
+	global global_suppress_printout
+	global gloablUnavailableHosts
+	global mainReturnCode
+	global failedHosts
+	global keyPressesIn
+	global ipmiiInterfaceIPPrefix
+	global sshpassAvailable
+	global env_file
+	emo = False
+
+
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments
