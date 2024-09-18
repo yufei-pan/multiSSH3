@@ -15,6 +15,7 @@ import io
 import signal
 import functools
 import glob
+#import fnmatch
 try:
 	# Check if functiools.cache is available
 	cache_decorator = functools.cache
@@ -26,47 +27,130 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-		
-version = '4.75'
+version = '4.81'
 VERSION = version
 
-DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
-DEFAULT_USERNAME = None
-DEFAULT_EXTRA_ARGS = None
-DEFAULT_PASSWORD = ''
-DEFAULT_ONE_ON_ONE = False
-DEFAULT_FILE_SYNC = False
-DEFAULT_SCP = False
-DEFAULT_TIMEOUT = 50
-DEFAULT_REPEAT = 1
-DEFAULT_INTERVAL = 0
-DEFAULT_IPMI = False
-DEFAULT_INTERFACE_IP_PREFIX = None
-DEFAULT_IPMI_INTERFACE_IP_PREFIX = None
-DEFAULT_QUIET = False
-DEFAULT_ERROR_ONLY = False
-DEFAULT_NO_OUTPUT = False
-DEFAULT_NO_ENV = False
-DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
-DEFAULT_JSON_MODE = False
-DEFAULT_PRINT_SUCCESS_HOSTS = False
-DEFAULT_GREPPABLE_MODE = False
-DEFAULT_NO_WATCH = False
-DEFAULT_SKIP_UNREACHABLE = False
-DEFAULT_SKIP_HOSTS = ''
-DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
-DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
-DEFAULT_SINGLE_WINDOW = False
+CONFIG_FILE = '/etc/multiSSH3.config.json'	
 
-DEFAULT_CALLED = True
-DEFAULT_RETURN_UNFINISHED = False
-DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
-DEFAULT_NO_START = False
+def load_config_file(config_file):
+	'''
+	Load the config file to global variables
 
-global_suppress_printout = True
+	Args:
+		config_file (str): The config file
 
-mainReturnCode = 0
-failedHosts = set()
+	Returns:
+		dict: The config
+	'''
+	if not os.path.exists(config_file):
+		return {}
+	with open(config_file,'r') as f:
+		config = json.load(f)
+	return config
+
+__configs_from_file = load_config_file(CONFIG_FILE)
+
+__build_in_default_config = {
+	'AUTHOR': 'Yufei Pan',
+	'AUTHOR_EMAIL': 'pan@zopyr.us',
+	'DEFAULT_HOSTS': 'all',
+	'DEFAULT_USERNAME': None,
+	'DEFAULT_PASSWORD': '',
+	'DEFAULT_EXTRA_ARGS': None,
+	'DEFAULT_ONE_ON_ONE': False,
+	'DEFAULT_SCP': False,
+	'DEFAULT_FILE_SYNC': False,
+	'DEFAULT_TIMEOUT': 50,
+	'DEFAULT_CLI_TIMEOUT': 0,
+	'DEFAULT_REPEAT': 1,
+	'DEFAULT_INTERVAL': 0,
+	'DEFAULT_IPMI': False,
+	'DEFAULT_IPMI_INTERFACE_IP_PREFIX': '',
+	'DEFAULT_INTERFACE_IP_PREFIX': None,
+	'DEFAULT_NO_WATCH': False,
+	'DEFAULT_CURSES_MINIMUM_CHAR_LEN': 40,
+	'DEFAULT_CURSES_MINIMUM_LINE_LEN': 1,
+	'DEFAULT_SINGLE_WINDOW': False,
+	'DEFAULT_ERROR_ONLY': False,
+	'DEFAULT_NO_OUTPUT': False,
+	'DEFAULT_NO_ENV': False,
+	'DEFAULT_ENV_FILE': '/etc/profile.d/hosts.sh',
+	'DEFAULT_MAX_CONNECTIONS': 4 * os.cpu_count(),
+	'DEFAULT_JSON_MODE': False,
+	'DEFAULT_PRINT_SUCCESS_HOSTS': False,
+	'DEFAULT_GREPPABLE_MODE': False,
+	'DEFAULT_SKIP_UNREACHABLE': False,
+	'DEFAULT_SKIP_HOSTS': '',
+	'ERROR_MESSAGES_TO_IGNORE': [
+		'Pseudo-terminal will not be allocated because stdin is not a terminal',
+		'Connection to .* closed',
+		'Warning: Permanently added',
+		'mux_client_request_session',
+		'disabling multiplexing',
+	],
+	'_DEFAULT_CALLED': True,
+	'_DEFAULT_RETURN_UNFINISHED': False,
+	'_DEFAULT_UPDATE_UNREACHABLE_HOSTS': True,
+	'_DEFAULT_NO_START': False,
+	'_etc_hosts': {},
+	'_sshpassAvailable': False,
+	'__ERROR_MESSAGES_TO_IGNORE_REGEX':None,
+}
+
+AUTHOR = __configs_from_file.get('AUTHOR', __build_in_default_config['AUTHOR'])
+AUTHOR_EMAIL = __configs_from_file.get('AUTHOR_EMAIL', __build_in_default_config['AUTHOR_EMAIL'])
+
+DEFAULT_HOSTS = __configs_from_file.get('DEFAULT_HOSTS', __build_in_default_config['DEFAULT_HOSTS'])
+DEFAULT_ENV_FILE = __configs_from_file.get('DEFAULT_ENV_FILE', __build_in_default_config['DEFAULT_ENV_FILE'])
+DEFAULT_USERNAME = __configs_from_file.get('DEFAULT_USERNAME', __build_in_default_config['DEFAULT_USERNAME'])
+DEFAULT_PASSWORD = __configs_from_file.get('DEFAULT_PASSWORD', __build_in_default_config['DEFAULT_PASSWORD'])
+DEFAULT_EXTRA_ARGS = __configs_from_file.get('DEFAULT_EXTRA_ARGS', __build_in_default_config['DEFAULT_EXTRA_ARGS'])
+DEFAULT_ONE_ON_ONE = __configs_from_file.get('DEFAULT_ONE_ON_ONE', __build_in_default_config['DEFAULT_ONE_ON_ONE'])
+DEFAULT_SCP = __configs_from_file.get('DEFAULT_SCP', __build_in_default_config['DEFAULT_SCP'])
+DEFAULT_FILE_SYNC = __configs_from_file.get('DEFAULT_FILE_SYNC', __build_in_default_config['DEFAULT_FILE_SYNC'])
+DEFAULT_TIMEOUT = __configs_from_file.get('DEFAULT_TIMEOUT', __build_in_default_config['DEFAULT_TIMEOUT'])
+DEFAULT_CLI_TIMEOUT = __configs_from_file.get('DEFAULT_CLI_TIMEOUT', __build_in_default_config['DEFAULT_CLI_TIMEOUT'])
+DEFAULT_REPEAT = __configs_from_file.get('DEFAULT_REPEAT', __build_in_default_config['DEFAULT_REPEAT'])
+DEFAULT_INTERVAL = __configs_from_file.get('DEFAULT_INTERVAL', __build_in_default_config['DEFAULT_INTERVAL'])
+DEFAULT_IPMI = __configs_from_file.get('DEFAULT_IPMI', __build_in_default_config['DEFAULT_IPMI'])
+DEFAULT_IPMI_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_IPMI_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_IPMI_INTERFACE_IP_PREFIX'])
+DEFAULT_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_INTERFACE_IP_PREFIX'])
+DEFAULT_NO_WATCH = __configs_from_file.get('DEFAULT_NO_WATCH', __build_in_default_config['DEFAULT_NO_WATCH'])
+DEFAULT_CURSES_MINIMUM_CHAR_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_CHAR_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_CHAR_LEN'])
+DEFAULT_CURSES_MINIMUM_LINE_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_LINE_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_LINE_LEN'])
+DEFAULT_SINGLE_WINDOW = __configs_from_file.get('DEFAULT_SINGLE_WINDOW', __build_in_default_config['DEFAULT_SINGLE_WINDOW'])
+DEFAULT_ERROR_ONLY = __configs_from_file.get('DEFAULT_ERROR_ONLY', __build_in_default_config['DEFAULT_ERROR_ONLY'])
+DEFAULT_NO_OUTPUT = __configs_from_file.get('DEFAULT_NO_OUTPUT', __build_in_default_config['DEFAULT_NO_OUTPUT'])
+DEFAULT_NO_ENV = __configs_from_file.get('DEFAULT_NO_ENV', __build_in_default_config['DEFAULT_NO_ENV'])
+DEFAULT_MAX_CONNECTIONS = __configs_from_file.get('DEFAULT_MAX_CONNECTIONS', __build_in_default_config['DEFAULT_MAX_CONNECTIONS'])
+if not DEFAULT_MAX_CONNECTIONS:
+	DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+DEFAULT_JSON_MODE = __configs_from_file.get('DEFAULT_JSON_MODE', __build_in_default_config['DEFAULT_JSON_MODE'])
+DEFAULT_PRINT_SUCCESS_HOSTS = __configs_from_file.get('DEFAULT_PRINT_SUCCESS_HOSTS', __build_in_default_config['DEFAULT_PRINT_SUCCESS_HOSTS'])
+DEFAULT_GREPPABLE_MODE = __configs_from_file.get('DEFAULT_GREPPABLE_MODE', __build_in_default_config['DEFAULT_GREPPABLE_MODE'])
+DEFAULT_SKIP_UNREACHABLE = __configs_from_file.get('DEFAULT_SKIP_UNREACHABLE', __build_in_default_config['DEFAULT_SKIP_UNREACHABLE'])
+DEFAULT_SKIP_HOSTS = __configs_from_file.get('DEFAULT_SKIP_HOSTS', __build_in_default_config['DEFAULT_SKIP_HOSTS'])
+
+ERROR_MESSAGES_TO_IGNORE = __configs_from_file.get('ERROR_MESSAGES_TO_IGNORE', __build_in_default_config['ERROR_MESSAGES_TO_IGNORE'])
+
+_DEFAULT_CALLED = __configs_from_file.get('_DEFAULT_CALLED', __build_in_default_config['_DEFAULT_CALLED'])
+_DEFAULT_RETURN_UNFINISHED = __configs_from_file.get('_DEFAULT_RETURN_UNFINISHED', __build_in_default_config['_DEFAULT_RETURN_UNFINISHED'])
+_DEFAULT_UPDATE_UNREACHABLE_HOSTS = __configs_from_file.get('_DEFAULT_UPDATE_UNREACHABLE_HOSTS', __build_in_default_config['_DEFAULT_UPDATE_UNREACHABLE_HOSTS'])
+_DEFAULT_NO_START = __configs_from_file.get('_DEFAULT_NO_START', __build_in_default_config['_DEFAULT_NO_START'])
+
+# form the regex from the list
+if '__ERROR_MESSAGES_TO_IGNORE_REGEX' in __configs_from_file:
+	print('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
+	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__configs_from_file['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
+else:
+	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
+
+
+
+__global_suppress_printout = True
+
+__mainReturnCode = 0
+__failedHosts = set()
 class Host:
 	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None):
 		self.name = name # the name of the host (hostname or IP address)
@@ -90,25 +174,25 @@ class Host:
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
 
-wildCharacters = ['*','?','x']
+__wildCharacters = ['*','?','x']
 
-gloablUnavailableHosts = set()
+__gloablUnavailableHosts = set()
 
-ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
+__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
 
-keyPressesIn = [[]]
+__keyPressesIn = [[]]
 
-emo = False
+_emo = False
 
-etc_hosts = {}
+_etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_etc_hosts'])
 
-env_file = DEFAULT_ENV_FILE
+_env_file = DEFAULT_ENV_FILE
 
 # check if command sshpass is available
-sshpassAvailable = False
+_sshpassAvailable = __configs_from_file.get('_sshpassAvailable', __build_in_default_config['_sshpassAvailable'])
 try:
 	subprocess.run(['which', 'sshpass'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-	sshpassAvailable = True
+	_sshpassAvailable = True
 except:
 	pass
 
@@ -135,14 +219,14 @@ def expandIPv4Address(hosts):
 				# Handle wildcards
 				octetRange = octet.split('-')
 				for i in range(len(octetRange)):
-					if not octetRange[i] or octetRange[i] in wildCharacters:
+					if not octetRange[i] or octetRange[i] in __wildCharacters:
 						if i == 0:
 							octetRange[i] = '0'
 						elif i == 1:
 							octetRange[i] = '255'
 				
 				expandedOctets.append([str(i) for i in range(int(octetRange[0]),int(octetRange[1])+1)])
-			elif octet in wildCharacters:
+			elif octet in __wildCharacters:
 				expandedOctets.append([str(i) for i in range(0,256)])
 			else:
 				expandedOctets.append([octet])
@@ -171,11 +255,11 @@ def readEnvFromFile(environemnt_file = ''):
 			return env
 	except:
 		env = {}
-	global env_file
+	global _env_file
 	if environemnt_file:
 		envf = environemnt_file
 	else:
-		envf = env_file if env_file else DEFAULT_ENV_FILE
+		envf = _env_file if _env_file else DEFAULT_ENV_FILE
 	if os.path.exists(envf):
 		with open(envf,'r') as f:
 			for line in f:
@@ -200,7 +284,7 @@ def getIP(hostname,local=False):
 	Returns:
 		str: The IP address of the hostname
 	'''
-	global etc_hosts
+	global _etc_hosts
 	# First we check if the hostname is an IP address
 	try:
 		ipaddress.ip_address(hostname)
@@ -208,7 +292,7 @@ def getIP(hostname,local=False):
 	except ValueError:
 		pass
 	# Then we check /etc/hosts
-	if not etc_hosts and os.path.exists('/etc/hosts'):
+	if not _etc_hosts and os.path.exists('/etc/hosts'):
 		with open('/etc/hosts','r') as f:
 			for line in f:
 				if line.startswith('#') or not line.strip():
@@ -219,9 +303,9 @@ def getIP(hostname,local=False):
 					continue
 				ip = chunks[0]
 				for host in chunks[1:]:
-					etc_hosts[host] = ip
-	if hostname in etc_hosts:
-		return etc_hosts[hostname]
+					_etc_hosts[host] = ip
+	if hostname in _etc_hosts:
+		return _etc_hosts[hostname]
 	if local:
 		return None
 	# Then we check the DNS
@@ -375,10 +459,10 @@ def validate_expand_hostname(hostname,no_env=False):
 		return [hostname]
 	else:
 		print(f"Error: {hostname} is not a valid hostname or IP address!")
-		global mainReturnCode
-		mainReturnCode += 1
-		global failedHosts
-		failedHosts.add(hostname)
+		global __mainReturnCode
+		__mainReturnCode += 1
+		global __failedHosts
+		__failedHosts.add(hostname)
 		return []
 
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
@@ -458,28 +542,28 @@ def handle_writing_stream(stream,stop_event,host):
 	Returns:
 		None
 	'''
-	global keyPressesIn
-	# keyPressesIn is a list of lists. 
+	global __keyPressesIn
+	# __keyPressesIn is a list of lists. 
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
 	sentInput = 0
 	while not stop_event.is_set():
-		if sentInput < len(keyPressesIn) - 1 :
-			stream.write(''.join(keyPressesIn[sentInput]).encode())
+		if sentInput < len(__keyPressesIn) - 1 :
+			stream.write(''.join(__keyPressesIn[sentInput]).encode())
 			stream.flush()
-			host.output.append(' $ ' + ''.join(keyPressesIn[sentInput]).encode().decode().replace('\n', '↵'))
-			host.stdout.append(' $ ' + ''.join(keyPressesIn[sentInput]).encode().decode().replace('\n', '↵'))
+			host.output.append(' $ ' + ''.join(__keyPressesIn[sentInput]).encode().decode().replace('\n', '↵'))
+			host.stdout.append(' $ ' + ''.join(__keyPressesIn[sentInput]).encode().decode().replace('\n', '↵'))
 			sentInput += 1
 		else:
 			time.sleep(0.1)
-	if sentInput < len(keyPressesIn) - 1 :
-		print(f"Warning: {len(keyPressesIn)-sentInput} key presses are not sent before the process is terminated!")
+	if sentInput < len(__keyPressesIn) - 1 :
+		print(f"Warning: {len(__keyPressesIn)-sentInput} key presses are not sent before the process is terminated!")
 	# # send the last line
-	# if keyPressesIn and keyPressesIn[-1]:
-	#     stream.write(''.join(keyPressesIn[-1]).encode())
+	# if __keyPressesIn and __keyPressesIn[-1]:
+	#     stream.write(''.join(__keyPressesIn[-1]).encode())
 	#     stream.flush()
-	#     host.output.append(' $ ' + ''.join(keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
-	#     host.stdout.append(' $ ' + ''.join(keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
+	#     host.output.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
+	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInput
 
 def ssh_command(host, sem, timeout=60,passwds=None):
@@ -495,7 +579,10 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	Returns:
 		None
 	'''
-	global emo
+	global _emo
+	global __ERROR_MESSAGES_TO_IGNORE_REGEX
+	global __ipmiiInterfaceIPPrefix
+	global _sshpassAvailable
 	with sem:
 		try:
 			host.username = None
@@ -514,8 +601,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 				extraargs = host.extraargs.split()
 			else:
 				extraargs = []
-			if ipmiiInterfaceIPPrefix:
-				host.interface_ip_prefix = ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
+			if __ipmiiInterfaceIPPrefix:
+				host.interface_ip_prefix = __ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
 			if host.interface_ip_prefix:
 				try:
 					hostOctets = getIP(host.address,local=False).split('.')
@@ -538,21 +625,21 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 					formatedCMD = ['bash','-c',f'ipmitool -H {host.address} -U {host.username} {" ".join(extraargs)} {host.command}']
 			else:
 				if host.files:
-						if host.scp:
-							formatedCMD = ['scp','-rpB'] + extraargs +['--']+host.files+[f'{host.resolvedName}:{host.command}']
-						else:
-							formatedCMD = ['rsync','-ahlX','--partial','--inplace', '--info=name'] + extraargs +['--']+host.files+[f'{host.resolvedName}:{host.command}']	
+					if host.scp:
+						formatedCMD = ['scp','-rpB'] + extraargs +['--']+host.files+[f'{host.resolvedName}:{host.command}']
+					else:
+						formatedCMD = ['rsync','-ahlX','--partial','--inplace', '--info=name'] + extraargs +['--']+host.files+[f'{host.resolvedName}:{host.command}']	
 				else:
 					formatedCMD = ['ssh'] + extraargs +['--']+ [host.resolvedName, host.command]
-				if passwds and sshpassAvailable:
+				if passwds and _sshpassAvailable:
 					formatedCMD = ['sshpass', '-p', passwds] + formatedCMD
 				elif passwds:
 					host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
 					#host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
 					host.output.append('Please provide password via live input or use ssh key authentication.')
-					# # try to send the password via keyPressesIn
-					# keyPressesIn[-1] = list(passwds) + ['\n']
-					# keyPressesIn.append([])
+					# # try to send the password via __keyPressesIn
+					# __keyPressesIn[-1] = list(passwds) + ['\n']
+					# __keyPressesIn.append([])
 			host.output.append('Running command: '+' '.join(formatedCMD))
 			#host.stdout = []
 			proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
@@ -592,7 +679,7 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 								host.printedLines -= 1
 							host.output.append(timeoutLine)
 							outLength = len(host.output)
-				if emo:
+				if _emo:
 					host.stderr.append('Ctrl C detected, Emergency Stop!')
 					host.output.append('Ctrl C detected, Emergency Stop!')
 					proc.send_signal(signal.SIGINT)
@@ -607,7 +694,7 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 			stdin_thread.join(timeout=1)
 			# here we handle the rest of the stdout after the subprocess returns
 			host.output.append(f'Pipe Closed. Trying to read the rest of the stdout...')
-			if not emo:
+			if not _emo:
 				stdout = None
 				stderr = None
 				try:
@@ -627,8 +714,9 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 				elif host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
 					host.returncode = 137
 			host.output.append(f'Command finished with return code {host.returncode}')
-			if host.stderr and host.stderr[-1].strip().startswith('Connection to ') and host.stderr[-1].strip().endswith(' closed.'):
-				host.stderr.pop()
+			if host.stderr:
+				# filter out the error messages that we want to ignore
+				host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
 		except Exception as e:
 			import traceback
 			host.stderr.extend(str(e).split('\n'))
@@ -764,7 +852,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 		last_refresh_time = time.perf_counter()
 		stdscr.clear()
 		#host_window.refresh()
-		global keyPressesIn
+		global __keyPressesIn
 		stdscr.nodelay(True)
 		# we generate a stats window at the top of the screen
 		stat_window = curses.newwin(1, max_x, 0, 0)
@@ -803,19 +891,19 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 				elif key in [259, 258, 260, 261, 339, 338, 262, 360]: 
 					# if the key is up arrow, we will move the line to display up
 					if key == 259: # 259 is the key code for up arrow
-						lineToDisplay = max(lineToDisplay - 1, -len(keyPressesIn))
+						lineToDisplay = max(lineToDisplay - 1, -len(__keyPressesIn))
 					# if the key is down arrow, we will move the line to display down
 					elif key == 258: # 258 is the key code for down arrow
 						lineToDisplay = min(lineToDisplay + 1, -1)
 					# if the key is left arrow, we will move the cursor left
 					elif key == 260: # 260 is the key code for left arrow
-						curserPosition = min(max(curserPosition - 1, 0), len(keyPressesIn[lineToDisplay]) -1)
+						curserPosition = min(max(curserPosition - 1, 0), len(__keyPressesIn[lineToDisplay]) -1)
 					# if the key is right arrow, we will move the cursor right
 					elif key == 261: # 261 is the key code for right arrow
-						curserPosition = max(min(curserPosition + 1, len(keyPressesIn[lineToDisplay])), 0)
+						curserPosition = max(min(curserPosition + 1, len(__keyPressesIn[lineToDisplay])), 0)
 					# if the key is page up, we will move the line to display up by 5 lines
 					elif key == 339: # 339 is the key code for page up
-						lineToDisplay = max(lineToDisplay - 5, -len(keyPressesIn))
+						lineToDisplay = max(lineToDisplay - 5, -len(__keyPressesIn))
 					# if the key is page down, we will move the line to display down by 5 lines
 					elif key == 338: # 338 is the key code for page down
 						lineToDisplay = min(lineToDisplay + 5, -1)
@@ -824,48 +912,48 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 						curserPosition = 0
 					# if the key is end, we will move the cursor to the end of the line
 					elif key == 360: # 360 is the key code for end
-						curserPosition = len(keyPressesIn[lineToDisplay])
+						curserPosition = len(__keyPressesIn[lineToDisplay])
 				# We are left with these are keys that mofidy the current line.
 				else:
 					# This means the user have done scrolling and is committing to modify the current line.
 					if lineToDisplay  < -1:
 						# We overwrite the last line (current working line) with the line to display, removing the newline at the end
-						keyPressesIn[-1] = keyPressesIn[lineToDisplay][:-1]
+						__keyPressesIn[-1] = __keyPressesIn[lineToDisplay][:-1]
 						lineToDisplay = -1
-					curserPosition = max(0, min(curserPosition, len(keyPressesIn[lineToDisplay])))
+					curserPosition = max(0, min(curserPosition, len(__keyPressesIn[lineToDisplay])))
 					if key == 10: # 10 is the key code for newline
-						keyPressesIn[-1].append(chr(key))
-						keyPressesIn.append([])
+						__keyPressesIn[-1].append(chr(key))
+						__keyPressesIn.append([])
 						lineToDisplay = -1
 						curserPosition = 0
 					# if the key is backspace, we will remove the last character from the last list
 					elif key in [8,263]: # 8 is the key code for backspace
 						if curserPosition > 0:
-							keyPressesIn[lineToDisplay].pop(curserPosition - 1)
+							__keyPressesIn[lineToDisplay].pop(curserPosition - 1)
 							curserPosition -= 1
 					# if the key is ESC, we will clear the last list
 					elif key == 27: # 27 is the key code for ESC
-						keyPressesIn[-1] = []
+						__keyPressesIn[-1] = []
 						curserPosition = 0
 					# ignore delete key
 					elif key in [127, 330]: # 330 is the key code for delete key
 						# delete the character at the cursor position
-						if curserPosition < len(keyPressesIn[lineToDisplay]):
-							keyPressesIn[lineToDisplay].pop(curserPosition)
+						if curserPosition < len(__keyPressesIn[lineToDisplay]):
+							__keyPressesIn[lineToDisplay].pop(curserPosition)
 					else:
 						# if the key is not a special key, we will add it
-						keyPressesIn[lineToDisplay].insert(curserPosition, chr(key))
+						__keyPressesIn[lineToDisplay].insert(curserPosition, chr(key))
 						curserPosition += 1
 			# reconfigure when the terminal size changes
 			# raise Exception when max_y or max_x is changed, let parent handle reconfigure
 			if org_dim != stdscr.getmaxyx():
 				raise Exception('Terminal size changed. Please reconfigure window.')
 			# We generate the aggregated stats if user did not input anything
-			if not keyPressesIn[lineToDisplay]:
+			if not __keyPressesIn[lineToDisplay]:
 				stats = '┍'+ f"Total: {len(hosts)}  Running: {host_stats['running']}  Failed: {host_stats['failed']}  Finished: {host_stats['finished']}  Waiting: {host_stats['waiting']}"[:max_x - 2].center(max_x - 2, "━")
 			else:
 				# we use the stat bar to display the key presses
-				encodedLine = ''.join(keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
+				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
 				# # add the flashing indicator at the curse position
 				# if time.perf_counter() % 1 > 0.5:
 				#     encodedLine = encodedLine[:curserPosition] + '█' + encodedLine[curserPosition:]
@@ -985,8 +1073,8 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	Returns:
 		str: The pretty output generated 
 	'''
-	global keyPressesIn
-	global global_suppress_printout
+	global __keyPressesIn
+	global __global_suppress_printout
 	hosts = [dict(host) for host in hosts]
 	if usejson:
 		# [print(dict(host)) for host in hosts]
@@ -1009,14 +1097,14 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		rtnStr = ''
 		for output, hosts in outputs.items():
 			rtnStr += f"{','.join(hosts)}{output}\n"
-		if keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in keyPressesIn if cmd]
+		if __keyPressesIn[-1]:
+			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 			#rtnStr += '\n'
 	else:
 		outputs = {}
 		for host in hosts:
-			if global_suppress_printout:
+			if __global_suppress_printout:
 				if host['returncode'] == 0:
 					continue
 			hostPrintOut = f"  Command:\n    {host['command']}\n"
@@ -1032,24 +1120,24 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 				outputs[hostPrintOut].append(host['name'])
 		rtnStr = ''
 		for output, hosts in outputs.items():
-			if global_suppress_printout:
+			if __global_suppress_printout:
 				rtnStr += f'Error returncode produced by {hosts}:\n'
 				rtnStr += output+'\n'
 			else:
 				rtnStr += '*'*80+'\n'
 				rtnStr += f"These hosts: {hosts} have a response of:\n"
 				rtnStr += output+'\n'
-		if not global_suppress_printout or outputs:
+		if not __global_suppress_printout or outputs:
 			rtnStr += '*'*80+'\n'
-		if keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			#rtnStr += f"Key presses: {''.join(keyPressesIn).encode('unicode_escape').decode()}\n"
-			#rtnStr += f"Key presses: {keyPressesIn}\n"
+		if __keyPressesIn[-1]:
+			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
+			#rtnStr += f"Key presses: {''.join(__keyPressesIn).encode('unicode_escape').decode()}\n"
+			#rtnStr += f"Key presses: {__keyPressesIn}\n"
 			rtnStr += "User Inputs: \n  "
 			rtnStr += '\n  '.join(CMDsOut)
 			rtnStr += '\n'
-			keyPressesIn = [[]]
-		if global_suppress_printout and not outputs:
+			__keyPressesIn = [[]]
+		if __global_suppress_printout and not outputs:
 			rtnStr += 'Success'
 	if not quiet:
 		print(rtnStr)
@@ -1095,10 +1183,10 @@ def signal_handler(sig, frame):
 	Returns:
 		None
 	'''
-	global emo
-	if not emo:
+	global _emo
+	if not _emo:
 		print('Ctrl C caught, exiting...')
-		emo = True
+		_emo = True
 	else:
 		print('Ctrl C caught again, exiting immediately!')
 		# wait for 0.1 seconds to allow the threads to exit
@@ -1107,10 +1195,10 @@ def signal_handler(sig, frame):
 		sys.exit(0)
 
 
-def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, quiet, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
-	global gloablUnavailableHosts
+def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
+	global __gloablUnavailableHosts
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
-	if not quiet and threads and not returnUnfinished and any([thread.is_alive() for thread in threads]) and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
+	if not nowatch and threads and not returnUnfinished and any([thread.is_alive() for thread in threads]) and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
 		curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
 	if not returnUnfinished:
 		# wait until all hosts have a return code
@@ -1121,7 +1209,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	# update the unavailable hosts and global unavailable hosts
 	if willUpdateUnreachableHosts:
 		unavailableHosts.update([host.name for host in hosts if host.stderr and ('No route to host' in host.stderr[0].strip() or host.stderr[0].strip().startswith('Timeout!'))])
-		gloablUnavailableHosts.update(unavailableHosts)
+		__gloablUnavailableHosts.update(unavailableHosts)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
 	if not called:
 		print_output(hosts,json,greppable=greppable)
@@ -1152,7 +1240,7 @@ def formHostStr(host) -> str:
 
 @cache_decorator
 def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 quiet = DEFAULT_QUIET,json = DEFAULT_JSON_MODE,max_connections=DEFAULT_MAX_CONNECTIONS,
+						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
 						 scp=DEFAULT_SCP,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
@@ -1162,9 +1250,9 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 	if oneonone: argsList.append('--oneonone' if not shortend else '-11')
 	if timeout and timeout != DEFAULT_TIMEOUT: argsList.append(f'--timeout={timeout}' if not shortend else f'-t={timeout}')
 	if password and password != DEFAULT_PASSWORD: argsList.append(f'--password="{password}"' if not shortend else f'-p="{password}"')
-	if quiet: argsList.append('--quiet' if not shortend else '-q')
+	if nowatch: argsList.append('--nowatch' if not shortend else '-q')
 	if json: argsList.append('--json' if not shortend else '-j')
-	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS: argsList.append(f'--maxconnections={max_connections}' if not shortend else f'-m={max_connections}')
+	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS: argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
 	if files: argsList.extend([f'--file="{file}"' for file in files] if not shortend else [f'-f="{file}"' for file in files])
 	if ipmi: argsList.append('--ipmi')
 	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX: argsList.append(f'--interface_ip_prefix="{interface_ip_prefix}"' if not shortend else f'-pre="{interface_ip_prefix}"')
@@ -1179,56 +1267,56 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 	if file_sync: argsList.append('--file_sync' if not shortend else '-fs')
 	return ' '.join(argsList)
 
-def getStrCommand(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 quiet = DEFAULT_QUIET,json = DEFAULT_JSON_MODE,called = DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = DEFAULT_RETURN_UNFINISHED,
+def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
+						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
+						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
 						 scp=DEFAULT_SCP,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=DEFAULT_NO_START,
+						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, shortend = False):
 	hosts = hosts if type(hosts) == str else frozenset(hosts)
 	hostStr = formHostStr(hosts)
 	files = frozenset(files) if files else None
 	argsStr = __formCommandArgStr(oneonone = oneonone, timeout = timeout,password = password,
-						 quiet = quiet,json = json,max_connections=max_connections,
+						 nowatch = nowatch,json = json,max_connections=max_connections,
 						 files = files,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,scp=scp,
 						 username=username,extraargs=extraargs,skipUnreachable=skipUnreachable,no_env=no_env,
 						 greppable=greppable,skip_hosts = skip_hosts, file_sync = file_sync,error_only = error_only, shortend = shortend)
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	return f'multissh {argsStr} {hostStr} {commandStr}'
 
-def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 quiet = DEFAULT_QUIET,json = DEFAULT_JSON_MODE,called = DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = DEFAULT_RETURN_UNFINISHED,
+def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
+						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
+						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
 						 scp=DEFAULT_SCP,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=DEFAULT_NO_START,
+						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY):
 	f'''
 	Run the command on the hosts, aka multissh. main function
 
 	Args:
-		hosts (str/iterable): A string of hosts seperated by space or comma / iterable of hosts.
-		commands (list): A list of commands to run on the hosts. When using files, defines the destination of the files.
+		hosts (str/iterable): A string of hosts seperated by space or comma / iterable of hosts. Default to {DEFAULT_HOSTS}.
+		commands (list): A list of commands to run on the hosts. When using files, defines the destination of the files. Defaults to None.
 		oneonone (bool, optional): Whether to run the commands one on one. Defaults to {DEFAULT_ONE_ON_ONE}.
 		timeout (int, optional): The timeout for the command. Defaults to {DEFAULT_TIMEOUT}.
 		password (str, optional): The password for the hosts. Defaults to {DEFAULT_PASSWORD}.
-		quiet (bool, optional): Whether to print the output. Defaults to {DEFAULT_QUIET}.
+		nowatch (bool, optional): Whether to print the output. Defaults to {DEFAULT_NO_WATCH}.
 		json (bool, optional): Whether to print the output in JSON format. Defaults to {DEFAULT_JSON_MODE}.
-		called (bool, optional): Whether the function is called by another function. Defaults to {DEFAULT_CALLED}.
+		called (bool, optional): Whether the function is called by another function. Defaults to {_DEFAULT_CALLED}.
 		max_connections (int, optional): The maximum number of concurrent SSH sessions. Defaults to 4 * os.cpu_count().
 		files (list, optional): A list of files to be copied to the hosts. Defaults to None.
 		ipmi (bool, optional): Whether to use IPMI to connect to the hosts. Defaults to {DEFAULT_IPMI}.
 		interface_ip_prefix (str, optional): The prefix of the IPMI interface. Defaults to {DEFAULT_INTERFACE_IP_PREFIX}.
-		returnUnfinished (bool, optional): Whether to return the unfinished hosts. Defaults to {DEFAULT_RETURN_UNFINISHED}.
+		returnUnfinished (bool, optional): Whether to return the unfinished hosts. Defaults to {_DEFAULT_RETURN_UNFINISHED}.
 		scp (bool, optional): Whether to use scp instead of rsync. Defaults to {DEFAULT_SCP}.
 		username (str, optional): The username to use to connect to the hosts. Defaults to {DEFAULT_USERNAME}.
 		extraargs (str, optional): Extra arguments to pass to the ssh / rsync / scp command. Defaults to {DEFAULT_EXTRA_ARGS}.
 		skipUnreachable (bool, optional): Whether to skip unreachable hosts. Defaults to {DEFAULT_SKIP_UNREACHABLE}.
 		no_env (bool, optional): Whether to not read the current sat system environment variables. (Will still read from files) Defaults to {DEFAULT_NO_ENV}.
 		greppable (bool, optional): Whether to print the output in greppable format. Defaults to {DEFAULT_GREPPABLE_MODE}.
-		willUpdateUnreachableHosts (bool, optional): Whether to update the global unavailable hosts. Defaults to {DEFAULT_UPDATE_UNREACHABLE_HOSTS}.
-		no_start (bool, optional): Whether to return the hosts without starting the command. Defaults to {DEFAULT_NO_START}.
+		willUpdateUnreachableHosts (bool, optional): Whether to update the global unavailable hosts. Defaults to {_DEFAULT_UPDATE_UNREACHABLE_HOSTS}.
+		no_start (bool, optional): Whether to return the hosts without starting the command. Defaults to {_DEFAULT_NO_START}.
 		skip_hosts (str, optional): The hosts to skip. Defaults to {DEFAULT_SKIP_HOSTS}.
 		min_char_len (int, optional): The minimum character per line of the curses output. Defaults to {DEFAULT_CURSES_MINIMUM_CHAR_LEN}.
 		min_line_len (int, optional): The minimum line number for each window of the curses output. Defaults to {DEFAULT_CURSES_MINIMUM_LINE_LEN}.
@@ -1238,8 +1326,8 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 	Returns:
 		list: A list of Host objects
 	'''
-	global gloablUnavailableHosts
-	global global_suppress_printout
+	global __gloablUnavailableHosts
+	global __global_suppress_printout
 	if not max_connections:
 		max_connections = 4 * os.cpu_count()
 	elif max_connections == 0:
@@ -1253,22 +1341,22 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 	if called:
 		# if called,
 		# if skipUnreachable is not set, we default to skip unreachable hosts within one command call
-		global_suppress_printout = True
+		__global_suppress_printout = True
 		if skipUnreachable is None:
 			skipUnreachable = True
 		if skipUnreachable:
-			unavailableHosts = gloablUnavailableHosts
+			unavailableHosts = __gloablUnavailableHosts
 		else:
 			unavailableHosts = set()
 	else:
 		# if run in command line ( or emulating running in command line, we default to skip unreachable hosts within one command call )
 		if skipUnreachable:
-			unavailableHosts = gloablUnavailableHosts
+			unavailableHosts = __gloablUnavailableHosts
 		else:
 			unavailableHosts = set()
 			skipUnreachable = True
-	global emo
-	emo = False
+	global _emo
+	_emo = False
 	# We create the hosts
 	hostStr = formHostStr(hosts)
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
@@ -1290,7 +1378,7 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 	targetHostsList = expand_hostnames(frozenset(hostStr.split(',')),no_env=no_env)
 	skipHostsList = expand_hostnames(frozenset(skipHostStr.split(',')),no_env=no_env)
 	if skipHostsList:
-		if not global_suppress_printout: print(f"Skipping hosts: {skipHostsList}")
+		if not __global_suppress_printout: print(f"Skipping hosts: {skipHostsList}")
 	if files and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
@@ -1321,22 +1409,22 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 			print(f"Number of commands: {len(commands)}")
 			print(f"Number of hosts: {len(targetHostsList - skipHostsList)}")
 			sys.exit(255)
-		if not global_suppress_printout:
+		if not __global_suppress_printout:
 			print('-'*80)
 			print("Running in one on one mode")
 		for host, command in zip(targetHostsList, commands):
 			if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
-				if not global_suppress_printout: print(f"Skipping unavailable host: {host}")
+				if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
 				continue
 			if host.strip() in skipHostsList: continue
 			if file_sync:
 				hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
 			else:
 				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
-			if not global_suppress_printout: 
+			if not __global_suppress_printout: 
 				print(f"Running command: {command} on host: {host}")
-		if not global_suppress_printout: print('-'*80)
-		if not no_start: processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, quiet, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
+		if not __global_suppress_printout: print('-'*80)
+		if not no_start: processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
 		return hosts
 	else:
 		allHosts = []
@@ -1345,7 +1433,7 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 			hosts = []
 			for host in targetHostsList:
 				if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
-					if not global_suppress_printout: print(f"Skipping unavailable host: {host}")
+					if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
 					continue
 				if host.strip() in skipHostsList: continue
 				if file_sync:
@@ -1357,93 +1445,164 @@ def run_command_on_hosts(hosts,commands,oneonone = DEFAULT_ONE_ON_ONE, timeout =
 					print(f"Error: ipmi mode is not supported in interactive mode")
 				else:
 					hosts.append(Host(host.strip(), '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
-			if not global_suppress_printout:
+			if not __global_suppress_printout:
 				print('-'*80)
 				print(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
 				print('-'*80)
 			if no_start:
 				print(f"Warning: no_start is set, the command will not be started. As we are in interactive mode, no action will be done.")
 			else:
-				processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, quiet, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
+				processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
 			return hosts
 		for command in commands:
 			hosts = []
 			for host in targetHostsList:
 				if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
-					if not global_suppress_printout: print(f"Skipping unavailable host: {host}")
+					if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
 					continue
 				if host.strip() in skipHostsList: continue
 				if file_sync:
 					hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
 				else:
 					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
-			if not global_suppress_printout and len(commands) > 1:
+			if not __global_suppress_printout and len(commands) > 1:
 				print('-'*80)
 				print(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
 				print('-'*80)
-			if not no_start: processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, quiet, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
+			if not no_start: processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
 			allHosts += hosts
 		return allHosts
 
+def get_default_config(args):
+	'''
+	Get the default config
+
+	Args:
+		args (argparse.Namespace): The arguments
+
+	Returns:
+		dict: The default config
+	'''
+	return {
+		'AUTHOR': AUTHOR,
+		'AUTHOR_EMAIL': AUTHOR_EMAIL,
+		'DEFAULT_HOSTS': args.hosts,
+		'DEFAULT_USERNAME': args.username,
+		'DEFAULT_PASSWORD': args.password,
+		'DEFAULT_EXTRA_ARGS': args.extraargs,
+		'DEFAULT_ONE_ON_ONE': args.oneonone,
+		'DEFAULT_SCP': args.scp,
+		'DEFAULT_FILE_SYNC': args.file_sync,
+		'DEFAULT_TIMEOUT': DEFAULT_TIMEOUT,
+		'DEFAULT_CLI_TIMEOUT': args.timeout,
+		'DEFAULT_REPEAT': args.repeat,
+		'DEFAULT_INTERVAL': args.interval,
+		'DEFAULT_IPMI': args.ipmi,
+		'DEFAULT_IPMI_INTERFACE_IP_PREFIX': args.ipmi_interface_ip_prefix,
+		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
+		'DEFAULT_NO_WATCH': args.nowatch,
+		'DEFAULT_CURSES_MINIMUM_CHAR_LEN': args.window_width,
+		'DEFAULT_CURSES_MINIMUM_LINE_LEN': args.window_height,
+		'DEFAULT_SINGLE_WINDOW': args.single_window,
+		'DEFAULT_ERROR_ONLY': args.error_only,
+		'DEFAULT_NO_OUTPUT': args.no_output,
+		'DEFAULT_NO_ENV': args.no_env,
+		'DEFAULT_ENV_FILE': args.env_file,
+		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * os.cpu_count() else None,
+		'DEFAULT_JSON_MODE': args.json,
+		'DEFAULT_PRINT_SUCCESS_HOSTS': args.success_hosts,
+		'DEFAULT_GREPPABLE_MODE': args.greppable,
+		'DEFAULT_SKIP_UNREACHABLE': args.skip_unreachable,
+		'DEFAULT_SKIP_HOSTS': args.skip_hosts,
+		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
+	}
+
+def write_default_config(args,CONFIG_FILE,backup = True):
+	if backup and os.path.exists(CONFIG_FILE):
+		os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
+	default_config = get_default_config(args)
+	with open(CONFIG_FILE,'w') as f:
+		json.dump(default_config,f,indent=4)
+
+
 def main():
-	global emo
-	global global_suppress_printout
-	global gloablUnavailableHosts
-	global mainReturnCode
-	global failedHosts
-	global keyPressesIn
-	global ipmiiInterfaceIPPrefix
-	global sshpassAvailable
-	global env_file
-	emo = False
-
-
+	global _emo
+	global __global_suppress_printout
+	global __gloablUnavailableHosts
+	global __mainReturnCode
+	global __failedHosts
+	global __ipmiiInterfaceIPPrefix
+	global _sshpassAvailable
+	global _env_file
+	_emo = False
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments
-	parser = argparse.ArgumentParser(description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command')
-	parser.add_argument('hosts', metavar='hosts', type=str, help='Hosts to run the command on, use "," to seperate hosts')
-	parser.add_argument('commands', metavar='commands', type=str, nargs='+',help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
+	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file: {CONFIG_FILE}')
+	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
+	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
-	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
+	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
 	parser.add_argument('--file_sync', action='store_true', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source as source and destination will be the same in this mode. (default: {DEFAULT_FILE_SYNC})', default=DEFAULT_FILE_SYNC)
 	parser.add_argument('--scp', action='store_true', help=f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})', default=DEFAULT_SCP)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
-	parser.add_argument("-t","--timeout", type=int, help=f"Timeout for each command in seconds (default: 0 (disabled))", default=0)
+	parser.add_argument("-t","--timeout", type=int, help=f"Timeout for each command in seconds (default: {DEFAULT_CLI_TIMEOUT} (disabled))", default=DEFAULT_CLI_TIMEOUT)
 	parser.add_argument("-r","--repeat", type=int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
 	parser.add_argument("-i","--interval", type=int, help=f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})", default=DEFAULT_INTERVAL)
 	parser.add_argument("--ipmi", action='store_true', help=f"Use ipmitool to run the command. (default: {DEFAULT_IPMI})", default=DEFAULT_IPMI)
 	parser.add_argument("-mpre","--ipmi_interface_ip_prefix", type=str, help=f"The prefix of the IPMI interfaces (default: {DEFAULT_IPMI_INTERFACE_IP_PREFIX})", default=DEFAULT_IPMI_INTERFACE_IP_PREFIX)
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})", default=DEFAULT_INTERFACE_IP_PREFIX)
-	parser.add_argument("-q","--quiet", action='store_true', help=f"Quiet mode, no curses, only print the output. (default: {DEFAULT_QUIET})", default=DEFAULT_QUIET)
+	parser.add_argument("-q","-nw","--nowatch","--quiet", action='store_true', help=f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
 	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_CURSES_MINIMUM_CHAR_LEN})", default=DEFAULT_CURSES_MINIMUM_CHAR_LEN)
 	parser.add_argument("-wh",'--window_height', type=int, help=f"The minimum line height of the curses window. (default: {DEFAULT_CURSES_MINIMUM_LINE_LEN})", default=DEFAULT_CURSES_MINIMUM_LINE_LEN)
 	parser.add_argument('-sw','--single_window', action='store_true', help=f'Use a single window for all hosts. (default: {DEFAULT_SINGLE_WINDOW})', default=DEFAULT_SINGLE_WINDOW)
 	parser.add_argument('-eo','--error_only', action='store_true', help=f'Only print the error output. (default: {DEFAULT_ERROR_ONLY})', default=DEFAULT_ERROR_ONLY)
-	parser.add_argument("-no","--nooutput", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
+	parser.add_argument("-no","--no_output", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
 	parser.add_argument('--no_env', action='store_true', help=f'Do not load the environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
 	parser.add_argument("--env_file", type=str, help=f"The file to load the environment variables from. (default: {DEFAULT_ENV_FILE})", default=DEFAULT_ENV_FILE)
-	parser.add_argument("-m","--maxconnections", type=int, help=f"Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
+	parser.add_argument("-m","--max_connections", type=int, help=f"Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument("--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as wells. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
 	parser.add_argument("-g","--greppable", action='store_true', help=f"Output in greppable format. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
-	parser.add_argument("-nw","--nowatch", action='store_true', help=f"Do not watch the output in curses modem, Use \\r. Not implemented yet. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
-	parser.add_argument("-su","--skipunreachable", action='store_true', help=f"Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
-	parser.add_argument("-sh","--skiphosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS})", default=DEFAULT_SKIP_HOSTS)
-	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} {("with sshpass " if sshpassAvailable else "")}by pan@zopyr.us')
+	parser.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
+	parser.add_argument("-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
+	parser.add_argument('--generate_default_config_file', action='store_true', help=f'Generate / store the default config file from command line argument and current config at {CONFIG_FILE}')
+	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} {("with sshpass " if _sshpassAvailable else "")}by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
 	#                     help='the user to use to connect to the hosts')
 	args = parser.parse_args()
 
-	env_file = args.env_file
+	if args.generate_default_config_file:
+		try:
+			if os.path.exists(CONFIG_FILE):
+				print(f"Warning: {CONFIG_FILE} already exists, what to do? (o/b/n)")
+				print(f"o:  Overwrite the file")
+				print(f"b:  Rename the current config file at {CONFIG_FILE}.bak forcefully and write the new config file (default)")
+				print(f"n:  Do nothing")
+				inStr = input_with_timeout_and_countdown(10)
+				if (not inStr) or inStr.lower().strip().startswith('b'):
+					write_default_config(args,CONFIG_FILE,backup = True)
+					print(f"Config file written to {CONFIG_FILE}")
+				elif inStr.lower().strip().startswith('o'):
+					write_default_config(args,CONFIG_FILE,backup = False)
+					print(f"Config file written to {CONFIG_FILE}")
+			else:
+				write_default_config(args,CONFIG_FILE,backup = True)
+				print(f"Config file written to {CONFIG_FILE}")
+		except Exception as e:
+			print(f"Error while writing config file: {e}")
+		if not args.commands:
+			sys.exit(0)
+
+	_env_file = args.env_file
 	# if there are more than 1 commands, and every command only consists of one word,
 	# we will ask the user to confirm if they want to run multiple commands or just one command.
 	if not args.file and len(args.commands) > 1 and all([len(command.split()) == 1 for command in args.commands]):
-		print(f"Multiple one word command detected, what to do? (s/f/n)")
+		print(f"Multiple one word command detected, what to do? (1/m/n)")
 		print(f"1:  Run 1 command [{' '.join(args.commands)}] on all hosts ( default )")
 		print(f"m:  Run multiple commands [{', '.join(args.commands)}] on all hosts")
 		print(f"n:  Exit")
@@ -1456,66 +1615,64 @@ def main():
 		else:
 			sys.exit(0)
 	
-	ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
+	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 
-	if not args.greppable and not args.json and not args.nooutput:
-		global_suppress_printout = False
+	if not args.greppable and not args.json and not args.no_output:
+		__global_suppress_printout = False
 
-	if not global_suppress_printout:
+	if not __global_suppress_printout:
 		print('> ' + getStrCommand(args.hosts,args.commands,oneonone=args.oneonone,timeout=args.timeout,password=args.password,
-						 quiet=args.quiet,json=args.json,called=args.nooutput,max_connections=args.maxconnections,
+						 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
 						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,username=args.username,
-						 extraargs=args.extraargs,skipUnreachable=args.skipunreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skiphosts,
+						 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
 						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only))
 	if args.error_only:
-		global_suppress_printout = True
+		__global_suppress_printout = True
 
 	for i in range(args.repeat):
 		if args.interval > 0 and i < args.repeat - 1:
 			print(f"Sleeping for {args.interval} seconds")
 			time.sleep(args.interval)
 
-		if not global_suppress_printout: print(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
+		if not __global_suppress_printout: print(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
 		hosts = run_command_on_hosts(args.hosts,args.commands,
 							 oneonone=args.oneonone,timeout=args.timeout,password=args.password,
-							 quiet=args.quiet,json=args.json,called=args.nooutput,max_connections=args.maxconnections,
+							 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
 							 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,username=args.username,
-							 extraargs=args.extraargs,skipUnreachable=args.skipunreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skiphosts,
+							 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
 							 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only)
 		#print('*'*80)
 
-		if not global_suppress_printout: print('-'*80)
+		if not __global_suppress_printout: print('-'*80)
 	
 	succeededHosts = set()
 	for host in hosts:
 		if host.returncode and host.returncode != 0:
-			mainReturnCode += 1
-			failedHosts.add(host.name)
+			__mainReturnCode += 1
+			__failedHosts.add(host.name)
 		else:
 			succeededHosts.add(host.name)
-	succeededHosts -= failedHosts
+	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
-	failedHosts = sorted(failedHosts)
+	__failedHosts = sorted(__failedHosts)
 	succeededHosts = sorted(succeededHosts)
-	if mainReturnCode > 0:
-		if not global_suppress_printout: print(f'Complete. Failed hosts (Return Code not 0) count: {mainReturnCode}')
+	if __mainReturnCode > 0:
+		if not __global_suppress_printout: print(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
 		# with open('/tmp/bashcmd.stdin','w') as f:
-		#     f.write(f"export failed_hosts={failedHosts}\n")
-		if not global_suppress_printout: print(f'failed_hosts: {",".join(failedHosts)}')
+		#     f.write(f"export failed_hosts={__failedHosts}\n")
+		if not __global_suppress_printout: print(f'failed_hosts: {",".join(__failedHosts)}')
 	else:
-		if not global_suppress_printout: print('Complete. All hosts returned 0.')
+		if not __global_suppress_printout: print('Complete. All hosts returned 0.')
 	
-	if args.success_hosts and not global_suppress_printout:
+	if args.success_hosts and not __global_suppress_printout:
 		print(f'succeeded_hosts: {",".join(succeededHosts)}')
 
 	if threading.active_count() > 1:
-		if not global_suppress_printout: print(f'Remaining active thread: {threading.active_count()}')
+		if not __global_suppress_printout: print(f'Remaining active thread: {threading.active_count()}')
 		# os.system(f'pkill -ef  {os.path.basename(__file__)}')
 		# os._exit(mainReturnCode)
 	
-	sys.exit(mainReturnCode)
-
-
+	sys.exit(__mainReturnCode)
 
 if __name__ == "__main__":
 	main()

@@ -3,6 +3,45 @@ A script that is able to issue commands to multiple hosts while monitoring their
 Can be used in bash scripts for automation actions.
 Also able to be imported and / or use with Flexec SSH Backend to perform cluster automation actions.
 
+Install via
+```
+pip install multiSSH3
+```
+
+multiSSH3 will be available as
+```
+mssh
+mssh3
+multissh
+multissh3
+multiSSH3
+```
+
+multissh will read a config file located at ```/etc/multiSSH3.config.json```
+
+To store / generate a config file with the current command line options, you can use
+
+```
+mssh --generate_default_config_file
+```
+
+You can modify the json file directly after generation and multissh will read from it for loading defaults. 
+
+Note:
+
+If you want to store password, it will be a plain text password in this config file. This will be better to supply it everytime as a CLI argument but you should really consider setting up priv-pub key setup.
+
+This option can also be used to store cli options into the config files. For example.
+
+```
+mssh --ipmi_interface_ip_prefix 192 --generate_default_config_file
+```
+will store 
+```
+"DEFAULT_IPMI_INTERFACE_IP_PREFIX": "192"
+```
+into the json file.
+
 By defualt reads bash env variables for hostname aliases. Also able to read
 ```
 DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
@@ -12,20 +51,20 @@ as hostname aliases.
 For example:
 ```
 export all='192.168.1-2.1-64'
-multiSSH3.py all 'echo hi'
+mssh all 'echo hi'
 ```
 
 It is also able to recognize ip blocks / number blocks / hex blocks / character blocks directly.
 
 For example:
 ```
-multiSSH3.py testrig[1-10] lsblk
-multiSSH3.py ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
+mssh testrig[1-10] lsblk
+mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
 ```
 
 It also supports interactive inputs. ( and able to async boardcast to all supplied hosts )
 ```
-multiSSH3.py www bash
+mssh www bash
 ```
 
 By default, it will try to fit everything inside your window. 
@@ -36,7 +75,7 @@ DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
 While leaving minimum 40 characters / 1 line for each host display by default. You can modify this by using -ww and -wh.
 
 
-Use ```multiSSH3.py --help``` for more info.
+Use ```mssh --help``` for more info.
 
 ```
 usage: mssh [-h] [-u USERNAME] [-ea EXTRAARGS] [-p PASSWORD] [-11] [-f FILE] [--file_sync] [--scp] [-t TIMEOUT] [-r REPEAT] [-i INTERVAL] [--ipmi]
@@ -105,23 +144,26 @@ Following document is generated courtesy of Mr.ChatGPT-o1 Preview:
 
 ## Table of Contents
 
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Basic Syntax](#basic-syntax)
-  - [Command-Line Options](#command-line-options)
-- [Examples](#examples)
-  - [Running a Command on Multiple Hosts](#running-a-command-on-multiple-hosts)
-  - [Copying Files to Multiple Hosts](#copying-files-to-multiple-hosts)
-  - [Using Hostname Ranges](#using-hostname-ranges)
-  - [Using IPMI](#using-ipmi)
-  - [Using Password Authentication](#using-password-authentication)
-  - [Skipping Unreachable Hosts](#skipping-unreachable-hosts)
-  - [JSON Output](#json-output)
-  - [Quiet Mode](#quiet-mode)
-- [Environment Variables](#environment-variables)
-- [Notes](#notes)
-- [License](#license)
+- [multiSSH3](#multissh3)
+- [multissh](#multissh)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Installation](#installation)
+  - [Usage](#usage)
+    - [Basic Syntax](#basic-syntax)
+    - [Command-Line Options](#command-line-options)
+  - [Examples](#examples)
+    - [Running a Command on Multiple Hosts](#running-a-command-on-multiple-hosts)
+    - [Copying Files to Multiple Hosts](#copying-files-to-multiple-hosts)
+    - [Using Hostname Ranges](#using-hostname-ranges)
+    - [Using IPMI](#using-ipmi)
+    - [Using Password Authentication](#using-password-authentication)
+    - [Skipping Unreachable Hosts](#skipping-unreachable-hosts)
+    - [JSON Output](#json-output)
+    - [Quiet Mode](#quiet-mode)
+  - [Environment Variables](#environment-variables)
+  - [Notes](#notes)
+  - [License](#license)
 
 ## Features
 
