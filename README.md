@@ -4,12 +4,12 @@ Can be used in bash scripts for automation actions.
 Also able to be imported and / or use with Flexec SSH Backend to perform cluster automation actions.
 
 Install via
-```
+```bash
 pip install multiSSH3
 ```
 
 multiSSH3 will be available as
-```
+```bash
 mssh
 mssh3
 multissh
@@ -21,7 +21,7 @@ multissh will read a config file located at ```/etc/multiSSH3.config.json```
 
 To store / generate a config file with the current command line options, you can use
 
-```
+```bash
 mssh --generate_default_config_file
 ```
 
@@ -33,42 +33,52 @@ If you want to store password, it will be a plain text password in this config f
 
 This option can also be used to store cli options into the config files. For example.
 
-```
+```bash
 mssh --ipmi_interface_ip_prefix 192 --generate_default_config_file
 ```
 will store 
-```
+```json
 "DEFAULT_IPMI_INTERFACE_IP_PREFIX": "192"
 ```
 into the json file.
 
 By defualt reads bash env variables for hostname aliases. Also able to read
-```
+```bash
 DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
 ```
 as hostname aliases.
 
 For example:
-```
+```bash
 export all='192.168.1-2.1-64'
 mssh all 'echo hi'
+```
+
+Note: you probably want to set presistent ssh connections to speed up each connection events. 
+An example .ssh/config:
+```bash
+Host *
+  StrictHostKeyChecking no
+  ControlMaster auto
+  ControlPath /run/ssh_sockets_%r@%h-%p
+  ControlPersist 3600
 ```
 
 It is also able to recognize ip blocks / number blocks / hex blocks / character blocks directly.
 
 For example:
-```
+```bash
 mssh testrig[1-10] lsblk
 mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
 ```
 
 It also supports interactive inputs. ( and able to async boardcast to all supplied hosts )
-```
+```bash
 mssh www bash
 ```
 
 By default, it will try to fit everything inside your window. 
-```
+```bash
 DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
 DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
 ```
@@ -77,7 +87,7 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 
 Use ```mssh --help``` for more info.
 
-```
+```bash
 usage: mssh [-h] [-u USERNAME] [-ea EXTRAARGS] [-p PASSWORD] [-11] [-f FILE] [--file_sync] [--scp] [-t TIMEOUT] [-r REPEAT] [-i INTERVAL] [--ipmi]
             [-pre INTERFACE_IP_PREFIX] [-q] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-sw] [-eo] [-no] [--no_env] [--env_file ENV_FILE] [-m MAXCONNECTIONS] [-j]
             [--success_hosts] [-g] [-nw] [-su] [-sh SKIPHOSTS] [-V]
@@ -291,8 +301,6 @@ Suppresses all output, useful for scripts where you only care about exit codes.
 - Use `--no_env` to prevent loading any environment variables from files.
 
 ## Notes
-
-- **SSH Configuration**: The script modifies `~/.ssh/config` to disable `StrictHostKeyChecking`. Ensure this is acceptable in your environment.
 - **Dependencies**: Requires Python 3, `sshpass` (if using password authentication), and standard Unix utilities like `ssh`, `scp`, and `rsync`.
 - **Signal Handling**: Supports graceful termination with `Ctrl+C`.
 

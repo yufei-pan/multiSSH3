@@ -29,7 +29,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.83'
+version = '4.87'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -83,6 +83,7 @@ __build_in_default_config = {
 	'DEFAULT_GREPPABLE_MODE': False,
 	'DEFAULT_SKIP_UNREACHABLE': False,
 	'DEFAULT_SKIP_HOSTS': '',
+	'SSH_STRICT_HOST_KEY_CHECKING': False,
 	'ERROR_MESSAGES_TO_IGNORE': [
 		'Pseudo-terminal will not be allocated because stdin is not a terminal',
 		'Connection to .* closed',
@@ -140,6 +141,8 @@ DEFAULT_GREPPABLE_MODE = __configs_from_file.get('DEFAULT_GREPPABLE_MODE', __bui
 DEFAULT_SKIP_UNREACHABLE = __configs_from_file.get('DEFAULT_SKIP_UNREACHABLE', __build_in_default_config['DEFAULT_SKIP_UNREACHABLE'])
 DEFAULT_SKIP_HOSTS = __configs_from_file.get('DEFAULT_SKIP_HOSTS', __build_in_default_config['DEFAULT_SKIP_HOSTS'])
 
+SSH_STRICT_HOST_KEY_CHECKING = __configs_from_file.get('SSH_STRICT_HOST_KEY_CHECKING', __build_in_default_config['SSH_STRICT_HOST_KEY_CHECKING'])
+
 ERROR_MESSAGES_TO_IGNORE = __configs_from_file.get('ERROR_MESSAGES_TO_IGNORE', __build_in_default_config['ERROR_MESSAGES_TO_IGNORE'])
 
 _DEFAULT_CALLED = __configs_from_file.get('_DEFAULT_CALLED', __build_in_default_config['_DEFAULT_CALLED'])
@@ -187,7 +190,7 @@ class Host:
 
 __wildCharacters = ['*','?','x']
 
-__gloablUnavailableHosts = set()
+__globalUnavailableHosts = set()
 
 __ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
 
@@ -607,6 +610,11 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	global __ipmiiInterfaceIPPrefix
 	global _binPaths
 	try:
+		keyCheckArgs = []
+		rsyncKeyCheckArgs = []
+		if not SSH_STRICT_HOST_KEY_CHECKING:
+			keyCheckArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+			rsyncKeyCheckArgs = ['--rsh','ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null']
 		host.username = None
 		host.address = host.name
 		if '@' in host.name:
@@ -697,11 +705,11 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 				else:
 					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rpB'] + extraargs +['--']+fileArgs
+					formatedCMD = [_binPaths['scp'],'-rpB'] + keyCheckArgs + extraargs +['--']+fileArgs
 				else:
-					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + extraargs +['--']+fileArgs	
+					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncKeyCheckArgs + extraargs +['--']+fileArgs	
 			else:
-				formatedCMD = [_binPaths['ssh']] + extraargs +['--']+ [host.resolvedName, host.command]
+				formatedCMD = [_binPaths['ssh']] + keyCheckArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
 				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
 			elif passwds:
@@ -1226,34 +1234,34 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		print(rtnStr)
 	return rtnStr
 
-sshConfigged = False
-def verify_ssh_config():
-	'''
-	Verify that ~/.ssh/config exists and contains the line "StrictHostKeyChecking no"
+# sshConfigged = False
+# def verify_ssh_config():
+# 	'''
+# 	Verify that ~/.ssh/config exists and contains the line "StrictHostKeyChecking no"
 
-	Args:
-		None
+# 	Args:
+# 		None
 
-	Returns:
-		None
-	'''
-	global sshConfigged
-	if not sshConfigged:
-		# first we make sure ~/.ssh/config exists
-		config = ''
-		if not os.path.exists(os.path.expanduser('~/.ssh')):
-			os.makedirs(os.path.expanduser('~/.ssh'))
-		if os.path.exists(os.path.expanduser('~/.ssh/config')):
-			with open(os.path.expanduser('~/.ssh/config'),'r') as f:
-				config = f.read()
-		if config:
-			if 'StrictHostKeyChecking no' not in config:
-				with open(os.path.expanduser('~/.ssh/config'),'a') as f:
-					f.write('\nHost *\n\tStrictHostKeyChecking no\n')
-		else:
-			with open(os.path.expanduser('~/.ssh/config'),'w') as f:
-				f.write('Host *\n\tStrictHostKeyChecking no\n')
-		sshConfigged = True
+# 	Returns:
+# 		None
+# 	'''
+# 	global sshConfigged
+# 	if not sshConfigged:
+# 		# first we make sure ~/.ssh/config exists
+# 		config = ''
+# 		if not os.path.exists(os.path.expanduser('~/.ssh')):
+# 			os.makedirs(os.path.expanduser('~/.ssh'))
+# 		if os.path.exists(os.path.expanduser('~/.ssh/config')):
+# 			with open(os.path.expanduser('~/.ssh/config'),'r') as f:
+# 				config = f.read()
+# 		if config:
+# 			if 'StrictHostKeyChecking no' not in config:
+# 				with open(os.path.expanduser('~/.ssh/config'),'a') as f:
+# 					f.write('\nHost *\n\tStrictHostKeyChecking no\n')
+# 		else:
+# 			with open(os.path.expanduser('~/.ssh/config'),'w') as f:
+# 				f.write('Host *\n\tStrictHostKeyChecking no\n')
+# 		sshConfigged = True
 
 def signal_handler(sig, frame):
 	'''
@@ -1277,9 +1285,8 @@ def signal_handler(sig, frame):
 		os.system(f'pkill -ef {os.path.basename(__file__)}')
 		sys.exit(0)
 
-
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
-	global __gloablUnavailableHosts
+	global __globalUnavailableHosts
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
 	if not nowatch and threads and not returnUnfinished and any([thread.is_alive() for thread in threads]) and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
 		curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
@@ -1292,7 +1299,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	# update the unavailable hosts and global unavailable hosts
 	if willUpdateUnreachableHosts:
 		unavailableHosts.update([host.name for host in hosts if host.stderr and ('No route to host' in host.stderr[0].strip() or host.stderr[0].strip().startswith('Timeout!'))])
-		__gloablUnavailableHosts.update(unavailableHosts)
+		__globalUnavailableHosts.update(unavailableHosts)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
 	if not called:
 		print_output(hosts,json,greppable=greppable)
@@ -1394,6 +1401,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		interface_ip_prefix (str, optional): The prefix of the IPMI interface. Defaults to {DEFAULT_INTERFACE_IP_PREFIX}.
 		returnUnfinished (bool, optional): Whether to return the unfinished hosts. Defaults to {_DEFAULT_RETURN_UNFINISHED}.
 		scp (bool, optional): Whether to use scp instead of rsync. Defaults to {DEFAULT_SCP}.
+		gather_mode (bool, optional): Whether to use gather mode. Defaults to False.
 		username (str, optional): The username to use to connect to the hosts. Defaults to {DEFAULT_USERNAME}.
 		extraargs (str, optional): Extra arguments to pass to the ssh / rsync / scp command. Defaults to {DEFAULT_EXTRA_ARGS}.
 		skipUnreachable (bool, optional): Whether to skip unreachable hosts. Defaults to {DEFAULT_SKIP_UNREACHABLE}.
@@ -1410,7 +1418,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	Returns:
 		list: A list of Host objects
 	'''
-	global __gloablUnavailableHosts
+	global __globalUnavailableHosts
 	global __global_suppress_printout
 	if not max_connections:
 		max_connections = 4 * os.cpu_count()
@@ -1420,7 +1428,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		max_connections = (-max_connections) * os.cpu_count()
 	if not commands:
 		commands = []
-	verify_ssh_config()
+	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
 		# if called,
@@ -1429,13 +1437,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if skipUnreachable is None:
 			skipUnreachable = True
 		if skipUnreachable:
-			unavailableHosts = __gloablUnavailableHosts
+			unavailableHosts = __globalUnavailableHosts
 		else:
 			unavailableHosts = set()
 	else:
 		# if run in command line ( or emulating running in command line, we default to skip unreachable hosts within one command call )
 		if skipUnreachable:
-			unavailableHosts = __gloablUnavailableHosts
+			unavailableHosts = __globalUnavailableHosts
 		else:
 			unavailableHosts = set()
 			skipUnreachable = True
@@ -1471,15 +1479,18 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		files = set(files+commands) if files else set(commands)
 	if files:
 		# try to resolve files first (like * etc)
-		pathSet = set()
-		for file in files:
-			try:
-				pathSet.update(glob.glob(file,include_hidden=True,recursive=True))
-			except:
-				pathSet.update(glob.glob(file,recursive=True))
-		if not pathSet:
-			print(f'Warning: No source files at {files} are found after resolving globs!')
-			sys.exit(66)
+		if not gather_mode:
+			pathSet = set()
+			for file in files:
+				try:
+					pathSet.update(glob.glob(file,include_hidden=True,recursive=True))
+				except:
+					pathSet.update(glob.glob(file,recursive=True))
+			if not pathSet:
+				print(f'Warning: No source files at {files} are found after resolving globs!')
+				sys.exit(66)
+		else:
+			pathSet = set(files)
 		if file_sync:
 			# use abosolute path for file sync
 			commands = [os.path.abspath(file) for file in pathSet]
@@ -1598,6 +1609,7 @@ def get_default_config(args):
 		'DEFAULT_GREPPABLE_MODE': args.greppable,
 		'DEFAULT_SKIP_UNREACHABLE': args.skip_unreachable,
 		'DEFAULT_SKIP_HOSTS': args.skip_hosts,
+		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
 		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
 	}
 
@@ -1605,14 +1617,16 @@ def write_default_config(args,CONFIG_FILE,backup = True):
 	if backup and os.path.exists(CONFIG_FILE):
 		os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 	default_config = get_default_config(args)
+	# apply the updated defualt_config to __configs_from_file and write that to file
+	__configs_from_file.update(default_config)
 	with open(CONFIG_FILE,'w') as f:
-		json.dump(default_config,f,indent=4)
+		json.dump(__configs_from_file,f,indent=4)
 
 
 def main():
 	global _emo
 	global __global_suppress_printout
-	global __gloablUnavailableHosts
+	global __globalUnavailableHosts
 	global __mainReturnCode
 	global __failedHosts
 	global __ipmiiInterfaceIPPrefix
@@ -1654,14 +1668,14 @@ def main():
 	parser.add_argument("-g","--greppable", action='store_true', help=f"Output in greppable format. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
 	parser.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument("-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
-	parser.add_argument('--generate_default_config_file', action='store_true', help=f'Generate / store the default config file from command line argument and current config at {CONFIG_FILE}')
+	parser.add_argument('--store_config_file', action='store_true', help=f'Store / generate the default config file from command line argument and current config at {CONFIG_FILE}')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
 	#                     help='the user to use to connect to the hosts')
 	args = parser.parse_args()
 
-	if args.generate_default_config_file:
+	if args.store_config_file:
 		try:
 			if os.path.exists(CONFIG_FILE):
 				print(f"Warning: {CONFIG_FILE} already exists, what to do? (o/b/n)")
@@ -1681,6 +1695,8 @@ def main():
 		except Exception as e:
 			print(f"Error while writing config file: {e}")
 		if not args.commands:
+			with open(CONFIG_FILE,'r') as f:
+				print(f"Config file content: \n{f.read()}")
 			sys.exit(0)
 
 	_env_file = args.env_file
