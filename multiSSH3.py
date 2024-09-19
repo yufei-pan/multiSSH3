@@ -15,7 +15,9 @@ import io
 import signal
 import functools
 import glob
-#import fnmatch
+import shutil
+import getpass
+
 try:
 	# Check if functiools.cache is available
 	cache_decorator = functools.cache
@@ -87,13 +89,20 @@ __build_in_default_config = {
 		'Warning: Permanently added',
 		'mux_client_request_session',
 		'disabling multiplexing',
+		'Killed by signal',
+		'Connection reset by peer',
 	],
 	'_DEFAULT_CALLED': True,
 	'_DEFAULT_RETURN_UNFINISHED': False,
 	'_DEFAULT_UPDATE_UNREACHABLE_HOSTS': True,
 	'_DEFAULT_NO_START': False,
 	'_etc_hosts': {},
-	'_sshpassAvailable': False,
+	'_sshpassPath': None,
+	'_sshPath': None,
+	'_scpPath': None,
+	'_ipmitoolPath': None,
+	'_rsyncPath': None,
+	'_bashPath': None,
 	'__ERROR_MESSAGES_TO_IGNORE_REGEX':None,
 }
 
@@ -139,7 +148,8 @@ _DEFAULT_UPDATE_UNREACHABLE_HOSTS = __configs_from_file.get('_DEFAULT_UPDATE_UNR
 _DEFAULT_NO_START = __configs_from_file.get('_DEFAULT_NO_START', __build_in_default_config['_DEFAULT_NO_START'])
 
 # form the regex from the list
-if '__ERROR_MESSAGES_TO_IGNORE_REGEX' in __configs_from_file:
+__ERROR_MESSAGES_TO_IGNORE_REGEX = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX', __build_in_default_config['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
+if __ERROR_MESSAGES_TO_IGNORE_REGEX:
 	print('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
 	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__configs_from_file['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
 else:
@@ -152,7 +162,7 @@ __global_suppress_printout = True
 __mainReturnCode = 0
 __failedHosts = set()
 class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None):
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False):
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -164,13 +174,14 @@ class Host:
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
 		self.interface_ip_prefix = interface_ip_prefix # the prefix of the ip address of the interface to be used to connect to the host
 		self.scp = scp # whether to use scp to copy files to the host
+		self.gatherMode = gatherMode # whether the host is in gather mode
 		self.extraargs = extraargs # extra arguments to be passed to ssh
 		self.resolvedName = None # the resolved IP address of the host
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
 	def __repr__(self):
 		# return the complete data structure
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, extraargs={self.extraargs}, resolvedName={self.resolvedName})"
+		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName})"
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
 
@@ -189,12 +200,24 @@ _etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_e
 _env_file = DEFAULT_ENV_FILE
 
 # check if command sshpass is available
-_sshpassAvailable = __configs_from_file.get('_sshpassAvailable', __build_in_default_config['_sshpassAvailable'])
-try:
-	subprocess.run(['which', 'sshpass'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-	_sshpassAvailable = True
-except:
-	pass
+_binPaths = {}
+def check_path(program_name):
+	global __configs_from_file
+	global __build_in_default_config
+	global _binPaths
+	config_key = f'_{program_name}Path'
+	program_path = (
+		__configs_from_file.get(config_key) or
+		__build_in_default_config.get(config_key) or
+		shutil.which(program_name)
+	)
+	if program_path:
+		_binPaths[program_name] = program_path
+		return True
+	return False
+
+[check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','bash']]
+
 
 
 @cache_decorator
@@ -582,64 +605,124 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	global _emo
 	global __ERROR_MESSAGES_TO_IGNORE_REGEX
 	global __ipmiiInterfaceIPPrefix
-	global _sshpassAvailable
-	with sem:
-		try:
-			host.username = None
-			host.address = host.name
-			if '@' in host.name:
-				host.username, host.address = host.name.rsplit('@',1)
-			if "#HOST#" in host.command.upper() or "#HOSTNAME#" in host.command.upper():
-				host.command = host.command.replace("#HOST#",host.address).replace("#HOSTNAME#",host.address).replace("#host#",host.address).replace("#hostname#",host.address)
-			if "#USER#" in host.command.upper() or "#USERNAME#" in host.command.upper():
-				if host.username:
-					host.command = host.command.replace("#USER#",host.username).replace("#USERNAME#",host.username).replace("#user#",host.username).replace("#username#",host.username)
-				else:
-					host.command = host.command.replace("#USER#",'CURRENT_USER').replace("#USERNAME#",'CURRENT_USER').replace("#user#",'CURRENT_USER').replace("#username#",'CURRENT_USER')
-			formatedCMD = []
-			if host.extraargs:
-				extraargs = host.extraargs.split()
+	global _binPaths
+	try:
+		host.username = None
+		host.address = host.name
+		if '@' in host.name:
+			host.username, host.address = host.name.rsplit('@',1)
+		if "#HOST#" in host.command.upper() or "#HOSTNAME#" in host.command.upper():
+			host.command = host.command.replace("#HOST#",host.address).replace("#HOSTNAME#",host.address).replace("#host#",host.address).replace("#hostname#",host.address)
+		if "#USER#" in host.command.upper() or "#USERNAME#" in host.command.upper():
+			if host.username:
+				host.command = host.command.replace("#USER#",host.username).replace("#USERNAME#",host.username).replace("#user#",host.username).replace("#username#",host.username)
 			else:
-				extraargs = []
-			if __ipmiiInterfaceIPPrefix:
-				host.interface_ip_prefix = __ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
-			if host.interface_ip_prefix:
-				try:
-					hostOctets = getIP(host.address,local=False).split('.')
-					prefixOctets = host.interface_ip_prefix.split('.')
-					host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
-					host.resolvedName = host.username + '@' if host.username else ''
-					host.resolvedName += host.address
-				except:
-					host.resolvedName = host.name
-			else:
+				current_user = getpass.getuser()
+				host.command = host.command.replace("#USER#",current_user).replace("#USERNAME#",current_user).replace("#user#",current_user).replace("#username#",current_user)
+		formatedCMD = []
+		if host.extraargs and type(host.extraargs) == str:
+			extraargs = host.extraargs.split()
+		elif host.extraargs and type(host.extraargs) == list:
+			extraargs = [str(arg) for arg in host.extraargs]
+		else:
+			extraargs = []
+		if __ipmiiInterfaceIPPrefix:
+			host.interface_ip_prefix = __ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
+		if host.interface_ip_prefix:
+			try:
+				hostOctets = getIP(host.address,local=False).split('.')
+				prefixOctets = host.interface_ip_prefix.split('.')
+				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
+				host.resolvedName = host.username + '@' if host.username else ''
+				host.resolvedName += host.address
+			except:
 				host.resolvedName = host.name
-			if host.ipmi:
+		else:
+			host.resolvedName = host.name
+		if host.ipmi:
+			if 'ipmitool' in _binPaths:
 				if host.command.startswith('ipmitool '):
 					host.command = host.command.replace('ipmitool ','')
+				elif host.command.startswith(_binPaths['ipmitool']):
+					host.command = host.command.replace(_binPaths['ipmitool'],'')
 				if not host.username:
 					host.username = 'admin'
-				if passwds:
-					formatedCMD = ['bash','-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {" ".join(extraargs)} {host.command}']
-				else:
-					formatedCMD = ['bash','-c',f'ipmitool -H {host.address} -U {host.username} {" ".join(extraargs)} {host.command}']
-			else:
-				if host.files:
-					if host.scp:
-						formatedCMD = ['scp','-rpB'] + extraargs +['--']+host.files+[f'{host.resolvedName}:{host.command}']
+				if 'bash' in _binPaths:
+					if passwds:
+						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {" ".join(extraargs)} {host.command}']
 					else:
-						formatedCMD = ['rsync','-ahlX','--partial','--inplace', '--info=name'] + extraargs +['--']+host.files+[f'{host.resolvedName}:{host.command}']	
+						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} {" ".join(extraargs)} {host.command}']
 				else:
-					formatedCMD = ['ssh'] + extraargs +['--']+ [host.resolvedName, host.command]
-				if passwds and _sshpassAvailable:
-					formatedCMD = ['sshpass', '-p', passwds] + formatedCMD
-				elif passwds:
-					host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
-					#host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
-					host.output.append('Please provide password via live input or use ssh key authentication.')
-					# # try to send the password via __keyPressesIn
-					# __keyPressesIn[-1] = list(passwds) + ['\n']
-					# __keyPressesIn.append([])
+					if passwds:
+						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P {passwds}'] + extraargs + [host.command]
+					else:
+						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}'] + extraargs + [host.command]
+			elif 'ssh' in _binPaths:
+				host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
+				host.ipmi = False
+				host.interface_ip_prefix = None
+				host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
+				ssh_command(host,sem,timeout,passwds)
+				return
+			else:
+				host.output.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
+				host.stderr.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
+				host.returncode = 1
+				return
+		else:
+			if host.files:
+				if host.scp:
+					if 'scp' in _binPaths:
+						useScp = True
+					elif 'rsync' in _binPaths:
+						host.output.append('scp not found on the local machine! Trying to use rsync...')
+						useScp = False
+					else:
+						host.output.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
+						host.stderr.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
+						host.returncode = 1
+						return
+				elif 'rsync' in _binPaths:
+					useScp = False
+				elif 'scp' in _binPaths:
+					host.output.append('rsync not found on the local machine! Trying to use scp...')
+					useScp = True
+				else:
+					host.output.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
+					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
+					host.returncode = 1
+					return
+				if host.gatherMode:
+					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
+				else:
+					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
+				if useScp:
+					formatedCMD = [_binPaths['scp'],'-rpB'] + extraargs +['--']+fileArgs
+				else:
+					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + extraargs +['--']+fileArgs	
+			else:
+				formatedCMD = [_binPaths['ssh']] + extraargs +['--']+ [host.resolvedName, host.command]
+			if passwds and 'sshpass' in _binPaths:
+				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
+			elif passwds:
+				host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
+				#host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
+				host.output.append('Please provide password via live input or use ssh key authentication.')
+				# # try to send the password via __keyPressesIn
+				# __keyPressesIn[-1] = list(passwds) + ['\n']
+				# __keyPressesIn.append([])
+	except Exception as e:
+		import traceback
+		host.output.append(f'Error occurred while formatting the command : {host.command}!')
+		host.stderr.append(f'Error occurred while formatting the command : {host.command}!')
+		host.stderr.extend(str(e).split('\n'))
+		host.output.extend(str(e).split('\n'))
+		host.stderr.extend(traceback.format_exc().split('\n'))
+		host.output.extend(traceback.format_exc().split('\n'))
+		host.returncode = -1
+		return
+	with sem:
+		try:
 			host.output.append('Running command: '+' '.join(formatedCMD))
 			#host.stdout = []
 			proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
@@ -733,7 +816,7 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 		host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
 		ssh_command(host,sem,timeout,passwds)
 	# If transfering files, we will try again using scp if rsync connection is not successful
-	if host.files and not host.scp and host.returncode != 0 and host.stderr:
+	if host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
 		host.stderr = []
 		host.stdout = []
 		host.output.append('Rsync connection failed! Trying SCP connection...')
@@ -1242,7 +1325,7 @@ def formHostStr(host) -> str:
 def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
-						 scp=DEFAULT_SCP,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
+						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
 						 file_sync = False, error_only = DEFAULT_ERROR_ONLY,
 						 shortend = False) -> str:
@@ -1257,6 +1340,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 	if ipmi: argsList.append('--ipmi')
 	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX: argsList.append(f'--interface_ip_prefix="{interface_ip_prefix}"' if not shortend else f'-pre="{interface_ip_prefix}"')
 	if scp: argsList.append('--scp')
+	if gather_mode: argsList.append('--gather_mode' if not shortend else '-gm')
 	if username and username != DEFAULT_USERNAME: argsList.append(f'--username="{username}"' if not shortend else f'-u="{username}"')
 	if extraargs and extraargs != DEFAULT_EXTRA_ARGS: argsList.append(f'--extraargs="{extraargs}"' if not shortend else f'-ea="{extraargs}"')
 	if skipUnreachable: argsList.append('--skipUnreachable' if not shortend else '-su')
@@ -1270,7 +1354,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
-						 scp=DEFAULT_SCP,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
+						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, shortend = False):
@@ -1279,7 +1363,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 	files = frozenset(files) if files else None
 	argsStr = __formCommandArgStr(oneonone = oneonone, timeout = timeout,password = password,
 						 nowatch = nowatch,json = json,max_connections=max_connections,
-						 files = files,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,scp=scp,
+						 files = files,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,scp=scp,gather_mode = gather_mode,
 						 username=username,extraargs=extraargs,skipUnreachable=skipUnreachable,no_env=no_env,
 						 greppable=greppable,skip_hosts = skip_hosts, file_sync = file_sync,error_only = error_only, shortend = shortend)
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
@@ -1288,7 +1372,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
-						 scp=DEFAULT_SCP,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
+						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY):
@@ -1418,9 +1502,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				continue
 			if host.strip() in skipHostsList: continue
 			if file_sync:
-				hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
+				hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
 			else:
-				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
+				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
 			if not __global_suppress_printout: 
 				print(f"Running command: {command} on host: {host}")
 		if not __global_suppress_printout: print('-'*80)
@@ -1462,9 +1546,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					continue
 				if host.strip() in skipHostsList: continue
 				if file_sync:
-					hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
+					hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
 				else:
-					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
+					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
 			if not __global_suppress_printout and len(commands) > 1:
 				print('-'*80)
 				print(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -1532,7 +1616,7 @@ def main():
 	global __mainReturnCode
 	global __failedHosts
 	global __ipmiiInterfaceIPPrefix
-	global _sshpassAvailable
+	global _binPaths
 	global _env_file
 	_emo = False
 	# We handle the signal
@@ -1548,6 +1632,7 @@ def main():
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
 	parser.add_argument('--file_sync', action='store_true', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source as source and destination will be the same in this mode. (default: {DEFAULT_FILE_SYNC})', default=DEFAULT_FILE_SYNC)
 	parser.add_argument('--scp', action='store_true', help=f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})', default=DEFAULT_SCP)
+	parser.add_argument('-gm','--gather_mode', action='store_true', help=f'Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
 	parser.add_argument("-t","--timeout", type=int, help=f"Timeout for each command in seconds (default: {DEFAULT_CLI_TIMEOUT} (disabled))", default=DEFAULT_CLI_TIMEOUT)
 	parser.add_argument("-r","--repeat", type=int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
@@ -1570,7 +1655,7 @@ def main():
 	parser.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument("-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
 	parser.add_argument('--generate_default_config_file', action='store_true', help=f'Generate / store the default config file from command line argument and current config at {CONFIG_FILE}')
-	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} {("with sshpass " if _sshpassAvailable else "")}by {AUTHOR} ({AUTHOR_EMAIL})')
+	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
 	#                     help='the user to use to connect to the hosts')
@@ -1623,7 +1708,7 @@ def main():
 	if not __global_suppress_printout:
 		print('> ' + getStrCommand(args.hosts,args.commands,oneonone=args.oneonone,timeout=args.timeout,password=args.password,
 						 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
-						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,username=args.username,
+						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
 						 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
 						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only))
 	if args.error_only:
@@ -1638,7 +1723,7 @@ def main():
 		hosts = run_command_on_hosts(args.hosts,args.commands,
 							 oneonone=args.oneonone,timeout=args.timeout,password=args.password,
 							 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
-							 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,username=args.username,
+							 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
 							 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
 							 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only)
 		#print('*'*80)

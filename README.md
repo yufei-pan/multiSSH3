@@ -148,8 +148,6 @@ Following document is generated courtesy of Mr.ChatGPT-o1 Preview:
 - [multissh](#multissh)
   - [Table of Contents](#table-of-contents)
   - [Features](#features)
-  - [Installation](#installation)
-  - [Usage](#usage)
     - [Basic Syntax](#basic-syntax)
     - [Command-Line Options](#command-line-options)
   - [Examples](#examples)
@@ -178,36 +176,10 @@ Following document is generated courtesy of Mr.ChatGPT-o1 Preview:
 - **Interactive Mode**: Run interactive commands with curses-based UI for monitoring.
 - **Quiet Mode**: Suppress output for cleaner automation scripts.
 
-## Installation
-
-1. **Clone the Repository**
-
-   ```bash
-   git clone https://github.com/yourusername/multissh.git
-   ```
-
-2. **Navigate to the Directory**
-
-   ```bash
-   cd multissh
-   ```
-
-3. **Make the Script Executable**
-
-   ```bash
-   chmod +x multissh.py
-   ```
-
-4. **Install Dependencies**
-
-   Ensure you have Python 3 and the required modules installed. You may need to install `curses` and `ipaddress` modules if they are not already available.
-
-## Usage
-
 ### Basic Syntax
 
 ```bash
-./multissh.py [options] <hosts> <commands>
+mssh [options] <hosts> <commands>
 ```
 
 - `<hosts>`: Comma-separated list of target hosts. Supports ranges and wildcards.
@@ -251,7 +223,7 @@ Following document is generated courtesy of Mr.ChatGPT-o1 Preview:
 ### Running a Command on Multiple Hosts
 
 ```bash
-./multissh.py "host1,host2,host3" "uptime"
+mssh "host1,host2,host3" "uptime"
 ```
 
 This command runs `uptime` on `host1`, `host2`, and `host3`.
@@ -259,7 +231,7 @@ This command runs `uptime` on `host1`, `host2`, and `host3`.
 ### Copying Files to Multiple Hosts
 
 ```bash
-./multissh.py -f "/path/to/local/file.txt" "host1,host2,host3" "/remote/path/"
+mssh -f "/path/to/local/file.txt" "host1,host2,host3" "/remote/path/"
 ```
 
 This command copies `file.txt` to `/remote/path/` on the specified hosts.
@@ -267,7 +239,7 @@ This command copies `file.txt` to `/remote/path/` on the specified hosts.
 ### Using Hostname Ranges
 
 ```bash
-./multissh.py "host[01-05]" "hostname"
+mssh "host[01-05]" "hostname"
 ```
 
 This expands to `host01`, `host02`, `host03`, `host04`, `host05` and runs `hostname` on each.
@@ -275,7 +247,7 @@ This expands to `host01`, `host02`, `host03`, `host04`, `host05` and runs `hostn
 ### Using IPMI
 
 ```bash
-./multissh.py --ipmi "192.168.1.[100-105]" "chassis power status"
+mssh --ipmi "192.168.1.[100-105]" "chassis power status"
 ```
 
 Runs `ipmitool chassis power status` on the specified IPMI interfaces.
@@ -283,7 +255,7 @@ Runs `ipmitool chassis power status` on the specified IPMI interfaces.
 ### Using Password Authentication
 
 ```bash
-./multissh.py -p "yourpassword" "host1,host2" "whoami"
+mssh -p "yourpassword" "host1,host2" "whoami"
 ```
 
 Uses `sshpass` to provide the password for SSH authentication.
@@ -291,7 +263,7 @@ Uses `sshpass` to provide the password for SSH authentication.
 ### Skipping Unreachable Hosts
 
 ```bash
-./multissh.py -su "host1,host2,host3" "date"
+mssh -su "host1,host2,host3" "date"
 ```
 
 Skips hosts that are unreachable during execution.
@@ -299,7 +271,7 @@ Skips hosts that are unreachable during execution.
 ### JSON Output
 
 ```bash
-./multissh.py -j "host1,host2" "uname -a"
+mssh -j "host1,host2" "uname -a"
 ```
 
 Outputs the results in JSON format, suitable for parsing.
@@ -307,7 +279,7 @@ Outputs the results in JSON format, suitable for parsing.
 ### Quiet Mode
 
 ```bash
-./multissh.py -q "host1,host2" "ls /nonexistent"
+mssh -q "host1,host2" "ls /nonexistent"
 ```
 
 Suppresses all output, useful for scripts where you only care about exit codes.
