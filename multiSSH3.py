@@ -29,7 +29,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.81'
+version = '4.83'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
