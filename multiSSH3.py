@@ -29,7 +29,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.87'
+version = '4.89'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -190,6 +190,10 @@ class Host:
 
 __wildCharacters = ['*','?','x']
 
+_no_env = DEFAULT_NO_ENV
+
+_env_file = DEFAULT_ENV_FILE
+
 __globalUnavailableHosts = set()
 
 __ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
@@ -200,7 +204,6 @@ _emo = False
 
 _etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_etc_hosts'])
 
-_env_file = DEFAULT_ENV_FILE
 
 # check if command sshpass is available
 _binPaths = {}
@@ -269,37 +272,6 @@ def expandIPv4Address(hosts):
 	return expandedHosts
 
 @cache_decorator
-def readEnvFromFile(environemnt_file = ''):
-	'''
-	Read the environment variables from env_file
-	Returns:
-		dict: A dictionary of environment variables
-	'''
-	global env
-	try:
-		if env:
-			return env
-	except:
-		env = {}
-	global _env_file
-	if environemnt_file:
-		envf = environemnt_file
-	else:
-		envf = _env_file if _env_file else DEFAULT_ENV_FILE
-	if os.path.exists(envf):
-		with open(envf,'r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
-					continue
-				key, value = line.replace('export ', '', 1).strip().split('=', 1)
-				key = key.strip().strip('"').strip("'")
-				value = value.strip().strip('"').strip("'")
-				# avoid infinite recursion
-				if key != value:
-					env[key] = value.strip('"').strip("'")
-	return env
-
-@cache_decorator
 def getIP(hostname,local=False):
 	'''
 	Get the IP address of the hostname
@@ -339,9 +311,40 @@ def getIP(hostname,local=False):
 		return socket.gethostbyname(hostname)
 	except:
 		return None
+	
+@cache_decorator
+def readEnvFromFile(environemnt_file = ''):
+	'''
+	Read the environment variables from env_file
+	Returns:
+		dict: A dictionary of environment variables
+	'''
+	global env
+	try:
+		if env:
+			return env
+	except:
+		env = {}
+	global _env_file
+	if environemnt_file:
+		envf = environemnt_file
+	else:
+		envf = _env_file if _env_file else DEFAULT_ENV_FILE
+	if os.path.exists(envf):
+		with open(envf,'r') as f:
+			for line in f:
+				if line.startswith('#') or not line.strip():
+					continue
+				key, value = line.replace('export ', '', 1).strip().split('=', 1)
+				key = key.strip().strip('"').strip("'")
+				value = value.strip().strip('"').strip("'")
+				# avoid infinite recursion
+				if key != value:
+					env[key] = value.strip('"').strip("'")
+	return env
 
 @cache_decorator 
-def expand_hostname(text,validate=True,no_env=False):
+def expand_hostname(text,validate=True):
 	'''
 	Expand the hostname range in the text.
 	Will search the string for a range ( [] encloused and non enclosed number ranges).
@@ -362,12 +365,12 @@ def expand_hostname(text,validate=True,no_env=False):
 		hostname = expandinghosts.pop()
 		match = re.search(r'\[(.*?-.*?)\]', hostname)
 		if not match:
-			expandedhosts.update(validate_expand_hostname(hostname,no_env=no_env) if validate else [hostname])
+			expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
 			continue
 		try:
 			range_start, range_end = match.group(1).split('-')
 		except ValueError:
-			expandedhosts.update(validate_expand_hostname(hostname,no_env=no_env) if validate else [hostname])
+			expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
 			continue
 		range_start = range_start.strip()
 		range_end = range_end.strip()
@@ -379,7 +382,7 @@ def expand_hostname(text,validate=True,no_env=False):
 			elif range_start.isalpha() and range_start.isupper():
 				range_end = 'Z'
 			else:
-				expandedhosts.update(validate_expand_hostname(hostname,no_env=no_env) if validate else [hostname])
+				expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
 				continue
 		if not range_start:
 			if range_end.isdigit():
@@ -389,7 +392,7 @@ def expand_hostname(text,validate=True,no_env=False):
 			elif range_end.isalpha() and range_end.isupper():
 				range_start = 'A'
 			else:
-				expandedhosts.update(validate_expand_hostname(hostname,no_env=no_env) if validate else [hostname])
+				expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
 				continue
 		if range_start.isdigit() and range_end.isdigit():
 			padding_length = min(len(range_start), len(range_end))
@@ -399,14 +402,14 @@ def expand_hostname(text,validate=True,no_env=False):
 				if '[' in hostname:
 					expandinghosts.append(hostname.replace(match.group(0), formatted_i, 1))
 				else:
-					expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), formatted_i, 1),no_env=no_env) if validate else [hostname])
+					expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), formatted_i, 1)) if validate else [hostname])
 		else:
 			if all(c in string.hexdigits for c in range_start + range_end):
 				for i in range(int(range_start, 16), int(range_end, 16)+1):
 					if '[' in hostname:
 						expandinghosts.append(hostname.replace(match.group(0), format(i, 'x'), 1))
 					else:
-						expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), format(i, 'x'), 1),no_env=no_env) if validate else [hostname])
+						expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), format(i, 'x'), 1)) if validate else [hostname])
 			else:
 				try:
 					start_index = alphanumeric.index(range_start)
@@ -415,13 +418,13 @@ def expand_hostname(text,validate=True,no_env=False):
 						if '[' in hostname:
 							expandinghosts.append(hostname.replace(match.group(0), alphanumeric[i], 1))
 						else:
-							expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), alphanumeric[i], 1),no_env=no_env) if validate else [hostname])
+							expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), alphanumeric[i], 1)) if validate else [hostname])
 				except ValueError:
-					expandedhosts.update(validate_expand_hostname(hostname,no_env=no_env) if validate else [hostname])
+					expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
 	return expandedhosts
 
 @cache_decorator
-def expand_hostnames(hosts,no_env=False):
+def expand_hostnames(hosts):
 	'''
 	Expand the hostnames in the hosts list
 
@@ -450,17 +453,17 @@ def expand_hostnames(hosts,no_env=False):
 		if re.match(r'^((((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])}|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?)(-((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?))?)|(\[((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?)(-((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?))?\]))){2}(\.(((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])}|x|\*|\?))?\]))$', host):
 			hostSetToAdd = sorted(expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
 		else:
-			hostSetToAdd = sorted(expand_hostname(host,no_env=no_env))
+			hostSetToAdd = sorted(expand_hostname(host))
 		if username:
 			# we expand the username
-			username = sorted(expand_hostname(username,validate=False,no_env=no_env))
+			username = sorted(expand_hostname(username,validate=False))
 			# we combine the username and hostname
 			hostSetToAdd = [u+'@'+h for u,h in product(username,hostSetToAdd)]
 		expandedhosts.extend(hostSetToAdd)
 	return expandedhosts
 
 @cache_decorator
-def validate_expand_hostname(hostname,no_env=False):
+def validate_expand_hostname(hostname):
 	'''
 	Validate the hostname and expand it if it is a range of IP addresses
 
@@ -470,17 +473,18 @@ def validate_expand_hostname(hostname,no_env=False):
 	Returns:
 		list: A list of valid hostnames
 	'''
+	global _no_env
 	# maybe it is just defined in ./target_files/hosts.sh and exported to the environment
 	# we will try to get the valid host name from the environment
 	hostname = hostname.strip('$')
 	if getIP(hostname,local=True):
 		return [hostname]
-	elif not no_env and hostname in os.environ:
+	elif not _no_env and hostname in os.environ:
 		# we will expand these hostnames again
-		return expand_hostnames(frozenset(os.environ[hostname].split(',')),no_env=no_env)
+		return expand_hostnames(frozenset(os.environ[hostname].split(',')))
 	elif hostname in readEnvFromFile():
 		# we will expand these hostnames again
-		return expand_hostnames(frozenset(readEnvFromFile()[hostname].split(',')),no_env=no_env)
+		return expand_hostnames(frozenset(readEnvFromFile()[hostname].split(',')))
 	elif getIP(hostname,local=False):
 		return [hostname]
 	else:
@@ -1287,6 +1291,7 @@ def signal_handler(sig, frame):
 
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
 	global __globalUnavailableHosts
+	global _no_env
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
 	if not nowatch and threads and not returnUnfinished and any([thread.is_alive() for thread in threads]) and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
 		curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
@@ -1300,6 +1305,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	if willUpdateUnreachableHosts:
 		unavailableHosts.update([host.name for host in hosts if host.stderr and ('No route to host' in host.stderr[0].strip() or host.stderr[0].strip().startswith('Timeout!'))])
 		__globalUnavailableHosts.update(unavailableHosts)
+		# update the os environment variable if not _no_env
+		if not _no_env:
+			os.environ['__multiSSH3_UNAVAILABLE_HOSTS'] = ','.join(unavailableHosts)
+
 	# print the output, if the output of multiple hosts are the same, we aggragate them
 	if not called:
 		print_output(hosts,json,greppable=greppable)
@@ -1420,6 +1429,14 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	'''
 	global __globalUnavailableHosts
 	global __global_suppress_printout
+	global _no_env
+	global _emo
+	_emo = False
+	_no_env = no_env
+	if not no_env and '__multiSSH3_UNAVAILABLE_HOSTS' in os.environ:
+		__globalUnavailableHosts = set(os.environ['__multiSSH3_UNAVAILABLE_HOSTS'].split(','))
+	elif '__multiSSH3_UNAVAILABLE_HOSTS' in readEnvFromFile():
+		__globalUnavailableHosts = set(readEnvFromFile()['__multiSSH3_UNAVAILABLE_HOSTS'].split(','))
 	if not max_connections:
 		max_connections = 4 * os.cpu_count()
 	elif max_connections == 0:
@@ -1447,8 +1464,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			unavailableHosts = set()
 			skipUnreachable = True
-	global _emo
-	_emo = False
+
 	# We create the hosts
 	hostStr = formHostStr(hosts)
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
@@ -1467,8 +1483,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if '@' not in host:
 					skipHostStr[i] = userStr + host
 			skipHostStr = ','.join(skipHostStr)
-	targetHostsList = expand_hostnames(frozenset(hostStr.split(',')),no_env=no_env)
-	skipHostsList = expand_hostnames(frozenset(skipHostStr.split(',')),no_env=no_env)
+	targetHostsList = expand_hostnames(frozenset(hostStr.split(',')))
+	skipHostsList = expand_hostnames(frozenset(skipHostStr.split(',')))
 	if skipHostsList:
 		if not __global_suppress_printout: print(f"Skipping hosts: {skipHostsList}")
 	if files and not commands:
@@ -1626,7 +1642,6 @@ def write_default_config(args,CONFIG_FILE,backup = True):
 def main():
 	global _emo
 	global __global_suppress_printout
-	global __globalUnavailableHosts
 	global __mainReturnCode
 	global __failedHosts
 	global __ipmiiInterfaceIPPrefix
@@ -1660,8 +1675,8 @@ def main():
 	parser.add_argument('-sw','--single_window', action='store_true', help=f'Use a single window for all hosts. (default: {DEFAULT_SINGLE_WINDOW})', default=DEFAULT_SINGLE_WINDOW)
 	parser.add_argument('-eo','--error_only', action='store_true', help=f'Only print the error output. (default: {DEFAULT_ERROR_ONLY})', default=DEFAULT_ERROR_ONLY)
 	parser.add_argument("-no","--no_output", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
-	parser.add_argument('--no_env', action='store_true', help=f'Do not load the environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
-	parser.add_argument("--env_file", type=str, help=f"The file to load the environment variables from. (default: {DEFAULT_ENV_FILE})", default=DEFAULT_ENV_FILE)
+	parser.add_argument('--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
+	parser.add_argument("--env_file", type=str, help=f"The file to load the mssh file based environment variables from. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILE})", default=DEFAULT_ENV_FILE)
 	parser.add_argument("-m","--max_connections", type=int, help=f"Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument("--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as wells. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
