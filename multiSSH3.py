@@ -29,7 +29,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.89'
+version = '4.92'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -173,6 +173,7 @@ class Host:
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
 		self.printedLines = -1 # the number of lines printed on the screen
+		self.lastUpdateTime = time.time() # the last time the output was updated
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
 		self.interface_ip_prefix = interface_ip_prefix # the prefix of the ip address of the interface to be used to connect to the host
@@ -541,6 +542,7 @@ def handle_reading_stream(stream,target, host):
 		current_line_str = current_line.decode('utf-8',errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
+		host.lastUpdateTime = time.time()
 	current_line = bytearray()
 	lastLineCommited = True
 	for char in iter(lambda:stream.read(1), b''):
@@ -584,6 +586,7 @@ def handle_writing_stream(stream,stop_event,host):
 			host.output.append(' $ ' + ''.join(__keyPressesIn[sentInput]).encode().decode().replace('\n', '↵'))
 			host.stdout.append(' $ ' + ''.join(__keyPressesIn[sentInput]).encode().decode().replace('\n', '↵'))
 			sentInput += 1
+			host.lastUpdateTime = time.time()
 		else:
 			time.sleep(0.1)
 	if sentInput < len(__keyPressesIn) - 1 :
@@ -750,14 +753,11 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 			stdin_thread = threading.Thread(target=handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
 			stdin_thread.start()
 			# Monitor the subprocess and terminate it after the timeout
-			start_time = time.time()
-			outLength = len(host.output)
+			host.lastUpdateTime = time.time()
+			timeoutLineAppended = False
 			while proc.poll() is None:  # while the process is still running
-				if len(host.output) > outLength:
-					start_time = time.time()
-					outLength = len(host.output)
 				if timeout > 0:
-					if time.time() - start_time > timeout:
+					if time.time() - host.lastUpdateTime > timeout:
 						host.stderr.append('Timeout!')
 						host.output.append('Timeout!')
 						proc.send_signal(signal.SIGINT)
@@ -765,15 +765,19 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 
 						proc.terminate()
 						break
-					elif time.time() - start_time >  min(10, timeout // 2):
-						timeoutLine = f'Timeout in [{timeout - int(time.time() - start_time)}] seconds!'
+					elif time.time() - host.lastUpdateTime >  min(30, timeout // 2):
+						timeoutLine = f'Timeout in [{timeout - int(time.time() - host.lastUpdateTime)}] seconds!'
 						if host.output and not host.output[-1].strip().startswith(timeoutLine):
 							# remove last line if it is a countdown
-							if host.output and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
+							if host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
 								host.output.pop()
 								host.printedLines -= 1
 							host.output.append(timeoutLine)
-							outLength = len(host.output)
+							timeoutLineAppended = True
+					elif host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
+						host.output.pop()
+						host.printedLines -= 1
+						timeoutLineAppended = False
 				if _emo:
 					host.stderr.append('Ctrl C detected, Emergency Stop!')
 					host.output.append('Ctrl C detected, Emergency Stop!')
@@ -966,7 +970,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 		bottom_border = None
 		if y + host_window_height  < org_dim[0]:
 			bottom_border = curses.newwin(1, max_x, y + host_window_height, 0)
-			bottom_border.clear()
+			#bottom_border.clear()
 			bottom_border.addstr(0, 0, '-' * (max_x - 1))
 			bottom_border.refresh()
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
@@ -1059,7 +1063,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 				bottom_stats = '└'+ f"Total: {len(hosts)}  Running: {host_stats['running']}  Failed: {host_stats['failed']}  Finished: {host_stats['finished']}  Waiting: {host_stats['waiting']}"[:max_x - 2].center(max_x - 2, "─")
 				if bottom_stats != old_bottom_stat:
 					old_bottom_stat = bottom_stats
-					bottom_border.clear()
+					#bottom_border.clear()
 					bottom_border.addstr(0, 0, bottom_stats)
 					bottom_border.refresh()
 			if stats != old_stat or curserPosition != old_cursor_position:
@@ -1070,7 +1074,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 					curserPositionStats = min(min(curserPosition,len(encodedLine) -1) + stats.find('Send CMD: ')+len('Send CMD: '), max_x -2)
 				else:
 					curserPositionStats = max_x -2
-				stat_window.clear()
+				#stat_window.clear()
 				#stat_window.addstr(0, 0, stats)
 				# add the line with curser that inverses the color at the curser position
 				stat_window.addstr(0, 0, stats[:curserPositionStats], curses.color_pair(1))
@@ -1086,7 +1090,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 				# we will only update the window if there is new output or the window is not fully printed
 				if new_configured or host.printedLines < len(host.output):
 					try:
-						host_window.clear()
+						#host_window.clear()
 						# we will try to center the name of the host with ┼ at the beginning and end and ─ in between
 						linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
 						host_window.addstr(0, 0, linePrintOut)
@@ -1094,12 +1098,12 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 						for i, line in enumerate(host.output[-(host_window_height - 1):]):
 							# print(f"Printng a line at {i + 1} with length of {len('│'+line[:host_window_width - 1])}")
 							# time.sleep(10)
-							linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip()
+							linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip().ljust(host_window_width - 1, ' ')
 							host_window.addstr(i + 1, 0, linePrintOut)
 						# we draw the rest of the available lines
 						for i in range(len(host.output), host_window_height - 1):
 							# print(f"Printng a line at {i + 1} with length of {len('│')}")
-							host_window.addstr(i + 1, 0, '│')
+							host_window.addstr(i + 1, 0, '│'.ljust(host_window_width - 1, ' '))
 						host.printedLines = len(host.output)
 						host_window.refresh()
 					except Exception as e:
@@ -1134,6 +1138,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 	# We create all the windows we need
 	# We initialize the color pair
 	curses.start_color()
+	curses.curs_set(0)
 	curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
 	curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
 	curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
@@ -1216,7 +1221,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		rtnStr = ''
 		for output, hosts in outputs.items():
 			if __global_suppress_printout:
-				rtnStr += f'Error returncode produced by {hosts}:\n'
+				rtnStr += f'Abnormal returncode produced by {hosts}:\n'
 				rtnStr += output+'\n'
 			else:
 				rtnStr += '*'*80+'\n'
@@ -1373,7 +1378,8 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
-						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, shortend = False):
+						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,
+						 shortend = False):
 	hosts = hosts if type(hosts) == str else frozenset(hosts)
 	hostStr = formHostStr(hosts)
 	files = frozenset(files) if files else None
@@ -1391,7 +1397,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
-						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY):
+						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False):
 	f'''
 	Run the command on the hosts, aka multissh. main function
 
@@ -1423,6 +1429,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		min_line_len (int, optional): The minimum line number for each window of the curses output. Defaults to {DEFAULT_CURSES_MINIMUM_LINE_LEN}.
 		single_window (bool, optional): Whether to use a single window for the curses output. Defaults to {DEFAULT_SINGLE_WINDOW}.
 		file_sync (bool, optional): Whether to use file sync mode to sync directories. Defaults to {DEFAULT_FILE_SYNC}.
+		error_only (bool, optional): Whether to only print the error output. Defaults to {DEFAULT_ERROR_ONLY}.
+		quiet (bool, optional): Whether to suppress all verbose printout, added for compatibility, avoid using. Defaults to False.
 
 	Returns:
 		list: A list of Host objects
@@ -1445,6 +1453,14 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		max_connections = (-max_connections) * os.cpu_count()
 	if not commands:
 		commands = []
+	else:
+		commands = [commands] if type(commands) == str else commands
+		# reformat commands into a list of strings, join the iterables if they are not strings
+		try:
+			commands = [' '.join(command) if not type(command) == str else command for command in commands]
+		except:
+			pass
+			print(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands} to a list of strings. Continuing anyway but expect failures.")
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
@@ -1464,7 +1480,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			unavailableHosts = set()
 			skipUnreachable = True
-
+	if quiet:
+		__global_suppress_printout = True
 	# We create the hosts
 	hostStr = formHostStr(hosts)
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
@@ -1653,13 +1670,13 @@ def main():
 	# We parse the arguments
 	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file: {CONFIG_FILE}')
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
-	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
+	parser.add_argument('commands', metavar='commands', type=str, nargs='+',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
 	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
 	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
-	parser.add_argument('--file_sync', action='store_true', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source as source and destination will be the same in this mode. (default: {DEFAULT_FILE_SYNC})', default=DEFAULT_FILE_SYNC)
+	parser.add_argument('-fs','--file_sync', action='store_true', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source as source and destination will be the same in this mode. (default: {DEFAULT_FILE_SYNC})', default=DEFAULT_FILE_SYNC)
 	parser.add_argument('--scp', action='store_true', help=f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})', default=DEFAULT_SCP)
 	parser.add_argument('-gm','--gather_mode', action='store_true', help=f'Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
