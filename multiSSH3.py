@@ -17,6 +17,7 @@ import functools
 import glob
 import shutil
 import getpass
+import uuid
 
 try:
 	# Check if functiools.cache is available
@@ -29,10 +30,15 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.92'
+version = '4.97'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
+
+import sys
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 def load_config_file(config_file):
 	'''
@@ -46,8 +52,12 @@ def load_config_file(config_file):
 	'''
 	if not os.path.exists(config_file):
 		return {}
-	with open(config_file,'r') as f:
-		config = json.load(f)
+	try:
+		with open(config_file,'r') as f:
+			config = json.load(f)
+	except:
+		eprint(f"Error: Cannot load config file {config_file}")
+		return {}
 	return config
 
 __configs_from_file = load_config_file(CONFIG_FILE)
@@ -153,7 +163,7 @@ _DEFAULT_NO_START = __configs_from_file.get('_DEFAULT_NO_START', __build_in_defa
 # form the regex from the list
 __ERROR_MESSAGES_TO_IGNORE_REGEX = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX', __build_in_default_config['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
 if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-	print('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
+	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
 	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__configs_from_file['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
 else:
 	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
@@ -164,8 +174,25 @@ __global_suppress_printout = True
 
 __mainReturnCode = 0
 __failedHosts = set()
+__host_i_lock = threading.Lock()
+__host_i_counter = -1
+def get_i():
+	'''
+	Get the global counter for the host objects
+
+	Returns:
+	int: The global counter for the host objects
+	'''
+	global __host_i_counter
+	global __host_i_lock
+	with __host_i_lock:
+		__host_i_counter += 1
+		return __host_i_counter
+	
 class Host:
 	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False):
+		global __host_i_counter
+		global __host_i_lock
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -181,11 +208,15 @@ class Host:
 		self.gatherMode = gatherMode # whether the host is in gather mode
 		self.extraargs = extraargs # extra arguments to be passed to ssh
 		self.resolvedName = None # the resolved IP address of the host
+		# also store a globally unique integer i from 0
+		self.i = get_i()
+		self.uuid = uuid.uuid4()
+
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
 	def __repr__(self):
 		# return the complete data structure
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName})"
+		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid})"
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
 
@@ -489,7 +520,7 @@ def validate_expand_hostname(hostname):
 	elif getIP(hostname,local=False):
 		return [hostname]
 	else:
-		print(f"Error: {hostname} is not a valid hostname or IP address!")
+		eprint(f"Error: {hostname} is not a valid hostname or IP address!")
 		global __mainReturnCode
 		__mainReturnCode += 1
 		global __failedHosts
@@ -509,14 +540,14 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 	"""
 	import select
 	# Print the initial prompt with the countdown
-	print(f"{prompt} [{timeout}s]: ", end='', flush=True)
+	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
 	# Loop until the timeout
 	for remaining in range(timeout, 0, -1):
 		# If there is an input, return it
 		if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
 			return input().strip()
 		# Print the remaining time
-		print(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
+		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
 		# Wait a second
 		time.sleep(1)
 	# If there is no input, return None
@@ -590,7 +621,7 @@ def handle_writing_stream(stream,stop_event,host):
 		else:
 			time.sleep(0.1)
 	if sentInput < len(__keyPressesIn) - 1 :
-		print(f"Warning: {len(__keyPressesIn)-sentInput} key presses are not sent before the process is terminated!")
+		eprint(f"Warning: {len(__keyPressesIn)-sentInput} key presses are not sent before the process is terminated!")
 	# # send the last line
 	# if __keyPressesIn and __keyPressesIn[-1]:
 	#     stream.write(''.join(__keyPressesIn[-1]).encode())
@@ -598,6 +629,34 @@ def handle_writing_stream(stream,stop_event,host):
 	#     host.output.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInput
+	
+def replace_magic_strings(string,keys,value,case_sensitive=False):
+	'''
+	Replace the magic strings in the host object
+
+	Args:
+		string (str): The string to replace the magic strings
+		keys (list): Search for keys to replace
+		value (str): The value to replace the key
+		case_sensitive (bool, optional): Whether to search for the keys in a case sensitive way. Defaults to False.
+
+	Returns:
+		str: The string with the magic strings replaced
+	'''
+	# verify magic strings have # at the beginning and end
+	newKeys = []
+	for key in keys:
+		if key.startswith('#') and key.endswith('#'):
+			newKeys.append(key)
+		else:
+			newKeys.append('#'+key.strip('#')+'#')
+	# replace the magic strings
+	for key in newKeys:
+		if case_sensitive:
+			string = string.replace(key,value)
+		else:
+			string = re.sub(re.escape(key),value,string,flags=re.IGNORECASE)
+	return string
 
 def ssh_command(host, sem, timeout=60,passwds=None):
 	'''
@@ -626,14 +685,18 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 		host.address = host.name
 		if '@' in host.name:
 			host.username, host.address = host.name.rsplit('@',1)
-		if "#HOST#" in host.command.upper() or "#HOSTNAME#" in host.command.upper():
-			host.command = host.command.replace("#HOST#",host.address).replace("#HOSTNAME#",host.address).replace("#host#",host.address).replace("#hostname#",host.address)
-		if "#USER#" in host.command.upper() or "#USERNAME#" in host.command.upper():
-			if host.username:
-				host.command = host.command.replace("#USER#",host.username).replace("#USERNAME#",host.username).replace("#user#",host.username).replace("#username#",host.username)
-			else:
-				current_user = getpass.getuser()
-				host.command = host.command.replace("#USER#",current_user).replace("#USERNAME#",current_user).replace("#user#",current_user).replace("#username#",current_user)
+		host.command = replace_magic_strings(host.command,['#HOST#','#HOSTNAME#'],host.address,case_sensitive=False)
+		if host.username:
+			host.command = replace_magic_strings(host.command,['#USER#','#USERNAME#'],host.username,case_sensitive=False)
+		else:
+			current_user = getpass.getuser()
+			host.command = replace_magic_strings(host.command,['#USER#','#USERNAME#'],current_user,case_sensitive=False)
+		host.command = replace_magic_strings(host.command,['#ID#'],str(id(host)),case_sensitive=False)
+		host.command = replace_magic_strings(host.command,['#I#'],str(host.i),case_sensitive=False)
+		host.command = replace_magic_strings(host.command,['#PASSWD#','#PASSWORD#'],passwds,case_sensitive=False)
+		if host.resolvedName:
+			host.command = replace_magic_strings(host.command,['#RESOLVEDNAME#','#RESOLVED#'],host.resolvedName,case_sensitive=False)
+		host.command = replace_magic_strings(host.command,['#UUID#'],str(host.uuid),case_sensitive=False)
 		formatedCMD = []
 		if host.extraargs and type(host.extraargs) == str:
 			extraargs = host.extraargs.split()
@@ -892,7 +955,7 @@ def get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 			host.printedLines = 0
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
 
-def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW):
+def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW):
 	try:
 		org_dim = stdscr.getmaxyx()
 		new_configured = True
@@ -906,11 +969,11 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 		if single_window:
 			min_char_len_local = max_x-1
 			min_line_len_local = max_y-1
-		# raise zero division error if the terminal is too small
+		# return True if the terminal is too small
 		if max_x < 2 or max_y < 2:
-			raise ZeroDivisionError
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 		if min_char_len_local < 1 or min_line_len_local < 1:
-			raise ZeroDivisionError
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 		# We need to figure out how many hosts we can fit in the terminal
 		# We will need at least 2 lines per host, one for its name, one for its output
 		# Each line will be at least 61 characters long (60 for the output, 1 for the borders)
@@ -918,10 +981,10 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 		max_num_hosts_y = max_y // (min_line_len_local + 1)
 		max_num_hosts = max_num_hosts_x * max_num_hosts_y
 		if max_num_hosts < 1:
-			raise ZeroDivisionError
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 		hosts_to_display , host_stats = get_hosts_to_display(hosts, max_num_hosts)
 		if len(hosts_to_display) == 0:
-			raise ZeroDivisionError
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 		# Now we calculate the actual number of hosts we will display for x and y
 		optimal_len_x = max(min_char_len_local, 80)
 		num_hosts_x = max(min(max_num_hosts_x, max_x // optimal_len_x),1)
@@ -942,7 +1005,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 		host_window_height = max_y // num_hosts_y
 		host_window_width = max_x // num_hosts_x
 		if host_window_height < 1 or host_window_width < 1:
-			raise ZeroDivisionError
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 
 		old_stat = ''
 		old_bottom_stat = ''
@@ -983,36 +1046,50 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 				# with open('keylog.txt','a') as f:
 				#     f.write(str(key)+'\n')
 				if key == 410: # 410 is the key code for resize
-					raise Exception('Terminal size changed. Please reconfigure window.')                
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)         
+				elif key == 95 and not __keyPressesIn[-1]: # 95 is the key code for _
+					# if last line is empty, we will reconfigure the wh to be smaller
+					if min_line_len != 1:
+						return (lineToDisplay,curserPosition , min_char_len , max(min_line_len -1,1), single_window)
+				elif key == 43 and not __keyPressesIn[-1]: # 43 is the key code for +
+					# if last line is empty, we will reconfigure the wh to be larger
+					return (lineToDisplay,curserPosition , min_char_len , min_line_len +1, single_window)
+				elif key == 123 and not __keyPressesIn[-1]: # 123 is the key code for {
+					# if last line is empty, we will reconfigure the ww to be smaller
+					if min_char_len != 1:
+						return (lineToDisplay,curserPosition , max(min_char_len -1,1), min_line_len, single_window)
+				elif key == 124 and not __keyPressesIn[-1]: # 124 is the key code for |
+					# if last line is empty, we will toggle the single window mode
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, not single_window)
+				elif key == 125 and not __keyPressesIn[-1]: # 125 is the key code for }
+					# if last line is empty, we will reconfigure the ww to be larger
+					return (lineToDisplay,curserPosition , min_char_len +1, min_line_len, single_window)
 				# We handle positional keys
-				# uparrow: 259; downarrow: 258; leftarrow: 260; rightarrow: 261
-				# pageup: 339; pagedown: 338; home: 262; end: 360
-				elif key in [259, 258, 260, 261, 339, 338, 262, 360]: 
-					# if the key is up arrow, we will move the line to display up
-					if key == 259: # 259 is the key code for up arrow
-						lineToDisplay = max(lineToDisplay - 1, -len(__keyPressesIn))
-					# if the key is down arrow, we will move the line to display down
-					elif key == 258: # 258 is the key code for down arrow
-						lineToDisplay = min(lineToDisplay + 1, -1)
-					# if the key is left arrow, we will move the cursor left
-					elif key == 260: # 260 is the key code for left arrow
-						curserPosition = min(max(curserPosition - 1, 0), len(__keyPressesIn[lineToDisplay]) -1)
-					# if the key is right arrow, we will move the cursor right
-					elif key == 261: # 261 is the key code for right arrow
-						curserPosition = max(min(curserPosition + 1, len(__keyPressesIn[lineToDisplay])), 0)
-					# if the key is page up, we will move the line to display up by 5 lines
-					elif key == 339: # 339 is the key code for page up
-						lineToDisplay = max(lineToDisplay - 5, -len(__keyPressesIn))
-					# if the key is page down, we will move the line to display down by 5 lines
-					elif key == 338: # 338 is the key code for page down
-						lineToDisplay = min(lineToDisplay + 5, -1)
-					# if the key is home, we will move the cursor to the beginning of the line
-					elif key == 262: # 262 is the key code for home
-						curserPosition = 0
-					# if the key is end, we will move the cursor to the end of the line
-					elif key == 360: # 360 is the key code for end
-						curserPosition = len(__keyPressesIn[lineToDisplay])
-				# We are left with these are keys that mofidy the current line.
+				# if the key is up arrow, we will move the line to display up
+				elif key == 259: # 259 is the key code for up arrow
+					lineToDisplay = max(lineToDisplay - 1, -len(__keyPressesIn))
+				# if the key is down arrow, we will move the line to display down
+				elif key == 258: # 258 is the key code for down arrow
+					lineToDisplay = min(lineToDisplay + 1, -1)
+				# if the key is left arrow, we will move the cursor left
+				elif key == 260: # 260 is the key code for left arrow
+					curserPosition = min(max(curserPosition - 1, 0), len(__keyPressesIn[lineToDisplay]) -1)
+				# if the key is right arrow, we will move the cursor right
+				elif key == 261: # 261 is the key code for right arrow
+					curserPosition = max(min(curserPosition + 1, len(__keyPressesIn[lineToDisplay])), 0)
+				# if the key is page up, we will move the line to display up by 5 lines
+				elif key == 339: # 339 is the key code for page up
+					lineToDisplay = max(lineToDisplay - 5, -len(__keyPressesIn))
+				# if the key is page down, we will move the line to display down by 5 lines
+				elif key == 338: # 338 is the key code for page down
+					lineToDisplay = min(lineToDisplay + 5, -1)
+				# if the key is home, we will move the cursor to the beginning of the line
+				elif key == 262: # 262 is the key code for home
+					curserPosition = 0
+				# if the key is end, we will move the cursor to the end of the line
+				elif key == 360: # 360 is the key code for end
+					curserPosition = len(__keyPressesIn[lineToDisplay])
+			# We are left with these are keys that mofidy the current line.
 				else:
 					# This means the user have done scrolling and is committing to modify the current line.
 					if lineToDisplay  < -1:
@@ -1044,12 +1121,11 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 						__keyPressesIn[lineToDisplay].insert(curserPosition, chr(key))
 						curserPosition += 1
 			# reconfigure when the terminal size changes
-			# raise Exception when max_y or max_x is changed, let parent handle reconfigure
 			if org_dim != stdscr.getmaxyx():
-				raise Exception('Terminal size changed. Please reconfigure window.')
+				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 			# We generate the aggregated stats if user did not input anything
 			if not __keyPressesIn[lineToDisplay]:
-				stats = '┍'+ f"Total: {len(hosts)}  Running: {host_stats['running']}  Failed: {host_stats['failed']}  Finished: {host_stats['finished']}  Waiting: {host_stats['waiting']}"[:max_x - 2].center(max_x - 2, "━")
+				stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
 			else:
 				# we use the stat bar to display the key presses
 				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
@@ -1060,7 +1136,7 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 				#     encodedLine = encodedLine[:curserPosition] + ' ' + encodedLine[curserPosition:]
 				stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
 			if bottom_border:
-				bottom_stats = '└'+ f"Total: {len(hosts)}  Running: {host_stats['running']}  Failed: {host_stats['failed']}  Finished: {host_stats['finished']}  Waiting: {host_stats['waiting']}"[:max_x - 2].center(max_x - 2, "─")
+				bottom_stats = '└'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']} "[:max_x - 2].center(max_x - 2, "─")
 				if bottom_stats != old_bottom_stat:
 					old_bottom_stat = bottom_stats
 					#bottom_border.clear()
@@ -1111,17 +1187,12 @@ def generate_display(stdscr, hosts, threads,lineToDisplay = -1,curserPosition = 
 						# print(str(e).strip())
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
-							raise Exception('Terminal size changed. Please reconfigure window.')
+							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
 			new_configured = False
 			last_refresh_time = time.perf_counter()
-
-	except ZeroDivisionError:
-		# terminial is too small, we skip the display
-		pass
 	except Exception as e:
-		stdscr.clear()
-		stdscr.refresh()
-		generate_display(stdscr, hosts, threads, lineToDisplay, curserPosition, min_char_len, min_line_len, single_window)
+		return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+	return None
 
 def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
 	'''
@@ -1159,7 +1230,20 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 	curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_BLUE)
 	curses.init_pair(19, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
 	curses.init_pair(20, curses.COLOR_BLACK, curses.COLOR_CYAN)
-	generate_display(stdscr, hosts, threads,min_char_len = min_char_len, min_line_len = min_line_len, single_window = single_window)
+	params = (-1,0 , min_char_len, min_line_len, single_window)
+	while params:
+		params = generate_display(stdscr, hosts, *params)
+		if not params:
+			break
+		if not any([host.returncode is None for host in hosts]):
+			# this means no hosts are running
+			break
+		# print the current configuration
+		stdscr.clear()
+		stdscr.addstr(0, 0, f"Loading Configuration: min_char_len={params[2]}, min_line_len={params[3]}, single_window={params[4]}")
+		stdscr.refresh()
+		#time.sleep(0.25)
+
 
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	'''
@@ -1285,10 +1369,10 @@ def signal_handler(sig, frame):
 	'''
 	global _emo
 	if not _emo:
-		print('Ctrl C caught, exiting...')
+		eprint('Ctrl C caught, exiting...')
 		_emo = True
 	else:
-		print('Ctrl C caught again, exiting immediately!')
+		eprint('Ctrl C caught again, exiting immediately!')
 		# wait for 0.1 seconds to allow the threads to exit
 		time.sleep(0.1)
 		os.system(f'pkill -ef {os.path.basename(__file__)}')
@@ -1460,7 +1544,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			commands = [' '.join(command) if not type(command) == str else command for command in commands]
 		except:
 			pass
-			print(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands} to a list of strings. Continuing anyway but expect failures.")
+			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands} to a list of strings. Continuing anyway but expect failures.")
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
@@ -1503,7 +1587,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	targetHostsList = expand_hostnames(frozenset(hostStr.split(',')))
 	skipHostsList = expand_hostnames(frozenset(skipHostStr.split(',')))
 	if skipHostsList:
-		if not __global_suppress_printout: print(f"Skipping hosts: {skipHostsList}")
+		eprint(f"Skipping hosts: {skipHostsList}")
 	if files and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
@@ -1520,7 +1604,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				except:
 					pathSet.update(glob.glob(file,recursive=True))
 			if not pathSet:
-				print(f'Warning: No source files at {files} are found after resolving globs!')
+				eprint(f'Warning: No source files at {files} are found after resolving globs!')
 				sys.exit(66)
 		else:
 			pathSet = set(files)
@@ -1533,16 +1617,16 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if oneonone:
 		hosts = []
 		if len(commands) != len(targetHostsList) - len(skipHostsList):
-			print("Error: the number of commands must be the same as the number of hosts")
-			print(f"Number of commands: {len(commands)}")
-			print(f"Number of hosts: {len(targetHostsList - skipHostsList)}")
+			eprint("Error: the number of commands must be the same as the number of hosts")
+			eprint(f"Number of commands: {len(commands)}")
+			eprint(f"Number of hosts: {len(targetHostsList - skipHostsList)}")
 			sys.exit(255)
 		if not __global_suppress_printout:
-			print('-'*80)
-			print("Running in one on one mode")
+			eprint('-'*80)
+			eprint("Running in one on one mode")
 		for host, command in zip(targetHostsList, commands):
 			if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
-				if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
+				eprint(f"Skipping unavailable host: {host}")
 				continue
 			if host.strip() in skipHostsList: continue
 			if file_sync:
@@ -1550,7 +1634,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			else:
 				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
 			if not __global_suppress_printout: 
-				print(f"Running command: {command} on host: {host}")
+				eprint(f"Running command: {command} on host: {host}")
 		if not __global_suppress_printout: print('-'*80)
 		if not no_start: processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
 		return hosts
@@ -1565,20 +1649,20 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					continue
 				if host.strip() in skipHostsList: continue
 				if file_sync:
-					print(f"Error: file sync mode need to be specified with at least one path to sync.")
+					eprint(f"Error: file sync mode need to be specified with at least one path to sync.")
 					return []
 				elif files:
-					print(f"Error: files need to be specified with at least one path to sync")
+					eprint(f"Error: files need to be specified with at least one path to sync")
 				elif ipmi:
-					print(f"Error: ipmi mode is not supported in interactive mode")
+					eprint(f"Error: ipmi mode is not supported in interactive mode")
 				else:
 					hosts.append(Host(host.strip(), '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
 			if not __global_suppress_printout:
-				print('-'*80)
-				print(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
-				print('-'*80)
+				eprint('-'*80)
+				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
+				eprint('-'*80)
 			if no_start:
-				print(f"Warning: no_start is set, the command will not be started. As we are in interactive mode, no action will be done.")
+				eprint(f"Warning: no_start is set, the command will not be started. As we are in interactive mode, no action will be done.")
 			else:
 				processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
 			return hosts
@@ -1594,9 +1678,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				else:
 					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
 			if not __global_suppress_printout and len(commands) > 1:
-				print('-'*80)
-				print(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
-				print('-'*80)
+				eprint('-'*80)
+				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
+				eprint('-'*80)
 			if not no_start: processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,single_window=single_window)
 			allHosts += hosts
 		return allHosts
@@ -1710,41 +1794,41 @@ def main():
 	if args.store_config_file:
 		try:
 			if os.path.exists(CONFIG_FILE):
-				print(f"Warning: {CONFIG_FILE} already exists, what to do? (o/b/n)")
-				print(f"o:  Overwrite the file")
-				print(f"b:  Rename the current config file at {CONFIG_FILE}.bak forcefully and write the new config file (default)")
-				print(f"n:  Do nothing")
+				eprint(f"Warning: {CONFIG_FILE} already exists, what to do? (o/b/n)")
+				eprint(f"o:  Overwrite the file")
+				eprint(f"b:  Rename the current config file at {CONFIG_FILE}.bak forcefully and write the new config file (default)")
+				eprint(f"n:  Do nothing")
 				inStr = input_with_timeout_and_countdown(10)
 				if (not inStr) or inStr.lower().strip().startswith('b'):
 					write_default_config(args,CONFIG_FILE,backup = True)
-					print(f"Config file written to {CONFIG_FILE}")
+					eprint(f"Config file written to {CONFIG_FILE}")
 				elif inStr.lower().strip().startswith('o'):
 					write_default_config(args,CONFIG_FILE,backup = False)
-					print(f"Config file written to {CONFIG_FILE}")
+					eprint(f"Config file written to {CONFIG_FILE}")
 			else:
 				write_default_config(args,CONFIG_FILE,backup = True)
-				print(f"Config file written to {CONFIG_FILE}")
+				eprint(f"Config file written to {CONFIG_FILE}")
 		except Exception as e:
-			print(f"Error while writing config file: {e}")
+			eprint(f"Error while writing config file: {e}")
 		if not args.commands:
 			with open(CONFIG_FILE,'r') as f:
-				print(f"Config file content: \n{f.read()}")
+				eprint(f"Config file content: \n{f.read()}")
 			sys.exit(0)
 
 	_env_file = args.env_file
 	# if there are more than 1 commands, and every command only consists of one word,
 	# we will ask the user to confirm if they want to run multiple commands or just one command.
 	if not args.file and len(args.commands) > 1 and all([len(command.split()) == 1 for command in args.commands]):
-		print(f"Multiple one word command detected, what to do? (1/m/n)")
-		print(f"1:  Run 1 command [{' '.join(args.commands)}] on all hosts ( default )")
-		print(f"m:  Run multiple commands [{', '.join(args.commands)}] on all hosts")
-		print(f"n:  Exit")
+		eprint(f"Multiple one word command detected, what to do? (1/m/n)")
+		eprint(f"1:  Run 1 command [{' '.join(args.commands)}] on all hosts ( default )")
+		eprint(f"m:  Run multiple commands [{', '.join(args.commands)}] on all hosts")
+		eprint(f"n:  Exit")
 		inStr = input_with_timeout_and_countdown(3)
 		if (not inStr) or inStr.lower().strip().startswith('1'):
 			args.commands = [" ".join(args.commands)]
-			print(f"\nRunning 1 command: {args.commands[0]} on all hosts")
+			eprint(f"\nRunning 1 command: {args.commands[0]} on all hosts")
 		elif inStr.lower().strip().startswith('m'):
-			print(f"\nRunning multiple commands: {', '.join(args.commands)} on all hosts")
+			eprint(f"\nRunning multiple commands: {', '.join(args.commands)} on all hosts")
 		else:
 			sys.exit(0)
 	
@@ -1754,7 +1838,7 @@ def main():
 		__global_suppress_printout = False
 
 	if not __global_suppress_printout:
-		print('> ' + getStrCommand(args.hosts,args.commands,oneonone=args.oneonone,timeout=args.timeout,password=args.password,
+		eprint('> ' + getStrCommand(args.hosts,args.commands,oneonone=args.oneonone,timeout=args.timeout,password=args.password,
 						 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
 						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
 						 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
@@ -1764,10 +1848,10 @@ def main():
 
 	for i in range(args.repeat):
 		if args.interval > 0 and i < args.repeat - 1:
-			print(f"Sleeping for {args.interval} seconds")
+			eprint(f"Sleeping for {args.interval} seconds")
 			time.sleep(args.interval)
 
-		if not __global_suppress_printout: print(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
+		if not __global_suppress_printout: eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
 		hosts = run_command_on_hosts(args.hosts,args.commands,
 							 oneonone=args.oneonone,timeout=args.timeout,password=args.password,
 							 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
@@ -1776,7 +1860,7 @@ def main():
 							 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only)
 		#print('*'*80)
 
-		if not __global_suppress_printout: print('-'*80)
+		if not __global_suppress_printout: eprint('-'*80)
 	
 	succeededHosts = set()
 	for host in hosts:
@@ -1790,18 +1874,18 @@ def main():
 	__failedHosts = sorted(__failedHosts)
 	succeededHosts = sorted(succeededHosts)
 	if __mainReturnCode > 0:
-		if not __global_suppress_printout: print(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
+		if not __global_suppress_printout: eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
 		# with open('/tmp/bashcmd.stdin','w') as f:
 		#     f.write(f"export failed_hosts={__failedHosts}\n")
-		if not __global_suppress_printout: print(f'failed_hosts: {",".join(__failedHosts)}')
+		if not __global_suppress_printout: eprint(f'failed_hosts: {",".join(__failedHosts)}')
 	else:
-		if not __global_suppress_printout: print('Complete. All hosts returned 0.')
+		if not __global_suppress_printout: eprint('Complete. All hosts returned 0.')
 	
 	if args.success_hosts and not __global_suppress_printout:
-		print(f'succeeded_hosts: {",".join(succeededHosts)}')
+		eprint(f'succeeded_hosts: {",".join(succeededHosts)}')
 
 	if threading.active_count() > 1:
-		if not __global_suppress_printout: print(f'Remaining active thread: {threading.active_count()}')
+		if not __global_suppress_printout: eprint(f'Remaining active thread: {threading.active_count()}')
 		# os.system(f'pkill -ef  {os.path.basename(__file__)}')
 		# os._exit(mainReturnCode)
 	
