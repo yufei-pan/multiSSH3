@@ -22,7 +22,7 @@ multissh will read a config file located at ```/etc/multiSSH3.config.json```
 To store / generate a config file with the current command line options, you can use
 
 ```bash
-mssh --generate_default_config_file
+mssh --store_config_file
 ```
 
 You can modify the json file directly after generation and multissh will read from it for loading defaults. 
@@ -31,10 +31,14 @@ Note:
 
 If you want to store password, it will be a plain text password in this config file. This will be better to supply it everytime as a CLI argument but you should really consider setting up priv-pub key setup.
 
+Also Note:
+
+On some systems, scp / rsync will require you use a priv-pub key to work
+
 This option can also be used to store cli options into the config files. For example.
 
 ```bash
-mssh --ipmi_interface_ip_prefix 192 --generate_default_config_file
+mssh --ipmi_interface_ip_prefix 192 --store_config_file
 ```
 will store 
 ```json
@@ -47,6 +51,22 @@ By defualt reads bash env variables for hostname aliases. Also able to read
 DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
 ```
 as hostname aliases.
+
+multissh3 will resolve hostname grouping by:
+  ipv4 address expansion > local hostname resolution ( like /etc/hosts ) > currrent terminal environment >  env from env_file > remote hostname resolution ( socket.gethostbyname() )
+
+An example hostname alias file will look like:
+```bash
+us_east='100.100.0.1-3,us_east_prod_[1-5]'
+us_central=""
+us_west="100.101.0.1-2,us_west_prod_[a-c]_[1-3]"
+us="$us_east,$us_central,$us_west"
+asia="100.90.0-1,1-9"
+eu=''
+rhel8="$asia,$us_east"
+all="$us,$asia,$eu"
+```
+( You can use bash replacements for grouping. )
 
 For example:
 ```bash
@@ -88,61 +108,73 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 Use ```mssh --help``` for more info.
 
 ```bash
-usage: mssh [-h] [-u USERNAME] [-ea EXTRAARGS] [-p PASSWORD] [-11] [-f FILE] [--file_sync] [--scp] [-t TIMEOUT] [-r REPEAT] [-i INTERVAL] [--ipmi]
-            [-pre INTERFACE_IP_PREFIX] [-q] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-sw] [-eo] [-no] [--no_env] [--env_file ENV_FILE] [-m MAXCONNECTIONS] [-j]
-            [--success_hosts] [-g] [-nw] [-su] [-sh SKIPHOSTS] [-V]
-            hosts commands [commands ...]
+usage: mssh [-h] [-u USERNAME] [-p PASSWORD] [-ea EXTRAARGS] [-11] [-f FILE] [-fs] [--scp] [-gm] [-t TIMEOUT] [-r REPEAT] [-i INTERVAL]
+            [--ipmi] [-mpre IPMI_INTERFACE_IP_PREFIX] [-pre INTERFACE_IP_PREFIX] [-q] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-sw] [-eo]
+            [-no] [--no_env] [--env_file ENV_FILE] [-m MAX_CONNECTIONS] [-j] [--success_hosts] [-g] [-su] [-sh SKIP_HOSTS]
+            [--store_config_file] [--debug] [--copy-id] [-V]
+            [hosts] [commands ...]
 
-Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command
+Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file: /etc/multiSSH3.config.json
 
 positional arguments:
-  hosts                 Hosts to run the command on, use "," to seperate hosts
-  commands              the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.
+  hosts                 Hosts to run the command on, use "," to seperate hosts. (default: all)
+  commands              the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host
+                        name.
 
 options:
   -h, --help            show this help message and exit
   -u USERNAME, --username USERNAME
-                        The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: None)
-  -ea EXTRAARGS, --extraargs EXTRAARGS
-                        Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default:
-                        None)
+                        The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified.
+                        (default: None)
   -p PASSWORD, --password PASSWORD
-                        The password to use to connect to the hosts, (default: hermes)
+                        The password to use to connect to the hosts, (default: )
+  -ea EXTRAARGS, --extraargs EXTRAARGS
+                        Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex.
+                        -ea="--delete" (default: None)
   -11, --oneonone       Run one corresponding command on each host. (default: False)
   -f FILE, --file FILE  The file to be copied to the hosts. Use -f multiple times to copy multiple files
-  --file_sync           Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source as source
-                        and destination will be the same in this mode. (default: False)
+  -fs, --file_sync      Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and
+                        <COMMANDS> both as source as source and destination will be the same in this mode. (default: False)
   --scp                 Use scp for copying files instead of rsync. Need to use this on windows. (default: False)
+  -gm, --gather_mode    Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to
+                        local path specified in <COMMANDS> (default: False)
   -t TIMEOUT, --timeout TIMEOUT
-                        Timeout for each command in seconds (default: 0 (disabled))
+                        Timeout for each command in seconds (default: 600 (disabled))
   -r REPEAT, --repeat REPEAT
                         Repeat the command for a number of times (default: 1)
   -i INTERVAL, --interval INTERVAL
                         Interval between repeats in seconds (default: 0)
   --ipmi                Use ipmitool to run the command. (default: False)
+  -mpre IPMI_INTERFACE_IP_PREFIX, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX
+                        The prefix of the IPMI interfaces (default: )
   -pre INTERFACE_IP_PREFIX, --interface_ip_prefix INTERFACE_IP_PREFIX
                         The prefix of the for the interfaces (default: None)
-  -q, --quiet           Quiet mode, no curses, only print the output. (default: False)
+  -q, -nw, --nowatch, --quiet
+                        Quiet mode, no curses watch, only print the output. (default: False)
   -ww WINDOW_WIDTH, --window_width WINDOW_WIDTH
                         The minimum character length of the curses window. (default: 40)
   -wh WINDOW_HEIGHT, --window_height WINDOW_HEIGHT
-                        The minimum line height of the curses window. (default: 1)
+                        The minimum line height of the curses window. (default: 5)
   -sw, --single_window  Use a single window for all hosts. (default: False)
   -eo, --error_only     Only print the error output. (default: False)
-  -no, --nooutput       Do not print the output. (default: False)
-  --no_env              Do not load the environment variables. (default: False)
-  --env_file ENV_FILE   The file to load the environment variables from. (default: /etc/profile.d/hosts.sh)
-  -m MAXCONNECTIONS, --maxconnections MAXCONNECTIONS
+  -no, --no_output      Do not print the output. (default: False)
+  --no_env              Do not load the command line environment variables. (default: False)
+  --env_file ENV_FILE   The file to load the mssh file based environment variables from. ( Still work with --no_env ) (default:
+                        /etc/profile.d/hosts.sh)
+  -m MAX_CONNECTIONS, --max_connections MAX_CONNECTIONS
                         Max number of connections to use (default: 4 * cpu_count)
   -j, --json            Output in json format. (default: False)
   --success_hosts       Output the hosts that succeeded in summary as wells. (default: False)
   -g, --greppable       Output in greppable format. (default: False)
-  -nw, --nowatch        Do not watch the output in curses modem, Use \r. Not implemented yet. (default: False)
-  -su, --skipunreachable
-                        Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto
-                        skip unreachable hosts. (default: False)
-  -sh SKIPHOSTS, --skiphosts SKIPHOSTS
-                        Skip the hosts in the list. (default: )
+  -su, --skip_unreachable
+                        Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple
+                        command sequence will still auto skip unreachable hosts. (default: False)
+  -sh SKIP_HOSTS, --skip_hosts SKIP_HOSTS
+                        Skip the hosts in the list. (default: None)
+  --store_config_file   Store / generate the default config file from command line argument and current config at
+                        /etc/multiSSH3.config.json
+  --debug               Print debug information
+  --copy-id             Copy the ssh id to the hosts
   -V, --version         show program's version number and exit
 ```
 
