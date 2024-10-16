@@ -30,7 +30,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.97'
+version = '4.98'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -115,6 +115,7 @@ __build_in_default_config = {
 	'_rsyncPath': None,
 	'_bashPath': None,
 	'__ERROR_MESSAGES_TO_IGNORE_REGEX':None,
+	'__DEBUG_MODE': False,
 }
 
 AUTHOR = __configs_from_file.get('AUTHOR', __build_in_default_config['AUTHOR'])
@@ -168,6 +169,8 @@ if __ERROR_MESSAGES_TO_IGNORE_REGEX:
 else:
 	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
 
+__DEBUG_MODE = __configs_from_file.get('__DEBUG_MODE', __build_in_default_config['__DEBUG_MODE'])
+
 
 
 __global_suppress_printout = True
@@ -191,8 +194,6 @@ def get_i():
 	
 class Host:
 	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False):
-		global __host_i_counter
-		global __host_i_lock
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -675,6 +676,7 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	global __ERROR_MESSAGES_TO_IGNORE_REGEX
 	global __ipmiiInterfaceIPPrefix
 	global _binPaths
+	global __DEBUG_MODE
 	try:
 		keyCheckArgs = []
 		rsyncKeyCheckArgs = []
@@ -737,6 +739,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}'] + extraargs + [host.command]
 			elif 'ssh' in _binPaths:
 				host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
+				if __DEBUG_MODE:
+					host.stderr.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
 				host.ipmi = False
 				host.interface_ip_prefix = None
 				host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
@@ -754,6 +758,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 						useScp = True
 					elif 'rsync' in _binPaths:
 						host.output.append('scp not found on the local machine! Trying to use rsync...')
+						if __DEBUG_MODE:
+							host.stderr.append('scp not found on the local machine! Trying to use rsync...')
 						useScp = False
 					else:
 						host.output.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
@@ -764,6 +770,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 					useScp = False
 				elif 'scp' in _binPaths:
 					host.output.append('rsync not found on the local machine! Trying to use scp...')
+					if __DEBUG_MODE:
+						host.stderr.append('rsync not found on the local machine! Trying to use scp...')
 					useScp = True
 				else:
 					host.output.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
@@ -784,7 +792,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
 			elif passwds:
 				host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
-				#host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
+				if __DEBUG_MODE:
+					host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
 				host.output.append('Please provide password via live input or use ssh key authentication.')
 				# # try to send the password via __keyPressesIn
 				# __keyPressesIn[-1] = list(passwds) + ['\n']
@@ -802,6 +811,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	with sem:
 		try:
 			host.output.append('Running command: '+' '.join(formatedCMD))
+			if __DEBUG_MODE:
+				host.stderr.append('Running command: '+' '.join(formatedCMD))
 			#host.stdout = []
 			proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
 			# create a thread to handle stdout
@@ -890,6 +901,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	if host.ipmi and host.returncode != 0 and any(['Unable to establish IPMI' in line for line in host.stderr]):
 		host.stderr = []
 		host.output.append('IPMI connection failed! Trying SSH connection...')
+		if __DEBUG_MODE:
+			host.stderr.append('IPMI connection failed! Trying SSH connection...')
 		host.ipmi = False
 		host.interface_ip_prefix = None
 		host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
@@ -899,6 +912,8 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 		host.stderr = []
 		host.stdout = []
 		host.output.append('Rsync connection failed! Trying SCP connection...')
+		if __DEBUG_MODE:
+			host.stderr.append('Rsync connection failed! Trying SCP connection...')
 		host.scp = True
 		ssh_command(host,sem,timeout,passwds)
 
@@ -1393,6 +1408,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	# update the unavailable hosts and global unavailable hosts
 	if willUpdateUnreachableHosts:
 		unavailableHosts.update([host.name for host in hosts if host.stderr and ('No route to host' in host.stderr[0].strip() or host.stderr[0].strip().startswith('Timeout!'))])
+		if __DEBUG_MODE:
+			print(f'Unreachable hosts: {unavailableHosts}')
 		__globalUnavailableHosts.update(unavailableHosts)
 		# update the os environment variable if not _no_env
 		if not _no_env:
@@ -1523,6 +1540,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __global_suppress_printout
 	global _no_env
 	global _emo
+	global __DEBUG_MODE
 	_emo = False
 	_no_env = no_env
 	if not no_env and '__multiSSH3_UNAVAILABLE_HOSTS' in os.environ:
@@ -1585,6 +1603,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					skipHostStr[i] = userStr + host
 			skipHostStr = ','.join(skipHostStr)
 	targetHostsList = expand_hostnames(frozenset(hostStr.split(',')))
+	if __DEBUG_MODE:
+		eprint(f"Target hosts: {targetHostsList}")
 	skipHostsList = expand_hostnames(frozenset(skipHostStr.split(',')))
 	if skipHostsList:
 		eprint(f"Skipping hosts: {skipHostsList}")
@@ -1614,6 +1634,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			files = []
 		else:
 			files = list(pathSet)
+		if __DEBUG_MODE:
+			eprint(f"Files: {files}")
 	if oneonone:
 		hosts = []
 		if len(commands) != len(targetHostsList) - len(skipHostsList):
@@ -1748,13 +1770,14 @@ def main():
 	global __ipmiiInterfaceIPPrefix
 	global _binPaths
 	global _env_file
+	global __DEBUG_MODE
 	_emo = False
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments
 	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file: {CONFIG_FILE}')
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
-	parser.add_argument('commands', metavar='commands', type=str, nargs='+',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
+	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
 	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
 	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
@@ -1785,11 +1808,26 @@ def main():
 	parser.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument("-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
 	parser.add_argument('--store_config_file', action='store_true', help=f'Store / generate the default config file from command line argument and current config at {CONFIG_FILE}')
+	parser.add_argument('--debug', action='store_true', help='Print debug information')
+	parser.add_argument('--copy-id', action='store_true', help='Copy the ssh id to the hosts')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
 	#                     help='the user to use to connect to the hosts')
-	args = parser.parse_args()
+	#args = parser.parse_args()
+
+	# if python version is 3.7 or higher, use parse_intermixed_args
+	if sys.version_info >= (3,7):
+		args = parser.parse_intermixed_args()
+	else:
+		# try to parse the arguments using parse_known_args
+		args, unknown = parser.parse_known_args()
+		# if there are unknown arguments, we will try to parse them again using parse_args
+		if unknown:
+			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown}")
+			args.commands += unknown
+			
+			
 
 	if args.store_config_file:
 		try:
@@ -1816,6 +1854,7 @@ def main():
 			sys.exit(0)
 
 	_env_file = args.env_file
+	__DEBUG_MODE = args.debug
 	# if there are more than 1 commands, and every command only consists of one word,
 	# we will ask the user to confirm if they want to run multiple commands or just one command.
 	if not args.file and len(args.commands) > 1 and all([len(command.split()) == 1 for command in args.commands]):
