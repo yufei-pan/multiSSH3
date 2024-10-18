@@ -30,7 +30,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.98'
+version = '4.99'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -68,6 +68,9 @@ __build_in_default_config = {
 	'DEFAULT_HOSTS': 'all',
 	'DEFAULT_USERNAME': None,
 	'DEFAULT_PASSWORD': '',
+	'DEFAULT_IDENTITY_FILE': None,
+	'DEDAULT_SSH_KEY_SEARCH_PATH': '~/.ssh/',
+	'DEFAULT_USE_KEY': False,
 	'DEFAULT_EXTRA_ARGS': None,
 	'DEFAULT_ONE_ON_ONE': False,
 	'DEFAULT_SCP': False,
@@ -125,6 +128,9 @@ DEFAULT_HOSTS = __configs_from_file.get('DEFAULT_HOSTS', __build_in_default_conf
 DEFAULT_ENV_FILE = __configs_from_file.get('DEFAULT_ENV_FILE', __build_in_default_config['DEFAULT_ENV_FILE'])
 DEFAULT_USERNAME = __configs_from_file.get('DEFAULT_USERNAME', __build_in_default_config['DEFAULT_USERNAME'])
 DEFAULT_PASSWORD = __configs_from_file.get('DEFAULT_PASSWORD', __build_in_default_config['DEFAULT_PASSWORD'])
+DEFAULT_IDENTITY_FILE = __configs_from_file.get('DEFAULT_IDENTITY_FILE', __build_in_default_config['DEFAULT_IDENTITY_FILE'])
+DEDAULT_SSH_KEY_SEARCH_PATH = __configs_from_file.get('DEDAULT_SSH_KEY_SEARCH_PATH', __build_in_default_config['DEDAULT_SSH_KEY_SEARCH_PATH'])
+DEFAULT_USE_KEY = __configs_from_file.get('DEFAULT_USE_KEY', __build_in_default_config['DEFAULT_USE_KEY'])
 DEFAULT_EXTRA_ARGS = __configs_from_file.get('DEFAULT_EXTRA_ARGS', __build_in_default_config['DEFAULT_EXTRA_ARGS'])
 DEFAULT_ONE_ON_ONE = __configs_from_file.get('DEFAULT_ONE_ON_ONE', __build_in_default_config['DEFAULT_ONE_ON_ONE'])
 DEFAULT_SCP = __configs_from_file.get('DEFAULT_SCP', __build_in_default_config['DEFAULT_SCP'])
@@ -193,7 +199,7 @@ def get_i():
 		return __host_i_counter
 	
 class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False):
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None):
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -212,12 +218,13 @@ class Host:
 		# also store a globally unique integer i from 0
 		self.i = get_i()
 		self.uuid = uuid.uuid4()
+		self.identity_file = identity_file
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
 	def __repr__(self):
 		# return the complete data structure
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid})"
+		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), identity_file={self.identity_file}"
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
 
@@ -255,7 +262,7 @@ def check_path(program_name):
 		return True
 	return False
 
-[check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','bash']]
+[check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','bash','ssh-copy-id']]
 
 
 
@@ -678,11 +685,13 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 	global _binPaths
 	global __DEBUG_MODE
 	try:
-		keyCheckArgs = []
-		rsyncKeyCheckArgs = []
+		localExtraArgs = []
+		
 		if not SSH_STRICT_HOST_KEY_CHECKING:
-			keyCheckArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
-			rsyncKeyCheckArgs = ['--rsh','ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null']
+			localExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+		if host.identity_file:
+			localExtraArgs += ['-i',host.identity_file]
+		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(localExtraArgs)]
 		host.username = None
 		host.address = host.name
 		if '@' in host.name:
@@ -783,11 +792,11 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 				else:
 					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rpB'] + keyCheckArgs + extraargs +['--']+fileArgs
+					formatedCMD = [_binPaths['scp'],'-rpB'] + localExtraArgs + extraargs +['--']+fileArgs
 				else:
-					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncKeyCheckArgs + extraargs +['--']+fileArgs	
+					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
 			else:
-				formatedCMD = [_binPaths['ssh']] + keyCheckArgs + extraargs +['--']+ [host.resolvedName, host.command]
+				formatedCMD = [_binPaths['ssh']] + localExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
 				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
 			elif passwds:
@@ -839,7 +848,7 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 
 						proc.terminate()
 						break
-					elif time.time() - host.lastUpdateTime >  min(30, timeout // 2):
+					elif time.time() - host.lastUpdateTime >  max(1, timeout // 2):
 						timeoutLine = f'Timeout in [{timeout - int(time.time() - host.lastUpdateTime)}] seconds!'
 						if host.output and not host.output[-1].strip().startswith(timeoutLine):
 							# remove last line if it is a countdown
@@ -1449,12 +1458,13 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
-						 file_sync = False, error_only = DEFAULT_ERROR_ONLY,
+						 file_sync = False, error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 shortend = False) -> str:
 	argsList = []
 	if oneonone: argsList.append('--oneonone' if not shortend else '-11')
 	if timeout and timeout != DEFAULT_TIMEOUT: argsList.append(f'--timeout={timeout}' if not shortend else f'-t={timeout}')
 	if password and password != DEFAULT_PASSWORD: argsList.append(f'--password="{password}"' if not shortend else f'-p="{password}"')
+	if identity_file and identity_file != DEFAULT_IDENTITY_FILE: argsList.append(f'--key="{identity_file}"' if not shortend else f'-k="{identity_file}"')
 	if nowatch: argsList.append('--nowatch' if not shortend else '-q')
 	if json: argsList.append('--json' if not shortend else '-j')
 	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS: argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
@@ -1479,7 +1489,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
-						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,
+						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 shortend = False):
 	hosts = hosts if type(hosts) == str else frozenset(hosts)
 	hostStr = formHostStr(hosts)
@@ -1488,7 +1498,8 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 nowatch = nowatch,json = json,max_connections=max_connections,
 						 files = files,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,scp=scp,gather_mode = gather_mode,
 						 username=username,extraargs=extraargs,skipUnreachable=skipUnreachable,no_env=no_env,
-						 greppable=greppable,skip_hosts = skip_hosts, file_sync = file_sync,error_only = error_only, shortend = shortend)
+						 greppable=greppable,skip_hosts = skip_hosts, file_sync = file_sync,error_only = error_only, identity_file = identity_file,
+						 shortend = shortend)
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	return f'multissh {argsStr} {hostStr} {commandStr}'
 
@@ -1498,7 +1509,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
-						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False):
+						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE):
 	f'''
 	Run the command on the hosts, aka multissh. main function
 
@@ -1532,6 +1543,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		file_sync (bool, optional): Whether to use file sync mode to sync directories. Defaults to {DEFAULT_FILE_SYNC}.
 		error_only (bool, optional): Whether to only print the error output. Defaults to {DEFAULT_ERROR_ONLY}.
 		quiet (bool, optional): Whether to suppress all verbose printout, added for compatibility, avoid using. Defaults to False.
+		identity_file (str, optional): The identity file to use for the ssh connection. Defaults to {DEFAULT_IDENTITY_FILE}.
 
 	Returns:
 		list: A list of Host objects
@@ -1652,9 +1664,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				continue
 			if host.strip() in skipHostsList: continue
 			if file_sync:
-				hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
+				hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
 			else:
-				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
+				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
 			if not __global_suppress_printout: 
 				eprint(f"Running command: {command} on host: {host}")
 		if not __global_suppress_printout: print('-'*80)
@@ -1678,7 +1690,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				elif ipmi:
 					eprint(f"Error: ipmi mode is not supported in interactive mode")
 				else:
-					hosts.append(Host(host.strip(), '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs))
+					hosts.append(Host(host.strip(), '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file))
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -1696,9 +1708,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					continue
 				if host.strip() in skipHostsList: continue
 				if file_sync:
-					hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
+					hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
 				else:
-					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode))
+					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -1723,6 +1735,9 @@ def get_default_config(args):
 		'DEFAULT_HOSTS': args.hosts,
 		'DEFAULT_USERNAME': args.username,
 		'DEFAULT_PASSWORD': args.password,
+		'DEFAULT_IDENTITY_FILE': args.key if args.key and not os.path.isdir(args.key) else DEFAULT_IDENTITY_FILE,
+		'DEDAULT_SSH_KEY_SEARCH_PATH': args.key if args.key and os.path.isdir(args.key) else DEDAULT_SSH_KEY_SEARCH_PATH,
+		'DEFAULT_USE_KEY': args.use_key,
 		'DEFAULT_EXTRA_ARGS': args.extraargs,
 		'DEFAULT_ONE_ON_ONE': args.oneonone,
 		'DEFAULT_SCP': args.scp,
@@ -1761,6 +1776,26 @@ def write_default_config(args,CONFIG_FILE,backup = True):
 	with open(CONFIG_FILE,'w') as f:
 		json.dump(__configs_from_file,f,indent=4)
 
+def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
+	'''
+	Find the ssh public key file
+
+	Args:
+		searchPath (str, optional): The path to search. Defaults to DEDAULT_SSH_KEY_SEARCH_PATH.
+
+	Returns:
+		str: The path to the ssh key file
+	'''
+	if searchPath:
+		sshKeyPath = searchPath
+	else:
+		sshKeyPath ='~/.ssh'
+	possibleSshKeyFiles = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
+	for sshKeyFile in possibleSshKeyFiles:
+		if os.path.exists(os.path.expanduser(os.path.join(sshKeyPath,sshKeyFile))):
+			return os.path.join(sshKeyPath,sshKeyFile)
+	return None
+
 
 def main():
 	global _emo
@@ -1780,6 +1815,8 @@ def main():
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
 	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
+	parser.add_argument('-k','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEDAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEDAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
+	parser.add_argument('-uk','--use_key', action='store_true', help=f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})', default=DEFAULT_USE_KEY)
 	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
@@ -1848,6 +1885,8 @@ def main():
 				eprint(f"Config file written to {CONFIG_FILE}")
 		except Exception as e:
 			eprint(f"Error while writing config file: {e}")
+			import traceback
+			eprint(traceback.format_exc())
 		if not args.commands:
 			with open(CONFIG_FILE,'r') as f:
 				eprint(f"Config file content: \n{f.read()}")
@@ -1870,7 +1909,35 @@ def main():
 			eprint(f"\nRunning multiple commands: {', '.join(args.commands)} on all hosts")
 		else:
 			sys.exit(0)
-	
+
+	if args.key or args.use_key:
+		if not args.key:
+			args.key = find_ssh_key_file()
+		else:
+			if os.path.isdir(os.path.expanduser(args.key)):
+				args.key = find_ssh_key_file(args.key)
+			elif not os.path.exists(args.key):
+				eprint(f"Warning: Identity file {args.key} not found. Passing to ssh anyway. Proceed with caution.")
+
+	if args.copy_id:
+		if 'ssh-copy-id' in _binPaths:
+			# we will copy the id to the hosts
+			for host in formHostStr(args.hosts).split(','):
+				command = f"{_binPaths['ssh-copy-id']} "
+				if args.key:
+					command = f"{command}-i {args.key} "
+				if args.username:
+					command =  f"{command} {args.username}@"
+				command = f"{command}{host}"
+				if args.password and 'sshpass' in _binPaths:
+					command = f"{_binPaths['sshpass']} -p {args.password} {command}"
+				eprint(f"> {command}")
+				os.system(command)
+		else:
+			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
+		if not args.commands:
+			sys.exit(0)
+
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 
 	if not args.greppable and not args.json and not args.no_output:
@@ -1881,7 +1948,7 @@ def main():
 						 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
 						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
 						 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
-						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only))
+						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key))
 	if args.error_only:
 		__global_suppress_printout = True
 
@@ -1896,7 +1963,7 @@ def main():
 							 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
 							 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
 							 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
-							 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only)
+							 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key)
 		#print('*'*80)
 
 		if not __global_suppress_printout: eprint('-'*80)
