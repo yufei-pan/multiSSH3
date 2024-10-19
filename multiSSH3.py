@@ -18,6 +18,7 @@ import glob
 import shutil
 import getpass
 import uuid
+import tempfile
 
 try:
 	# Check if functiools.cache is available
@@ -30,7 +31,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '4.99'
+version = '5.00'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -94,7 +95,7 @@ __build_in_default_config = {
 	'DEFAULT_JSON_MODE': False,
 	'DEFAULT_PRINT_SUCCESS_HOSTS': False,
 	'DEFAULT_GREPPABLE_MODE': False,
-	'DEFAULT_SKIP_UNREACHABLE': False,
+	'DEFAULT_SKIP_UNREACHABLE': True,
 	'DEFAULT_SKIP_HOSTS': '',
 	'SSH_STRICT_HOST_KEY_CHECKING': False,
 	'ERROR_MESSAGES_TO_IGNORE': [
@@ -179,7 +180,7 @@ __DEBUG_MODE = __configs_from_file.get('__DEBUG_MODE', __build_in_default_config
 
 
 
-__global_suppress_printout = True
+__global_suppress_printout = False
 
 __mainReturnCode = 0
 __failedHosts = set()
@@ -1302,9 +1303,10 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 				outputs[hostPrintOut] = [host['name']]
 			else:
 				outputs[hostPrintOut].append(host['name'])
-		rtnStr = ''
+		rtnStr = '*'*80+'\n'
 		for output, hosts in outputs.items():
 			rtnStr += f"{','.join(hosts)}{output}\n"
+			rtnStr += '*'*80+'\n'
 		if __keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
@@ -1420,9 +1422,25 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 		if __DEBUG_MODE:
 			print(f'Unreachable hosts: {unavailableHosts}')
 		__globalUnavailableHosts.update(unavailableHosts)
-		# update the os environment variable if not _no_env
-		if not _no_env:
-			os.environ['__multiSSH3_UNAVAILABLE_HOSTS'] = ','.join(unavailableHosts)
+
+		# os.environ['__multiSSH3_UNAVAILABLE_HOSTS'] = ','.join(unavailableHosts)
+		# create a temporary file to store the unavailable hosts
+		try:
+			# check for the old content, only update if the new content is different
+			if not os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')):
+				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'w') as f:
+					f.write(','.join(unavailableHosts))
+			else:
+				try:
+					with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'r') as f:
+						oldSet = set(f.read().strip().split(','))
+				except:
+					oldSet = None
+				if not oldSet or set(oldSet) != unavailableHosts:
+					with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'w') as f:
+						f.write(','.join(unavailableHosts))
+		except Exception as e:
+			eprint(f'Error writing to temporary file: {e}')
 
 	# print the output, if the output of multiple hosts are the same, we aggragate them
 	if not called:
@@ -1555,10 +1573,26 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __DEBUG_MODE
 	_emo = False
 	_no_env = no_env
-	if not no_env and '__multiSSH3_UNAVAILABLE_HOSTS' in os.environ:
-		__globalUnavailableHosts = set(os.environ['__multiSSH3_UNAVAILABLE_HOSTS'].split(','))
+	if os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')):
+		if timeout <= 0:
+			checkTime = DEFAULT_TIMEOUT
+		else:
+			checkTime = timeout
+		if checkTime <= 0:
+			checkTime = 60
+		try:
+			if 0 < time.time() - os.path.getmtime(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')) < checkTime:
+				if not __global_suppress_printout:
+					eprint(f"Reading unavailable hosts from the file {os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')}")
+				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'r') as f:
+					__globalUnavailableHosts.update(f.read().strip().split(','))
+					if __DEBUG_MODE:
+						eprint(f"Unavailable hosts: {__globalUnavailableHosts}")
+		except Exception as e:
+			eprint(f"Warning: Unable to read the unavailable hosts from the file {os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')}")
+			eprint(str(e))
 	elif '__multiSSH3_UNAVAILABLE_HOSTS' in readEnvFromFile():
-		__globalUnavailableHosts = set(readEnvFromFile()['__multiSSH3_UNAVAILABLE_HOSTS'].split(','))
+		__globalUnavailableHosts.update(readEnvFromFile()['__multiSSH3_UNAVAILABLE_HOSTS'].split(','))
 	if not max_connections:
 		max_connections = 4 * os.cpu_count()
 	elif max_connections == 0:
@@ -1842,7 +1876,7 @@ def main():
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument("--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as wells. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
 	parser.add_argument("-g","--greppable", action='store_true', help=f"Output in greppable format. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
-	parser.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
+	parser.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument("-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
 	parser.add_argument('--store_config_file', action='store_true', help=f'Store / generate the default config file from command line argument and current config at {CONFIG_FILE}')
 	parser.add_argument('--debug', action='store_true', help='Print debug information')
@@ -1940,15 +1974,16 @@ def main():
 
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 
-	if not args.greppable and not args.json and not args.no_output:
-		__global_suppress_printout = False
+	if args.no_output:
+		__global_suppress_printout = True
 
 	if not __global_suppress_printout:
-		eprint('> ' + getStrCommand(args.hosts,args.commands,oneonone=args.oneonone,timeout=args.timeout,password=args.password,
+		cmdStr = getStrCommand(args.hosts,args.commands,oneonone=args.oneonone,timeout=args.timeout,password=args.password,
 						 nowatch=args.nowatch,json=args.json,called=args.no_output,max_connections=args.max_connections,
 						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
 						 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
-						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key))
+						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key)
+		eprint('> ' + cmdStr)
 	if args.error_only:
 		__global_suppress_printout = True
 
