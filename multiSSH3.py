@@ -31,7 +31,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.00'
+version = '5.06'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -741,12 +741,14 @@ def ssh_command(host, sem, timeout=60,passwds=None):
 					if passwds:
 						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {" ".join(extraargs)} {host.command}']
 					else:
-						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} {" ".join(extraargs)} {host.command}']
+						host.output.append('Warning: Password not provided for ipmi! Using a default password `admin`.')
+						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} -P admin {" ".join(extraargs)} {host.command}']
 				else:
 					if passwds:
 						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P {passwds}'] + extraargs + [host.command]
 					else:
-						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}'] + extraargs + [host.command]
+						host.output.append('Warning: Password not provided for ipmi! Using a default password `admin`.')
+						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P admin'] + extraargs + [host.command]
 			elif 'ssh' in _binPaths:
 				host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
 				if __DEBUG_MODE:
@@ -980,7 +982,7 @@ def get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 			host.printedLines = 0
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
 
-def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW):
+def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason= 'New Configuration'):
 	try:
 		org_dim = stdscr.getmaxyx()
 		new_configured = True
@@ -996,9 +998,9 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 			min_line_len_local = max_y-1
 		# return True if the terminal is too small
 		if max_x < 2 or max_y < 2:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal too small')
 		if min_char_len_local < 1 or min_line_len_local < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Minimum character or line length too small')
 		# We need to figure out how many hosts we can fit in the terminal
 		# We will need at least 2 lines per host, one for its name, one for its output
 		# Each line will be at least 61 characters long (60 for the output, 1 for the borders)
@@ -1006,14 +1008,14 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 		max_num_hosts_y = max_y // (min_line_len_local + 1)
 		max_num_hosts = max_num_hosts_x * max_num_hosts_y
 		if max_num_hosts < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal too small to display any hosts')
 		hosts_to_display , host_stats = get_hosts_to_display(hosts, max_num_hosts)
 		if len(hosts_to_display) == 0:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'No hosts to display')
 		# Now we calculate the actual number of hosts we will display for x and y
 		optimal_len_x = max(min_char_len_local, 80)
-		num_hosts_x = max(min(max_num_hosts_x, max_x // optimal_len_x),1)
-		num_hosts_y = len(hosts_to_display) // num_hosts_x
+		num_hosts_x = min(max(min(max_num_hosts_x, max_x // optimal_len_x),1),len(hosts_to_display))
+		num_hosts_y = len(hosts_to_display) // num_hosts_x + (len(hosts_to_display) % num_hosts_x > 0)
 		while num_hosts_y > max_num_hosts_y:
 			num_hosts_x += 1
 			# round up for num_hosts_y
@@ -1025,12 +1027,12 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 					num_hosts_x += 1
 					num_hosts_y = len(hosts_to_display) // num_hosts_x + (len(hosts_to_display) % num_hosts_x > 0)
 				break
-
+		num_hosts_y = max(num_hosts_y,1)
 		# We calculate the size of each window
 		host_window_height = max_y // num_hosts_y
 		host_window_width = max_x // num_hosts_x
 		if host_window_height < 1 or host_window_width < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Host window too small')
 
 		old_stat = ''
 		old_bottom_stat = ''
@@ -1071,24 +1073,24 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 				# with open('keylog.txt','a') as f:
 				#     f.write(str(key)+'\n')
 				if key == 410: # 410 is the key code for resize
-					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)         
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize requested')      
 				elif key == 95 and not __keyPressesIn[-1]: # 95 is the key code for _
 					# if last line is empty, we will reconfigure the wh to be smaller
 					if min_line_len != 1:
-						return (lineToDisplay,curserPosition , min_char_len , max(min_line_len -1,1), single_window)
+						return (lineToDisplay,curserPosition , min_char_len , max(min_line_len -1,1), single_window, 'Decrease line length')
 				elif key == 43 and not __keyPressesIn[-1]: # 43 is the key code for +
 					# if last line is empty, we will reconfigure the wh to be larger
-					return (lineToDisplay,curserPosition , min_char_len , min_line_len +1, single_window)
+					return (lineToDisplay,curserPosition , min_char_len , min_line_len +1, single_window, 'Increase line length')
 				elif key == 123 and not __keyPressesIn[-1]: # 123 is the key code for {
 					# if last line is empty, we will reconfigure the ww to be smaller
 					if min_char_len != 1:
-						return (lineToDisplay,curserPosition , max(min_char_len -1,1), min_line_len, single_window)
+						return (lineToDisplay,curserPosition , max(min_char_len -1,1), min_line_len, single_window, 'Decrease character length')
 				elif key == 124 and not __keyPressesIn[-1]: # 124 is the key code for |
 					# if last line is empty, we will toggle the single window mode
-					return (lineToDisplay,curserPosition , min_char_len, min_line_len, not single_window)
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, not single_window, 'Toggle single window mode')
 				elif key == 125 and not __keyPressesIn[-1]: # 125 is the key code for }
 					# if last line is empty, we will reconfigure the ww to be larger
-					return (lineToDisplay,curserPosition , min_char_len +1, min_line_len, single_window)
+					return (lineToDisplay,curserPosition , min_char_len +1, min_line_len, single_window, 'Increase character length')
 				# We handle positional keys
 				# if the key is up arrow, we will move the line to display up
 				elif key == 259: # 259 is the key code for up arrow
@@ -1147,7 +1149,7 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 						curserPosition += 1
 			# reconfigure when the terminal size changes
 			if org_dim != stdscr.getmaxyx():
-				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
 			# We generate the aggregated stats if user did not input anything
 			if not __keyPressesIn[lineToDisplay]:
 				stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
@@ -1212,11 +1214,12 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 						# print(str(e).strip())
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
-							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
 			new_configured = False
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
-		return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window)
+		import traceback
+		return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, f'Error: {str(e)}',traceback.format_exc())
 	return None
 
 def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
@@ -1255,7 +1258,12 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 	curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_BLUE)
 	curses.init_pair(19, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
 	curses.init_pair(20, curses.COLOR_BLACK, curses.COLOR_CYAN)
-	params = (-1,0 , min_char_len, min_line_len, single_window)
+
+	# do not generate display if the output window have a size of zero
+	if stdscr.getmaxyx()[0] < 2 or stdscr.getmaxyx()[1] < 2:
+		return
+
+	params = (-1,0 , min_char_len, min_line_len, single_window,'new config')
 	while params:
 		params = generate_display(stdscr, hosts, *params)
 		if not params:
@@ -1265,8 +1273,19 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 			break
 		# print the current configuration
 		stdscr.clear()
-		stdscr.addstr(0, 0, f"Loading Configuration: min_char_len={params[2]}, min_line_len={params[3]}, single_window={params[4]}")
-		stdscr.refresh()
+		try:
+			stdscr.addstr(0, 0, f"{params[5]}, Reloading Configuration: min_char_len={params[2]}, min_line_len={params[3]}, single_window={params[4]} with window size {stdscr.getmaxyx()} and {len(hosts)} hosts...")
+			if len(params) > 6:
+				# traceback is available, print it
+				i = 1
+				for line in params[6].split('\n'):
+					stdscr.addstr(i, 0, line)
+					i += 1
+			stdscr.refresh()
+		except:
+			pass
+		params = params[:5]
+		time.sleep(0.01)
 		#time.sleep(0.25)
 
 
@@ -1418,7 +1437,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 			thread.join(timeout=3)
 	# update the unavailable hosts and global unavailable hosts
 	if willUpdateUnreachableHosts:
+		unavailableHosts = set(unavailableHosts)
 		unavailableHosts.update([host.name for host in hosts if host.stderr and ('No route to host' in host.stderr[0].strip() or host.stderr[0].strip().startswith('Timeout!'))])
+		# reachable hosts = all hosts - unreachable hosts
+		reachableHosts = set([host.name for host in hosts]) - unavailableHosts
 		if __DEBUG_MODE:
 			print(f'Unreachable hosts: {unavailableHosts}')
 		__globalUnavailableHosts.update(unavailableHosts)
@@ -1427,18 +1449,31 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 		# create a temporary file to store the unavailable hosts
 		try:
 			# check for the old content, only update if the new content is different
-			if not os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')):
-				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'w') as f:
-					f.write(','.join(unavailableHosts))
+			if not os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')):
+				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv'),'w') as f:
+					f.write(f',{int(time.time())}\n'.join(unavailableHosts) + f',{int(time.time())}\n')
 			else:
+				oldDic = {}
 				try:
-					with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'r') as f:
-						oldSet = set(f.read().strip().split(','))
+					with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
+						for line in f:
+							line = line.strip()
+							if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
+								oldDic[line.split(',')[0]] = int(line.split(',')[1])
 				except:
-					oldSet = None
-				if not oldSet or set(oldSet) != unavailableHosts:
-					with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'w') as f:
-						f.write(','.join(unavailableHosts))
+					pass
+				# remove entries that are either available now or older than min(timeout,3600) seconds
+				for key in list(oldDic.keys()):
+					if key in reachableHosts or time.time() - oldDic[key] > min(timeout,3600):
+						del oldDic[key]
+				# add new entries
+				for host in unavailableHosts:
+					oldDic[host] = int(time.time())
+				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),'w') as f:
+					for key, value in oldDic.items():
+						f.write(f'{key},{value}\n')
+				os.replace(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv'))
+				
 		except Exception as e:
 			eprint(f'Error writing to temporary file: {e}')
 
@@ -1573,23 +1608,27 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __DEBUG_MODE
 	_emo = False
 	_no_env = no_env
-	if os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')):
+	if os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')):
 		if timeout <= 0:
 			checkTime = DEFAULT_TIMEOUT
 		else:
 			checkTime = timeout
 		if checkTime <= 0:
 			checkTime = 60
+		elif checkTime > 3600:
+			checkTime = 3600
 		try:
-			if 0 < time.time() - os.path.getmtime(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')) < checkTime:
+			if 0 < time.time() - os.path.getmtime(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')) < checkTime:
 				if not __global_suppress_printout:
-					eprint(f"Reading unavailable hosts from the file {os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')}")
-				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS'),'r') as f:
-					__globalUnavailableHosts.update(f.read().strip().split(','))
-					if __DEBUG_MODE:
-						eprint(f"Unavailable hosts: {__globalUnavailableHosts}")
+					eprint(f"Reading unavailable hosts from the file {os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')}")
+				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
+					for line in f:
+						line = line.strip()
+						if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
+							if int(line.split(',')[1]) > time.time() - checkTime:
+								__globalUnavailableHosts.add(line.split(',')[0])
 		except Exception as e:
-			eprint(f"Warning: Unable to read the unavailable hosts from the file {os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS')}")
+			eprint(f"Warning: Unable to read the unavailable hosts from the file {os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')}")
 			eprint(str(e))
 	elif '__multiSSH3_UNAVAILABLE_HOSTS' in readEnvFromFile():
 		__globalUnavailableHosts.update(readEnvFromFile()['__multiSSH3_UNAVAILABLE_HOSTS'].split(','))
@@ -1888,9 +1927,9 @@ def main():
 	#args = parser.parse_args()
 
 	# if python version is 3.7 or higher, use parse_intermixed_args
-	if sys.version_info >= (3,7):
+	try:
 		args = parser.parse_intermixed_args()
-	else:
+	except:
 		# try to parse the arguments using parse_known_args
 		args, unknown = parser.parse_known_args()
 		# if there are unknown arguments, we will try to parse them again using parse_args
