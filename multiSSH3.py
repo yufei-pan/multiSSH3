@@ -36,13 +36,12 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.10'
+version = '5.24'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
 
-import sys
-
+# ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
 	try:
 		print(*args, file=sys.stderr, **kwargs)
@@ -50,6 +49,146 @@ def eprint(*args, **kwargs):
 		print(f"Error: Cannot print to stderr: {e}")
 		print(*args, **kwargs)
 
+def signal_handler(sig, frame):
+	'''
+	Handle the Ctrl C signal
+
+	Args:
+		sig (int): The signal
+		frame (frame): The frame
+
+	Returns:
+		None
+	'''
+	global _emo
+	if not _emo:
+		eprint('Ctrl C caught, exiting...')
+		_emo = True
+	else:
+		eprint('Ctrl C caught again, exiting immediately!')
+		# wait for 0.1 seconds to allow the threads to exit
+		time.sleep(0.1)
+		os.system(f'pkill -ef {os.path.basename(__file__)}')
+		sys.exit(0)
+
+def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
+	"""
+	Read an input from the user with a timeout and a countdown.
+
+	Parameters:
+	timeout (int): The timeout value in seconds.
+	prompt (str): The prompt message to display to the user. Default is 'Please enter your selection'.
+
+	Returns:
+	str or None: The user input if received within the timeout, or None if no input is received.
+	"""
+	import select
+	# Print the initial prompt with the countdown
+	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
+	# Loop until the timeout
+	for remaining in range(timeout, 0, -1):
+		# If there is an input, return it
+		if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+			return input().strip()
+		# Print the remaining time
+		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
+		# Wait a second
+		time.sleep(1)
+	# If there is no input, return None
+	return None
+
+@cache_decorator
+def getIP(hostname: str,local=False):
+	'''
+	Get the IP address of the hostname
+
+	Args:
+		hostname (str): The hostname
+
+	Returns:
+		str: The IP address of the hostname
+	'''
+	global _etc_hosts
+	if '@' in hostname:
+		_, hostname = hostname.rsplit('@',1)
+	# First we check if the hostname is an IP address
+	try:
+		ipaddress.ip_address(hostname)
+		return hostname
+	except ValueError:
+		pass
+	# Then we check /etc/hosts
+	if not _etc_hosts and os.path.exists('/etc/hosts'):
+		with open('/etc/hosts','r') as f:
+			for line in f:
+				if line.startswith('#') or not line.strip():
+					continue
+				#ip, host = line.split()[:2]
+				chunks = line.split()
+				if len(chunks) < 2:
+					continue
+				ip = chunks[0]
+				for host in chunks[1:]:
+					_etc_hosts[host] = ip
+	if hostname in _etc_hosts:
+		return _etc_hosts[hostname]
+	if local:
+		return None
+	# Then we check the DNS
+	try:
+		return socket.gethostbyname(hostname)
+	except:
+		return None
+
+__host_i_lock = threading.Lock()
+__host_i_counter = -1
+def _get_i():
+	'''
+	Get the global counter for the host objects
+
+	Returns:
+	int: The global counter for the host objects
+	'''
+	global __host_i_counter
+	global __host_i_lock
+	with __host_i_lock:
+		__host_i_counter += 1
+		return __host_i_counter
+
+# ------------ Host Object ----------------
+class Host:
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,bash=False,i = _get_i(),uuid=uuid.uuid4(),ip = None):
+		self.name = name # the name of the host (hostname or IP address)
+		self.command = command # the command to run on the host
+		self.returncode = None # the return code of the command
+		self.output = [] # the output of the command for curses
+		self.stdout = [] # the stdout of the command
+		self.stderr = [] # the stderr of the command
+		self.printedLines = -1 # the number of lines printed on the screen
+		self.lastUpdateTime = time.time() # the last time the output was updated
+		self.files = files # the files to be copied to the host
+		self.ipmi = ipmi # whether to use ipmi to connect to the host
+		self.bash = bash # whether to use bash to run the command
+		self.interface_ip_prefix = interface_ip_prefix # the prefix of the ip address of the interface to be used to connect to the host
+		self.scp = scp # whether to use scp to copy files to the host
+		self.gatherMode = gatherMode # whether the host is in gather mode
+		self.extraargs = extraargs # extra arguments to be passed to ssh
+		self.resolvedName = None # the resolved IP address of the host
+		# also store a globally unique integer i from 0
+		self.i = i
+		self.uuid = uuid
+		self.identity_file = identity_file
+		self.ip = ip if ip else getIP(name)
+
+	def __iter__(self):
+		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
+	def __repr__(self):
+		# return the complete data structure
+		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), identity_file={self.identity_file}"
+	def __str__(self):
+		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
+
+# ------------ Load Defaults ( Config ) File ----------------
 def load_config_file(config_file):
 	'''
 	Load the config file to global variables
@@ -131,131 +270,79 @@ __build_in_default_config = {
 	'__DEBUG_MODE': False,
 }
 
-AUTHOR = __configs_from_file.get('AUTHOR', __build_in_default_config['AUTHOR'])
-AUTHOR_EMAIL = __configs_from_file.get('AUTHOR_EMAIL', __build_in_default_config['AUTHOR_EMAIL'])
+# Load Config Based Default Global variables
+if True:
+	AUTHOR = __configs_from_file.get('AUTHOR', __build_in_default_config['AUTHOR'])
+	AUTHOR_EMAIL = __configs_from_file.get('AUTHOR_EMAIL', __build_in_default_config['AUTHOR_EMAIL'])
 
-DEFAULT_HOSTS = __configs_from_file.get('DEFAULT_HOSTS', __build_in_default_config['DEFAULT_HOSTS'])
-DEFAULT_ENV_FILE = __configs_from_file.get('DEFAULT_ENV_FILE', __build_in_default_config['DEFAULT_ENV_FILE'])
-DEFAULT_USERNAME = __configs_from_file.get('DEFAULT_USERNAME', __build_in_default_config['DEFAULT_USERNAME'])
-DEFAULT_PASSWORD = __configs_from_file.get('DEFAULT_PASSWORD', __build_in_default_config['DEFAULT_PASSWORD'])
-DEFAULT_IDENTITY_FILE = __configs_from_file.get('DEFAULT_IDENTITY_FILE', __build_in_default_config['DEFAULT_IDENTITY_FILE'])
-DEDAULT_SSH_KEY_SEARCH_PATH = __configs_from_file.get('DEDAULT_SSH_KEY_SEARCH_PATH', __build_in_default_config['DEDAULT_SSH_KEY_SEARCH_PATH'])
-DEFAULT_USE_KEY = __configs_from_file.get('DEFAULT_USE_KEY', __build_in_default_config['DEFAULT_USE_KEY'])
-DEFAULT_EXTRA_ARGS = __configs_from_file.get('DEFAULT_EXTRA_ARGS', __build_in_default_config['DEFAULT_EXTRA_ARGS'])
-DEFAULT_ONE_ON_ONE = __configs_from_file.get('DEFAULT_ONE_ON_ONE', __build_in_default_config['DEFAULT_ONE_ON_ONE'])
-DEFAULT_SCP = __configs_from_file.get('DEFAULT_SCP', __build_in_default_config['DEFAULT_SCP'])
-DEFAULT_FILE_SYNC = __configs_from_file.get('DEFAULT_FILE_SYNC', __build_in_default_config['DEFAULT_FILE_SYNC'])
-DEFAULT_TIMEOUT = __configs_from_file.get('DEFAULT_TIMEOUT', __build_in_default_config['DEFAULT_TIMEOUT'])
-DEFAULT_CLI_TIMEOUT = __configs_from_file.get('DEFAULT_CLI_TIMEOUT', __build_in_default_config['DEFAULT_CLI_TIMEOUT'])
-DEFAULT_REPEAT = __configs_from_file.get('DEFAULT_REPEAT', __build_in_default_config['DEFAULT_REPEAT'])
-DEFAULT_INTERVAL = __configs_from_file.get('DEFAULT_INTERVAL', __build_in_default_config['DEFAULT_INTERVAL'])
-DEFAULT_IPMI = __configs_from_file.get('DEFAULT_IPMI', __build_in_default_config['DEFAULT_IPMI'])
-DEFAULT_IPMI_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_IPMI_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_IPMI_INTERFACE_IP_PREFIX'])
-DEFAULT_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_INTERFACE_IP_PREFIX'])
-DEFAULT_NO_WATCH = __configs_from_file.get('DEFAULT_NO_WATCH', __build_in_default_config['DEFAULT_NO_WATCH'])
-DEFAULT_CURSES_MINIMUM_CHAR_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_CHAR_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_CHAR_LEN'])
-DEFAULT_CURSES_MINIMUM_LINE_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_LINE_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_LINE_LEN'])
-DEFAULT_SINGLE_WINDOW = __configs_from_file.get('DEFAULT_SINGLE_WINDOW', __build_in_default_config['DEFAULT_SINGLE_WINDOW'])
-DEFAULT_ERROR_ONLY = __configs_from_file.get('DEFAULT_ERROR_ONLY', __build_in_default_config['DEFAULT_ERROR_ONLY'])
-DEFAULT_NO_OUTPUT = __configs_from_file.get('DEFAULT_NO_OUTPUT', __build_in_default_config['DEFAULT_NO_OUTPUT'])
-DEFAULT_NO_ENV = __configs_from_file.get('DEFAULT_NO_ENV', __build_in_default_config['DEFAULT_NO_ENV'])
-DEFAULT_MAX_CONNECTIONS = __configs_from_file.get('DEFAULT_MAX_CONNECTIONS', __build_in_default_config['DEFAULT_MAX_CONNECTIONS'])
-if not DEFAULT_MAX_CONNECTIONS:
-	DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
-DEFAULT_JSON_MODE = __configs_from_file.get('DEFAULT_JSON_MODE', __build_in_default_config['DEFAULT_JSON_MODE'])
-DEFAULT_PRINT_SUCCESS_HOSTS = __configs_from_file.get('DEFAULT_PRINT_SUCCESS_HOSTS', __build_in_default_config['DEFAULT_PRINT_SUCCESS_HOSTS'])
-DEFAULT_GREPPABLE_MODE = __configs_from_file.get('DEFAULT_GREPPABLE_MODE', __build_in_default_config['DEFAULT_GREPPABLE_MODE'])
-DEFAULT_SKIP_UNREACHABLE = __configs_from_file.get('DEFAULT_SKIP_UNREACHABLE', __build_in_default_config['DEFAULT_SKIP_UNREACHABLE'])
-DEFAULT_SKIP_HOSTS = __configs_from_file.get('DEFAULT_SKIP_HOSTS', __build_in_default_config['DEFAULT_SKIP_HOSTS'])
+	DEFAULT_HOSTS = __configs_from_file.get('DEFAULT_HOSTS', __build_in_default_config['DEFAULT_HOSTS'])
+	DEFAULT_ENV_FILE = __configs_from_file.get('DEFAULT_ENV_FILE', __build_in_default_config['DEFAULT_ENV_FILE'])
+	DEFAULT_USERNAME = __configs_from_file.get('DEFAULT_USERNAME', __build_in_default_config['DEFAULT_USERNAME'])
+	DEFAULT_PASSWORD = __configs_from_file.get('DEFAULT_PASSWORD', __build_in_default_config['DEFAULT_PASSWORD'])
+	DEFAULT_IDENTITY_FILE = __configs_from_file.get('DEFAULT_IDENTITY_FILE', __build_in_default_config['DEFAULT_IDENTITY_FILE'])
+	DEDAULT_SSH_KEY_SEARCH_PATH = __configs_from_file.get('DEDAULT_SSH_KEY_SEARCH_PATH', __build_in_default_config['DEDAULT_SSH_KEY_SEARCH_PATH'])
+	DEFAULT_USE_KEY = __configs_from_file.get('DEFAULT_USE_KEY', __build_in_default_config['DEFAULT_USE_KEY'])
+	DEFAULT_EXTRA_ARGS = __configs_from_file.get('DEFAULT_EXTRA_ARGS', __build_in_default_config['DEFAULT_EXTRA_ARGS'])
+	DEFAULT_ONE_ON_ONE = __configs_from_file.get('DEFAULT_ONE_ON_ONE', __build_in_default_config['DEFAULT_ONE_ON_ONE'])
+	DEFAULT_SCP = __configs_from_file.get('DEFAULT_SCP', __build_in_default_config['DEFAULT_SCP'])
+	DEFAULT_FILE_SYNC = __configs_from_file.get('DEFAULT_FILE_SYNC', __build_in_default_config['DEFAULT_FILE_SYNC'])
+	DEFAULT_TIMEOUT = __configs_from_file.get('DEFAULT_TIMEOUT', __build_in_default_config['DEFAULT_TIMEOUT'])
+	DEFAULT_CLI_TIMEOUT = __configs_from_file.get('DEFAULT_CLI_TIMEOUT', __build_in_default_config['DEFAULT_CLI_TIMEOUT'])
+	DEFAULT_REPEAT = __configs_from_file.get('DEFAULT_REPEAT', __build_in_default_config['DEFAULT_REPEAT'])
+	DEFAULT_INTERVAL = __configs_from_file.get('DEFAULT_INTERVAL', __build_in_default_config['DEFAULT_INTERVAL'])
+	DEFAULT_IPMI = __configs_from_file.get('DEFAULT_IPMI', __build_in_default_config['DEFAULT_IPMI'])
+	DEFAULT_IPMI_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_IPMI_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_IPMI_INTERFACE_IP_PREFIX'])
+	DEFAULT_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_INTERFACE_IP_PREFIX'])
+	DEFAULT_NO_WATCH = __configs_from_file.get('DEFAULT_NO_WATCH', __build_in_default_config['DEFAULT_NO_WATCH'])
+	DEFAULT_CURSES_MINIMUM_CHAR_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_CHAR_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_CHAR_LEN'])
+	DEFAULT_CURSES_MINIMUM_LINE_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_LINE_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_LINE_LEN'])
+	DEFAULT_SINGLE_WINDOW = __configs_from_file.get('DEFAULT_SINGLE_WINDOW', __build_in_default_config['DEFAULT_SINGLE_WINDOW'])
+	DEFAULT_ERROR_ONLY = __configs_from_file.get('DEFAULT_ERROR_ONLY', __build_in_default_config['DEFAULT_ERROR_ONLY'])
+	DEFAULT_NO_OUTPUT = __configs_from_file.get('DEFAULT_NO_OUTPUT', __build_in_default_config['DEFAULT_NO_OUTPUT'])
+	DEFAULT_NO_ENV = __configs_from_file.get('DEFAULT_NO_ENV', __build_in_default_config['DEFAULT_NO_ENV'])
+	DEFAULT_MAX_CONNECTIONS = __configs_from_file.get('DEFAULT_MAX_CONNECTIONS', __build_in_default_config['DEFAULT_MAX_CONNECTIONS'])
+	if not DEFAULT_MAX_CONNECTIONS:
+		DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+	DEFAULT_JSON_MODE = __configs_from_file.get('DEFAULT_JSON_MODE', __build_in_default_config['DEFAULT_JSON_MODE'])
+	DEFAULT_PRINT_SUCCESS_HOSTS = __configs_from_file.get('DEFAULT_PRINT_SUCCESS_HOSTS', __build_in_default_config['DEFAULT_PRINT_SUCCESS_HOSTS'])
+	DEFAULT_GREPPABLE_MODE = __configs_from_file.get('DEFAULT_GREPPABLE_MODE', __build_in_default_config['DEFAULT_GREPPABLE_MODE'])
+	DEFAULT_SKIP_UNREACHABLE = __configs_from_file.get('DEFAULT_SKIP_UNREACHABLE', __build_in_default_config['DEFAULT_SKIP_UNREACHABLE'])
+	DEFAULT_SKIP_HOSTS = __configs_from_file.get('DEFAULT_SKIP_HOSTS', __build_in_default_config['DEFAULT_SKIP_HOSTS'])
 
-SSH_STRICT_HOST_KEY_CHECKING = __configs_from_file.get('SSH_STRICT_HOST_KEY_CHECKING', __build_in_default_config['SSH_STRICT_HOST_KEY_CHECKING'])
+	SSH_STRICT_HOST_KEY_CHECKING = __configs_from_file.get('SSH_STRICT_HOST_KEY_CHECKING', __build_in_default_config['SSH_STRICT_HOST_KEY_CHECKING'])
 
-ERROR_MESSAGES_TO_IGNORE = __configs_from_file.get('ERROR_MESSAGES_TO_IGNORE', __build_in_default_config['ERROR_MESSAGES_TO_IGNORE'])
+	ERROR_MESSAGES_TO_IGNORE = __configs_from_file.get('ERROR_MESSAGES_TO_IGNORE', __build_in_default_config['ERROR_MESSAGES_TO_IGNORE'])
 
-_DEFAULT_CALLED = __configs_from_file.get('_DEFAULT_CALLED', __build_in_default_config['_DEFAULT_CALLED'])
-_DEFAULT_RETURN_UNFINISHED = __configs_from_file.get('_DEFAULT_RETURN_UNFINISHED', __build_in_default_config['_DEFAULT_RETURN_UNFINISHED'])
-_DEFAULT_UPDATE_UNREACHABLE_HOSTS = __configs_from_file.get('_DEFAULT_UPDATE_UNREACHABLE_HOSTS', __build_in_default_config['_DEFAULT_UPDATE_UNREACHABLE_HOSTS'])
-_DEFAULT_NO_START = __configs_from_file.get('_DEFAULT_NO_START', __build_in_default_config['_DEFAULT_NO_START'])
+	_DEFAULT_CALLED = __configs_from_file.get('_DEFAULT_CALLED', __build_in_default_config['_DEFAULT_CALLED'])
+	_DEFAULT_RETURN_UNFINISHED = __configs_from_file.get('_DEFAULT_RETURN_UNFINISHED', __build_in_default_config['_DEFAULT_RETURN_UNFINISHED'])
+	_DEFAULT_UPDATE_UNREACHABLE_HOSTS = __configs_from_file.get('_DEFAULT_UPDATE_UNREACHABLE_HOSTS', __build_in_default_config['_DEFAULT_UPDATE_UNREACHABLE_HOSTS'])
+	_DEFAULT_NO_START = __configs_from_file.get('_DEFAULT_NO_START', __build_in_default_config['_DEFAULT_NO_START'])
 
-# form the regex from the list
-__ERROR_MESSAGES_TO_IGNORE_REGEX = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX', __build_in_default_config['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
-if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
-	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__configs_from_file['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
-else:
-	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
+	# form the regex from the list
+	__ERROR_MESSAGES_TO_IGNORE_REGEX = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX', __build_in_default_config['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
+	if __ERROR_MESSAGES_TO_IGNORE_REGEX:
+		eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__configs_from_file['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
+	else:
+		__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
 
-__DEBUG_MODE = __configs_from_file.get('__DEBUG_MODE', __build_in_default_config['__DEBUG_MODE'])
+	__DEBUG_MODE = __configs_from_file.get('__DEBUG_MODE', __build_in_default_config['__DEBUG_MODE'])
 
+# Load mssh Functional Global Variables
+if True:
+	__global_suppress_printout = False
+	__mainReturnCode = 0
+	__failedHosts = set()
+	__wildCharacters = ['*','?','x']
+	_no_env = DEFAULT_NO_ENV
+	_env_file = DEFAULT_ENV_FILE
+	__globalUnavailableHosts = set()
+	__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
+	__keyPressesIn = [[]]
+	_emo = False
+	_etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_etc_hosts'])
 
-
-__global_suppress_printout = False
-
-__mainReturnCode = 0
-__failedHosts = set()
-__host_i_lock = threading.Lock()
-__host_i_counter = -1
-def get_i():
-	'''
-	Get the global counter for the host objects
-
-	Returns:
-	int: The global counter for the host objects
-	'''
-	global __host_i_counter
-	global __host_i_lock
-	with __host_i_lock:
-		__host_i_counter += 1
-		return __host_i_counter
-	
-class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,bash=False,i = get_i(),uuid=uuid.uuid4()):
-		self.name = name # the name of the host (hostname or IP address)
-		self.command = command # the command to run on the host
-		self.returncode = None # the return code of the command
-		self.output = [] # the output of the command for curses
-		self.stdout = [] # the stdout of the command
-		self.stderr = [] # the stderr of the command
-		self.printedLines = -1 # the number of lines printed on the screen
-		self.lastUpdateTime = time.time() # the last time the output was updated
-		self.files = files # the files to be copied to the host
-		self.ipmi = ipmi # whether to use ipmi to connect to the host
-		self.bash = bash # whether to use bash to run the command
-		self.interface_ip_prefix = interface_ip_prefix # the prefix of the ip address of the interface to be used to connect to the host
-		self.scp = scp # whether to use scp to copy files to the host
-		self.gatherMode = gatherMode # whether the host is in gather mode
-		self.extraargs = extraargs # extra arguments to be passed to ssh
-		self.resolvedName = None # the resolved IP address of the host
-		# also store a globally unique integer i from 0
-		self.i = i
-		self.uuid = uuid
-		self.identity_file = identity_file
-
-	def __iter__(self):
-		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
-	def __repr__(self):
-		# return the complete data structure
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), identity_file={self.identity_file}"
-	def __str__(self):
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
-
-__wildCharacters = ['*','?','x']
-
-_no_env = DEFAULT_NO_ENV
-
-_env_file = DEFAULT_ENV_FILE
-
-__globalUnavailableHosts = set()
-
-__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
-
-__keyPressesIn = [[]]
-
-_emo = False
-
-_etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_etc_hosts'])
-
-
+# ------------ Exportable Help Functions ----------------
 # check if command sshpass is available
 _binPaths = {}
 def check_path(program_name):
@@ -275,40 +362,162 @@ def check_path(program_name):
 
 [check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','bash','ssh-copy-id']]
 
-#%%
-def tokenize_hostname(hostname):
-    """
-    Tokenize the hostname into a list of tokens.
-    Tokens will be separated by symbols or numbers.
+def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
+	'''
+	Find the ssh public key file
 
-    Args:
-        hostname (str): The hostname to tokenize.
+	Args:
+		searchPath (str, optional): The path to search. Defaults to DEDAULT_SSH_KEY_SEARCH_PATH.
 
-    Returns:
-        list: A list of tokens.
-
-    Example:
-        >>> tokenize_hostname('www.example.com')
-        ('www', '.', 'example', '.', 'com')
-        >>> tokenize_hostname('localhost')
-        ('localhost',)
-        >>> tokenize_hostname('Sub-S1')
-        ('Sub', '-', 'S', '1')
-        >>> tokenize_hostname('Sub-S10')
-        ('Sub', '-', 'S', '10')
-        >>> tokenize_hostname('Process-Client10-1')
-        ('Process', '-', 'Client', '10', '-', '1')
-        >>> tokenize_hostname('Process-C5-15')
-        ('Process', '-', 'C', '5', '-', '15')
-        >>> tokenize_hostname('192.168.1.1')
-        ('192', '.', '168', '.', '1', '.', '1')
-    """
-    # Regular expression to match sequences of letters, digits, or symbols
-    tokens = re.findall(r'[A-Za-z]+|\d+|[^A-Za-z0-9]', hostname)
-    return tuple(tokens)
+	Returns:
+		str: The path to the ssh key file
+	'''
+	if searchPath:
+		sshKeyPath = searchPath
+	else:
+		sshKeyPath ='~/.ssh'
+	possibleSshKeyFiles = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
+	for sshKeyFile in possibleSshKeyFiles:
+		if os.path.exists(os.path.expanduser(os.path.join(sshKeyPath,sshKeyFile))):
+			return os.path.join(sshKeyPath,sshKeyFile)
+	return None
 
 @cache_decorator
-def hashTokens(tokens):
+def readEnvFromFile(environemnt_file = ''):
+	'''
+	Read the environment variables from env_file
+	Returns:
+		dict: A dictionary of environment variables
+	'''
+	global env
+	try:
+		if env:
+			return env
+	except:
+		env = {}
+	global _env_file
+	if environemnt_file:
+		envf = environemnt_file
+	else:
+		envf = _env_file if _env_file else DEFAULT_ENV_FILE
+	if os.path.exists(envf):
+		with open(envf,'r') as f:
+			for line in f:
+				if line.startswith('#') or not line.strip():
+					continue
+				key, value = line.replace('export ', '', 1).strip().split('=', 1)
+				key = key.strip().strip('"').strip("'")
+				value = value.strip().strip('"').strip("'")
+				# avoid infinite recursion
+				if key != value:
+					env[key] = value.strip('"').strip("'")
+	return env
+
+def replace_magic_strings(string,keys,value,case_sensitive=False):
+	'''
+	Replace the magic strings in the host object
+
+	Args:
+		string (str): The string to replace the magic strings
+		keys (list): Search for keys to replace
+		value (str): The value to replace the key
+		case_sensitive (bool, optional): Whether to search for the keys in a case sensitive way. Defaults to False.
+
+	Returns:
+		str: The string with the magic strings replaced
+	'''
+	# verify magic strings have # at the beginning and end
+	newKeys = []
+	for key in keys:
+		if key.startswith('#') and key.endswith('#'):
+			newKeys.append(key)
+		else:
+			newKeys.append('#'+key.strip('#')+'#')
+	# replace the magic strings
+	for key in newKeys:
+		if case_sensitive:
+			string = string.replace(key,value)
+		else:
+			string = re.sub(re.escape(key),value,string,flags=re.IGNORECASE)
+	return string
+
+def pretty_format_table(data):
+	if not data:
+		return ''
+	if type(data) == str:
+		data = data.strip('\n').split('\n')
+		data = [line.split('\t') for line in data]
+	elif isinstance(data, dict):
+		# flatten the 2D dict to a list of lists
+		if isinstance(next(iter(data.values())), dict):
+			tempData = [['key'] + list(next(iter(data.values())).keys())]
+			tempData.extend( [[key] + list(value.values()) for key, value in data.items()])
+			data = tempData
+		else:
+			# it is a dict of lists
+			data = [[key] + list(value) for key, value in data.items()]
+	elif type(data) != list:
+		data = list(data)
+	# TODO : add support for list of dictionaries
+	# format the list into 2d list of list of strings
+	if isinstance(data[0], dict):
+		tempData = [data[0].keys()]
+		tempData.extend([list(item.values()) for item in data])
+		data = tempData
+	data = [[str(item) for item in row] for row in data]
+	num_cols = len(data[0])
+	col_widths = [0] * num_cols
+	# Calculate the maximum width of each column
+	for c in range(num_cols):
+		col_widths[c] = max(len(row[c]) for row in data)
+	# Build the row format string
+	row_format = ' | '.join('{{:<{}}}'.format(width) for width in col_widths)
+	# Print the header
+	header = data[0]
+	outTable = []
+	outTable.append(row_format.format(*header))
+	outTable.append('-+-'.join('-' * width for width in col_widths))
+	for row in data[1:]:
+		# if the row is empty, print an divider
+		if not any(row):
+			outTable.append('-+-'.join('-' * width for width in col_widths))
+		else:
+			outTable.append(row_format.format(*row))
+	return '\n'.join(outTable) + '\n'
+
+# ------------ Compacting Hostnames ----------------
+def __tokenize_hostname(hostname):
+	"""
+	Tokenize the hostname into a list of tokens.
+	Tokens will be separated by symbols or numbers.
+
+	Args:
+		hostname (str): The hostname to tokenize.
+
+	Returns:
+		list: A list of tokens.
+
+	Example:
+		>>> tokenize_hostname('www.example.com')
+		('www', '.', 'example', '.', 'com')
+		>>> tokenize_hostname('localhost')
+		('localhost',)
+		>>> tokenize_hostname('Sub-S1')
+		('Sub', '-', 'S', '1')
+		>>> tokenize_hostname('Sub-S10')
+		('Sub', '-', 'S', '10')
+		>>> tokenize_hostname('Process-Client10-1')
+		('Process', '-', 'Client', '10', '-', '1')
+		>>> tokenize_hostname('Process-C5-15')
+		('Process', '-', 'C', '5', '-', '15')
+		>>> tokenize_hostname('192.168.1.1')
+		('192', '.', '168', '.', '1', '.', '1')
+	"""
+	# Regular expression to match sequences of letters, digits, or symbols
+	tokens = re.findall(r'[A-Za-z]+|\d+|[^A-Za-z0-9]', hostname)
+	return tuple(tokens)
+
+def __hashTokens(tokens):
 	"""
 	Translate a list of tokens in string to a list of integers with positional information.
 
@@ -332,7 +541,7 @@ def hashTokens(tokens):
 	"""
 	return tuple(int(token) if token.isdigit() else hash(token) for token in tokens)
 
-def findDiffIndex(token1, token2):
+def __findDiffIndex(token1, token2):
 	"""
 	Find the index of the first difference between two lists of tokens.
 	If there is more than one difference, return -1.
@@ -377,7 +586,7 @@ def findDiffIndex(token1, token2):
 				return -1
 	return rtn
 
-def generateSumDic(Hostnames):
+def __generateSumDic(Hostnames):
 	"""
 	Generate a dictionary of sums of tokens for a list of hostnames.
 
@@ -396,12 +605,12 @@ def generateSumDic(Hostnames):
 	"""
 	sumDic = {}
 	for hostname in reversed(sorted(Hostnames)):
-		tokens = tokenize_hostname(hostname)
-		sumHash = sum(hashTokens(tokens))
+		tokens = __tokenize_hostname(hostname)
+		sumHash = sum(__hashTokens(tokens))
 		sumDic.setdefault(sumHash, {})[tokens] = {}
 	return sumDic
 
-def filterSumDic(sumDic):
+def __filterSumDic(sumDic):
 	"""
 	Filter the sumDic to do one order of grouping.
 
@@ -465,78 +674,80 @@ def filterSumDic(sumDic):
 						# 3. the two hostnames have the same tokens except for one token
 						# 4. the two hostnames have the same token groups
 						if len(hostnameTokens) == len(lastHostnameTokens) and \
-							lastSumHash in newSumDic and lastHostnameTokens in newSumDic[lastSumHash] and \
-							(diffIndex:=findDiffIndex(hostnameTokens, lastHostnameTokens)) != -1 and \
-							sumDic[sumHash][hostnameTokens] == sumDic[lastSumHash][lastHostnameTokens]:
-							# the sumDic[sumHash][hostnameTokens] will ba a dic of 2 element value lists with 2 element key representing:
-							# (token position that got grouped, the amount of zero padding (length) ):
-							#   [ the start int token, the end int token]
-							# if we entered here, this means we are able to group the two hostnames together
+							lastSumHash in newSumDic and lastHostnameTokens in newSumDic[lastSumHash]:
+							#(diffIndex:=findDiffIndex(hostnameTokens, lastHostnameTokens)) != -1 and \
+							diffIndex=__findDiffIndex(hostnameTokens, lastHostnameTokens)
+							if diffIndex != -1 and \
+								sumDic[sumHash][hostnameTokens] == sumDic[lastSumHash][lastHostnameTokens]:
+								# the sumDic[sumHash][hostnameTokens] will ba a dic of 2 element value lists with 2 element key representing:
+								# (token position that got grouped, the amount of zero padding (length) ):
+								#   [ the start int token, the end int token]
+								# if we entered here, this means we are able to group the two hostnames together
 
-							if not diffIndex:
-								# should never happen, but just in case, we skip grouping
-								continue
-							tokenToGroup = hostnameTokens[diffIndex]
-							try:
-								tokenLength = len(tokenToGroup)
-								tokenToGroup = int(tokenToGroup)
-							except ValueError:
-								# if the token is not an int, we skip grouping
-								continue
-							# group(09 , 10) -> (x, 2): [9, 10]
-							# group(9 , 10) -> (x, 0): [9, 10]
-							# group(9 , 010) -> not able to group
-							# group(009 , 10) -> not able to group
-							# group(08, 09) -> (x, 2): [8, 9]
-							# group(08, 9) -> not able to group
-							# group(8, 09) -> not able to group
-							# group(0099, 0100) -> (x, 4): [99, 100]
-							# group(0099, 100) -> not able to groups
-							# group(099, 100) -> (x, 3): [99, 100]
-							# group(99, 100) -> (x, 0): [99, 100]
-							lastTokenToGroup = lastHostnameTokens[diffIndex]
-							try:
-								minimumTokenLength = 0
-								lastTokenLength = len(lastTokenToGroup) 
-								if lastTokenLength > tokenLength:
-									raise ValueError('The last token is longer than the current token.')
-								elif lastTokenLength < tokenLength:
-									if tokenLength - lastTokenLength != 1:
-										raise ValueError('The last token is not one less than the current token.')
-									# if the last token is not made out of all 9s, we cannot group
-									if any(c != '9' for c in lastTokenToGroup):
-										raise ValueError('The last token is not made out of all 9s.')
-								elif lastTokenToGroup[0] == '0' and lastTokenLength > 1:
-									# we have encoutered a padded last token, will set this as the minimum token length
-									minimumTokenLength = lastTokenLength
-								lastTokenToGroup = int(lastTokenToGroup)
-							except ValueError:
-								# if the token is not an int, we skip grouping
-								continue
-							assert lastTokenToGroup + 1 == tokenToGroup, 'Error! The two tokens are not one apart.'
-							# we take the last hostname tokens grouped dic out from the newSumDic
-							hostnameGroupDic = newSumDic[lastSumHash][lastHostnameTokens].copy()
-							if (diffIndex, minimumTokenLength) in hostnameGroupDic and hostnameGroupDic[(diffIndex, minimumTokenLength)][1] + 1 == tokenToGroup:
-								# if the token is already grouped, we just update the end token
-								hostnameGroupDic[(diffIndex, minimumTokenLength)][1] = tokenToGroup
-							elif (diffIndex, tokenLength) in hostnameGroupDic and hostnameGroupDic[(diffIndex, tokenLength)][1] + 1 == tokenToGroup:
-								# alternatively, there is already an exact length padded token grouped
-								hostnameGroupDic[(diffIndex, tokenLength)][1] = tokenToGroup
-							elif sumDic[lastSumHash][lastHostnameTokens] == newSumDic[lastSumHash][lastHostnameTokens]:
-								# only when there are no new groups added to this token group this iter, we can add the new group
-								hostnameGroupDic[(diffIndex, minimumTokenLength)] = [lastTokenToGroup, tokenToGroup]
-							else:
-								# skip grouping if there are new groups added to this token group this iter
-								continue
-							# move the grouped dic under the new hostname / sum hash
-							del newSumDic[lastSumHash][lastHostnameTokens]
-							del sumDic[lastSumHash][lastHostnameTokens]
-							if not newSumDic[lastSumHash]:
-								del newSumDic[lastSumHash]
-							newSumDic.setdefault(sumHash, {})[hostnameTokens] = hostnameGroupDic
-							# we add the new group to the newSumDic
-							added = True
-							break
+								if not diffIndex:
+									# should never happen, but just in case, we skip grouping
+									continue
+								tokenToGroup = hostnameTokens[diffIndex]
+								try:
+									tokenLength = len(tokenToGroup)
+									tokenToGroup = int(tokenToGroup)
+								except ValueError:
+									# if the token is not an int, we skip grouping
+									continue
+								# group(09 , 10) -> (x, 2): [9, 10]
+								# group(9 , 10) -> (x, 0): [9, 10]
+								# group(9 , 010) -> not able to group
+								# group(009 , 10) -> not able to group
+								# group(08, 09) -> (x, 2): [8, 9]
+								# group(08, 9) -> not able to group
+								# group(8, 09) -> not able to group
+								# group(0099, 0100) -> (x, 4): [99, 100]
+								# group(0099, 100) -> not able to groups
+								# group(099, 100) -> (x, 3): [99, 100]
+								# group(99, 100) -> (x, 0): [99, 100]
+								lastTokenToGroup = lastHostnameTokens[diffIndex]
+								try:
+									minimumTokenLength = 0
+									lastTokenLength = len(lastTokenToGroup) 
+									if lastTokenLength > tokenLength:
+										raise ValueError('The last token is longer than the current token.')
+									elif lastTokenLength < tokenLength:
+										if tokenLength - lastTokenLength != 1:
+											raise ValueError('The last token is not one less than the current token.')
+										# if the last token is not made out of all 9s, we cannot group
+										if any(c != '9' for c in lastTokenToGroup):
+											raise ValueError('The last token is not made out of all 9s.')
+									elif lastTokenToGroup[0] == '0' and lastTokenLength > 1:
+										# we have encoutered a padded last token, will set this as the minimum token length
+										minimumTokenLength = lastTokenLength
+									lastTokenToGroup = int(lastTokenToGroup)
+								except ValueError:
+									# if the token is not an int, we skip grouping
+									continue
+								assert lastTokenToGroup + 1 == tokenToGroup, 'Error! The two tokens are not one apart.'
+								# we take the last hostname tokens grouped dic out from the newSumDic
+								hostnameGroupDic = newSumDic[lastSumHash][lastHostnameTokens].copy()
+								if (diffIndex, minimumTokenLength) in hostnameGroupDic and hostnameGroupDic[(diffIndex, minimumTokenLength)][1] + 1 == tokenToGroup:
+									# if the token is already grouped, we just update the end token
+									hostnameGroupDic[(diffIndex, minimumTokenLength)][1] = tokenToGroup
+								elif (diffIndex, tokenLength) in hostnameGroupDic and hostnameGroupDic[(diffIndex, tokenLength)][1] + 1 == tokenToGroup:
+									# alternatively, there is already an exact length padded token grouped
+									hostnameGroupDic[(diffIndex, tokenLength)][1] = tokenToGroup
+								elif sumDic[lastSumHash][lastHostnameTokens] == newSumDic[lastSumHash][lastHostnameTokens]:
+									# only when there are no new groups added to this token group this iter, we can add the new group
+									hostnameGroupDic[(diffIndex, minimumTokenLength)] = [lastTokenToGroup, tokenToGroup]
+								else:
+									# skip grouping if there are new groups added to this token group this iter
+									continue
+								# move the grouped dic under the new hostname / sum hash
+								del newSumDic[lastSumHash][lastHostnameTokens]
+								del sumDic[lastSumHash][lastHostnameTokens]
+								if not newSumDic[lastSumHash]:
+									del newSumDic[lastSumHash]
+								newSumDic.setdefault(sumHash, {})[hostnameTokens] = hostnameGroupDic
+								# we add the new group to the newSumDic
+								added = True
+								break
 				if not added:
 					# if the two hostnames are not able to group, we just add the last group to the newSumDic
 					newSumDic.setdefault(sumHash, {})[hostnameTokens] = sumDic[sumHash][hostnameTokens].copy()
@@ -546,6 +757,7 @@ def filterSumDic(sumDic):
 		lastSumHash = sumHash
 	return newSumDic
 
+@cache_decorator
 def compact_hostnames(Hostnames):
 	"""
 	Compact a list of hostnames.
@@ -571,12 +783,12 @@ def compact_hostnames(Hostnames):
 		>>> compact_hostnames(['sub-s1', 'sub-s2'])
 		['sub-s[1-2]']
 	"""
-	sumDic = generateSumDic(Hostnames)
-	filteredSumDic = filterSumDic(sumDic)
+	sumDic = __generateSumDic(Hostnames)
+	filteredSumDic = __filterSumDic(sumDic)
 	lastFilteredSumDicLen = len(filteredSumDic) + 1
 	while lastFilteredSumDicLen > len(filteredSumDic):
 		lastFilteredSumDicLen = len(filteredSumDic)
-		filteredSumDic = filterSumDic(filteredSumDic)
+		filteredSumDic = __filterSumDic(filteredSumDic)
 	rtnSet = set()
 	for sumHash in filteredSumDic:
 		for hostnameTokens in filteredSumDic[sumHash]:
@@ -589,11 +801,44 @@ def compact_hostnames(Hostnames):
 				else:
 					hostnameList[tokenIndex] = f'[{startToken}-{endToken}]'
 			rtnSet.add(''.join(hostnameList))
-	return rtnSet
+	return frozenset(rtnSet)
 
-#%%
+# ------------ Expanding Hostnames ----------------
 @cache_decorator
-def expandIPv4Address(hosts):
+def __validate_expand_hostname(hostname):
+	'''
+	Validate the hostname and expand it if it is a range of IP addresses
+
+	Args:
+		hostname (str): The hostname to be validated and expanded
+
+	Returns:
+		list: A list of valid hostnames
+	'''
+	global _no_env
+	# maybe it is just defined in ./target_files/hosts.sh and exported to the environment
+	# we will try to get the valid host name from the environment
+	hostname = hostname.strip().strip('$')
+	if getIP(hostname,local=True):
+		return [hostname]
+	elif not _no_env and hostname in os.environ:
+		# we will expand these hostnames again
+		return expand_hostnames(frozenset(os.environ[hostname].split(',')))
+	elif hostname in readEnvFromFile():
+		# we will expand these hostnames again
+		return expand_hostnames(frozenset(readEnvFromFile()[hostname].split(',')))
+	elif getIP(hostname,local=False):
+		return [hostname]
+	else:
+		eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
+		global __mainReturnCode
+		__mainReturnCode += 1
+		global __failedHosts
+		__failedHosts.add(hostname)
+		return []
+
+@cache_decorator
+def __expandIPv4Address(hosts):
 	'''
 	Expand the IP address range in the hosts list
 
@@ -606,7 +851,7 @@ def expandIPv4Address(hosts):
 	expandedHosts = []
 	expandedHost = []
 	for host in hosts:
-		host = host.replace('[','').replace(']','')
+		host = host.replace('[','').replace(']','').strip()
 		octets = host.split('.')
 		expandedOctets = []
 		for octet in octets:
@@ -637,162 +882,8 @@ def expandIPv4Address(hosts):
 	expandedHosts.extend(expandedHost)
 	return expandedHosts
 
-@cache_decorator
-def getIP(hostname,local=False):
-	'''
-	Get the IP address of the hostname
-
-	Args:
-		hostname (str): The hostname
-
-	Returns:
-		str: The IP address of the hostname
-	'''
-	global _etc_hosts
-	if '@' in hostname:
-		_, hostname = hostname.rsplit('@',1)
-	# First we check if the hostname is an IP address
-	try:
-		ipaddress.ip_address(hostname)
-		return hostname
-	except ValueError:
-		pass
-	# Then we check /etc/hosts
-	if not _etc_hosts and os.path.exists('/etc/hosts'):
-		with open('/etc/hosts','r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
-					continue
-				#ip, host = line.split()[:2]
-				chunks = line.split()
-				if len(chunks) < 2:
-					continue
-				ip = chunks[0]
-				for host in chunks[1:]:
-					_etc_hosts[host] = ip
-	if hostname in _etc_hosts:
-		return _etc_hosts[hostname]
-	if local:
-		return None
-	# Then we check the DNS
-	try:
-		return socket.gethostbyname(hostname)
-	except:
-		return None
-	
-@cache_decorator
-def readEnvFromFile(environemnt_file = ''):
-	'''
-	Read the environment variables from env_file
-	Returns:
-		dict: A dictionary of environment variables
-	'''
-	global env
-	try:
-		if env:
-			return env
-	except:
-		env = {}
-	global _env_file
-	if environemnt_file:
-		envf = environemnt_file
-	else:
-		envf = _env_file if _env_file else DEFAULT_ENV_FILE
-	if os.path.exists(envf):
-		with open(envf,'r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
-					continue
-				key, value = line.replace('export ', '', 1).strip().split('=', 1)
-				key = key.strip().strip('"').strip("'")
-				value = value.strip().strip('"').strip("'")
-				# avoid infinite recursion
-				if key != value:
-					env[key] = value.strip('"').strip("'")
-	return env
-
 @cache_decorator 
-def old_expand_hostname(text,validate=True):
-	'''
-	Expand the hostname range in the text.
-	Will search the string for a range ( [] encloused and non enclosed number ranges).
-	Will expand the range, validate them using validate_expand_hostname and return a list of expanded hostnames
-
-	Args:
-		text (str): The text to be expanded
-		validate (bool, optional): Whether to validate the hostname. Defaults to True.
-
-	Returns:
-		set: A set of expanded hostnames
-	'''
-	expandinghosts = [text]
-	expandedhosts = set()
-	# all valid alphanumeric characters
-	alphanumeric = string.digits + string.ascii_letters
-	while len(expandinghosts) > 0:
-		hostname = expandinghosts.pop()
-		match = re.search(r'\[(.*?-.*?)\]', hostname)
-		if not match:
-			expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
-			continue
-		try:
-			range_start, range_end = match.group(1).split('-')
-		except ValueError:
-			expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
-			continue
-		range_start = range_start.strip()
-		range_end = range_end.strip()
-		if not range_end:
-			if range_start.isdigit():
-				range_end = '9'
-			elif range_start.isalpha() and range_start.islower():
-				range_end = 'z'
-			elif range_start.isalpha() and range_start.isupper():
-				range_end = 'Z'
-			else:
-				expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
-				continue
-		if not range_start:
-			if range_end.isdigit():
-				range_start = '0'
-			elif range_end.isalpha() and range_end.islower():
-				range_start = 'a'
-			elif range_end.isalpha() and range_end.isupper():
-				range_start = 'A'
-			else:
-				expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
-				continue
-		if range_start.isdigit() and range_end.isdigit():
-			padding_length = min(len(range_start), len(range_end))
-			format_str = "{:0" + str(padding_length) + "d}"
-			for i in range(int(range_start), int(range_end) + 1):
-				formatted_i = format_str.format(i)
-				if '[' in hostname:
-					expandinghosts.append(hostname.replace(match.group(0), formatted_i, 1))
-				else:
-					expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), formatted_i, 1)) if validate else [hostname])
-		else:
-			if all(c in string.hexdigits for c in range_start + range_end):
-				for i in range(int(range_start, 16), int(range_end, 16)+1):
-					if '[' in hostname:
-						expandinghosts.append(hostname.replace(match.group(0), format(i, 'x'), 1))
-					else:
-						expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), format(i, 'x'), 1)) if validate else [hostname])
-			else:
-				try:
-					start_index = alphanumeric.index(range_start)
-					end_index = alphanumeric.index(range_end)
-					for i in range(start_index, end_index + 1):
-						if '[' in hostname:
-							expandinghosts.append(hostname.replace(match.group(0), alphanumeric[i], 1))
-						else:
-							expandedhosts.update(validate_expand_hostname(hostname.replace(match.group(0), alphanumeric[i], 1)) if validate else [hostname])
-				except ValueError:
-					expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
-	return expandedhosts
-
-@cache_decorator 
-def expand_hostname(text, validate=True):
+def __expand_hostname(text, validate=True):# -> set:
 	'''
 	Expand the hostname range in the text.
 	Will search the string for a range ( [] enclosed and non-enclosed number ranges).
@@ -813,7 +904,7 @@ def expand_hostname(text, validate=True):
 		hostname = expandinghosts.pop()
 		match = re.search(r'\[(.*?)]', hostname)
 		if not match:
-			expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
+			expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
 			continue
 		group = match.group(1)
 		parts = group.split(',')
@@ -823,7 +914,7 @@ def expand_hostname(text, validate=True):
 				try:
 					range_start,_, range_end = part.partition('-')
 				except ValueError:
-					expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
+					expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
 					continue
 				range_start = range_start.strip()
 				range_end = range_end.strip()
@@ -843,24 +934,23 @@ def expand_hostname(text, validate=True):
 						for i in range(start_index, end_index + 1):
 							expandinghosts.append(hostname.replace(match.group(0), alphanumeric[i], 1))
 					except ValueError:
-						expandedhosts.update(validate_expand_hostname(hostname) if validate else [hostname])
+						expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
 			else:
 				expandinghosts.append(hostname.replace(match.group(0), part, 1))
 	return expandedhosts
 
-
 @cache_decorator
-def expand_hostnames(hosts):
+def expand_hostnames(hosts) -> dict:
 	'''
-	Expand the hostnames in the hosts list
+	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
 
 	Returns:
-		list: A list of expanded hostnames
+		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
 	'''
-	expandedhosts = []
+	expandedhosts = {}
 	if isinstance(hosts, str):
 		hosts = [hosts]
 	for host in hosts:
@@ -870,84 +960,32 @@ def expand_hostnames(hosts):
 		# we seperate the username from the hostname
 		username = None
 		if '@' in host:
-			username, host = host.split('@',1)
+			username, host = host.split('@',1).strip()
 		# first we check if the hostname is an range of IP addresses
 		# This is done by checking if the hostname follows four fields of 
 		# "(((\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?)|(\[(\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?\]))" 
 		# seperated by .
 		# If so, we expand the IP address range
+		iplist = []
 		if re.match(r'^((((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])}|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?)(-((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?))?)|(\[((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?)(-((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?))?\]))){2}(\.(((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])}|x|\*|\?))?\]))$', host):
-			hostSetToAdd = sorted(expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
+			hostSetToAdd = sorted(__expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
+			iplist = hostSetToAdd
 		else:
-			hostSetToAdd = sorted(expand_hostname(host))
+			hostSetToAdd = sorted(__expand_hostname(host))
+			for host in hostSetToAdd:
+				iplist.append(getIP(host,local=False))
 		if username:
 			# we expand the username
-			username = sorted(expand_hostname(username,validate=False))
+			username = sorted(__expand_hostname(username,validate=False))
 			# we combine the username and hostname
-			hostSetToAdd = [u+'@'+h for u,h in product(username,hostSetToAdd)]
-		expandedhosts.extend(hostSetToAdd)
+			for user in username:
+				[expandedhosts.update({f'{user}@{host}':ip}) for host,ip in zip(hostSetToAdd,iplist)]
+		else:
+			[expandedhosts.update({host:ip}) for host,ip in zip(hostSetToAdd,iplist)]
 	return expandedhosts
 
-@cache_decorator
-def validate_expand_hostname(hostname):
-	'''
-	Validate the hostname and expand it if it is a range of IP addresses
-
-	Args:
-		hostname (str): The hostname to be validated and expanded
-
-	Returns:
-		list: A list of valid hostnames
-	'''
-	global _no_env
-	# maybe it is just defined in ./target_files/hosts.sh and exported to the environment
-	# we will try to get the valid host name from the environment
-	hostname = hostname.strip('$')
-	if getIP(hostname,local=True):
-		return [hostname]
-	elif not _no_env and hostname in os.environ:
-		# we will expand these hostnames again
-		return expand_hostnames(frozenset(os.environ[hostname].split(',')))
-	elif hostname in readEnvFromFile():
-		# we will expand these hostnames again
-		return expand_hostnames(frozenset(readEnvFromFile()[hostname].split(',')))
-	elif getIP(hostname,local=False):
-		return [hostname]
-	else:
-		eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
-		global __mainReturnCode
-		__mainReturnCode += 1
-		global __failedHosts
-		__failedHosts.add(hostname)
-		return []
-
-def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
-	"""
-	Read an input from the user with a timeout and a countdown.
-
-	Parameters:
-	timeout (int): The timeout value in seconds.
-	prompt (str): The prompt message to display to the user. Default is 'Please enter your selection'.
-
-	Returns:
-	str or None: The user input if received within the timeout, or None if no input is received.
-	"""
-	import select
-	# Print the initial prompt with the countdown
-	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
-	# Loop until the timeout
-	for remaining in range(timeout, 0, -1):
-		# If there is an input, return it
-		if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-			return input().strip()
-		# Print the remaining time
-		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
-		# Wait a second
-		time.sleep(1)
-	# If there is no input, return None
-	return None
-
-def handle_reading_stream(stream,target, host):
+# ------------ Run Command Block ----------------
+def __handle_reading_stream(stream,target, host):
 	'''
 	Read the stream and append the lines to the target list
 
@@ -987,7 +1025,7 @@ def handle_reading_stream(stream,target, host):
 	if current_line:
 		add_line(current_line,target, host, keepLastLine=lastLineCommited)
 
-def handle_writing_stream(stream,stop_event,host):
+def __handle_writing_stream(stream,stop_event,host):
 	'''
 	Write the key presses to the stream
 
@@ -1025,34 +1063,6 @@ def handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInput
 	
-def replace_magic_strings(string,keys,value,case_sensitive=False):
-	'''
-	Replace the magic strings in the host object
-
-	Args:
-		string (str): The string to replace the magic strings
-		keys (list): Search for keys to replace
-		value (str): The value to replace the key
-		case_sensitive (bool, optional): Whether to search for the keys in a case sensitive way. Defaults to False.
-
-	Returns:
-		str: The string with the magic strings replaced
-	'''
-	# verify magic strings have # at the beginning and end
-	newKeys = []
-	for key in keys:
-		if key.startswith('#') and key.endswith('#'):
-			newKeys.append(key)
-		else:
-			newKeys.append('#'+key.strip('#')+'#')
-	# replace the magic strings
-	for key in newKeys:
-		if case_sensitive:
-			string = string.replace(key,value)
-		else:
-			string = re.sub(re.escape(key),value,string,flags=re.IGNORECASE)
-	return string
-
 def run_command(host, sem, timeout=60,passwds=None):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
@@ -1104,7 +1114,7 @@ def run_command(host, sem, timeout=60,passwds=None):
 			host.interface_ip_prefix = __ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
 		if host.interface_ip_prefix:
 			try:
-				hostOctets = getIP(host.address,local=False).split('.')
+				hostOctets = host.ip.split('.')
 				prefixOctets = host.interface_ip_prefix.split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
 				host.resolvedName = host.username + '@' if host.username else ''
@@ -1232,15 +1242,15 @@ def run_command(host, sem, timeout=60,passwds=None):
 			#host.stdout = []
 			proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
 			# create a thread to handle stdout
-			stdout_thread = threading.Thread(target=handle_reading_stream, args=(proc.stdout,host.stdout, host), daemon=True)
+			stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host), daemon=True)
 			stdout_thread.start()
 			# create a thread to handle stderr
 			#host.stderr = []
-			stderr_thread = threading.Thread(target=handle_reading_stream, args=(proc.stderr,host.stderr, host), daemon=True)
+			stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host), daemon=True)
 			stderr_thread.start()
 			# create a thread to handle stdin
 			stdin_stop_event = threading.Event()
-			stdin_thread = threading.Thread(target=handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
+			stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
 			stdin_thread.start()
 			# Monitor the subprocess and terminate it after the timeout
 			host.lastUpdateTime = time.time()
@@ -1291,9 +1301,9 @@ def run_command(host, sem, timeout=60,passwds=None):
 				except subprocess.TimeoutExpired:
 					pass
 				if stdout:
-					handle_reading_stream(io.BytesIO(stdout),host.stdout, host)
+					__handle_reading_stream(io.BytesIO(stdout),host.stdout, host)
 				if stderr:
-					handle_reading_stream(io.BytesIO(stderr),host.stderr, host)
+					__handle_reading_stream(io.BytesIO(stderr),host.stderr, host)
 				# if the last line in host.stderr is Connection to * closed., we will remove it
 			host.returncode = proc.poll()
 			if not host.returncode:
@@ -1333,6 +1343,7 @@ def run_command(host, sem, timeout=60,passwds=None):
 		host.scp = True
 		run_command(host,sem,timeout,passwds)
 
+# ------------ Start Threading Block ----------------
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
@@ -1354,7 +1365,8 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cp
 		thread.start()
 	return threads
 
-def get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
+# ------------ Display Block ----------------
+def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	'''
 	Generate a list for the hosts to be displayed on the screen. This is used to display as much relevant information as possible.
 
@@ -1386,7 +1398,7 @@ def get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 			host.printedLines = 0
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
 
-def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason= 'New Configuration'):
+def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason= 'New Configuration'):
 	try:
 		org_dim = stdscr.getmaxyx()
 		new_configured = True
@@ -1413,7 +1425,7 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 		max_num_hosts = max_num_hosts_x * max_num_hosts_y
 		if max_num_hosts < 1:
 			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal too small to display any hosts')
-		hosts_to_display , host_stats = get_hosts_to_display(hosts, max_num_hosts)
+		hosts_to_display , host_stats = _get_hosts_to_display(hosts, max_num_hosts)
 		if len(hosts_to_display) == 0:
 			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'No hosts to display')
 		# Now we calculate the actual number of hosts we will display for x and y
@@ -1592,7 +1604,7 @@ def generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_c
 			if time.perf_counter() - last_refresh_time < 0.01:
 				time.sleep(max(0,0.01 - time.perf_counter() + last_refresh_time))
 			#stdscr.clear()
-			hosts_to_display, host_stats = get_hosts_to_display(hosts, max_num_hosts,hosts_to_display)
+			hosts_to_display, host_stats = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display)
 			for host_window, host in zip(host_windows, hosts_to_display):
 				# we will only update the window if there is new output or the window is not fully printed
 				if new_configured or host.printedLines < len(host.output):
@@ -1669,7 +1681,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 
 	params = (-1,0 , min_char_len, min_line_len, single_window,'new config')
 	while params:
-		params = generate_display(stdscr, hosts, *params)
+		params = __generate_display(stdscr, hosts, *params)
 		if not params:
 			break
 		if not any([host.returncode is None for host in hosts]):
@@ -1692,7 +1704,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		time.sleep(0.01)
 		#time.sleep(0.25)
 
-
+# ------------ Generate Output Block ----------------
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	'''
 	Print / generate the output of the hosts to the terminal
@@ -1713,29 +1725,18 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		#print(json.dumps([dict(host) for host in hosts],indent=4))
 		rtnStr = json.dumps(hosts,indent=4)
 	elif greppable:
-		outputs = {}
-		# transform hosts to dictionaries
-		for host in hosts:
-			hostPrintOut = f" | cmd: {host['command']} | stdout: "+'↵ '.join(host['stdout'])
-			if host['stderr']:
-				if host['stderr'][0].strip().startswith('ssh: connect to host '):
-					host['stderr'][0] = 'SSH not reachable!'
-				elif host['stderr'][-1].strip().endswith('Connection timed out'):
-					host['stderr'][-1] = 'SSH connection timed out!'
-				elif host['stderr'][-1].strip().endswith('No route to host'):
-					host['stderr'][-1] = 'Cannot find host!'
-				hostPrintOut += " | stderr: "+'↵ '.join(host['stderr'])
-			hostPrintOut += f" | return_code: {host['returncode']}"
-			outputs.setdefault(hostPrintOut, set()).add(host['name'])
+		# transform hosts to a 2d list
 		rtnStr = '*'*80+'\n'
-		for output, hostSet in outputs.items():
-			compact_hosts = compact_hostnames(hostSet)
-			if expand_hostnames(frozenset(compact_hosts)) != expand_hostnames(frozenset(hostSet)):
-				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
-				rtnStr += f"{','.join(hostSet)}{output}\n"
-			else:
-				rtnStr += f"{','.join(compact_hosts)}{output}\n"
-			rtnStr += '*'*80+'\n'
+		rtnList = [['host_name','return_code','output_type','output']]
+		for host in hosts:
+			#header = f"{host['name']} | rc: {host['returncode']} | "
+			for line in host['stdout']:
+				rtnList.append([host['name'],f"rc: {host['returncode']}",'stdout',line])
+			for line in host['stderr']:
+				rtnList.append([host['name'],f"rc: {host['returncode']}",'stderr',line])
+			rtnList.append(['','','',''])
+		rtnStr += pretty_format_table(rtnList)
+		rtnStr += '*'*80+'\n'
 		if __keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
@@ -1760,8 +1761,9 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 			outputs.setdefault(hostPrintOut, set()).add(host['name'])
 		rtnStr = ''
 		for output, hostSet in outputs.items():
+			hostSet = frozenset(hostSet)
 			compact_hosts = compact_hostnames(hostSet)
-			if expand_hostnames(frozenset(compact_hosts)) != expand_hostnames(frozenset(hostSet)):
+			if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 				compact_hosts = hostSet
 			if __global_suppress_printout:
@@ -1769,7 +1771,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 				rtnStr += output+'\n'
 			else:
 				rtnStr += '*'*80+'\n'
-				rtnStr += f'These hosts: {",".join(compact_hosts)} have a response of:\n'
+				rtnStr += f'These hosts: "{",".join(sorted(compact_hosts))}" have a response of:\n'
 				rtnStr += output+'\n'
 		if not __global_suppress_printout or outputs:
 			rtnStr += '*'*80+'\n'
@@ -1787,28 +1789,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		print(rtnStr)
 	return rtnStr
 
-def signal_handler(sig, frame):
-	'''
-	Handle the Ctrl C signal
-
-	Args:
-		sig (int): The signal
-		frame (frame): The frame
-
-	Returns:
-		None
-	'''
-	global _emo
-	if not _emo:
-		eprint('Ctrl C caught, exiting...')
-		_emo = True
-	else:
-		eprint('Ctrl C caught again, exiting immediately!')
-		# wait for 0.1 seconds to allow the threads to exit
-		time.sleep(0.1)
-		os.system(f'pkill -ef {os.path.basename(__file__)}')
-		sys.exit(0)
-
+# ------------ Run / Process Hosts Block ----------------
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
 	global __globalUnavailableHosts
 	global _no_env
@@ -1867,6 +1848,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	if not called:
 		print_output(hosts,json,greppable=greppable)
 
+# ------------ Stringfy Block ----------------
 @cache_decorator
 def formHostStr(host) -> str:
 	"""
@@ -1889,7 +1871,6 @@ def formHostStr(host) -> str:
 		host.add('localhost')
 	host = ','.join(host)
 	return host
-
 
 @cache_decorator
 def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
@@ -1946,6 +1927,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	return f'multissh {argsStr} {hostStr} {commandStr}'
 
+# ------------ Main Block ----------------
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
@@ -2081,18 +2063,19 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if '@' not in host:
 					skipHostStr[i] = userStr + host
 			skipHostStr = ','.join(skipHostStr)
-	targetHostsList = expand_hostnames(frozenset(hostStr.split(',')))
+	targetHostDic = expand_hostnames(frozenset(hostStr.split(',')))
 	if __DEBUG_MODE:
-		eprint(f"Target hosts: {targetHostsList!r}")
-	skipHostsList = expand_hostnames(frozenset(skipHostStr.split(',')))
-	if skipHostsList:
-		eprint(f"Skipping hosts: {skipHostsList!r}")
+		eprint(f"Target hosts: {targetHostDic!r}")
+	skipHostsDic = expand_hostnames(frozenset(skipHostStr.split(',')))
+	if skipHostsDic:
+		eprint(f"Skipping hosts: {skipHostsDic!r}")
+	skipHostSet = set(skipHostsDic).union(skipHostsDic.values())
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
 			hosts = []
-			for host in targetHostsList:
-				if host.strip() in skipHostsList: continue
+			for host in targetHostDic:
+				if host in skipHostSet or targetHostDic[host] in skipHostSet: continue
 				command = f"{_binPaths['ssh-copy-id']} "
 				if identity_file:
 					command = f"{command}-i {identity_file} "
@@ -2101,7 +2084,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				command = f"{command}{host}"
 				if password and 'sshpass' in _binPaths:
 					command = f"{_binPaths['sshpass']} -p {password} {command}"
-					hosts.append(Host(host, command,identity_file=identity_file,bash=True))
+					hosts.append(Host(host, command,identity_file=identity_file,bash=True,ip = targetHostDic[host]))
 				else:
 					eprint(f"> {command}")
 					os.system(command)
@@ -2141,23 +2124,23 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint(f"Files: {files!r}")
 	if oneonone:
 		hosts = []
-		if len(commands) != len(set(targetHostsList) - set(skipHostsList)):
+		if len(commands) != len(set(targetHostDic) - set(skipHostSet)):
 			eprint("Error: the number of commands must be the same as the number of hosts")
 			eprint(f"Number of commands: {len(commands)}")
-			eprint(f"Number of hosts: {len(set(targetHostsList) - set(skipHostsList))}")
+			eprint(f"Number of hosts: {len(set(targetHostDic) - set(skipHostSet))}")
 			sys.exit(255)
 		if not __global_suppress_printout:
 			eprint('-'*80)
 			eprint("Running in one on one mode")
-		for host, command in zip(targetHostsList, commands):
-			if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
+		for host, command in zip(targetHostDic, commands):
+			if not ipmi and skipUnreachable and host in unavailableHosts:
 				eprint(f"Skipping unavailable host: {host}")
 				continue
-			if host.strip() in skipHostsList: continue
+			if host in skipHostSet or targetHostDic[host] in skipHostSet: continue
 			if file_sync:
-				hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
+				hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host]))
 			else:
-				hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
+				hosts.append(Host(host, command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
 			if not __global_suppress_printout: 
 				eprint(f"Running command: {command!r} on host: {host!r}")
 		if not __global_suppress_printout: eprint('-'*80)
@@ -2168,11 +2151,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if not commands:
 			# run in interactive mode ssh mode
 			hosts = []
-			for host in targetHostsList:
-				if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
+			for host in targetHostDic:
+				if not ipmi and skipUnreachable and host in unavailableHosts:
 					if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
 					continue
-				if host.strip() in skipHostsList: continue
+				if host in skipHostSet or targetHostDic[host] in skipHostSet: continue
 				# TODO: use ip to determine if we skip the host or not, also for unavailable hosts
 				if file_sync:
 					eprint(f"Error: file sync mode need to be specified with at least one path to sync.")
@@ -2180,7 +2163,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				elif files:
 					eprint(f"Error: files need to be specified with at least one path to sync")
 				else:
-					hosts.append(Host(host.strip(), '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file))
+					hosts.append(Host(host, '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host]))
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -2192,15 +2175,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			return hosts
 		for command in commands:
 			hosts = []
-			for host in targetHostsList:
-				if not ipmi and skipUnreachable and host.strip() in unavailableHosts:
+			for host in targetHostDic:
+				if not ipmi and skipUnreachable and host in unavailableHosts:
 					if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
 					continue
-				if host.strip() in skipHostsList: continue
+				if host in skipHostSet or targetHostDic[host] in skipHostSet: continue
 				if file_sync:
-					hosts.append(Host(host.strip(), os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
+					hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
 				else:
-					hosts.append(Host(host.strip(), command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file))
+					hosts.append(Host(host, command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -2209,7 +2192,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			allHosts += hosts
 		return allHosts
 
-def get_default_config(args):
+# ------------ Default Config Functions ----------------
+def generate_default_config(args):
 	'''
 	Get the default config
 
@@ -2260,33 +2244,13 @@ def get_default_config(args):
 def write_default_config(args,CONFIG_FILE,backup = True):
 	if backup and os.path.exists(CONFIG_FILE):
 		os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
-	default_config = get_default_config(args)
+	default_config = generate_default_config(args)
 	# apply the updated defualt_config to __configs_from_file and write that to file
 	__configs_from_file.update(default_config)
 	with open(CONFIG_FILE,'w') as f:
 		json.dump(__configs_from_file,f,indent=4)
 
-def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
-	'''
-	Find the ssh public key file
-
-	Args:
-		searchPath (str, optional): The path to search. Defaults to DEDAULT_SSH_KEY_SEARCH_PATH.
-
-	Returns:
-		str: The path to the ssh key file
-	'''
-	if searchPath:
-		sshKeyPath = searchPath
-	else:
-		sshKeyPath ='~/.ssh'
-	possibleSshKeyFiles = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
-	for sshKeyFile in possibleSshKeyFiles:
-		if os.path.exists(os.path.expanduser(os.path.join(sshKeyPath,sshKeyFile))):
-			return os.path.join(sshKeyPath,sshKeyFile)
-	return None
-
-
+# ------------ Wrapper Block ----------------
 def main():
 	global _emo
 	global __global_suppress_printout
@@ -2331,7 +2295,7 @@ def main():
 	parser.add_argument("-m","--max_connections", type=int, help=f"Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument("--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as wells. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
-	parser.add_argument("-g","--greppable", action='store_true', help=f"Output in greppable format. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
+	parser.add_argument("-g","--greppable",'--table', action='store_true', help=f"Output in greppable format. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
 	group = parser.add_mutually_exclusive_group()
 	group.add_argument("-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
 	group.add_argument("-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
@@ -2350,7 +2314,7 @@ def main():
 	try:
 		args = parser.parse_intermixed_args()
 	except Exception as e:
-		eprint(f"Error while parsing arguments: {e!r}")
+		#eprint(f"Error while parsing arguments: {e!r}")
 		# try to parse the arguments using parse_known_args
 		args, unknown = parser.parse_known_args()
 		# if there are unknown arguments, we will try to parse them again using parse_args
@@ -2444,7 +2408,7 @@ def main():
 							 copy_id=args.copy_id)
 		#print('*'*80)
 
-		if not __global_suppress_printout: eprint('-'*80)
+		#if not __global_suppress_printout: eprint('-'*80)
 	
 	succeededHosts = set()
 	for host in hosts:
@@ -2477,6 +2441,3 @@ def main():
 
 if __name__ == "__main__":
 	main()
-
-# %%
-
