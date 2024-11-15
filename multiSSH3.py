@@ -36,7 +36,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.24'
+version = '5.25'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -960,7 +960,9 @@ def expand_hostnames(hosts) -> dict:
 		# we seperate the username from the hostname
 		username = None
 		if '@' in host:
-			username, host = host.split('@',1).strip()
+			username, host = host.split('@',1)
+			username = username.strip()
+			host = host.strip()
 		# first we check if the hostname is an range of IP addresses
 		# This is done by checking if the hostname follows four fields of 
 		# "(((\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?)|(\[(\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?\]))" 
