@@ -80,7 +80,7 @@ An example .ssh/config:
 Host *
   StrictHostKeyChecking no
   ControlMaster auto
-  ControlPath /run/ssh_sockets_%r@%h-%p
+  ControlPath /tmp/%u_ssh_sockets_%r@%h-%p
   ControlPersist 3600
 ```
 
@@ -108,10 +108,10 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 Use ```mssh --help``` for more info.
 
 ```bash
-usage: mssh [-h] [-u USERNAME] [-p PASSWORD] [-ea EXTRAARGS] [-11] [-f FILE] [-fs] [--scp] [-gm] [-t TIMEOUT] [-r REPEAT] [-i INTERVAL]
-            [--ipmi] [-mpre IPMI_INTERFACE_IP_PREFIX] [-pre INTERFACE_IP_PREFIX] [-q] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-sw] [-eo]
-            [-no] [--no_env] [--env_file ENV_FILE] [-m MAX_CONNECTIONS] [-j] [--success_hosts] [-g] [-su] [-sh SKIP_HOSTS]
-            [--store_config_file] [--debug] [--copy-id] [-V]
+usage: mssh [-h] [-u USERNAME] [-p PASSWORD] [-k [KEY]] [-uk] [-ea EXTRAARGS] [-11] [-f FILE] [-fs] [--scp] [-gm] [-t TIMEOUT] [-r REPEAT]
+            [-i INTERVAL] [--ipmi] [-mpre IPMI_INTERFACE_IP_PREFIX] [-pre INTERFACE_IP_PREFIX] [-q] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT]
+            [-sw] [-eo] [-no] [--no_env] [--env_file ENV_FILE] [-m MAX_CONNECTIONS] [-j] [--success_hosts] [-g] [-su | -nsu]
+            [-sh SKIP_HOSTS] [--store_config_file] [--debug] [-ci] [-V]
             [hosts] [commands ...]
 
 Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file: /etc/multiSSH3.config.json
@@ -128,6 +128,10 @@ options:
                         (default: None)
   -p PASSWORD, --password PASSWORD
                         The password to use to connect to the hosts, (default: )
+  -k [KEY], --key [KEY], --identity [KEY]
+                        The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a
+                        key. Use option without value to use ~/.ssh/ (default: None)
+  -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
   -ea EXTRAARGS, --extraargs EXTRAARGS
                         Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex.
                         -ea="--delete" (default: None)
@@ -165,16 +169,20 @@ options:
                         Max number of connections to use (default: 4 * cpu_count)
   -j, --json            Output in json format. (default: False)
   --success_hosts       Output the hosts that succeeded in summary as wells. (default: False)
-  -g, --greppable       Output in greppable format. (default: False)
+  -g, --greppable, --table
+                        Output in greppable format. (default: False)
   -su, --skip_unreachable
-                        Skip unreachable hosts while using --repeat. Note: Timedout Hosts are considered unreachable. Note: multiple
-                        command sequence will still auto skip unreachable hosts. (default: False)
+                        Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will
+                        still auto skip unreachable hosts. (default: False)
+  -nsu, --no_skip_unreachable
+                        Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence
+                        will still auto skip unreachable hosts. (default: True)
   -sh SKIP_HOSTS, --skip_hosts SKIP_HOSTS
                         Skip the hosts in the list. (default: None)
   --store_config_file   Store / generate the default config file from command line argument and current config at
                         /etc/multiSSH3.config.json
   --debug               Print debug information
-  --copy-id             Copy the ssh id to the hosts
+  -ci, --copy_id        Copy the ssh id to the hosts
   -V, --version         show program's version number and exit
 ```
 
