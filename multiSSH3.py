@@ -36,7 +36,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.25'
+version = '5.27'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -758,7 +758,7 @@ def __filterSumDic(sumDic):
 	return newSumDic
 
 @cache_decorator
-def compact_hostnames(Hostnames):
+def __compact_hostnames(Hostnames):
 	"""
 	Compact a list of hostnames.
 	Compact numeric numbers into ranges.
@@ -803,6 +803,43 @@ def compact_hostnames(Hostnames):
 			rtnSet.add(''.join(hostnameList))
 	return frozenset(rtnSet)
 
+def compact_hostnames(Hostnames):
+	"""
+	Compact a list of hostnames.
+	Compact numeric numbers into ranges.
+
+	Args:
+		Hostnames (list): A list of hostnames.
+
+	Returns:
+		list: A list of comapcted hostname list.
+
+	Example:
+		>>> compact_hostnames(['server15', 'server16', 'server17'])
+		['server[15-17]']
+		>>> compact_hostnames(['server-1', 'server-2', 'server-3'])
+		['server-[1-3]']
+		>>> compact_hostnames(['server-1-2', 'server-1-1', 'server-2-1', 'server-2-2'])
+		['server-[1-2]-[1-2]']
+		>>> compact_hostnames(['server-1-2', 'server-1-1', 'server-2-2'])
+		['server-1-[1-2]', 'server-2-2']
+		>>> compact_hostnames(['test1-a', 'test2-a'])
+		['test[1-2]-a']
+		>>> compact_hostnames(['sub-s1', 'sub-s2'])
+		['sub-s[1-2]']
+	"""
+	global __global_suppress_printout
+	if not isinstance(Hostnames, frozenset):
+		hostSet = frozenset(Hostnames)
+	else:
+		hostSet = Hostnames
+	compact_hosts = __compact_hostnames(hostSet)
+	if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
+		if not __global_suppress_printout:
+			eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
+		compact_hosts = hostSet
+	return compact_hosts
+
 # ------------ Expanding Hostnames ----------------
 @cache_decorator
 def __validate_expand_hostname(hostname):
@@ -823,10 +860,10 @@ def __validate_expand_hostname(hostname):
 		return [hostname]
 	elif not _no_env and hostname in os.environ:
 		# we will expand these hostnames again
-		return expand_hostnames(frozenset(os.environ[hostname].split(',')))
+		return expand_hostnames(os.environ[hostname].split(','))
 	elif hostname in readEnvFromFile():
 		# we will expand these hostnames again
-		return expand_hostnames(frozenset(readEnvFromFile()[hostname].split(',')))
+		return expand_hostnames(readEnvFromFile()[hostname].split(','))
 	elif getIP(hostname,local=False):
 		return [hostname]
 	else:
@@ -940,7 +977,7 @@ def __expand_hostname(text, validate=True):# -> set:
 	return expandedhosts
 
 @cache_decorator
-def expand_hostnames(hosts) -> dict:
+def __expand_hostnames(hosts) -> dict:
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
@@ -951,8 +988,6 @@ def expand_hostnames(hosts) -> dict:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
 	'''
 	expandedhosts = {}
-	if isinstance(hosts, str):
-		hosts = [hosts]
 	for host in hosts:
 		host = host.strip()
 		if not host:
@@ -960,6 +995,9 @@ def expand_hostnames(hosts) -> dict:
 		# we seperate the username from the hostname
 		username = None
 		if '@' in host:
+			username, host = host.split('@',1)
+			username = username.strip()
+			host = host.strip()
 			username, host = host.split('@',1)
 			username = username.strip()
 			host = host.strip()
@@ -985,6 +1023,24 @@ def expand_hostnames(hosts) -> dict:
 		else:
 			[expandedhosts.update({host:ip}) for host,ip in zip(hostSetToAdd,iplist)]
 	return expandedhosts
+
+def expand_hostnames(hosts):
+	'''
+	Expand the hostnames in the hosts into a dictionary
+
+	Args:
+		hosts (list): A list of hostnames
+
+	Returns:
+		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
+	'''
+	if isinstance(hosts, str):
+		hosts = [hosts]
+	# change data type to frozenset if it is not hashable
+	if not isinstance(hosts, frozenset):
+		hosts = frozenset(hosts)
+	return __expand_hostnames(hosts)
+
 
 # ------------ Run Command Block ----------------
 def __handle_reading_stream(stream,target, host):
@@ -1763,17 +1819,13 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 			outputs.setdefault(hostPrintOut, set()).add(host['name'])
 		rtnStr = ''
 		for output, hostSet in outputs.items():
-			hostSet = frozenset(hostSet)
-			compact_hosts = compact_hostnames(hostSet)
-			if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
-				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
-				compact_hosts = hostSet
+			compact_hosts = sorted(compact_hostnames(hostSet))
 			if __global_suppress_printout:
 				rtnStr += f'Abnormal returncode produced by {",".join(compact_hosts)}:\n'
 				rtnStr += output+'\n'
 			else:
 				rtnStr += '*'*80+'\n'
-				rtnStr += f'These hosts: "{",".join(sorted(compact_hosts))}" have a response of:\n'
+				rtnStr += f'These hosts: "{",".join(compact_hosts)}" have a response of:\n'
 				rtnStr += output+'\n'
 		if not __global_suppress_printout or outputs:
 			rtnStr += '*'*80+'\n'
@@ -2065,13 +2117,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if '@' not in host:
 					skipHostStr[i] = userStr + host
 			skipHostStr = ','.join(skipHostStr)
-	targetHostDic = expand_hostnames(frozenset(hostStr.split(',')))
+	targetHostDic = expand_hostnames(hostStr.split(','))
 	if __DEBUG_MODE:
 		eprint(f"Target hosts: {targetHostDic!r}")
-	skipHostsDic = expand_hostnames(frozenset(skipHostStr.split(',')))
-	if skipHostsDic:
-		eprint(f"Skipping hosts: {skipHostsDic!r}")
+	skipHostsDic = expand_hostnames(skipHostStr.split(','))
 	skipHostSet = set(skipHostsDic).union(skipHostsDic.values())
+	if skipHostSet:
+		eprint(f"Skipping hosts: \"{' '.join(sorted(compact_hostnames(skipHostSet)))}\"")
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
@@ -2421,18 +2473,15 @@ def main():
 			succeededHosts.add(host.name)
 	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
-	__failedHosts = sorted(__failedHosts)
-	succeededHosts = sorted(succeededHosts)
 	if __mainReturnCode > 0:
-		if not __global_suppress_printout: eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
-		# with open('/tmp/bashcmd.stdin','w') as f:
-		#     f.write(f"export failed_hosts={__failedHosts}\n")
-		if not __global_suppress_printout: eprint(f'failed_hosts: {",".join(__failedHosts)}')
+		if not __global_suppress_printout: 
+			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
+			eprint(f'failed_hosts: {",".join(sorted(compact_hostnames(__failedHosts)))}')
 	else:
 		if not __global_suppress_printout: eprint('Complete. All hosts returned 0.')
 	
 	if args.success_hosts and not __global_suppress_printout:
-		eprint(f'succeeded_hosts: {",".join(succeededHosts)}')
+		eprint(f'succeeded_hosts: {",".join(sorted(compact_hostnames(succeededHosts)))}')
 
 	if threading.active_count() > 1:
 		if not __global_suppress_printout: eprint(f'Remaining active thread: {threading.active_count()}')
