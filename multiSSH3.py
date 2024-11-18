@@ -998,9 +998,6 @@ def __expand_hostnames(hosts) -> dict:
 			username, host = host.split('@',1)
 			username = username.strip()
 			host = host.strip()
-			username, host = host.split('@',1)
-			username = username.strip()
-			host = host.strip()
 		# first we check if the hostname is an range of IP addresses
 		# This is done by checking if the hostname follows four fields of 
 		# "(((\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?)|(\[(\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?\]))" 
