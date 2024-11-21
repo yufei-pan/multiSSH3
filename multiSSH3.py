@@ -36,7 +36,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.27'
+version = '5.28'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -179,12 +179,17 @@ class Host:
 		self.uuid = uuid
 		self.identity_file = identity_file
 		self.ip = ip if ip else getIP(name)
+		self.current_color_pair = [-1, -1, 0]
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
 	def __repr__(self):
 		# return the complete data structure
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), identity_file={self.identity_file}"
+		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, \
+output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, \
+interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, \
+extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), \
+identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.current_color_pair}"
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
 
@@ -341,7 +346,28 @@ if True:
 	__keyPressesIn = [[]]
 	_emo = False
 	_etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_etc_hosts'])
+	__global_color_pairs = {}
+	__current_pair_index = 1  # Start from 1, as 0 is the default color pair
 
+# Mapping of ANSI 4-bit colors to curses colors
+ANSI_TO_CURSES_COLOR = {
+	30: curses.COLOR_BLACK,
+	31: curses.COLOR_RED,
+	32: curses.COLOR_GREEN,
+	33: curses.COLOR_YELLOW,
+	34: curses.COLOR_BLUE,
+	35: curses.COLOR_MAGENTA,
+	36: curses.COLOR_CYAN,
+	37: curses.COLOR_WHITE,
+	90: curses.COLOR_BLACK,   # Bright Black (usually gray)
+	91: curses.COLOR_RED,     # Bright Red
+	92: curses.COLOR_GREEN,   # Bright Green
+	93: curses.COLOR_YELLOW,  # Bright Yellow
+	94: curses.COLOR_BLUE,    # Bright Blue
+	95: curses.COLOR_MAGENTA, # Bright Magenta
+	96: curses.COLOR_CYAN,    # Bright Cyan
+	97: curses.COLOR_WHITE    # Bright White
+}
 # ------------ Exportable Help Functions ----------------
 # check if command sshpass is available
 _binPaths = {}
@@ -1421,6 +1447,156 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cp
 	return threads
 
 # ------------ Display Block ----------------
+def __approximate_color_8bit(color):
+	"""
+	Approximate an 8-bit color (0-255) to the nearest curses color.
+
+	Args:
+		color: 8-bit color code
+
+	Returns:
+		Curses color code
+	"""
+	if color < 8:  # Standard and bright colors
+		return ANSI_TO_CURSES_COLOR.get(color % 8 + 30, curses.COLOR_WHITE)
+	elif 8 <= color < 16:  # Bright colors
+		return ANSI_TO_CURSES_COLOR.get(color % 8 + 90, curses.COLOR_WHITE)
+	elif 16 <= color <= 231:  # Color cube
+		# Convert 216-color cube index to RGB
+		color -= 16
+		r = (color // 36) % 6 * 51
+		g = (color // 6) % 6 * 51
+		b = color % 6 * 51
+		return __approximate_color_24bit(r, g, b)  # Map to the closest curses color
+	elif 232 <= color <= 255:  # Grayscale
+		gray = (color - 232) * 10 + 8
+		return __approximate_color_24bit(gray, gray, gray)
+	else:
+		return curses.COLOR_WHITE  # Fallback to white for unexpected values
+
+def __approximate_color_24bit(r, g, b):
+	"""
+	Approximate a 24-bit RGB color to the nearest curses color.
+
+	Args:
+		r: Red component (0-255)
+		g: Green component (0-255)
+		b: Blue component (0-255)
+
+	Returns:
+		Curses color code
+	"""
+	colors = {
+		curses.COLOR_BLACK: (0, 0, 0),
+		curses.COLOR_RED: (255, 0, 0),
+		curses.COLOR_GREEN: (0, 255, 0),
+		curses.COLOR_YELLOW: (255, 255, 0),
+		curses.COLOR_BLUE: (0, 0, 255),
+		curses.COLOR_MAGENTA: (255, 0, 255),
+		curses.COLOR_CYAN: (0, 255, 255),
+		curses.COLOR_WHITE: (255, 255, 255),
+	}
+	best_match = curses.COLOR_WHITE
+	min_distance = float("inf")
+	for color, (cr, cg, cb) in colors.items():
+		distance = math.sqrt((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2)
+		if distance < min_distance:
+			min_distance = distance
+			best_match = color
+	return best_match
+
+def __parse_ansi_escape_sequence_to_curses_color(escape_code):
+	"""
+	Parse ANSI escape codes to extract foreground and background colors.
+
+	Args:
+		escape_code: ANSI escape sequence for color
+
+	Returns:
+		Tuple of (foreground, background) curses color pairs. 
+		If the escape code is a reset code, return (-1, -1).
+		None values indicate that the color should not be changed.
+	"""
+	color_match = re.match(r"\x1b\[(\d+)(?:;(\d+))?(?:;(\d+))?(?:;(\d+);(\d+);(\d+))?m", escape_code)
+	if color_match:
+		params = color_match.groups()
+		if params[0] == "0":  # Reset code
+			return -1, -1
+		if params[0] == "38" and params[1] == "5":  # 8-bit foreground
+			return __approximate_color_8bit(int(params[2])), None
+		elif params[0] == "38" and params[1] == "2":  # 24-bit foreground
+			return __approximate_color_24bit(int(params[3]), int(params[4]), int(params[5])), None
+		elif params[0] == "48" and params[1] == "5":  # 8-bit background
+			return None , __approximate_color_8bit(int(params[2]))
+		elif params[0] == "48" and params[1] == "2":  # 24-bit background
+			return None, __approximate_color_24bit(int(params[3]), int(params[4]), int(params[5]))
+		else:
+			fg = None
+			bg = None
+			if params[0] and params[0].isdigit():  # 4-bit color
+				fg = ANSI_TO_CURSES_COLOR.get(int(params[0]), curses.COLOR_WHITE)
+			if params[1] and params[1].isdigit():
+				bg = ANSI_TO_CURSES_COLOR.get(int(params[1]), curses.COLOR_BLACK)
+			return fg, bg
+	return None, None
+
+def __get_curses_color_pair(fg, bg):
+	"""
+	Use curses color int values to create a curses color pair.
+
+	Globals:
+		__global_color_pairs: Dictionary of color pairs
+		__current_pair_index: Index of the next color pair
+
+	Args:
+		fg: Foreground color code
+		bg: Background color code
+
+	Returns:
+		Curses color pair code
+	"""
+	global __global_color_pairs, __current_pair_index
+	if (fg, bg) not in __global_color_pairs:
+		if __current_pair_index >= curses.COLOR_PAIRS:
+			eprint("Warning: Maximum number of color pairs reached.")
+			return 0
+		curses.init_pair(__current_pair_index, fg, bg)
+		__global_color_pairs[(fg, bg)] = __current_pair_index
+		__current_pair_index += 1
+	return __global_color_pairs[(fg, bg)]
+
+def _add_line_with_ascii_colors(window, y, x, line, n, color_pair_list = [-1,-1,0]):
+	"""
+	Add a line to a curses window with ANSI escape sequences translated to curses color pairs.
+
+	Args:
+		window: curses window object
+		y: Line position in the window
+		x: Column position in the window
+		line: The string containing ANSI escape sequences for color
+		n: Maximum number of characters to write
+		host: The host object
+	
+	Returns:
+		None
+	"""
+	segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
+	current_x = x
+	for segment in segments:
+		if segment.startswith("\x1b["):
+			# Parse ANSI escape sequence
+			newFrontColor, newBackColor = __parse_ansi_escape_sequence_to_curses_color(segment)
+			if newFrontColor is not None:
+				color_pair_list[0] = newFrontColor
+			if newBackColor is not None:
+				color_pair_list[1] = newBackColor
+			color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+		else:
+			# Add text with current color
+			if current_x < x + n:
+				window.addnstr(y, current_x, segment, n - (current_x - x), curses.color_pair(color_pair_list[2]))
+				current_x += len(segment)
+
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	'''
 	Generate a list for the hosts to be displayed on the screen. This is used to display as much relevant information as possible.
@@ -1526,13 +1702,15 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			#print(f"Creating a window at {y},{x}")
 			# We create the window
 			host_window = curses.newwin(host_window_height, host_window_width, y, x)
+			host_window.idlok(True)
 			host_windows.append(host_window)
 		# If there is space left, we will draw the bottom border
 		bottom_border = None
 		if y + host_window_height  < org_dim[0]:
 			bottom_border = curses.newwin(1, max_x, y + host_window_height, 0)
 			#bottom_border.clear()
-			bottom_border.addstr(0, 0, '-' * (max_x - 1))
+			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
+			_add_line_with_ascii_colors(window=bottom_border, y=0, x=0, line='-' * (max_x - 1), n=max_x - 1)
 			bottom_border.refresh()
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
 			# Check for keypress
@@ -1638,7 +1816,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				if bottom_stats != old_bottom_stat:
 					old_bottom_stat = bottom_stats
 					#bottom_border.clear()
-					bottom_border.addstr(0, 0, bottom_stats)
+					#bottom_border.addnstr(0, 0, bottom_stats, max_x - 1)
+					_add_line_with_ascii_colors(window=bottom_border, y=0, x=0, line=bottom_stats, n=max_x - 1)
 					bottom_border.refresh()
 			if stats != old_stat or curserPosition != old_cursor_position:
 				old_stat = stats
@@ -1667,17 +1846,19 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						#host_window.clear()
 						# we will try to center the name of the host with ┼ at the beginning and end and ─ in between
 						linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
-						host_window.addstr(0, 0, linePrintOut)
+						#host_window.addnstr(0, 0, linePrintOut, host_window_width - 1)
+						_add_line_with_ascii_colors(window=host_window, y=0, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list = host.current_color_pair)
 						# we will display the latest outputs of the host as much as we can
 						for i, line in enumerate(host.output[-(host_window_height - 1):]):
 							# print(f"Printng a line at {i + 1} with length of {len('│'+line[:host_window_width - 1])}")
 							# time.sleep(10)
 							linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip().ljust(host_window_width - 1, ' ')
-							host_window.addstr(i + 1, 0, linePrintOut)
+							#host_window.addnstr(i + 1, 0, linePrintOut, host_window_width - 1)
+							_add_line_with_ascii_colors(window=host_window, y=i + 1, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list=host.current_color_pair)
 						# we draw the rest of the available lines
 						for i in range(len(host.output), host_window_height - 1):
 							# print(f"Printng a line at {i + 1} with length of {len('│')}")
-							host_window.addstr(i + 1, 0, '│'.ljust(host_window_width - 1, ' '))
+							host_window.addnstr(i + 1, 0, '│'.ljust(host_window_width - 1, ' '), host_window_width - 1)
 						host.printedLines = len(host.output)
 						host_window.refresh()
 					except Exception as e:
@@ -1707,33 +1888,12 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 	'''
 	# We create all the windows we need
 	# We initialize the color pair
-	curses.start_color()
 	curses.curs_set(0)
-	curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
-	curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
-	curses.init_pair(4, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	curses.init_pair(5, curses.COLOR_YELLOW, curses.COLOR_BLACK)
-	curses.init_pair(6, curses.COLOR_BLUE, curses.COLOR_BLACK)
-	curses.init_pair(7, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
-	curses.init_pair(8, curses.COLOR_CYAN, curses.COLOR_BLACK)
-	curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_RED)
-	curses.init_pair(10, curses.COLOR_WHITE, curses.COLOR_GREEN)
-	curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_YELLOW)
-	curses.init_pair(12, curses.COLOR_WHITE, curses.COLOR_BLUE)
-	curses.init_pair(13, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
-	curses.init_pair(14, curses.COLOR_WHITE, curses.COLOR_CYAN)
-	curses.init_pair(15, curses.COLOR_BLACK, curses.COLOR_RED)
-	curses.init_pair(16, curses.COLOR_BLACK, curses.COLOR_GREEN)
-	curses.init_pair(17, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-	curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_BLUE)
-	curses.init_pair(19, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
-	curses.init_pair(20, curses.COLOR_BLACK, curses.COLOR_CYAN)
-
+	curses.start_color()
+	curses.use_default_colors()
 	# do not generate display if the output window have a size of zero
 	if stdscr.getmaxyx()[0] < 2 or stdscr.getmaxyx()[1] < 2:
 		return
-
 	params = (-1,0 , min_char_len, min_line_len, single_window,'new config')
 	while params:
 		params = __generate_display(stdscr, hosts, *params)
