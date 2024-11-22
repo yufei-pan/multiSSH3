@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.29'
+version = '5.30'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -1499,8 +1499,8 @@ def __approximate_color_24bit(r, g, b):
 		# Initiate a new color if it does not exist
 		if (r, g, b) not in __curses_color_table:
 			if __curses_current_color_index >= curses.COLORS:
-				eprint("Warning: Maximum number of colors reached.")
-				return curses.COLOR_WHITE
+				eprint("Warning: Maximum number of colors reached. Wrapping around.")
+				__curses_current_color_index = 10
 			curses.init_color(__curses_current_color_index, int(r/255*1000), int(g/255*1000), int(b/255*1000))
 			__curses_color_table[(r, g, b)] = __curses_current_color_index
 			__curses_current_color_index += 1
@@ -1537,6 +1537,8 @@ def __parse_ansi_escape_sequence_to_curses_color(escape_code):
 		If the escape code is a reset code, return (-1, -1).
 		None values indicate that the color should not be changed.
 	"""
+	if not escape_code:
+		return None, None
 	color_match = re.match(r"\x1b\[(\d+)(?:;(\d+))?(?:;(\d+))?(?:;(\d+);(\d+);(\d+))?m", escape_code)
 	if color_match:
 		params = color_match.groups()
@@ -1578,32 +1580,74 @@ def __get_curses_color_pair(fg, bg):
 	global __curses_global_color_pairs, __curses_current_color_pair_index
 	if (fg, bg) not in __curses_global_color_pairs:
 		if __curses_current_color_pair_index >= curses.COLOR_PAIRS:
-			eprint("Warning: Maximum number of color pairs reached.")
-			return 0
+			print("Warning: Maximum number of color pairs reached, wrapping around.")
+			__curses_current_color_pair_index = 1
 		curses.init_pair(__curses_current_color_pair_index, fg, bg)
 		__curses_global_color_pairs[(fg, bg)] = __curses_current_color_pair_index
 		__curses_current_color_pair_index += 1
-	return __curses_global_color_pairs[(fg, bg)]
+	return curses.color_pair(__curses_global_color_pairs[(fg, bg)])
 
-def _add_line_with_ascii_colors(window, y, x, line, n, color_pair_list = [-1,-1,1]):
+def _curses_add_string_to_window(window, line, y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ascii_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None):
 	"""
-	Add a line to a curses window with ANSI escape sequences translated to curses color pairs.
+	Add a string to a curses window with / without ANSI color escape sequences translated to curses color pairs.
 
 	Args:
 		window: curses window object
-		y: Line position in the window
+		line: The line to add
+		y: Line position in the window. Use -1 to scroll the window up 1 line and add the line at the bottom
 		x: Column position in the window
-		line: The string containing ANSI escape sequences for color
-		n: Maximum number of characters to write
-		host: The host object
+		number_of_char_to_write: Number of characters to write. -1 for all remaining space in line, 0 for no characters, and a positive integer for a specific number of characters.
+		color_pair_list: List of [foreground, background, color_pair] curses color pair values
+		fill_char: Character to fill the remaining space in the line
+		parse_ascii_colors: Parse ASCII color codes
+		centered: Center the text in the window
+		lead_str: Leading string to add to the line
+		trail_str: Trailing string to add to the line
 	
 	Returns:
 		None
 	"""
-	segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
-	current_x = x
+	if window.getmaxyx()[0] == 0 or window.getmaxyx()[1] == 0 or x >= window.getmaxyx()[1]:
+		return
+	if x < 0:
+		x = window.getmaxyx()[1] + x
+	if number_of_char_to_write == -1:
+		numChar = window.getmaxyx()[1] - x -1
+	elif number_of_char_to_write == 0:
+		return
+	elif number_of_char_to_write + x > window.getmaxyx()[1]:
+		numChar = window.getmaxyx()[1] - x -1
+	else:
+		numChar = number_of_char_to_write
+	if numChar < 0:
+		return
+	if y < 0 or  y >= window.getmaxyx()[0]:
+		window.move(0, 0)
+		window.deleteln()
+		y = window.getmaxyx()[0] - 1
+	if parse_ascii_colors:
+		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
+	else:
+		segments = [line]
+	charsWritten = 0
+	boxFrontColor, boxBackColor = color_pair_list[0], color_pair_list[1]
+	newBoxFrontColor, newBoxBackColor = __parse_ansi_escape_sequence_to_curses_color(box_ansi_color)
+	if newBoxFrontColor:
+		boxFrontColor = newBoxFrontColor
+	if newBoxBackColor:
+		boxBackColor = newBoxBackColor
+	boxColorPair = __get_curses_color_pair(boxFrontColor, boxBackColor)
+	# first add the lead_str
+	window.addnstr(y, x, lead_str, numChar, boxColorPair)
+	charsWritten = min(len(lead_str), numChar)
+	# process centering
+	if centered:
+		fill_length = numChar - len(lead_str) - len(trail_str) - sum([len(segment) for segment in segments if not segment.startswith("\x1b[")])
+		window.addnstr(y, x + charsWritten, fill_char * (fill_length // 2), numChar - charsWritten, boxColorPair)
+		charsWritten += min(fill_length // 2, numChar - charsWritten)
+	# add the segments
 	for segment in segments:
-		if segment.startswith("\x1b["):
+		if parse_ascii_colors and segment.startswith("\x1b["):
 			# Parse ANSI escape sequence
 			newFrontColor, newBackColor = __parse_ansi_escape_sequence_to_curses_color(segment)
 			if newFrontColor is not None:
@@ -1611,12 +1655,21 @@ def _add_line_with_ascii_colors(window, y, x, line, n, color_pair_list = [-1,-1,
 			if newBackColor is not None:
 				color_pair_list[1] = newBackColor
 			color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+			#window.addnstr(y, x + charsWritten, str(color_pair_list[2]), numChar - charsWritten, color_pair_list[2])
+			#charsWritten += min(len(str(color_pair_list[2])), numChar - charsWritten)
 		else:
 			# Add text with current color
-			if current_x < x + n:
-				#eprint(f"\ny: {y}, x: {current_x}, segment: {segment}, n: {n}, color_pair: {color_pair_list[2]}\n")
-				window.addnstr(y, current_x, segment, n - (current_x - x), curses.color_pair(color_pair_list[2]))
-				current_x += len(segment)
+			if charsWritten < numChar:
+				window.addnstr(y, x + charsWritten, segment, numChar - charsWritten, color_pair_list[2])
+				charsWritten += min(len(segment), numChar - charsWritten)
+	# if we have finished printing segments but we still have space, we will fill it with fill_char
+	if charsWritten + len(trail_str) < numChar:
+		fillStr = fill_char * (numChar - charsWritten - len(trail_str))
+		#fillStr = f'{color_pair_list}'
+		window.addnstr(y, x + charsWritten, fillStr + trail_str, numChar - charsWritten, boxColorPair)
+		charsWritten += numChar - charsWritten
+	else:
+		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxColorPair)
 
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	'''
@@ -1713,6 +1766,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		stdscr.nodelay(True)
 		# we generate a stats window at the top of the screen
 		stat_window = curses.newwin(1, max_x, 0, 0)
+		stat_window.leaveok(True)
 		# We create a window for each host
 		host_windows = []
 		for i, host in enumerate(hosts_to_display):
@@ -1724,14 +1778,17 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			# We create the window
 			host_window = curses.newwin(host_window_height, host_window_width, y, x)
 			host_window.idlok(True)
+			host_window.scrollok(True)
+			host_window.leaveok(True)
 			host_windows.append(host_window)
 		# If there is space left, we will draw the bottom border
 		bottom_border = None
 		if y + host_window_height  < org_dim[0]:
 			bottom_border = curses.newwin(1, max_x, y + host_window_height, 0)
+			bottom_border.leaveok(True)
 			#bottom_border.clear()
 			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
-			_add_line_with_ascii_colors(window=bottom_border, y=0, x=0, line='-' * (max_x - 1), n=max_x - 1)
+			_curses_add_string_to_window(window=bottom_border, y=0, line='-' * (max_x - 1),fill_char='-')
 			bottom_border.refresh()
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
 			# Check for keypress
@@ -1839,7 +1896,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					old_bottom_stat = bottom_stats
 					#bottom_border.clear()
 					#bottom_border.addnstr(0, 0, bottom_stats, max_x - 1)
-					_add_line_with_ascii_colors(window=bottom_border, y=0, x=0, line=bottom_stats, n=max_x - 1)
+					_curses_add_string_to_window(window=bottom_border, y=0, line=bottom_stats)
 					bottom_border.refresh()
 			if stats != old_stat or curserPosition != old_cursor_position:
 				old_stat = stats
@@ -1868,15 +1925,15 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						#host_window.clear()
 						# we will try to center the name of the host with ┼ at the beginning and end and ─ in between
 						linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
-						#host_window.addnstr(0, 0, linePrintOut, host_window_width - 1)
-						_add_line_with_ascii_colors(window=host_window, y=0, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list = host.current_color_pair)
+						host_window.addnstr(0, 0, linePrintOut, host_window_width - 1)
+						#_add_line_with_ascii_colors(window=host_window, y=0, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list = host.current_color_pair)
 						# we will display the latest outputs of the host as much as we can
 						for i, line in enumerate(host.output[-(host_window_height - 1):]):
 							# print(f"Printng a line at {i + 1} with length of {len('│'+line[:host_window_width - 1])}")
 							# time.sleep(10)
-							linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip().ljust(host_window_width - 1, ' ')
+							linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip()
 							#host_window.addnstr(i + 1, 0, linePrintOut, host_window_width - 1)
-							_add_line_with_ascii_colors(window=host_window, y=i + 1, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list=host.current_color_pair)
+							_curses_add_string_to_window(window=host_window, y=i + 1, line=linePrintOut, color_pair_list=host.current_color_pair)
 						# we draw the rest of the available lines
 						for i in range(len(host.output), host_window_height - 1):
 							# print(f"Printng a line at {i + 1} with length of {len('│')}")
@@ -1919,26 +1976,27 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		return
 	stdscr.idlok(True)
 	stdscr.scrollok(True)
+	stdscr.leaveok(True)
 	# generate some debug information before display initialization
 	try:
 		stdscr.clear()
-		_add_line_with_ascii_colors(window=stdscr, y=0, x=0, line='Initializing display...', n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=0, line='Initializing display...', n=stdscr.getmaxyx()[1] - 1)
 		# print the size
-		_add_line_with_ascii_colors(window=stdscr, y=1, x=0, line=f"Terminal size: {stdscr.getmaxyx()}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=1, line=f"Terminal size: {stdscr.getmaxyx()}", n=stdscr.getmaxyx()[1] - 1)
 		# print the number of hosts
-		_add_line_with_ascii_colors(window=stdscr, y=2, x=0, line=f"Number of hosts: {len(hosts)}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=2, line=f"Number of hosts: {len(hosts)}", n=stdscr.getmaxyx()[1] - 1)
 		# print the number of threads
-		_add_line_with_ascii_colors(window=stdscr, y=3, x=0, line=f"Number of threads: {len(threads)}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=3, line=f"Number of threads: {len(threads)}", n=stdscr.getmaxyx()[1] - 1)
 		# print the minimum character length
-		_add_line_with_ascii_colors(window=stdscr, y=4, x=0, line=f"Minimum character length: {min_char_len}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=4, line=f"Minimum character length: {min_char_len}", n=stdscr.getmaxyx()[1] - 1)
 		# print the minimum line length
-		_add_line_with_ascii_colors(window=stdscr, y=5, x=0, line=f"Minimum line length: {min_line_len}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=5, line=f"Minimum line length: {min_line_len}", n=stdscr.getmaxyx()[1] - 1)
 		# print the single window mode
-		_add_line_with_ascii_colors(window=stdscr, y=6, x=0, line=f"Single window mode: {single_window}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=6, line=f"Single window mode: {single_window}", n=stdscr.getmaxyx()[1] - 1)
 		# print COLORS and COLOR_PAIRS count
-		_add_line_with_ascii_colors(window=stdscr, y=7, x=0, line=f"len(COLORS): {curses.COLORS} len(COLOR_PAIRS): {curses.COLOR_PAIRS}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=7, line=f"len(COLORS): {curses.COLORS} len(COLOR_PAIRS): {curses.COLOR_PAIRS}", n=stdscr.getmaxyx()[1] - 1)
 		# print if can change color
-		_add_line_with_ascii_colors(window=stdscr, y=8, x=0, line=f"Real color capability: {curses.can_change_color()}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=8, line=f"Real color capability: {curses.can_change_color()}", n=stdscr.getmaxyx()[1] - 1)
 		stdscr.refresh()
 	except:
 		pass
