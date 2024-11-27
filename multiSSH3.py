@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.30'
+version = '5.33'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -166,6 +166,7 @@ class Host:
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
 		self.printedLines = -1 # the number of lines printed on the screen
+		self.lineNumToReprintSet = set() # whether to reprint the last line
 		self.lastUpdateTime = time.time() # the last time the output was updated
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
@@ -187,7 +188,7 @@ class Host:
 	def __repr__(self):
 		# return the complete data structure
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, \
-output={self.output}, printedLines={self.printedLines}, files={self.files}, ipmi={self.ipmi}, \
+output={self.output}, printedLines={self.printedLines}, lineNumToReprintSet={self.lineNumToReprintSet}, files={self.files}, ipmi={self.ipmi}, \
 interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, \
 extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), \
 identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.current_color_pair}"
@@ -1085,10 +1086,10 @@ def __handle_reading_stream(stream,target, host):
 		if not keepLastLine:
 			target.pop()
 			host.output.pop()
-			host.printedLines -= 1
 		current_line_str = current_line.decode('utf-8',errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
+		host.lineNumToReprintSet.add(len(host.output)-1)
 		host.lastUpdateTime = time.time()
 	current_line = bytearray()
 	lastLineCommited = True
@@ -1355,12 +1356,13 @@ def run_command(host, sem, timeout=60,passwds=None):
 							# remove last line if it is a countdown
 							if host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
 								host.output.pop()
-								host.printedLines -= 1
 							host.output.append(timeoutLine)
+							host.lineNumToReprintSet.add(len(host.output)-1)
 							timeoutLineAppended = True
 					elif host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
 						host.output.pop()
-						host.printedLines -= 1
+						host.output.append('')
+						host.lineNumToReprintSet.add(len(host.output)-1)
 						timeoutLineAppended = False
 				if _emo:
 					host.stderr.append('Ctrl C detected, Emergency Stop!')
@@ -1525,43 +1527,6 @@ def __approximate_color_24bit(r, g, b):
 			best_match = color
 	return best_match
 
-def __parse_ansi_escape_sequence_to_curses_color(escape_code):
-	"""
-	Parse ANSI escape codes to extract foreground and background colors.
-
-	Args:
-		escape_code: ANSI escape sequence for color
-
-	Returns:
-		Tuple of (foreground, background) curses color pairs. 
-		If the escape code is a reset code, return (-1, -1).
-		None values indicate that the color should not be changed.
-	"""
-	if not escape_code:
-		return None, None
-	color_match = re.match(r"\x1b\[(\d+)(?:;(\d+))?(?:;(\d+))?(?:;(\d+);(\d+);(\d+))?m", escape_code)
-	if color_match:
-		params = color_match.groups()
-		if params[0] == "0" and not any(params[1:]):  # Reset code
-			return -1, -1
-		if params[0] == "38" and params[1] == "5":  # 8-bit foreground
-			return __approximate_color_8bit(int(params[2])), None
-		elif params[0] == "38" and params[1] == "2":  # 24-bit foreground
-			return __approximate_color_24bit(int(params[3]), int(params[4]), int(params[5])), None
-		elif params[0] == "48" and params[1] == "5":  # 8-bit background
-			return None , __approximate_color_8bit(int(params[2]))
-		elif params[0] == "48" and params[1] == "2":  # 24-bit background
-			return None, __approximate_color_24bit(int(params[3]), int(params[4]), int(params[5]))
-		else:
-			fg = None
-			bg = None
-			if params[0] and params[0].isdigit():  # 4-bit color
-				fg = ANSI_TO_CURSES_COLOR.get(int(params[0]), curses.COLOR_WHITE)
-			if params[1] and params[1].isdigit():
-				bg = ANSI_TO_CURSES_COLOR.get(int(params[1]), curses.COLOR_BLACK)
-			return fg, bg
-	return None, None
-
 def __get_curses_color_pair(fg, bg):
 	"""
 	Use curses color int values to create a curses color pair.
@@ -1587,7 +1552,123 @@ def __get_curses_color_pair(fg, bg):
 		__curses_current_color_pair_index += 1
 	return curses.color_pair(__curses_global_color_pairs[(fg, bg)])
 
-def _curses_add_string_to_window(window, line, y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ascii_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None):
+def __parse_ansi_escape_sequence_to_curses_attr(escape_code,color_pair_list = None):
+	"""
+	Parse ANSI escape codes to extract foreground and background colors.
+
+	Args:
+		escape_code: ANSI escape sequence for color
+		color_pair_list: List of [foreground, background, color_pair] curses color pair values
+
+	Returns:
+		Curses color pair / attribute code
+	"""
+	if not escape_code:
+		return 1
+	if not color_pair_list:
+		color_pair_list = [-1,-1,1]
+	color_match = escape_code.lstrip("\x1b[").rstrip("m").split(";")
+	color_match = [x if x else '0' for x in color_match]  # Replace empty strings with '0' (reset)
+	if color_match:
+		processed_index = -1
+		for i, param in enumerate(color_match):
+			if processed_index >= i:
+				# if the index has been processed, skip
+				continue
+			if param.isdigit():
+				if int(param) == 0:
+					color_pair_list[0] = -1
+					color_pair_list[1] = -1
+					color_pair_list[2] = 1
+				elif int(param) == 38:
+					if i + 1 >= len(color_match):
+						# Invalid color code, skip
+						continue
+					if color_match[i + 1] == "5":
+						# 8-bit foreground color
+						if i + 2 >= len(color_match) or not color_match[i + 2].isdigit():
+							# Invalid color code, skip
+							processed_index = i + 1
+							continue
+						color_pair_list[0] = __approximate_color_8bit(int(color_match[i + 2]))
+						color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+						processed_index = i + 2
+					elif color_match[i + 1] == "2":
+						# 24-bit foreground color
+						if i + 4 >= len(color_match) or not all(x.isdigit() for x in color_match[i + 2:i + 5]):
+							# Invalid color code, skip
+							processed_index = i + 1
+							continue
+						color_pair_list[0] = __approximate_color_24bit(int(color_match[i + 2]), int(color_match[i + 3]), int(color_match[i + 4]))
+						color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+						processed_index = i + 4
+				elif int(param) == 48:
+					if i + 1 >= len(color_match):
+						# Invalid color code, skip
+						continue
+					if color_match[i + 1] == "5":
+						# 8-bit background color
+						if i + 2 >= len(color_match) or not color_match[i + 2].isdigit():
+							# Invalid color code, skip
+							processed_index = i + 1
+							continue
+						color_pair_list[1] = __approximate_color_8bit(int(color_match[i + 2]))
+						color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+						processed_index = i + 2
+					elif color_match[i + 1] == "2":
+						# 24-bit background color
+						if i + 4 >= len(color_match) or not all(x.isdigit() for x in color_match[i + 2:i + 5]):
+							# Invalid color code, skip
+							processed_index = i + 1
+							continue
+						color_pair_list[1] = __approximate_color_24bit(int(color_match[i + 2]), int(color_match[i + 3]), int(color_match[i + 4]))
+						color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+						processed_index = i + 4
+				elif 30 <= int(param) <= 37 or 90 <= int(param) <= 97:
+					# 4-bit foreground color
+					color_pair_list[0] = ANSI_TO_CURSES_COLOR.get(int(param), curses.COLOR_WHITE)
+					color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+				elif 40 <= int(param) <= 47 or 100 <= int(param) <= 107:
+					# 4-bit background color
+					color_pair_list[1] = ANSI_TO_CURSES_COLOR.get(int(param)-10, curses.COLOR_BLACK)
+					color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+				elif int(param) == 1:
+					color_pair_list[2] = color_pair_list[2] | curses.A_BOLD
+				elif int(param) == 2:
+					color_pair_list[2] = color_pair_list[2] | curses.A_DIM
+				elif int(param) == 4:
+					color_pair_list[2] = color_pair_list[2] | curses.A_UNDERLINE
+				elif int(param) == 5:
+					color_pair_list[2] = color_pair_list[2] | curses.A_BLINK
+				elif int(param) == 7:
+					color_pair_list[2] = color_pair_list[2] | curses.A_REVERSE
+				elif int(param) == 8:
+					color_pair_list[2] = color_pair_list[2] | curses.A_INVIS
+				elif int(param) == 21:
+					color_pair_list[2] = color_pair_list[2] & ~curses.A_BOLD
+				elif int(param) == 22:
+					color_pair_list[2] = color_pair_list[2] & ~curses.A_DIM
+				elif int(param) == 24:
+					color_pair_list[2] = color_pair_list[2] & ~curses.A_UNDERLINE
+				elif int(param) == 25:
+					color_pair_list[2] = color_pair_list[2] & ~curses.A_BLINK
+				elif int(param) == 27:
+					color_pair_list[2] = color_pair_list[2] & ~curses.A_REVERSE
+				elif int(param) == 28:
+					color_pair_list[2] = color_pair_list[2] & ~curses.A_INVIS
+				elif int(param) == 39:
+					color_pair_list[0] = -1
+					color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+				elif int(param) == 49:
+					color_pair_list[1] = -1
+					color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
+	else:
+		color_pair_list[0] = -1
+		color_pair_list[1] = -1
+		color_pair_list[2] = 1
+	return color_pair_list[2]
+
+def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0):
 	"""
 	Add a string to a curses window with / without ANSI color escape sequences translated to curses color pairs.
 
@@ -1599,10 +1680,12 @@ def _curses_add_string_to_window(window, line, y = 0, x = 0, number_of_char_to_w
 		number_of_char_to_write: Number of characters to write. -1 for all remaining space in line, 0 for no characters, and a positive integer for a specific number of characters.
 		color_pair_list: List of [foreground, background, color_pair] curses color pair values
 		fill_char: Character to fill the remaining space in the line
-		parse_ascii_colors: Parse ASCII color codes
+		parse_ansi_colors: Parse ASCII color codes
 		centered: Center the text in the window
 		lead_str: Leading string to add to the line
 		trail_str: Trailing string to add to the line
+		box_ansi_color: ANSI color escape sequence for the box color
+		keep_top_n_lines: Number of lines to keep at the top of the window
 	
 	Returns:
 		None
@@ -1622,41 +1705,35 @@ def _curses_add_string_to_window(window, line, y = 0, x = 0, number_of_char_to_w
 	if numChar < 0:
 		return
 	if y < 0 or  y >= window.getmaxyx()[0]:
-		window.move(0, 0)
+		if keep_top_n_lines > window.getmaxyx()[0] -1:
+			keep_top_n_lines = window.getmaxyx()[0] -1
+		if keep_top_n_lines < 0:
+			keep_top_n_lines = 0
+		window.move(keep_top_n_lines,0)
 		window.deleteln()
 		y = window.getmaxyx()[0] - 1
-	if parse_ascii_colors:
+	line = line.replace('\n', ' ').replace('\r', ' ')
+	if parse_ansi_colors:
 		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
 	else:
 		segments = [line]
 	charsWritten = 0
-	boxFrontColor, boxBackColor = color_pair_list[0], color_pair_list[1]
-	newBoxFrontColor, newBoxBackColor = __parse_ansi_escape_sequence_to_curses_color(box_ansi_color)
-	if newBoxFrontColor:
-		boxFrontColor = newBoxFrontColor
-	if newBoxBackColor:
-		boxBackColor = newBoxBackColor
-	boxColorPair = __get_curses_color_pair(boxFrontColor, boxBackColor)
+	boxAttr = __parse_ansi_escape_sequence_to_curses_attr(box_ansi_color)
 	# first add the lead_str
-	window.addnstr(y, x, lead_str, numChar, boxColorPair)
+	window.addnstr(y, x, lead_str, numChar, boxAttr)
 	charsWritten = min(len(lead_str), numChar)
 	# process centering
 	if centered:
 		fill_length = numChar - len(lead_str) - len(trail_str) - sum([len(segment) for segment in segments if not segment.startswith("\x1b[")])
-		window.addnstr(y, x + charsWritten, fill_char * (fill_length // 2), numChar - charsWritten, boxColorPair)
+		window.addnstr(y, x + charsWritten, fill_char * (fill_length // 2), numChar - charsWritten, boxAttr)
 		charsWritten += min(fill_length // 2, numChar - charsWritten)
 	# add the segments
 	for segment in segments:
-		if parse_ascii_colors and segment.startswith("\x1b["):
+		if not segment:
+			continue
+		if parse_ansi_colors and segment.startswith("\x1b["):
 			# Parse ANSI escape sequence
-			newFrontColor, newBackColor = __parse_ansi_escape_sequence_to_curses_color(segment)
-			if newFrontColor is not None:
-				color_pair_list[0] = newFrontColor
-			if newBackColor is not None:
-				color_pair_list[1] = newBackColor
-			color_pair_list[2] = __get_curses_color_pair(color_pair_list[0], color_pair_list[1])
-			#window.addnstr(y, x + charsWritten, str(color_pair_list[2]), numChar - charsWritten, color_pair_list[2])
-			#charsWritten += min(len(str(color_pair_list[2])), numChar - charsWritten)
+			newAttr = __parse_ansi_escape_sequence_to_curses_attr(segment,color_pair_list)
 		else:
 			# Add text with current color
 			if charsWritten < numChar:
@@ -1666,10 +1743,10 @@ def _curses_add_string_to_window(window, line, y = 0, x = 0, number_of_char_to_w
 	if charsWritten + len(trail_str) < numChar:
 		fillStr = fill_char * (numChar - charsWritten - len(trail_str))
 		#fillStr = f'{color_pair_list}'
-		window.addnstr(y, x + charsWritten, fillStr + trail_str, numChar - charsWritten, boxColorPair)
+		window.addnstr(y, x + charsWritten, fillStr + trail_str, numChar - charsWritten, boxAttr)
 		charsWritten += numChar - charsWritten
 	else:
-		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxColorPair)
+		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxAttr)
 
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	'''
@@ -1705,6 +1782,7 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason= 'New Configuration'):
 	try:
+		box_ansi_color = None
 		org_dim = stdscr.getmaxyx()
 		new_configured = True
 		# To do this, first we need to know the size of the terminal
@@ -1757,7 +1835,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 
 		old_stat = ''
 		old_bottom_stat = ''
-		old_cursor_position = -1
 		# we refresh the screen every 0.1 seconds
 		last_refresh_time = time.perf_counter()
 		stdscr.clear()
@@ -1788,7 +1865,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			bottom_border.leaveok(True)
 			#bottom_border.clear()
 			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
-			_curses_add_string_to_window(window=bottom_border, y=0, line='-' * (max_x - 1),fill_char='-')
+			_curses_add_string_to_window(window=bottom_border, y=0, line='-' * (max_x - 1),fill_char='-',box_ansi_color=box_ansi_color)
 			bottom_border.refresh()
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
 			# Check for keypress
@@ -1879,40 +1956,40 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
 			# We generate the aggregated stats if user did not input anything
 			if not __keyPressesIn[lineToDisplay]:
-				stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
+				#stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
+				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "
 			else:
 				# we use the stat bar to display the key presses
 				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
-				# # add the flashing indicator at the curse position
-				# if time.perf_counter() % 1 > 0.5:
-				#     encodedLine = encodedLine[:curserPosition] + '█' + encodedLine[curserPosition:]
+				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
+				stats = f"Send CMD: {encodedLine}"
+				# format the stats line with chracter at curser position inverted using ansi escape sequence
+				stats = f'{stats[:curserPosition]}\x1b[7m{stats[curserPosition]}\x1b[0m{stats[curserPosition + 1:]}'
+			if stats != old_stat :
+				old_stat = stats
+				# calculate the real curser position in stats as we centered the stats
+				# if 'Send CMD: ' in stats:
+				# 	curserPositionStats = min(min(curserPosition,len(encodedLine) -1) + stats.find('Send CMD: ')+len('Send CMD: '), max_x -2)
 				# else:
-				#     encodedLine = encodedLine[:curserPosition] + ' ' + encodedLine[curserPosition:]
-				stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
+				# 	curserPositionStats = max_x -2
+				#stat_window.clear()
+				#stat_window.addstr(0, 0, stats)
+				# add the line with curser that inverses the color at the curser position
+				# stat_window.addstr(0, 0, stats[:curserPositionStats])
+				# stat_window.addch(0,curserPositionStats, stats[curserPositionStats], curses.A_REVERSE)
+				# stat_window.addnstr(0, curserPositionStats + 1, stats[curserPositionStats + 1:], max_x - 1 - curserPositionStats)
+				# stat_window.refresh()
+				_curses_add_string_to_window(window=stat_window, y=0, line=stats, color_pair_list=[-1, -1, 1],centered=True,fill_char='━',lead_str='┍',box_ansi_color=box_ansi_color)
 			if bottom_border:
-				target_length = max_x - 2 + len('\x1b[33m\x1b[0m\x1b[31m\x1b[0m\x1b[32m\x1b[0m')
-				bottom_stats = '└'+ f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "[:target_length].center(target_length, "─")
+				#target_length = max_x - 2 + len('\x1b[33m\x1b[0m\x1b[31m\x1b[0m\x1b[32m\x1b[0m')
+				#bottom_stats = '└'+ f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "[:target_length].center(target_length, "─")
+				bottom_stats = f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "
 				if bottom_stats != old_bottom_stat:
 					old_bottom_stat = bottom_stats
 					#bottom_border.clear()
 					#bottom_border.addnstr(0, 0, bottom_stats, max_x - 1)
-					_curses_add_string_to_window(window=bottom_border, y=0, line=bottom_stats)
+					_curses_add_string_to_window(window=bottom_border, y=0, line=bottom_stats,fill_char='─',centered=True,lead_str='└',box_ansi_color=box_ansi_color)
 					bottom_border.refresh()
-			if stats != old_stat or curserPosition != old_cursor_position:
-				old_stat = stats
-				old_cursor_position = curserPosition
-				# calculate the real curser position in stats as we centered the stats
-				if 'Send CMD: ' in stats:
-					curserPositionStats = min(min(curserPosition,len(encodedLine) -1) + stats.find('Send CMD: ')+len('Send CMD: '), max_x -2)
-				else:
-					curserPositionStats = max_x -2
-				#stat_window.clear()
-				#stat_window.addstr(0, 0, stats)
-				# add the line with curser that inverses the color at the curser position
-				stat_window.addstr(0, 0, stats[:curserPositionStats])
-				stat_window.addch(0,curserPositionStats, stats[curserPositionStats], curses.A_REVERSE)
-				stat_window.addnstr(0, curserPositionStats + 1, stats[curserPositionStats + 1:], max_x - 1 - curserPositionStats)
-				stat_window.refresh()
 			# set the maximum refresh rate to 100 Hz
 			if time.perf_counter() - last_refresh_time < 0.01:
 				time.sleep(max(0,0.01 - time.perf_counter() + last_refresh_time))
@@ -1924,20 +2001,27 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					try:
 						#host_window.clear()
 						# we will try to center the name of the host with ┼ at the beginning and end and ─ in between
-						linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
-						host_window.addnstr(0, 0, linePrintOut, host_window_width - 1)
-						#_add_line_with_ascii_colors(window=host_window, y=0, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list = host.current_color_pair)
+						#linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
+						#linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
+						#host_window.addnstr(0, 0, linePrintOut, host_window_width - 1)
+						linePrintOut = f'{host.name}:[{host.command}]'.replace('\n', ' ').replace('\r', ' ').strip()
+						_curses_add_string_to_window(window=host_window, y=0, line=linePrintOut, color_pair_list=[-1, -1, 1],centered=True,fill_char='─',lead_str='┼',box_ansi_color=box_ansi_color)
+						#_add_line_with_ansi_colors(window=host_window, y=0, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list = host.current_color_pair)
 						# we will display the latest outputs of the host as much as we can
-						for i, line in enumerate(host.output[-(host_window_height - 1):]):
+						#for i, line in enumerate(host.output[-(host_window_height - 1):]):
 							# print(f"Printng a line at {i + 1} with length of {len('│'+line[:host_window_width - 1])}")
 							# time.sleep(10)
-							linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip()
+							#linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip()
 							#host_window.addnstr(i + 1, 0, linePrintOut, host_window_width - 1)
-							_curses_add_string_to_window(window=host_window, y=i + 1, line=linePrintOut, color_pair_list=host.current_color_pair)
+							#_curses_add_string_to_window(window=host_window, y=i + 1, line=line, color_pair_list=host.current_color_pair,lead_str='│')
 						# we draw the rest of the available lines
+						# for i in range(len(host.output), host_window_height - 1):
+						# 	# print(f"Printng a line at {i + 1} with length of {len('│')}")
+						# 	host_window.addnstr(i + 1, 0, '│'.ljust(host_window_width - 1, ' '), host_window_width - 1)
+						for i in range(host.printedLines, len(host.output)):
+							_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 						for i in range(len(host.output), host_window_height - 1):
-							# print(f"Printng a line at {i + 1} with length of {len('│')}")
-							host_window.addnstr(i + 1, 0, '│'.ljust(host_window_width - 1, ' '), host_window_width - 1)
+							_curses_add_string_to_window(window=host_window, y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 						host.printedLines = len(host.output)
 						host_window.refresh()
 					except Exception as e:
@@ -1946,6 +2030,24 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
 							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
+				if host.lineNumToReprintSet:
+					# visible range is from host.printedLines - host_window_height + 1 to host.printedLines
+					visibleLowerBound = host.printedLines - host_window_height + 1
+					for lineNumToReprint in host.lineNumToReprintSet:
+						# if the line is visible, we will reprint it
+						if visibleLowerBound <= lineNumToReprint <= host.printedLines:
+							if visibleLowerBound <= 0:
+								# this means all lines are visible
+								linePos = lineNumToReprint
+							else:
+								# calculate the position of the line to reprint
+								linePos = lineNumToReprint - visibleLowerBound
+							# Note: color can be incorrect if repainting an old line with new colors already initialized,
+							# 	 Thus we will not use any presistent color pair for old lines
+							cpl = host.current_color_pair if lineNumToReprint == host.printedLines else [-1,-1,1]
+							_curses_add_string_to_window(window=host_window, y=linePos + 1, line=host.output[lineNumToReprint], color_pair_list=cpl,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
+					host.lineNumToReprintSet = set()
+					host_window.refresh()
 			new_configured = False
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
