@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='multiSSH3',
-    version='5.35',
+    version='5.36',
     description='Run commands on multiple hosts via SSH',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',

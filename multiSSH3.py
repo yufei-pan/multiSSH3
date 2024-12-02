@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.35'
+version = '5.36'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -2000,6 +2000,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# we will only update the window if there is new output or the window is not fully printed
 				if new_configured or host.printedLines < len(host.output):
 					try:
+						if new_configured:
+							host.printedLines = 0
 						#host_window.clear()
 						# we will try to center the name of the host with ┼ at the beginning and end and ─ in between
 						#linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
@@ -2124,7 +2126,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 			stdscr.refresh()
 		except:
 			pass
-		params = params[:5]
+		params = params[:5] + ('new config',)
 		time.sleep(0.01)
 		#time.sleep(0.25)
 
