@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.33'
+version = '5.34'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -1942,7 +1942,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					elif key == 27: # 27 is the key code for ESC
 						__keyPressesIn[-1] = []
 						curserPosition = 0
-					# ignore delete key
 					elif key in [127, 330]: # 330 is the key code for delete key
 						# delete the character at the cursor position
 						if curserPosition < len(__keyPressesIn[lineToDisplay]):
@@ -1962,9 +1961,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# we use the stat bar to display the key presses
 				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
 				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
-				stats = f"Send CMD: {encodedLine}"
 				# format the stats line with chracter at curser position inverted using ansi escape sequence
-				stats = f'{stats[:curserPosition]}\x1b[7m{stats[curserPosition]}\x1b[0m{stats[curserPosition + 1:]}'
+				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
+				displayCurserPosition = min(curserPosition,len(encodedLine) -1)
+				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
 			if stats != old_stat :
 				old_stat = stats
 				# calculate the real curser position in stats as we centered the stats
@@ -1980,6 +1980,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# stat_window.addnstr(0, curserPositionStats + 1, stats[curserPositionStats + 1:], max_x - 1 - curserPositionStats)
 				# stat_window.refresh()
 				_curses_add_string_to_window(window=stat_window, y=0, line=stats, color_pair_list=[-1, -1, 1],centered=True,fill_char='━',lead_str='┍',box_ansi_color=box_ansi_color)
+				stat_window.refresh()
 			if bottom_border:
 				#target_length = max_x - 2 + len('\x1b[33m\x1b[0m\x1b[31m\x1b[0m\x1b[32m\x1b[0m')
 				#bottom_stats = '└'+ f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "[:target_length].center(target_length, "─")
