@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.36'
+version = '5.37'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -2319,7 +2319,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 	if gather_mode: argsList.append('--gather_mode' if not shortend else '-gm')
 	if username and username != DEFAULT_USERNAME: argsList.append(f'--username="{username}"' if not shortend else f'-u="{username}"')
 	if extraargs and extraargs != DEFAULT_EXTRA_ARGS: argsList.append(f'--extraargs="{extraargs}"' if not shortend else f'-ea="{extraargs}"')
-	if skipUnreachable: argsList.append('--skipUnreachable' if not shortend else '-su')
+	if skipUnreachable: argsList.append('--skip_unreachable' if not shortend else '-su')
 	if no_env: argsList.append('--no_env')
 	if greppable: argsList.append('--greppable' if not shortend else '-g')
 	if error_only: argsList.append('--error_only' if not shortend else '-eo')
