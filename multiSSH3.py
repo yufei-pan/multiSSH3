@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.38'
+version = '5.39'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -833,7 +833,7 @@ def __compact_hostnames(Hostnames):
 			rtnSet.add(''.join(hostnameList))
 	return frozenset(rtnSet)
 
-def compact_hostnames(Hostnames):
+def compact_hostnames(Hostnames,verify = True):
 	"""
 	Compact a list of hostnames.
 	Compact numeric numbers into ranges.
@@ -864,10 +864,11 @@ def compact_hostnames(Hostnames):
 	else:
 		hostSet = Hostnames
 	compact_hosts = __compact_hostnames(hostSet)
-	if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
-		if not __global_suppress_printout:
-			eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
-		compact_hosts = hostSet
+	if verify:
+		if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
+			if not __global_suppress_printout:
+				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
+			compact_hosts = hostSet
 	return compact_hosts
 
 # ------------ Expanding Hostnames ----------------
@@ -1548,6 +1549,7 @@ def __get_curses_color_pair(fg, bg):
 		if __curses_current_color_pair_index >= curses.COLOR_PAIRS:
 			print("Warning: Maximum number of color pairs reached, wrapping around.")
 			__curses_current_color_pair_index = 1
+		# TODO: avoid initializing the same fg and bg color
 		curses.init_pair(__curses_current_color_pair_index, fg, bg)
 		__curses_global_color_pairs[(fg, bg)] = __curses_current_color_pair_index
 		__curses_current_color_pair_index += 1
