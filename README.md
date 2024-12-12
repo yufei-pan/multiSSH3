@@ -27,6 +27,15 @@ mssh --store_config_file
 
 You can modify the json file directly after generation and multissh will read from it for loading defaults. 
 
+```bash
+mssh --ipmi_interface_ip_prefix 192 --store_config_file
+```
+will store 
+```json
+"DEFAULT_IPMI_INTERFACE_IP_PREFIX": "192"
+```
+into the json file.
+
 Note:
 
 If you want to store password, it will be a plain text password in this config file. This will be better to supply it everytime as a CLI argument but you should really consider setting up priv-pub key setup.
@@ -36,15 +45,6 @@ Also Note:
 On some systems, scp / rsync will require you use a priv-pub key to work
 
 This option can also be used to store cli options into the config files. For example.
-
-```bash
-mssh --ipmi_interface_ip_prefix 192 --store_config_file
-```
-will store 
-```json
-"DEFAULT_IPMI_INTERFACE_IP_PREFIX": "192"
-```
-into the json file.
 
 By defualt reads bash env variables for hostname aliases. Also able to read
 ```bash
@@ -61,7 +61,7 @@ us_east='100.100.0.1-3,us_east_prod_[1-5]'
 us_central=""
 us_west="100.101.0.1-2,us_west_prod_[a-c]_[1-3]"
 us="$us_east,$us_central,$us_west"
-asia="100.90.0-1,1-9"
+asia="100.90.0-1.1-9"
 eu=''
 rhel8="$asia,$us_east"
 all="$us,$asia,$eu"
