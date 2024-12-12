@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.37'
+version = '5.38'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -158,7 +158,7 @@ def _get_i():
 
 # ------------ Host Object ----------------
 class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,bash=False,i = _get_i(),uuid=uuid.uuid4(),ip = None):
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = _get_i(),uuid=uuid.uuid4(),ip = None):
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -170,7 +170,7 @@ class Host:
 		self.lastUpdateTime = time.time() # the last time the output was updated
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
-		self.bash = bash # whether to use bash to run the command
+		self.shell = shell # whether to use shell to run the command
 		self.interface_ip_prefix = interface_ip_prefix # the prefix of the ip address of the interface to be used to connect to the host
 		self.scp = scp # whether to use scp to copy files to the host
 		self.gatherMode = gatherMode # whether the host is in gather mode
@@ -272,7 +272,7 @@ __build_in_default_config = {
 	'_scpPath': None,
 	'_ipmitoolPath': None,
 	'_rsyncPath': None,
-	'_bashPath': None,
+	'_shellPath': None,
 	'__ERROR_MESSAGES_TO_IGNORE_REGEX':None,
 	'__DEBUG_MODE': False,
 }
@@ -390,7 +390,7 @@ def check_path(program_name):
 		return True
 	return False
 
-[check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','bash','ssh-copy-id']]
+[check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id']]
 
 def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
 	'''
@@ -472,6 +472,7 @@ def replace_magic_strings(string,keys,value,case_sensitive=False):
 	return string
 
 def pretty_format_table(data):
+	version = 1.0
 	if not data:
 		return ''
 	if type(data) == str:
@@ -488,7 +489,6 @@ def pretty_format_table(data):
 			data = [[key] + list(value) for key, value in data.items()]
 	elif type(data) != list:
 		data = list(data)
-	# TODO : add support for list of dictionaries
 	# format the list into 2d list of list of strings
 	if isinstance(data[0], dict):
 		tempData = [data[0].keys()]
@@ -883,7 +883,6 @@ def __validate_expand_hostname(hostname):
 		list: A list of valid hostnames
 	'''
 	global _no_env
-	# maybe it is just defined in ./target_files/hosts.sh and exported to the environment
 	# we will try to get the valid host name from the environment
 	hostname = hostname.strip().strip('$')
 	if getIP(hostname,local=True):
@@ -1018,6 +1017,8 @@ def __expand_hostnames(hosts) -> dict:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
 	'''
 	expandedhosts = {}
+	if isinstance(hosts, str):
+		hosts = [hosts]
 	for host in hosts:
 		host = host.strip()
 		if not host:
@@ -1220,12 +1221,12 @@ def run_command(host, sem, timeout=60,passwds=None):
 					host.username = 'admin'
 				if not host.command:
 					host.command = 'power status'
-				if 'bash' in _binPaths:
+				if 'sh' in _binPaths:
 					if passwds:
-						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {" ".join(extraargs)} {host.command}']
+						formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {" ".join(extraargs)} {host.command}']
 					else:
 						host.output.append('Warning: Password not provided for ipmi! Using a default password `admin`.')
-						formatedCMD = [_binPaths['bash'],'-c',f'ipmitool -H {host.address} -U {host.username} -P admin {" ".join(extraargs)} {host.command}']
+						formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {host.username} -P admin {" ".join(extraargs)} {host.command}']
 				else:
 					if passwds:
 						formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P {passwds}'] + extraargs + [host.command]
@@ -1249,17 +1250,17 @@ def run_command(host, sem, timeout=60,passwds=None):
 				host.stderr.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
 				host.returncode = 1
 				return
-		elif host.bash:
-			if 'bash' in _binPaths:
-				host.output.append('Running command in bash mode, ignoring the hosts...')
+		elif host.shell:
+			if 'sh' in _binPaths:
+				host.output.append('Running command in shell mode, ignoring the hosts...')
 				if __DEBUG_MODE:
-					host.stderr.append('Running command in bash mode, ignoring the hosts...')
-				formatedCMD = [_binPaths['bash'],'-c',host.command]
+					host.stderr.append('Running command in shell mode, ignoring the hosts...')
+				formatedCMD = [_binPaths['sh'],'-c',host.command]
 			else:
-				host.output.append('Bash not found on the local machine! Using ssh localhost instead...')
+				host.output.append('shell not found on the local machine! Using ssh localhost instead...')
 				if __DEBUG_MODE:
-					host.stderr.append('Bash not found on the local machine! Using ssh localhost instead...')
-				host.bash = False
+					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
+				host.shell = False
 				host.name = 'localhost'
 				run_command(host,sem,timeout,passwds)
 		else:
@@ -2506,7 +2507,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				command = f"{command}{host}"
 				if password and 'sshpass' in _binPaths:
 					command = f"{_binPaths['sshpass']} -p {password} {command}"
-					hosts.append(Host(host, command,identity_file=identity_file,bash=True,ip = targetHostDic[host]))
+					hosts.append(Host(host, command,identity_file=identity_file,shell=True,ip = targetHostDic[host]))
 				else:
 					eprint(f"> {command}")
 					os.system(command)
