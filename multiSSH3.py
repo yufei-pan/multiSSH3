@@ -37,7 +37,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.38'
+version = '5.39'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -1726,8 +1726,8 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 	# process centering
 	if centered:
 		fill_length = numChar - len(lead_str) - len(trail_str) - sum([len(segment) for segment in segments if not segment.startswith("\x1b[")])
-		window.addnstr(y, x + charsWritten, fill_char * (fill_length // 2), numChar - charsWritten, boxAttr)
-		charsWritten += min(fill_length // 2, numChar - charsWritten)
+		window.addnstr(y, x + charsWritten, fill_char * (fill_length // 2 // len(fill_char)), numChar - charsWritten, boxAttr)
+		charsWritten += min(len(fill_char * (fill_length // 2)), numChar - charsWritten)
 	# add the segments
 	for segment in segments:
 		if not segment:
@@ -1742,7 +1742,7 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 				charsWritten += min(len(segment), numChar - charsWritten)
 	# if we have finished printing segments but we still have space, we will fill it with fill_char
 	if charsWritten + len(trail_str) < numChar:
-		fillStr = fill_char * (numChar - charsWritten - len(trail_str))
+		fillStr = fill_char * ((numChar - charsWritten - len(trail_str))//len(fill_char))
 		#fillStr = f'{color_pair_list}'
 		window.addnstr(y, x + charsWritten, fillStr + trail_str, numChar - charsWritten, boxAttr)
 		charsWritten += numChar - charsWritten
