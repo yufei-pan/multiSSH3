@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 __curses_available = False
+__resource_lib_available = False
 try:
 	import curses
 	__curses_available = True
 except ImportError:
 	pass
+try:
+	import resource
+	__resource_lib_available = True
+except ImportError:
+	pass
+
 import subprocess
 import threading
-import time,os
+import time
+import os
 import argparse
 from itertools import product
 import re
@@ -37,7 +45,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.39'
+version = '5.40'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -352,6 +360,13 @@ if True:
 	__curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
 	__curses_color_table = {}
 	__curses_current_color_index = 10
+	__max_connections_nofile_limit_supported = 0
+	if __resource_lib_available:
+		# Get the current limits
+		_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+		# Set the soft limit to the hard limit
+		resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
+		__max_connections_nofile_limit_supported = int((__system_nofile_limit - 5) / 4.6)
 
 # Mapping of ANSI 4-bit colors to curses colors
 ANSI_TO_CURSES_COLOR = {
@@ -2437,9 +2452,12 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if not max_connections:
 		max_connections = 4 * os.cpu_count()
 	elif max_connections == 0:
-		max_connections = 1048576
+		max_connections = __max_connections_nofile_limit_supported
 	elif max_connections < 0:
 		max_connections = (-max_connections) * os.cpu_count()
+	if __max_connections_nofile_limit_supported > 0 and max_connections > __max_connections_nofile_limit_supported:
+		eprint(f"Warning: The number of maximum connections {max_connections} is larger than estimated limit {__max_connections_nofile_limit_supported} from ulimit nofile limit {__system_nofile_limit}, setting the maximum connections to {__max_connections_nofile_limit_supported}.")
+		max_connections = __max_connections_nofile_limit_supported
 	if not commands:
 		commands = []
 	else:
