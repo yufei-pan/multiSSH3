@@ -45,7 +45,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.40'
+version = '5.41'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -361,12 +361,13 @@ if True:
 	__curses_color_table = {}
 	__curses_current_color_index = 10
 	__max_connections_nofile_limit_supported = 0
+	__thread_start_delay = 0
 	if __resource_lib_available:
 		# Get the current limits
 		_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
 		# Set the soft limit to the hard limit
 		resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
-		__max_connections_nofile_limit_supported = int((__system_nofile_limit - 5) / 4.6)
+		__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
 
 # Mapping of ANSI 4-bit colors to curses colors
 if __curses_available:
@@ -1166,7 +1167,7 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInput
 	
-def run_command(host, sem, timeout=60,passwds=None):
+def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
 
@@ -1184,6 +1185,11 @@ def run_command(host, sem, timeout=60,passwds=None):
 	global __ipmiiInterfaceIPPrefix
 	global _binPaths
 	global __DEBUG_MODE
+	if retry_limit < 0:
+		host.output.append('Error: Retry limit reached!')
+		host.stderr.append('Error: Retry limit reached!')
+		host.returncode = 1
+		return
 	try:
 		localExtraArgs = []
 		
@@ -1260,7 +1266,7 @@ def run_command(host, sem, timeout=60,passwds=None):
 					host.command = 'ipmitool power status'
 				else:
 					host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
-				run_command(host,sem,timeout,passwds)
+				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
 				return
 			else:
 				host.output.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
@@ -1279,7 +1285,7 @@ def run_command(host, sem, timeout=60,passwds=None):
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				run_command(host,sem,timeout,passwds)
+				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
 		else:
 			if host.files:
 				if host.scp:
@@ -1420,6 +1426,16 @@ def run_command(host, sem, timeout=60,passwds=None):
 			if host.stderr:
 				# filter out the error messages that we want to ignore
 				host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
+		# except os error too many open files
+		except OSError as e:
+			if e.errno == 24:  # Errno 24 corresponds to "Too many open files"
+				host.output.append("Warning: Too many open files. retrying...")
+				# Handle the error, e.g., clean up, retry logic, or exit
+				time.sleep(0.1)
+				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
+			else:
+				# Re-raise the exception if it's not the specific one
+				raise
 		except Exception as e:
 			import traceback
 			host.stderr.extend(str(e).split('\n'))
@@ -1436,7 +1452,7 @@ def run_command(host, sem, timeout=60,passwds=None):
 		host.ipmi = False
 		host.interface_ip_prefix = None
 		host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
-		run_command(host,sem,timeout,passwds)
+		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
 	# If transfering files, we will try again using scp if rsync connection is not successful
 	if host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
 		host.stderr = []
@@ -1445,7 +1461,7 @@ def run_command(host, sem, timeout=60,passwds=None):
 		if __DEBUG_MODE:
 			host.stderr.append('Rsync connection failed! Trying SCP connection...')
 		host.scp = True
-		run_command(host,sem,timeout,passwds)
+		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
 
 # ------------ Start Threading Block ----------------
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
@@ -1461,12 +1477,14 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cp
 	Returns:
 		list: A list of threads that get started
 	'''
+	global __thread_start_delay
 	if len(hosts) == 0:
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
 	threads = [threading.Thread(target=run_command, args=(host, sem,timeout,password), daemon=True) for host in hosts]
 	for thread in threads:
 		thread.start()
+		time.sleep(__thread_start_delay)
 	return threads
 
 # ------------ Display Block ----------------
@@ -2421,6 +2439,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global _no_env
 	global _emo
 	global __DEBUG_MODE
+	global __thread_start_delay
+	global __max_connections_nofile_limit_supported
 	_emo = False
 	_no_env = no_env
 	if os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')):
@@ -2456,9 +2476,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		max_connections = __max_connections_nofile_limit_supported
 	elif max_connections < 0:
 		max_connections = (-max_connections) * os.cpu_count()
-	if __max_connections_nofile_limit_supported > 0 and max_connections > __max_connections_nofile_limit_supported:
-		eprint(f"Warning: The number of maximum connections {max_connections} is larger than estimated limit {__max_connections_nofile_limit_supported} from ulimit nofile limit {__system_nofile_limit}, setting the maximum connections to {__max_connections_nofile_limit_supported}.")
-		max_connections = __max_connections_nofile_limit_supported
+	if __max_connections_nofile_limit_supported > 0:
+		if max_connections > __max_connections_nofile_limit_supported:
+			eprint(f"Warning: The number of maximum connections {max_connections} is larger than estimated limit {__max_connections_nofile_limit_supported} from ulimit nofile limit {__system_nofile_limit}, setting the maximum connections to {__max_connections_nofile_limit_supported}.")
+			max_connections = __max_connections_nofile_limit_supported
+		if max_connections > __max_connections_nofile_limit_supported * 2:
+			# we need to throttle thread start to avoid hitting the nofile limit
+			__thread_start_delay = 0.001
 	if not commands:
 		commands = []
 	else:
