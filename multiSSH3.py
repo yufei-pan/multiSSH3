@@ -369,24 +369,25 @@ if True:
 		__max_connections_nofile_limit_supported = int((__system_nofile_limit - 5) / 4.6)
 
 # Mapping of ANSI 4-bit colors to curses colors
-ANSI_TO_CURSES_COLOR = {
-	30: curses.COLOR_BLACK,
-	31: curses.COLOR_RED,
-	32: curses.COLOR_GREEN,
-	33: curses.COLOR_YELLOW,
-	34: curses.COLOR_BLUE,
-	35: curses.COLOR_MAGENTA,
-	36: curses.COLOR_CYAN,
-	37: curses.COLOR_WHITE,
-	90: curses.COLOR_BLACK,   # Bright Black (usually gray)
-	91: curses.COLOR_RED,     # Bright Red
-	92: curses.COLOR_GREEN,   # Bright Green
-	93: curses.COLOR_YELLOW,  # Bright Yellow
-	94: curses.COLOR_BLUE,    # Bright Blue
-	95: curses.COLOR_MAGENTA, # Bright Magenta
-	96: curses.COLOR_CYAN,    # Bright Cyan
-	97: curses.COLOR_WHITE    # Bright White
-}
+if __curses_available:
+	ANSI_TO_CURSES_COLOR = {
+		30: curses.COLOR_BLACK,
+		31: curses.COLOR_RED,
+		32: curses.COLOR_GREEN,
+		33: curses.COLOR_YELLOW,
+		34: curses.COLOR_BLUE,
+		35: curses.COLOR_MAGENTA,
+		36: curses.COLOR_CYAN,
+		37: curses.COLOR_WHITE,
+		90: curses.COLOR_BLACK,   # Bright Black (usually gray)
+		91: curses.COLOR_RED,     # Bright Red
+		92: curses.COLOR_GREEN,   # Bright Green
+		93: curses.COLOR_YELLOW,  # Bright Yellow
+		94: curses.COLOR_BLUE,    # Bright Blue
+		95: curses.COLOR_MAGENTA, # Bright Magenta
+		96: curses.COLOR_CYAN,    # Bright Cyan
+		97: curses.COLOR_WHITE    # Bright White
+	}
 # ------------ Exportable Help Functions ----------------
 # check if command sshpass is available
 _binPaths = {}
