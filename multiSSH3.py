@@ -45,7 +45,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.41'
+version = '5.42'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -1156,7 +1156,7 @@ def __handle_writing_stream(stream,stop_event,host):
 			sentInput += 1
 			host.lastUpdateTime = time.time()
 		else:
-			time.sleep(0.1)
+			time.sleep(0.01) # sleep for 10ms
 	if sentInput < len(__keyPressesIn) - 1 :
 		eprint(f"Warning: {len(__keyPressesIn)-sentInput} key presses are not sent before the process is terminated!")
 	# # send the last line
@@ -1364,6 +1364,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 			# Monitor the subprocess and terminate it after the timeout
 			host.lastUpdateTime = time.time()
 			timeoutLineAppended = False
+			sleep_interval = 1.0e-8 # 10 nanoseconds 
 			while proc.poll() is None:  # while the process is still running
 				if timeout > 0:
 					if time.time() - host.lastUpdateTime > timeout:
@@ -1371,7 +1372,6 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 						host.output.append('Timeout!')
 						proc.send_signal(signal.SIGINT)
 						time.sleep(0.1)
-
 						proc.terminate()
 						break
 					elif time.time() - host.lastUpdateTime >  max(1, timeout // 2):
@@ -1395,7 +1395,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 					time.sleep(0.1)
 					proc.terminate()
 					break
-				time.sleep(0.1)  # avoid busy-waiting
+				time.sleep(sleep_interval)  # avoid busy-waiting
+				if sleep_interval < 0.001:
+					sleep_interval *= 2
+				elif sleep_interval < 0.01:
+					sleep_interval *= 1.1
 			stdin_stop_event.set()
 			# Wait for output processing to complete
 			stdout_thread.join(timeout=1)
@@ -2258,7 +2262,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	if not returnUnfinished:
 		# wait until all hosts have a return code
 		while any([host.returncode is None for host in hosts]):
-			time.sleep(0.1)
+			time.sleep(0.01)
 		for thread in threads:
 			thread.join(timeout=3)
 	# update the unavailable hosts and global unavailable hosts
