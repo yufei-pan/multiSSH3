@@ -45,7 +45,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.42'
+version = '5.43'
 VERSION = version
 
 CONFIG_FILE = '/etc/multiSSH3.config.json'	
@@ -1420,12 +1420,14 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 					__handle_reading_stream(io.BytesIO(stderr),host.stderr, host)
 				# if the last line in host.stderr is Connection to * closed., we will remove it
 			host.returncode = proc.poll()
-			if not host.returncode:
+			if host.returncode is None:
 				# process been killed via timeout or sigkill
 				if host.stderr and host.stderr[-1].strip().startswith('Timeout!'):
 					host.returncode = 124
 				elif host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
 					host.returncode = 137
+				else:
+					host.returncode = -1
 			host.output.append(f'Command finished with return code {host.returncode}')
 			if host.stderr:
 				# filter out the error messages that we want to ignore
