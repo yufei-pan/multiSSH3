@@ -45,10 +45,18 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.43'
+version = '5.44'
 VERSION = version
 
-CONFIG_FILE = '/etc/multiSSH3.config.json'	
+CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
+					 '~/multiSSH3.config.json',
+					 '~/.multiSSH3.config.json',
+					 '~/.config/multiSSH3/multiSSH3.config.json',
+					 '/etc/multiSSH3.d/multiSSH3.config.json',
+					 '/etc/multiSSH3.config.json'] # The first one has the highest priority
+
+
+# TODO: Add terminal TUI with history support
 
 # ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
@@ -224,44 +232,42 @@ def load_config_file(config_file):
 		return {}
 	return config
 
-__configs_from_file = load_config_file(CONFIG_FILE)
-
-__build_in_default_config = {
-	'AUTHOR': 'Yufei Pan',
-	'AUTHOR_EMAIL': 'pan@zopyr.us',
-	'DEFAULT_HOSTS': 'all',
-	'DEFAULT_USERNAME': None,
-	'DEFAULT_PASSWORD': '',
-	'DEFAULT_IDENTITY_FILE': None,
-	'DEDAULT_SSH_KEY_SEARCH_PATH': '~/.ssh/',
-	'DEFAULT_USE_KEY': False,
-	'DEFAULT_EXTRA_ARGS': None,
-	'DEFAULT_ONE_ON_ONE': False,
-	'DEFAULT_SCP': False,
-	'DEFAULT_FILE_SYNC': False,
-	'DEFAULT_TIMEOUT': 50,
-	'DEFAULT_CLI_TIMEOUT': 0,
-	'DEFAULT_REPEAT': 1,
-	'DEFAULT_INTERVAL': 0,
-	'DEFAULT_IPMI': False,
-	'DEFAULT_IPMI_INTERFACE_IP_PREFIX': '',
-	'DEFAULT_INTERFACE_IP_PREFIX': None,
-	'DEFAULT_NO_WATCH': False,
-	'DEFAULT_CURSES_MINIMUM_CHAR_LEN': 40,
-	'DEFAULT_CURSES_MINIMUM_LINE_LEN': 1,
-	'DEFAULT_SINGLE_WINDOW': False,
-	'DEFAULT_ERROR_ONLY': False,
-	'DEFAULT_NO_OUTPUT': False,
-	'DEFAULT_NO_ENV': False,
-	'DEFAULT_ENV_FILE': '/etc/profile.d/hosts.sh',
-	'DEFAULT_MAX_CONNECTIONS': 4 * os.cpu_count(),
-	'DEFAULT_JSON_MODE': False,
-	'DEFAULT_PRINT_SUCCESS_HOSTS': False,
-	'DEFAULT_GREPPABLE_MODE': False,
-	'DEFAULT_SKIP_UNREACHABLE': True,
-	'DEFAULT_SKIP_HOSTS': '',
-	'SSH_STRICT_HOST_KEY_CHECKING': False,
-	'ERROR_MESSAGES_TO_IGNORE': [
+if True:
+	AUTHOR = 'Yufei Pan'
+	AUTHOR_EMAIL = 'pan@zopyr.us'
+	DEFAULT_HOSTS = 'all'
+	DEFAULT_USERNAME = None
+	DEFAULT_PASSWORD = ''
+	DEFAULT_IDENTITY_FILE = None
+	DEDAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
+	DEFAULT_USE_KEY = False
+	DEFAULT_EXTRA_ARGS = None
+	DEFAULT_ONE_ON_ONE = False
+	DEFAULT_SCP = False
+	DEFAULT_FILE_SYNC = False
+	DEFAULT_TIMEOUT = 50
+	DEFAULT_CLI_TIMEOUT = 0
+	DEFAULT_REPEAT = 1
+	DEFAULT_INTERVAL = 0
+	DEFAULT_IPMI = False
+	DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
+	DEFAULT_INTERFACE_IP_PREFIX = None
+	DEFAULT_NO_WATCH = False
+	DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
+	DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
+	DEFAULT_SINGLE_WINDOW = False
+	DEFAULT_ERROR_ONLY = False
+	DEFAULT_NO_OUTPUT = False
+	DEFAULT_NO_ENV = False
+	DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
+	DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+	DEFAULT_JSON_MODE = False
+	DEFAULT_PRINT_SUCCESS_HOSTS = False
+	DEFAULT_GREPPABLE_MODE = False
+	DEFAULT_SKIP_UNREACHABLE = True
+	DEFAULT_SKIP_HOSTS = ''
+	SSH_STRICT_HOST_KEY_CHECKING = False
+	ERROR_MESSAGES_TO_IGNORE = [
 		'Pseudo-terminal will not be allocated because stdin is not a terminal',
 		'Connection to .* closed',
 		'Warning: Permanently added',
@@ -269,79 +275,33 @@ __build_in_default_config = {
 		'disabling multiplexing',
 		'Killed by signal',
 		'Connection reset by peer',
-	],
-	'_DEFAULT_CALLED': True,
-	'_DEFAULT_RETURN_UNFINISHED': False,
-	'_DEFAULT_UPDATE_UNREACHABLE_HOSTS': True,
-	'_DEFAULT_NO_START': False,
-	'_etc_hosts': {},
-	'_sshpassPath': None,
-	'_sshPath': None,
-	'_scpPath': None,
-	'_ipmitoolPath': None,
-	'_rsyncPath': None,
-	'_shellPath': None,
-	'__ERROR_MESSAGES_TO_IGNORE_REGEX':None,
-	'__DEBUG_MODE': False,
-}
+	]
+	_DEFAULT_CALLED = True
+	_DEFAULT_RETURN_UNFINISHED = False
+	_DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
+	_DEFAULT_NO_START = False
+	_etc_hosts = {}
+	_sshpassPath = None
+	_sshPath = None
+	_scpPath = None
+	_ipmitoolPath = None
+	_rsyncPath = None
+	_shellPath = None
+	__ERROR_MESSAGES_TO_IGNORE_REGEX =None
+	__DEBUG_MODE = False
 
 # Load Config Based Default Global variables
 if True:
-	AUTHOR = __configs_from_file.get('AUTHOR', __build_in_default_config['AUTHOR'])
-	AUTHOR_EMAIL = __configs_from_file.get('AUTHOR_EMAIL', __build_in_default_config['AUTHOR_EMAIL'])
-
-	DEFAULT_HOSTS = __configs_from_file.get('DEFAULT_HOSTS', __build_in_default_config['DEFAULT_HOSTS'])
-	DEFAULT_ENV_FILE = __configs_from_file.get('DEFAULT_ENV_FILE', __build_in_default_config['DEFAULT_ENV_FILE'])
-	DEFAULT_USERNAME = __configs_from_file.get('DEFAULT_USERNAME', __build_in_default_config['DEFAULT_USERNAME'])
-	DEFAULT_PASSWORD = __configs_from_file.get('DEFAULT_PASSWORD', __build_in_default_config['DEFAULT_PASSWORD'])
-	DEFAULT_IDENTITY_FILE = __configs_from_file.get('DEFAULT_IDENTITY_FILE', __build_in_default_config['DEFAULT_IDENTITY_FILE'])
-	DEDAULT_SSH_KEY_SEARCH_PATH = __configs_from_file.get('DEDAULT_SSH_KEY_SEARCH_PATH', __build_in_default_config['DEDAULT_SSH_KEY_SEARCH_PATH'])
-	DEFAULT_USE_KEY = __configs_from_file.get('DEFAULT_USE_KEY', __build_in_default_config['DEFAULT_USE_KEY'])
-	DEFAULT_EXTRA_ARGS = __configs_from_file.get('DEFAULT_EXTRA_ARGS', __build_in_default_config['DEFAULT_EXTRA_ARGS'])
-	DEFAULT_ONE_ON_ONE = __configs_from_file.get('DEFAULT_ONE_ON_ONE', __build_in_default_config['DEFAULT_ONE_ON_ONE'])
-	DEFAULT_SCP = __configs_from_file.get('DEFAULT_SCP', __build_in_default_config['DEFAULT_SCP'])
-	DEFAULT_FILE_SYNC = __configs_from_file.get('DEFAULT_FILE_SYNC', __build_in_default_config['DEFAULT_FILE_SYNC'])
-	DEFAULT_TIMEOUT = __configs_from_file.get('DEFAULT_TIMEOUT', __build_in_default_config['DEFAULT_TIMEOUT'])
-	DEFAULT_CLI_TIMEOUT = __configs_from_file.get('DEFAULT_CLI_TIMEOUT', __build_in_default_config['DEFAULT_CLI_TIMEOUT'])
-	DEFAULT_REPEAT = __configs_from_file.get('DEFAULT_REPEAT', __build_in_default_config['DEFAULT_REPEAT'])
-	DEFAULT_INTERVAL = __configs_from_file.get('DEFAULT_INTERVAL', __build_in_default_config['DEFAULT_INTERVAL'])
-	DEFAULT_IPMI = __configs_from_file.get('DEFAULT_IPMI', __build_in_default_config['DEFAULT_IPMI'])
-	DEFAULT_IPMI_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_IPMI_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_IPMI_INTERFACE_IP_PREFIX'])
-	DEFAULT_INTERFACE_IP_PREFIX = __configs_from_file.get('DEFAULT_INTERFACE_IP_PREFIX', __build_in_default_config['DEFAULT_INTERFACE_IP_PREFIX'])
-	DEFAULT_NO_WATCH = __configs_from_file.get('DEFAULT_NO_WATCH', __build_in_default_config['DEFAULT_NO_WATCH'])
-	DEFAULT_CURSES_MINIMUM_CHAR_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_CHAR_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_CHAR_LEN'])
-	DEFAULT_CURSES_MINIMUM_LINE_LEN = __configs_from_file.get('DEFAULT_CURSES_MINIMUM_LINE_LEN', __build_in_default_config['DEFAULT_CURSES_MINIMUM_LINE_LEN'])
-	DEFAULT_SINGLE_WINDOW = __configs_from_file.get('DEFAULT_SINGLE_WINDOW', __build_in_default_config['DEFAULT_SINGLE_WINDOW'])
-	DEFAULT_ERROR_ONLY = __configs_from_file.get('DEFAULT_ERROR_ONLY', __build_in_default_config['DEFAULT_ERROR_ONLY'])
-	DEFAULT_NO_OUTPUT = __configs_from_file.get('DEFAULT_NO_OUTPUT', __build_in_default_config['DEFAULT_NO_OUTPUT'])
-	DEFAULT_NO_ENV = __configs_from_file.get('DEFAULT_NO_ENV', __build_in_default_config['DEFAULT_NO_ENV'])
-	DEFAULT_MAX_CONNECTIONS = __configs_from_file.get('DEFAULT_MAX_CONNECTIONS', __build_in_default_config['DEFAULT_MAX_CONNECTIONS'])
-	if not DEFAULT_MAX_CONNECTIONS:
-		DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
-	DEFAULT_JSON_MODE = __configs_from_file.get('DEFAULT_JSON_MODE', __build_in_default_config['DEFAULT_JSON_MODE'])
-	DEFAULT_PRINT_SUCCESS_HOSTS = __configs_from_file.get('DEFAULT_PRINT_SUCCESS_HOSTS', __build_in_default_config['DEFAULT_PRINT_SUCCESS_HOSTS'])
-	DEFAULT_GREPPABLE_MODE = __configs_from_file.get('DEFAULT_GREPPABLE_MODE', __build_in_default_config['DEFAULT_GREPPABLE_MODE'])
-	DEFAULT_SKIP_UNREACHABLE = __configs_from_file.get('DEFAULT_SKIP_UNREACHABLE', __build_in_default_config['DEFAULT_SKIP_UNREACHABLE'])
-	DEFAULT_SKIP_HOSTS = __configs_from_file.get('DEFAULT_SKIP_HOSTS', __build_in_default_config['DEFAULT_SKIP_HOSTS'])
-
-	SSH_STRICT_HOST_KEY_CHECKING = __configs_from_file.get('SSH_STRICT_HOST_KEY_CHECKING', __build_in_default_config['SSH_STRICT_HOST_KEY_CHECKING'])
-
-	ERROR_MESSAGES_TO_IGNORE = __configs_from_file.get('ERROR_MESSAGES_TO_IGNORE', __build_in_default_config['ERROR_MESSAGES_TO_IGNORE'])
-
-	_DEFAULT_CALLED = __configs_from_file.get('_DEFAULT_CALLED', __build_in_default_config['_DEFAULT_CALLED'])
-	_DEFAULT_RETURN_UNFINISHED = __configs_from_file.get('_DEFAULT_RETURN_UNFINISHED', __build_in_default_config['_DEFAULT_RETURN_UNFINISHED'])
-	_DEFAULT_UPDATE_UNREACHABLE_HOSTS = __configs_from_file.get('_DEFAULT_UPDATE_UNREACHABLE_HOSTS', __build_in_default_config['_DEFAULT_UPDATE_UNREACHABLE_HOSTS'])
-	_DEFAULT_NO_START = __configs_from_file.get('_DEFAULT_NO_START', __build_in_default_config['_DEFAULT_NO_START'])
-
+	__configs_from_file = {}
+	for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
+		__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
+	globals().update(__configs_from_file)
 	# form the regex from the list
-	__ERROR_MESSAGES_TO_IGNORE_REGEX = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX', __build_in_default_config['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
 	if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-		eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX from config file, ignoring ERROR_MESSAGES_TO_IGNORE')
-		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__configs_from_file['__ERROR_MESSAGES_TO_IGNORE_REGEX'])
+		eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
 	else:
 		__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
-
-	__DEBUG_MODE = __configs_from_file.get('__DEBUG_MODE', __build_in_default_config['__DEBUG_MODE'])
 
 # Load mssh Functional Global Variables
 if True:
@@ -355,7 +315,6 @@ if True:
 	__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
 	__keyPressesIn = [[]]
 	_emo = False
-	_etc_hosts = __configs_from_file.get('_etc_hosts', __build_in_default_config['_etc_hosts'])
 	__curses_global_color_pairs = {(-1,-1):1}
 	__curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
 	__curses_color_table = {}
@@ -394,12 +353,11 @@ if __curses_available:
 _binPaths = {}
 def check_path(program_name):
 	global __configs_from_file
-	global __build_in_default_config
 	global _binPaths
 	config_key = f'_{program_name}Path'
 	program_path = (
 		__configs_from_file.get(config_key) or
-		__build_in_default_config.get(config_key) or
+		globals().get(config_key) or
 		shutil.which(program_name)
 	)
 	if program_path:
@@ -2715,14 +2673,45 @@ def generate_default_config(args):
 		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
 	}
 
-def write_default_config(args,CONFIG_FILE,backup = True):
-	if backup and os.path.exists(CONFIG_FILE):
-		os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
+def write_default_config(args,CONFIG_FILE = None):
 	default_config = generate_default_config(args)
 	# apply the updated defualt_config to __configs_from_file and write that to file
 	__configs_from_file.update(default_config)
-	with open(CONFIG_FILE,'w') as f:
-		json.dump(__configs_from_file,f,indent=4)
+	if not CONFIG_FILE:
+		print(json.dumps(__configs_from_file, indent=4))
+		return
+	backup = True
+	if os.path.exists(CONFIG_FILE):
+		eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
+		eprint(f"o:  Overwrite the file")
+		eprint(f"b:  Rename the current config file at {CONFIG_FILE!r}.bak forcefully and write the new config file (default)")
+		eprint(f"n:  Do nothing")
+		inStr = input_with_timeout_and_countdown(10)
+		if (not inStr) or inStr.lower().strip().startswith('b'):
+			backup = True
+		elif inStr.lower().strip().startswith('o'):
+			backup = False
+		else:
+			eprint("Aborted")
+			sys.exit(1)
+	try:
+		if backup and os.path.exists(CONFIG_FILE):
+			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
+	except Exception as e:
+		eprint(f"Error: Unable to backup the config file: {e!r}")
+		eprint(f"Do you want to continue writing the new config file to {CONFIG_FILE!r}? (y/n)")
+		inStr = input_with_timeout_and_countdown(10)
+		if not inStr or not inStr.lower().strip().startswith('y'):
+			eprint("Aborted")
+			sys.exit(1)
+	try:
+		with open(CONFIG_FILE,'w') as f:
+			json.dump(__configs_from_file,f,indent=4)
+		eprint(f"Config file written to {CONFIG_FILE!r}")
+	except Exception as e:
+		eprint(f"Error: Unable to write to the config file: {e!r}")
+		eprint(f'Printing the config file to stdout:')
+		print(json.dumps(__configs_from_file, indent=4))
 
 # ------------ Wrapper Block ----------------
 def main():
@@ -2734,11 +2723,12 @@ def main():
 	global _binPaths
 	global _env_file
 	global __DEBUG_MODE
+	global __configs_from_file
 	_emo = False
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments
-	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file: {CONFIG_FILE}')
+	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file chain: {CONFIG_FILE_CHAIN!r}')
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
@@ -2775,7 +2765,9 @@ def main():
 	group.add_argument("-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
 
 	parser.add_argument("-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
-	parser.add_argument('--store_config_file', action='store_true', help=f'Store / generate the default config file from command line argument and current config at {CONFIG_FILE}')
+	parser.add_argument('--generate_config_file', action='store_true', help=f'Store / generate the default config file from command line argument and current config at --config_file / stdout')
+	parser.add_argument('--config_file', type=str,nargs='?', help=f'Additional config file to use, will pioritize over config chains. When using with store_config_file, will store the resulting config file at this location. Use without a path will use multiSSH3.config.json',const='multiSSH3.config.json',default=None)
+	parser.add_argument('--store_config_file',type = str,nargs='?',help=f'Store the default config file from command line argument and current config. Same as --store_config_file --config_file=<path>',const='multiSSH3.config.json')
 	parser.add_argument('--debug', action='store_true', help='Print debug information')
 	parser.add_argument('-ci','--copy_id', action='store_true', help='Copy the ssh id to the hosts')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
@@ -2796,33 +2788,26 @@ def main():
 			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
 			args.commands += unknown
 			
-			
-
-	if args.store_config_file:
-		try:
-			if os.path.exists(CONFIG_FILE):
-				eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
-				eprint(f"o:  Overwrite the file")
-				eprint(f"b:  Rename the current config file at {CONFIG_FILE!r}.bak forcefully and write the new config file (default)")
-				eprint(f"n:  Do nothing")
-				inStr = input_with_timeout_and_countdown(10)
-				if (not inStr) or inStr.lower().strip().startswith('b'):
-					write_default_config(args,CONFIG_FILE,backup = True)
-					eprint(f"Config file written to {CONFIG_FILE!r}")
-				elif inStr.lower().strip().startswith('o'):
-					write_default_config(args,CONFIG_FILE,backup = False)
-					eprint(f"Config file written to {CONFIG_FILE!r}")
-			else:
-				write_default_config(args,CONFIG_FILE,backup = True)
-				eprint(f"Config file written to {CONFIG_FILE!r}")
-		except Exception as e:
-			eprint(f"Error while writing config file: {e!r}")
-			import traceback
-			eprint(traceback.format_exc())
-		if not args.commands:
-			with open(CONFIG_FILE,'r') as f:
+	if args.generate_config_file or args.store_config_file:
+		if args.store_config_file:
+			configFileToWriteTo = args.store_config_file
+			if args.config_file:
+				if os.path.exists(args.config_file):
+					__configs_from_file.update(load_config_file(os.path.expanduser(args.config_file)))
+				else:
+					eprint(f"Warning: Pre store config file {args.config_file!r} not found.")
+		else:
+			configFileToWriteTo = args.config_file
+		write_default_config(args,configFileToWriteTo)
+		if not args.commands and configFileToWriteTo:
+			with open(configFileToWriteTo,'r') as f:
 				eprint(f"Config file content: \n{f.read()}")
 			sys.exit(0)
+	if args.config_file:
+		if os.path.exists(args.config_file):
+			__configs_from_file.update(load_config_file(os.path.expanduser(args.config_file)))
+		else:
+			eprint(f"Warning: Config file {args.config_file!r} not found, ignoring it.")
 
 	_env_file = args.env_file
 	__DEBUG_MODE = args.debug
