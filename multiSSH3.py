@@ -33,6 +33,7 @@ import getpass
 import uuid
 import tempfile
 import math
+from itertools import count
 
 try:
 	# Check if functiools.cache is available
@@ -45,7 +46,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.44'
+version = '5.45'
 VERSION = version
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -157,8 +158,8 @@ def getIP(hostname: str,local=False):
 	except:
 		return None
 
-__host_i_lock = threading.Lock()
-__host_i_counter = -1
+
+_i_counter = count()
 def _get_i():
 	'''
 	Get the global counter for the host objects
@@ -166,15 +167,11 @@ def _get_i():
 	Returns:
 	int: The global counter for the host objects
 	'''
-	global __host_i_counter
-	global __host_i_lock
-	with __host_i_lock:
-		__host_i_counter += 1
-		return __host_i_counter
+	return next(_i_counter)
 
 # ------------ Host Object ----------------
 class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = _get_i(),uuid=uuid.uuid4(),ip = None):
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=uuid.uuid4(),ip = None):
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -193,7 +190,7 @@ class Host:
 		self.extraargs = extraargs # extra arguments to be passed to ssh
 		self.resolvedName = None # the resolved IP address of the host
 		# also store a globally unique integer i from 0
-		self.i = i
+		self.i = i if i != -1 else _get_i()
 		self.uuid = uuid
 		self.identity_file = identity_file
 		self.ip = ip if ip else getIP(name)
