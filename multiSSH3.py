@@ -46,7 +46,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.46'
+version = '5.47'
 VERSION = version
 COMMIT_DATE = '2025-01-30'
 
@@ -1879,7 +1879,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# with open('keylog.txt','a') as f:
 				#     f.write(str(key)+'\n')
 				if key == 410: # 410 is the key code for resize
-					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize requested')      
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize requested')    
+				# if the user pressed ctrl + d and the last line is empty, we will exit by adding 'exit\n' to the last line
+				elif key == 4 and not __keyPressesIn[-1]:
+					__keyPressesIn[-1].extend('exit\n')
+					__keyPressesIn.append([])
 				elif key == 95 and not __keyPressesIn[-1]: # 95 is the key code for _
 					# if last line is empty, we will reconfigure the wh to be smaller
 					if min_line_len != 1:
