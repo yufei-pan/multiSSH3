@@ -46,8 +46,9 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.45'
+version = '5.46'
 VERSION = version
+COMMIT_DATE = '2025-01-30'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1718,13 +1719,16 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 	charsWritten = 0
 	boxAttr = __parse_ansi_escape_sequence_to_curses_attr(box_ansi_color)
 	# first add the lead_str
-	window.addnstr(y, x, lead_str, numChar, boxAttr)
-	charsWritten = min(len(lead_str), numChar)
+	if len(lead_str) > 0:
+		window.addnstr(y, x, lead_str, numChar, boxAttr)
+		charsWritten = min(len(lead_str), numChar)
 	# process centering
 	if centered:
 		fill_length = numChar - len(lead_str) - len(trail_str) - sum([len(segment) for segment in segments if not segment.startswith("\x1b[")])
-		window.addnstr(y, x + charsWritten, fill_char * (fill_length // 2 // len(fill_char)), numChar - charsWritten, boxAttr)
-		charsWritten += min(len(fill_char * (fill_length // 2)), numChar - charsWritten)
+		leading_fill_length = fill_length // 2
+		if leading_fill_length > 0:
+			window.addnstr(y, x + charsWritten, fill_char * (leading_fill_length // len(fill_char) + 1), leading_fill_length, boxAttr)
+			charsWritten += leading_fill_length
 	# add the segments
 	for segment in segments:
 		if not segment:
@@ -1734,17 +1738,17 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 			newAttr = __parse_ansi_escape_sequence_to_curses_attr(segment,color_pair_list)
 		else:
 			# Add text with current color
-			if charsWritten < numChar:
+			if charsWritten < numChar and len(segment) > 0:
 				window.addnstr(y, x + charsWritten, segment, numChar - charsWritten, color_pair_list[2])
 				charsWritten += min(len(segment), numChar - charsWritten)
 	# if we have finished printing segments but we still have space, we will fill it with fill_char
-	if charsWritten + len(trail_str) < numChar:
-		fillStr = fill_char * ((numChar - charsWritten - len(trail_str))//len(fill_char))
-		#fillStr = f'{color_pair_list}'
-		window.addnstr(y, x + charsWritten, fillStr + trail_str, numChar - charsWritten, boxAttr)
-		charsWritten += numChar - charsWritten
-	else:
+	trail_fill_length = numChar - charsWritten - len(trail_str)
+	if trail_fill_length > 0:
+		window.addnstr(y, x + charsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length, boxAttr)
+		charsWritten += trail_fill_length
+	if len(trail_str) > 0 and charsWritten < numChar:
 		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxAttr)
+		charsWritten += min(len(trail_str), numChar - charsWritten)
 
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	'''
@@ -2767,7 +2771,7 @@ def main():
 	parser.add_argument('--store_config_file',type = str,nargs='?',help=f'Store the default config file from command line argument and current config. Same as --store_config_file --config_file=<path>',const='multiSSH3.config.json')
 	parser.add_argument('--debug', action='store_true', help='Print debug information')
 	parser.add_argument('-ci','--copy_id', action='store_true', help='Copy the ssh id to the hosts')
-	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
+	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
 	#                     help='the user to use to connect to the hosts')
