@@ -34,6 +34,7 @@ import uuid
 import tempfile
 import math
 from itertools import count
+import queue
 
 try:
 	# Check if functiools.cache is available
@@ -46,7 +47,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.47'
+version = '5.48'
 VERSION = version
 COMMIT_DATE = '2025-01-30'
 
@@ -90,31 +91,68 @@ def signal_handler(sig, frame):
 		os.system(f'pkill -ef {os.path.basename(__file__)}')
 		sys.exit(0)
 
+# def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
+# 	"""
+# 	Read an input from the user with a timeout and a countdown.
+
+# 	Parameters:
+# 	timeout (int): The timeout value in seconds.
+# 	prompt (str): The prompt message to display to the user. Default is 'Please enter your selection'.
+
+# 	Returns:
+# 	str or None: The user input if received within the timeout, or None if no input is received.
+# 	"""
+# 	import select
+# 	# Print the initial prompt with the countdown
+# 	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
+# 	# Loop until the timeout
+# 	for remaining in range(timeout, 0, -1):
+# 		# If there is an input, return it
+# 		# this only works on linux
+# 		if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+# 			return input().strip()
+# 		# Print the remaining time
+# 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
+# 		# Wait a second
+# 		time.sleep(1)
+# 	# If there is no input, return None
+# 	return None
+
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
 	"""
-	Read an input from the user with a timeout and a countdown.
-
-	Parameters:
-	timeout (int): The timeout value in seconds.
-	prompt (str): The prompt message to display to the user. Default is 'Please enter your selection'.
-
-	Returns:
-	str or None: The user input if received within the timeout, or None if no input is received.
+	Read input from the user with a timeout (cross-platform).
+	If the user does not enter any input within `timeout` seconds, return None.
+	Otherwise, return the input string.
 	"""
-	import select
-	# Print the initial prompt with the countdown
+	# Queue to receive user input from the background thread
+	input_queue = queue.Queue()
+	def read_input():
+		# Read line from stdin and put it in the queue
+		user_input = sys.stdin.readline()
+		input_queue.put(user_input)
+	# Start a thread that will block on input()
+	input_thread = threading.Thread(target=read_input, daemon=True)
+	input_thread.start()
+	# Print the initial prompt
 	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
-	# Loop until the timeout
-	for remaining in range(timeout, 0, -1):
-		# If there is an input, return it
-		if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-			return input().strip()
-		# Print the remaining time
+	# Countdown loop
+	start_time = time.time()
+	while True:
+		# Check if the input thread has finished (i.e., user pressed Enter)
+		if not input_queue.empty():
+			# We got user input
+			user_input = input_queue.get().strip()
+			eprint()  # move to the next line
+			return user_input
+		elapsed = int(time.time() - start_time)
+		remaining = timeout - elapsed
+		if remaining <= 0:
+			# Time is up, no input
+			eprint()  # move to the next line
+			return None
+		# Update prompt countdown
 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
-		# Wait a second
 		time.sleep(1)
-	# If there is no input, return None
-	return None
 
 @cache_decorator
 def getIP(hostname: str,local=False):
