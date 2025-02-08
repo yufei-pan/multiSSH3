@@ -47,8 +47,9 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.48'
+version = '5.50'
 VERSION = version
+__version__ = version
 COMMIT_DATE = '2025-01-30'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -2175,18 +2176,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		#time.sleep(0.25)
 
 # ------------ Generate Output Block ----------------
-def print_output(hosts,usejson = False,quiet = False,greppable = False):
-	'''
-	Print / generate the output of the hosts to the terminal
-
-	Args:
-		hosts (list): A list of Host objects
-		usejson (bool, optional): Whether to print the output in JSON format. Defaults to False.
-		quiet (bool, optional): Whether to print the output. Defaults to False.
-
-	Returns:
-		str: The pretty output generated 
-	'''
+def generate_output(hosts, usejson = False, greppable = False):
 	global __keyPressesIn
 	global __global_suppress_printout
 	hosts = [dict(host) for host in hosts]
@@ -2251,6 +2241,21 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 			__keyPressesIn = [[]]
 		if __global_suppress_printout and not outputs:
 			rtnStr += 'Success'
+		return rtnStr
+
+def print_output(hosts,usejson = False,quiet = False,greppable = False):
+	'''
+	Print / generate the output of the hosts to the terminal
+
+	Args:
+		hosts (list): A list of Host objects
+		usejson (bool, optional): Whether to print the output in JSON format. Defaults to False.
+		quiet (bool, optional): Whether to print the output. Defaults to False.
+
+	Returns:
+		str: The pretty output generated 
+	'''
+	rtnStr = generate_output(hosts,usejson,greppable)
 	if not quiet:
 		print(rtnStr)
 	return rtnStr
@@ -2448,6 +2453,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __DEBUG_MODE
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
+	global __keyPressesIn
 	_emo = False
 	_no_env = no_env
 	if os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')):
@@ -2511,6 +2517,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			unavailableHosts = __globalUnavailableHosts
 		else:
 			unavailableHosts = set()
+		# set global input to empty
+		__keyPressesIn = [[]]
 	else:
 		# if run in command line ( or emulating running in command line, we default to skip unreachable hosts within one command call )
 		if skipUnreachable:
