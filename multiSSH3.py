@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.6"
+# dependencies = [
+#     "argparse",
+#     "ipaddress",
+# ]
+# ///
 __curses_available = False
 __resource_lib_available = False
 try:
