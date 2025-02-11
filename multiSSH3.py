@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.50'
+version = '5.51'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-01-30'
@@ -1366,7 +1366,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 			# Monitor the subprocess and terminate it after the timeout
 			host.lastUpdateTime = time.time()
 			timeoutLineAppended = False
-			sleep_interval = 1.0e-8 # 10 nanoseconds 
+			sleep_interval = 1.0e-7 # 100 nanoseconds 
 			while proc.poll() is None:  # while the process is still running
 				if timeout > 0:
 					if time.time() - host.lastUpdateTime > timeout:
@@ -2271,13 +2271,27 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
 	global __globalUnavailableHosts
 	global _no_env
+	sleep_interval =  1.0e-7 # 0.1 microseconds
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
-	if __curses_available and not nowatch and threads and not returnUnfinished and any([thread.is_alive() for thread in threads]) and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
-		curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
+	if __curses_available and not nowatch and threads and not returnUnfinished  and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
+		total_sleeped = 0
+		while any([host.returncode is None for host in hosts]):
+			time.sleep(sleep_interval)  # avoid busy-waiting
+			total_sleeped += sleep_interval
+			if sleep_interval < 0.001:
+				sleep_interval *= 2
+			elif sleep_interval < 0.01:
+				sleep_interval *= 1.1
+			if total_sleeped > 0.1:
+				break
+		if any([host.returncode is None for host in hosts]):
+			curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
 	if not returnUnfinished:
 		# wait until all hosts have a return code
 		while any([host.returncode is None for host in hosts]):
-			time.sleep(0.01)
+			time.sleep(sleep_interval)  # avoid busy-waiting
+			if sleep_interval < 0.01:
+				sleep_interval *= 1.1
 		for thread in threads:
 			thread.join(timeout=3)
 	# update the unavailable hosts and global unavailable hosts
