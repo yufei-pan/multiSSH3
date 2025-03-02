@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.52'
+version = '5.53'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-03-01'
@@ -491,7 +491,7 @@ def replace_magic_strings(string,keys,value,case_sensitive=False):
 	return string
 
 def pretty_format_table(data, delimiter = '\t',header = None):
-    version = 1.1
+    version = 1.11
     if not data:
         return ''
     if type(data) == str:
@@ -521,6 +521,9 @@ def pretty_format_table(data, delimiter = '\t',header = None):
         #col_widths[c] = max(len(row[c]) for row in data)
         # handle ansii escape sequences
         col_widths[c] = max(len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',row[c])) for row in data)
+    if header:
+        header_widths = [len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', col)) for col in header]
+        col_widths = [max(col_widths[i], header_widths[i]) for i in range(num_cols)]
     # Build the row format string
     row_format = ' | '.join('{{:<{}}}'.format(width) for width in col_widths)
     # Print the header
