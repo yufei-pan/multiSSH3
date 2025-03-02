@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.53'
+version = '5.54'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-03-01'
@@ -494,7 +494,7 @@ def pretty_format_table(data, delimiter = '\t',header = None):
     version = 1.11
     if not data:
         return ''
-    if type(data) == str:
+    if isinstance(data, str):
         data = data.strip('\n').split('\n')
         data = [line.split(delimiter) for line in data]
     elif isinstance(data, dict):
@@ -506,7 +506,7 @@ def pretty_format_table(data, delimiter = '\t',header = None):
         else:
             # it is a dict of lists
             data = [[key] + list(value) for key, value in data.items()]
-    elif type(data) != list:
+    elif not isinstance(data, list):
         data = list(data)
     # format the list into 2d list of list of strings
     if isinstance(data[0], dict):
@@ -1238,9 +1238,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 		host.command = replace_magic_strings(host.command,['#PASSWD#','#PASSWORD#'],passwds,case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#UUID#'],str(host.uuid),case_sensitive=False)
 		formatedCMD = []
-		if host.extraargs and type(host.extraargs) == str:
+		if host.extraargs and isinstance(host.extraargs, str):
 			extraargs = host.extraargs.split()
-		elif host.extraargs and type(host.extraargs) == list:
+		elif host.extraargs and isinstance(host.extraargs, list):
 			extraargs = [str(arg) for arg in host.extraargs]
 		else:
 			extraargs = []
@@ -2377,7 +2377,7 @@ def formHostStr(host) -> str:
 	"""
 	if not host or len(host) == 0:
 		return 'EMPTY_HOSTS'
-	if type(host) is str:
+	if isinstance(host, str):
 		host = set(host.replace(',',' ').replace('\n',' ').replace('\r',' ').replace('\t',' ').replace(';', ' ').replace('|', ' ').replace('/', ' ').replace('&',' ').split())
 	else:
 		host = set(host)
@@ -2429,7 +2429,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False,
 						 shortend = False):
-	hosts = hosts if type(hosts) == str else frozenset(hosts)
+	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
 	hostStr = formHostStr(hosts)
 	files = frozenset(files) if files else None
 	argsStr = __formCommandArgStr(oneonone = oneonone, timeout = timeout,password = password,
@@ -2543,10 +2543,10 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if not commands:
 		commands = []
 	else:
-		commands = [commands] if type(commands) == str else commands
+		commands = [commands] if isinstance(commands,str) else commands
 		# reformat commands into a list of strings, join the iterables if they are not strings
 		try:
-			commands = [' '.join(command) if not type(command) == str else command for command in commands]
+			commands = [' '.join(command) if not isinstance(command,str) else command for command in commands]
 		except:
 			pass
 			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures.")
