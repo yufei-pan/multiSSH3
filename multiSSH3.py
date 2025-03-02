@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.51'
+version = '5.52'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-01-30'
+COMMIT_DATE = '2025-03-01'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
