@@ -144,7 +144,7 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 	# Print the initial prompt
 	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
 	# Countdown loop
-	start_time = time.monotonic()
+	start_time = time.time()
 	while True:
 		# Check if the input thread has finished (i.e., user pressed Enter)
 		if not input_queue.empty():
@@ -152,7 +152,7 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 			user_input = input_queue.get().strip()
 			eprint()  # move to the next line
 			return user_input
-		elapsed = int(time.monotonic() - start_time)
+		elapsed = int(time.time() - start_time)
 		remaining = timeout - elapsed
 		if remaining <= 0:
 			# Time is up, no input
@@ -227,7 +227,7 @@ class Host:
 		self.stderr = [] # the stderr of the command
 		self.printedLines = -1 # the number of lines printed on the screen
 		self.lineNumToReprintSet = set() # whether to reprint the last line
-		self.lastUpdateTime = time.monotonic() # the last time the output was updated
+		self.lastUpdateTime = time.time() # the last time the output was updated
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
 		self.shell = shell # whether to use shell to run the command
@@ -1134,7 +1134,7 @@ def __handle_reading_stream(stream,target, host):
 		target.append(current_line_str)
 		host.output.append(current_line_str)
 		host.lineNumToReprintSet.add(len(host.output)-1)
-		host.lastUpdateTime = time.monotonic()
+		host.lastUpdateTime = time.time()
 	current_line = bytearray()
 	lastLineCommited = True
 	for char in iter(lambda:stream.read(1), b''):
@@ -1179,7 +1179,7 @@ def __handle_writing_stream(stream,stop_event,host):
 			host.output.append(line)
 			host.stdout.append(line)
 			sentInput += 1
-			host.lastUpdateTime = time.monotonic()
+			host.lastUpdateTime = time.time()
 		else:
 			time.sleep(0.01) # sleep for 10ms
 	if sentInput < len(__keyPressesIn) - 1 :
@@ -1387,20 +1387,20 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 			stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
 			stdin_thread.start()
 			# Monitor the subprocess and terminate it after the timeout
-			host.lastUpdateTime = time.monotonic()
+			host.lastUpdateTime = time.time()
 			timeoutLineAppended = False
 			sleep_interval = 1.0e-7 # 100 nanoseconds 
 			while proc.poll() is None:  # while the process is still running
 				if timeout > 0:
-					if time.monotonic() - host.lastUpdateTime > timeout:
+					if time.time() - host.lastUpdateTime > timeout:
 						host.stderr.append('Timeout!')
 						host.output.append('Timeout!')
 						proc.send_signal(signal.SIGINT)
 						time.sleep(0.1)
 						proc.terminate()
 						break
-					elif time.monotonic() - host.lastUpdateTime >  max(1, timeout // 2):
-						timeoutLine = f'Timeout in [{timeout - int(time.monotonic() - host.lastUpdateTime)}] seconds!'
+					elif time.time() - host.lastUpdateTime >  max(1, timeout // 2):
+						timeoutLine = f'Timeout in [{timeout - int(time.time() - host.lastUpdateTime)}] seconds!'
 						if host.output and not host.output[-1].strip().startswith(timeoutLine):
 							# remove last line if it is a countdown
 							if host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
@@ -2333,7 +2333,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 			# check for the old content, only update if the new content is different
 			if not os.path.exists(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv')):
 				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv'),'w') as f:
-					f.write(f',{int(time.monotonic())}\n'.join(unavailableHosts) + f',{int(time.monotonic())}\n')
+					f.write(f',{int(time.time())}\n'.join(unavailableHosts) + f',{int(time.time())}\n')
 			else:
 				oldDic = {}
 				try:
@@ -2346,11 +2346,11 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 					pass
 				# remove entries that are either available now or older than min(timeout,3600) seconds
 				for key in list(oldDic.keys()):
-					if key in reachableHosts or time.monotonic() < oldDic[key] or time.monotonic() - oldDic[key] > min(timeout,3600):
+					if key in reachableHosts or time.time() - oldDic[key] > min(timeout,3600):
 						del oldDic[key]
 				# add new entries
 				for host in unavailableHosts:
-					oldDic[host] = int(time.monotonic	())
+					oldDic[host] = int(time.time())
 				with open(os.path.join(tempfile.gettempdir(),'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),'w') as f:
 					for key, value in oldDic.items():
 						f.write(f'{key},{value}\n')
@@ -2517,7 +2517,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					for line in f:
 						line = line.strip()
 						if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
-							if int(line.split(',')[1]) < time.monotonic() and int(line.split(',')[1]) + checkTime > time.monotonic():
+							if int(line.split(',')[1]) > time.time() - checkTime:
 								__globalUnavailableHosts.add(line.split(',')[0])
 								readed = True
 			if readed and not __global_suppress_printout:
@@ -2573,6 +2573,10 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
+	if isinstance(hosts, list):
+		hosts = frozenset(hosts)
+	elif isinstance(hosts, dict):
+		hosts = frozenset(hosts.keys())
 	hostStr = formHostStr(hosts)
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
 
