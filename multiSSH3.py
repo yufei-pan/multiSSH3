@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.56'
+version = '5.57'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-03-06'
@@ -2160,23 +2160,23 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 	# generate some debug information before display initialization
 	try:
 		stdscr.clear()
-		_curses_add_string_to_window(window=stdscr, y=0, line='Initializing display...', n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=0, line='Initializing display...', number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the size
-		_curses_add_string_to_window(window=stdscr, y=1, line=f"Terminal size: {stdscr.getmaxyx()}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=1, line=f"Terminal size: {stdscr.getmaxyx()}",number_of_char_to_writen=stdscr.getmaxyx()[1] - 1)
 		# print the number of hosts
-		_curses_add_string_to_window(window=stdscr, y=2, line=f"Number of hosts: {len(hosts)}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=2, line=f"Number of hosts: {len(hosts)}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the number of threads
-		_curses_add_string_to_window(window=stdscr, y=3, line=f"Number of threads: {len(threads)}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=3, line=f"Number of threads: {len(threads)}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the minimum character length
-		_curses_add_string_to_window(window=stdscr, y=4, line=f"Minimum character length: {min_char_len}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=4, line=f"Minimum character length: {min_char_len}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the minimum line length
-		_curses_add_string_to_window(window=stdscr, y=5, line=f"Minimum line length: {min_line_len}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=5, line=f"Minimum line length: {min_line_len}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the single window mode
-		_curses_add_string_to_window(window=stdscr, y=6, line=f"Single window mode: {single_window}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=6, line=f"Single window mode: {single_window}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print COLORS and COLOR_PAIRS count
-		_curses_add_string_to_window(window=stdscr, y=7, line=f"len(COLORS): {curses.COLORS} len(COLOR_PAIRS): {curses.COLOR_PAIRS}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=7, line=f"len(COLORS): {curses.COLORS} len(COLOR_PAIRS): {curses.COLOR_PAIRS}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print if can change color
-		_curses_add_string_to_window(window=stdscr, y=8, line=f"Real color capability: {curses.can_change_color()}", n=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=8, line=f"Real color capability: {curses.can_change_color()}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		stdscr.refresh()
 	except:
 		pass
