@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.57'
+version = '5.58'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-03-06'
@@ -69,7 +69,7 @@ CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 
 # TODO: Add terminal TUI with history support
 
-# ------------ Pre Helper Functions ----------------
+#%% ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
 	try:
 		print(*args, file=sys.stderr, **kwargs)
@@ -216,7 +216,7 @@ def _get_i():
 	'''
 	return next(_i_counter)
 
-# ------------ Host Object ----------------
+#%% ------------ Host Object ----------------
 class Host:
 	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=uuid.uuid4(),ip = None):
 		self.name = name # the name of the host (hostname or IP address)
@@ -255,7 +255,7 @@ identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.curre
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
 
-# ------------ Load Defaults ( Config ) File ----------------
+#%% ------------ Load Defaults ( Config ) File ----------------
 def load_config_file(config_file):
 	'''
 	Load the config file to global variables
@@ -276,103 +276,101 @@ def load_config_file(config_file):
 		return {}
 	return config
 
-if True:
-	AUTHOR = 'Yufei Pan'
-	AUTHOR_EMAIL = 'pan@zopyr.us'
-	DEFAULT_HOSTS = 'all'
-	DEFAULT_USERNAME = None
-	DEFAULT_PASSWORD = ''
-	DEFAULT_IDENTITY_FILE = None
-	DEDAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
-	DEFAULT_USE_KEY = False
-	DEFAULT_EXTRA_ARGS = None
-	DEFAULT_ONE_ON_ONE = False
-	DEFAULT_SCP = False
-	DEFAULT_FILE_SYNC = False
-	DEFAULT_TIMEOUT = 50
-	DEFAULT_CLI_TIMEOUT = 0
-	DEFAULT_REPEAT = 1
-	DEFAULT_INTERVAL = 0
-	DEFAULT_IPMI = False
-	DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
-	DEFAULT_INTERFACE_IP_PREFIX = None
-	DEFAULT_NO_WATCH = False
-	DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
-	DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
-	DEFAULT_SINGLE_WINDOW = False
-	DEFAULT_ERROR_ONLY = False
-	DEFAULT_NO_OUTPUT = False
-	DEFAULT_NO_ENV = False
-	DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
-	DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
-	DEFAULT_JSON_MODE = False
-	DEFAULT_PRINT_SUCCESS_HOSTS = False
-	DEFAULT_GREPPABLE_MODE = False
-	DEFAULT_SKIP_UNREACHABLE = True
-	DEFAULT_SKIP_HOSTS = ''
-	SSH_STRICT_HOST_KEY_CHECKING = False
-	ERROR_MESSAGES_TO_IGNORE = [
-		'Pseudo-terminal will not be allocated because stdin is not a terminal',
-		'Connection to .* closed',
-		'Warning: Permanently added',
-		'mux_client_request_session',
-		'disabling multiplexing',
-		'Killed by signal',
-		'Connection reset by peer',
-	]
-	_DEFAULT_CALLED = True
-	_DEFAULT_RETURN_UNFINISHED = False
-	_DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
-	_DEFAULT_NO_START = False
-	_etc_hosts = {}
-	_sshpassPath = None
-	_sshPath = None
-	_scpPath = None
-	_ipmitoolPath = None
-	_rsyncPath = None
-	_shellPath = None
-	__ERROR_MESSAGES_TO_IGNORE_REGEX =None
-	__DEBUG_MODE = False
+#%% ------------ Global Variables ----------------
+AUTHOR = 'Yufei Pan'
+AUTHOR_EMAIL = 'pan@zopyr.us'
+DEFAULT_HOSTS = 'all'
+DEFAULT_USERNAME = None
+DEFAULT_PASSWORD = ''
+DEFAULT_IDENTITY_FILE = None
+DEDAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
+DEFAULT_USE_KEY = False
+DEFAULT_EXTRA_ARGS = None
+DEFAULT_ONE_ON_ONE = False
+DEFAULT_SCP = False
+DEFAULT_FILE_SYNC = False
+DEFAULT_TIMEOUT = 50
+DEFAULT_CLI_TIMEOUT = 0
+DEFAULT_REPEAT = 1
+DEFAULT_INTERVAL = 0
+DEFAULT_IPMI = False
+DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
+DEFAULT_INTERFACE_IP_PREFIX = None
+DEFAULT_NO_WATCH = False
+DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
+DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
+DEFAULT_SINGLE_WINDOW = False
+DEFAULT_ERROR_ONLY = False
+DEFAULT_NO_OUTPUT = False
+DEFAULT_NO_ENV = False
+DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
+DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+DEFAULT_JSON_MODE = False
+DEFAULT_PRINT_SUCCESS_HOSTS = False
+DEFAULT_GREPPABLE_MODE = False
+DEFAULT_SKIP_UNREACHABLE = True
+DEFAULT_SKIP_HOSTS = ''
+SSH_STRICT_HOST_KEY_CHECKING = False
+ERROR_MESSAGES_TO_IGNORE = [
+	'Pseudo-terminal will not be allocated because stdin is not a terminal',
+	'Connection to .* closed',
+	'Warning: Permanently added',
+	'mux_client_request_session',
+	'disabling multiplexing',
+	'Killed by signal',
+	'Connection reset by peer',
+]
+_DEFAULT_CALLED = True
+_DEFAULT_RETURN_UNFINISHED = False
+_DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
+_DEFAULT_NO_START = False
+_etc_hosts = {}
+_sshpassPath = None
+_sshPath = None
+_scpPath = None
+_ipmitoolPath = None
+_rsyncPath = None
+_shellPath = None
+__ERROR_MESSAGES_TO_IGNORE_REGEX =None
+__DEBUG_MODE = False
 
-# Load Config Based Default Global variables
-if True:
-	__configs_from_file = {}
-	for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
-		__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
-	globals().update(__configs_from_file)
-	# form the regex from the list
-	if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-		eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
-		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
-	else:
-		__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
+#%% Load Config Based Default Global variables
+__configs_from_file = {}
+for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
+	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
+globals().update(__configs_from_file)
+# form the regex from the list
+if __ERROR_MESSAGES_TO_IGNORE_REGEX:
+	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
+	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
+else:
+	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
 
-# Load mssh Functional Global Variables
-if True:
-	__global_suppress_printout = False
-	__mainReturnCode = 0
-	__failedHosts = set()
-	__wildCharacters = ['*','?','x']
-	_no_env = DEFAULT_NO_ENV
-	_env_file = DEFAULT_ENV_FILE
-	__globalUnavailableHosts = set()
-	__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
-	__keyPressesIn = [[]]
-	_emo = False
-	__curses_global_color_pairs = {(-1,-1):1}
-	__curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
-	__curses_color_table = {}
-	__curses_current_color_index = 10
-	__max_connections_nofile_limit_supported = 0
-	__thread_start_delay = 0
-	if __resource_lib_available:
-		# Get the current limits
-		_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
-		# Set the soft limit to the hard limit
-		resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
-		__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
+#%% Load mssh Functional Global Variables
+__global_suppress_printout = False
+__mainReturnCode = 0
+__failedHosts = set()
+__wildCharacters = ['*','?','x']
+_no_env = DEFAULT_NO_ENV
+_env_file = DEFAULT_ENV_FILE
+__globalUnavailableHosts = set()
+__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
+__keyPressesIn = [[]]
+_emo = False
+__curses_global_color_pairs = {(-1,-1):1}
+__curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
+__curses_color_table = {}
+__curses_current_color_index = 10
+__max_connections_nofile_limit_supported = 0
+__thread_start_delay = 0
+if __resource_lib_available:
+	# Get the current limits
+	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+	# Set the soft limit to the hard limit
+	resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
+	__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
 
-# Mapping of ANSI 4-bit colors to curses colors
+#%% Mapping of ANSI 4-bit colors to curses colors
 if __curses_available:
 	ANSI_TO_CURSES_COLOR = {
 		30: curses.COLOR_BLACK,
@@ -392,7 +390,7 @@ if __curses_available:
 		96: curses.COLOR_CYAN,    # Bright Cyan
 		97: curses.COLOR_WHITE    # Bright White
 	}
-# ------------ Exportable Help Functions ----------------
+#%% ------------ Exportable Help Functions ----------------
 # check if command sshpass is available
 _binPaths = {}
 def check_path(program_name):
@@ -491,73 +489,74 @@ def replace_magic_strings(string,keys,value,case_sensitive=False):
 	return string
 
 def pretty_format_table(data, delimiter = '\t',header = None):
-    version = 1.11
-    if not data:
-        return ''
-    if isinstance(data, str):
-        data = data.strip('\n').split('\n')
-        data = [line.split(delimiter) for line in data]
-    elif isinstance(data, dict):
-        # flatten the 2D dict to a list of lists
-        if isinstance(next(iter(data.values())), dict):
-            tempData = [['key'] + list(next(iter(data.values())).keys())]
-            tempData.extend( [[key] + list(value.values()) for key, value in data.items()])
-            data = tempData
-        else:
-            # it is a dict of lists
-            data = [[key] + list(value) for key, value in data.items()]
-    elif not isinstance(data, list):
-        data = list(data)
-    # format the list into 2d list of list of strings
-    if isinstance(data[0], dict):
-        tempData = [data[0].keys()]
-        tempData.extend([list(item.values()) for item in data])
-        data = tempData
-    data = [[str(item) for item in row] for row in data]
-    num_cols = len(data[0])
-    col_widths = [0] * num_cols
-    # Calculate the maximum width of each column
-    for c in range(num_cols):
-        #col_widths[c] = max(len(row[c]) for row in data)
-        # handle ansii escape sequences
-        col_widths[c] = max(len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',row[c])) for row in data)
-    if header:
-        header_widths = [len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', col)) for col in header]
-        col_widths = [max(col_widths[i], header_widths[i]) for i in range(num_cols)]
-    # Build the row format string
-    row_format = ' | '.join('{{:<{}}}'.format(width) for width in col_widths)
-    # Print the header
-    if not header:
-        header = data[0]
-        outTable = []
-        outTable.append(row_format.format(*header))
-        outTable.append('-+-'.join('-' * width for width in col_widths))
-        for row in data[1:]:
-            # if the row is empty, print an divider
-            if not any(row):
-                outTable.append('-+-'.join('-' * width for width in col_widths))
-            else:
-                outTable.append(row_format.format(*row))
-    else:
-        # pad / truncate header to appropriate length
-        if isinstance(header,str):
-            header = header.split(delimiter)
-        if len(header) < num_cols:
-            header += ['']*(num_cols-len(header))
-        elif len(header) > num_cols:
-            header = header[:num_cols]
-        outTable = []
-        outTable.append(row_format.format(*header))
-        outTable.append('-+-'.join('-' * width for width in col_widths))
-        for row in data:
-            # if the row is empty, print an divider
-            if not any(row):
-                outTable.append('-+-'.join('-' * width for width in col_widths))
-            else:
-                outTable.append(row_format.format(*row))
-    return '\n'.join(outTable) + '\n'
+	version = 1.11
+	_ = version
+	if not data:
+		return ''
+	if isinstance(data, str):
+		data = data.strip('\n').split('\n')
+		data = [line.split(delimiter) for line in data]
+	elif isinstance(data, dict):
+		# flatten the 2D dict to a list of lists
+		if isinstance(next(iter(data.values())), dict):
+			tempData = [['key'] + list(next(iter(data.values())).keys())]
+			tempData.extend( [[key] + list(value.values()) for key, value in data.items()])
+			data = tempData
+		else:
+			# it is a dict of lists
+			data = [[key] + list(value) for key, value in data.items()]
+	elif not isinstance(data, list):
+		data = list(data)
+	# format the list into 2d list of list of strings
+	if isinstance(data[0], dict):
+		tempData = [data[0].keys()]
+		tempData.extend([list(item.values()) for item in data])
+		data = tempData
+	data = [[str(item) for item in row] for row in data]
+	num_cols = len(data[0])
+	col_widths = [0] * num_cols
+	# Calculate the maximum width of each column
+	for c in range(num_cols):
+		#col_widths[c] = max(len(row[c]) for row in data)
+		# handle ansii escape sequences
+		col_widths[c] = max(len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',row[c])) for row in data)
+	if header:
+		header_widths = [len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', col)) for col in header]
+		col_widths = [max(col_widths[i], header_widths[i]) for i in range(num_cols)]
+	# Build the row format string
+	row_format = ' | '.join('{{:<{}}}'.format(width) for width in col_widths)
+	# Print the header
+	if not header:
+		header = data[0]
+		outTable = []
+		outTable.append(row_format.format(*header))
+		outTable.append('-+-'.join('-' * width for width in col_widths))
+		for row in data[1:]:
+			# if the row is empty, print an divider
+			if not any(row):
+				outTable.append('-+-'.join('-' * width for width in col_widths))
+			else:
+				outTable.append(row_format.format(*row))
+	else:
+		# pad / truncate header to appropriate length
+		if isinstance(header,str):
+			header = header.split(delimiter)
+		if len(header) < num_cols:
+			header += ['']*(num_cols-len(header))
+		elif len(header) > num_cols:
+			header = header[:num_cols]
+		outTable = []
+		outTable.append(row_format.format(*header))
+		outTable.append('-+-'.join('-' * width for width in col_widths))
+		for row in data:
+			# if the row is empty, print an divider
+			if not any(row):
+				outTable.append('-+-'.join('-' * width for width in col_widths))
+			else:
+				outTable.append(row_format.format(*row))
+	return '\n'.join(outTable) + '\n'
 
-# ------------ Compacting Hostnames ----------------
+#%% ------------ Compacting Hostnames ----------------
 def __tokenize_hostname(hostname):
 	"""
 	Tokenize the hostname into a list of tokens.
@@ -913,7 +912,7 @@ def compact_hostnames(Hostnames,verify = True):
 			compact_hosts = hostSet
 	return compact_hosts
 
-# ------------ Expanding Hostnames ----------------
+#%% ------------ Expanding Hostnames ----------------
 @cache_decorator
 def __validate_expand_hostname(hostname):
 	'''
@@ -1078,7 +1077,7 @@ def __expand_hostnames(hosts) -> dict:
 		# seperated by .
 		# If so, we expand the IP address range
 		iplist = []
-		if re.match(r'^((((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])}|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?)(-((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?))?)|(\[((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?)(-((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|x|\*|\?))?\]))){2}(\.(((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[1-9])}|x|\*|\?))?\]))$', host):
+		if re.match(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])}|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}(\.(((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])}|x|\*|\?))?\]))$', host):
 			hostSetToAdd = sorted(__expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
 			iplist = hostSetToAdd
 		else:
@@ -1113,7 +1112,7 @@ def expand_hostnames(hosts):
 	return __expand_hostnames(hosts)
 
 
-# ------------ Run Command Block ----------------
+#%% ------------ Run Command Block ----------------
 def __handle_reading_stream(stream,target, host):
 	'''
 	Read the stream and append the lines to the target list
@@ -1494,7 +1493,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 		host.scp = True
 		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
 
-# ------------ Start Threading Block ----------------
+#%% ------------ Start Threading Block ----------------
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
@@ -1518,7 +1517,7 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cp
 		time.sleep(__thread_start_delay)
 	return threads
 
-# ------------ Display Block ----------------
+#%% ------------ Display Block ----------------
 def __approximate_color_8bit(color):
 	"""
 	Approximate an 8-bit color (0-255) to the nearest curses color.
@@ -1614,7 +1613,6 @@ def __get_curses_color_pair(fg, bg):
 		if __curses_current_color_pair_index >= curses.COLOR_PAIRS:
 			print("Warning: Maximum number of color pairs reached, wrapping around.")
 			__curses_current_color_pair_index = 1
-		# TODO: avoid initializing the same fg and bg color
 		curses.init_pair(__curses_current_color_pair_index, fg, bg)
 		__curses_global_color_pairs[(fg, bg)] = __curses_current_color_pair_index
 		__curses_current_color_pair_index += 1
@@ -1804,7 +1802,7 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 			continue
 		if parse_ansi_colors and segment.startswith("\x1b["):
 			# Parse ANSI escape sequence
-			newAttr = __parse_ansi_escape_sequence_to_curses_attr(segment,color_pair_list)
+			_ = __parse_ansi_escape_sequence_to_curses_attr(segment,color_pair_list)
 		else:
 			# Add text with current color
 			if charsWritten < numChar and len(segment) > 0:
@@ -1845,13 +1843,12 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 		return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
 	# we will compare the new_hosts_to_display with the old one, if some hosts are not in their original position, we will change its printedLines to 0
 	for i, host in enumerate(new_hosts_to_display):
-		if host not in hosts_to_display:
-			host.printedLines = 0
-		elif i != hosts_to_display.index(host):
+		if host not in hosts_to_display or i != hosts_to_display.index(host):
 			host.printedLines = 0
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
 
-def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason= 'New Configuration'):
+def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason = 'New Configuration'):
+	_ = config_reason
 	try:
 		box_ansi_color = None
 		org_dim = stdscr.getmaxyx()
@@ -2162,7 +2159,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		stdscr.clear()
 		_curses_add_string_to_window(window=stdscr, y=0, line='Initializing display...', number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the size
-		_curses_add_string_to_window(window=stdscr, y=1, line=f"Terminal size: {stdscr.getmaxyx()}",number_of_char_to_writen=stdscr.getmaxyx()[1] - 1)
+		_curses_add_string_to_window(window=stdscr, y=1, line=f"Terminal size: {stdscr.getmaxyx()}",number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the number of hosts
 		_curses_add_string_to_window(window=stdscr, y=2, line=f"Number of hosts: {len(hosts)}", number_of_char_to_write=stdscr.getmaxyx()[1] - 1)
 		# print the number of threads
@@ -2205,7 +2202,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		time.sleep(0.01)
 		#time.sleep(0.25)
 
-# ------------ Generate Output Block ----------------
+#%% ------------ Generate Output Block ----------------
 def generate_output(hosts, usejson = False, greppable = False):
 	global __keyPressesIn
 	global __global_suppress_printout
@@ -2234,8 +2231,7 @@ def generate_output(hosts, usejson = False, greppable = False):
 	else:
 		outputs = {}
 		for host in hosts:
-			if __global_suppress_printout:
-				if host['returncode'] == 0:
+			if __global_suppress_printout and host['returncode'] == 0:
 					continue
 			hostPrintOut = f"  Command:\n    {host['command']}\n"
 			hostPrintOut += "  stdout:\n    "+'\n    '.join(host['stdout'])
@@ -2271,7 +2267,7 @@ def generate_output(hosts, usejson = False, greppable = False):
 			__keyPressesIn = [[]]
 		if __global_suppress_printout and not outputs:
 			rtnStr += 'Success'
-		return rtnStr
+	return rtnStr
 
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	'''
@@ -2290,7 +2286,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		print(rtnStr)
 	return rtnStr
 
-# ------------ Run / Process Hosts Block ----------------
+#%% ------------ Run / Process Hosts Block ----------------
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, nowatch, json, called, greppable,unavailableHosts,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
 	global __globalUnavailableHosts
 	global _no_env
@@ -2363,7 +2359,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 	if not called:
 		print_output(hosts,json,greppable=greppable)
 
-# ------------ Stringfy Block ----------------
+#%% ------------ Stringfy Block ----------------
 @cache_decorator
 def formHostStr(host) -> str:
 	"""
@@ -2429,6 +2425,13 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False,
 						 shortend = False):
+	_ = called
+	_ = returnUnfinished
+	_ = willUpdateUnreachableHosts
+	_ = no_start
+	_ = curses_min_char_len
+	_ = curses_min_line_len
+	_ = single_window
 	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
 	hostStr = formHostStr(hosts)
 	files = frozenset(files) if files else None
@@ -2442,7 +2445,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	return f'multissh {argsStr} {hostStr} {commandStr}'
 
-# ------------ Main Block ----------------
+#%% ------------ Main Block ----------------
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 nowatch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
@@ -2548,7 +2551,6 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		try:
 			commands = [' '.join(command) if not isinstance(command,str) else command for command in commands]
 		except:
-			pass
 			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures.")
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
@@ -2687,7 +2689,6 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					if not __global_suppress_printout: print(f"Skipping unavailable host: {host}")
 					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet: continue
-				# TODO: use ip to determine if we skip the host or not, also for unavailable hosts
 				if file_sync:
 					eprint(f"Error: file sync mode need to be specified with at least one path to sync.")
 					return []
@@ -2723,7 +2724,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			allHosts += hosts
 		return allHosts
 
-# ------------ Default Config Functions ----------------
+#%% ------------ Default Config Functions ----------------
 def generate_default_config(args):
 	'''
 	Get the default config
@@ -2812,7 +2813,7 @@ def write_default_config(args,CONFIG_FILE = None):
 		eprint(f'Printing the config file to stdout:')
 		print(json.dumps(__configs_from_file, indent=4))
 
-# ------------ Wrapper Block ----------------
+#%% ------------ Wrapper Block ----------------
 def main():
 	global _emo
 	global __global_suppress_printout
@@ -2878,7 +2879,7 @@ def main():
 	# if python version is 3.7 or higher, use parse_intermixed_args
 	try:
 		args = parser.parse_intermixed_args()
-	except Exception as e:
+	except Exception :
 		#eprint(f"Error while parsing arguments: {e!r}")
 		# try to parse the arguments using parse_known_args
 		args, unknown = parser.parse_known_args()
@@ -2987,8 +2988,8 @@ def main():
 	if args.success_hosts and not __global_suppress_printout:
 		eprint(f'succeeded_hosts: {",".join(sorted(compact_hostnames(succeededHosts)))}')
 
-	if threading.active_count() > 1:
-		if not __global_suppress_printout: eprint(f'Remaining active thread: {threading.active_count()}')
+	if threading.active_count() > 1 and not __global_suppress_printout: 
+		eprint(f'Remaining active thread: {threading.active_count()}')
 		# os.system(f'pkill -ef  {os.path.basename(__file__)}')
 		# os._exit(mainReturnCode)
 	
