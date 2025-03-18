@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.58'
+version = '5.59'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-03-06'
+COMMIT_DATE = '2025-03-17'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2565,6 +2565,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			unavailableHosts = set()
 		# set global input to empty
 		__keyPressesIn = [[]]
+		__global_suppress_printout = True
 	else:
 		# if run in command line ( or emulating running in command line, we default to skip unreachable hosts within one command call )
 		if skipUnreachable:
