@@ -80,7 +80,7 @@ An example .ssh/config:
 Host *
   StrictHostKeyChecking no
   ControlMaster auto
-  ControlPath /tmp/%u_ssh_sockets_%r@%h-%p
+  ControlPath /run/user/%i/ssh_sockets_%C
   ControlPersist 3600
 ```
 
