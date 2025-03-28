@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.59'
+version = '5.60'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-03-17'
+COMMIT_DATE = '2025-03-27'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -226,7 +226,7 @@ class Host:
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
 		self.printedLines = -1 # the number of lines printed on the screen
-		self.lineNumToReprintSet = set() # whether to reprint the last line
+		self.lineNumToReprintSet = set() # line numbers to reprint
 		self.lastUpdateTime = time.monotonic() # the last time the output was updated
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
@@ -1136,20 +1136,37 @@ def __handle_reading_stream(stream,target, host):
 		host.lastUpdateTime = time.monotonic()
 	current_line = bytearray()
 	lastLineCommited = True
+	curser_position = 0
+	previousUpdateTime = time.monotonic()
 	for char in iter(lambda:stream.read(1), b''):
 		if char == b'\n':
-			if (not lastLineCommited) and current_line:
-				add_line(current_line,target, host, keepLastLine=False)
-			elif lastLineCommited:
-				add_line(current_line,target, host, keepLastLine=True)
-			current_line = bytearray()
-			lastLineCommited = True
-		elif char == b'\r':
 			add_line(current_line,target, host, keepLastLine=lastLineCommited)
 			current_line = bytearray()
-			lastLineCommited = False
+			lastLineCommited = True
+			curser_position = 0
+			previousUpdateTime = time.monotonic()
+			continue
+		elif char == b'\r':
+			curser_position = 0
+		elif char == b'\x08':
+			# backspace
+			if curser_position > 0:
+				curser_position -= 1
 		else:
-			current_line.extend(char)
+			# over write the character if the curser is not at the end of the line
+			if curser_position < len(current_line):
+				current_line[curser_position] = char[0]
+			elif curser_position == len(current_line):
+				current_line.append(char[0])
+			else:
+				# curser is bigger than the length of the line
+				current_line += b' '*(curser_position - len(current_line)) + char
+			curser_position += 1
+		if time.monotonic() - previousUpdateTime > 0.1:
+			# if the time since the last update is more than 10ms, we update the output
+			add_line(current_line,target, host, keepLastLine=lastLineCommited)
+			lastLineCommited = False
+			previousUpdateTime = time.monotonic()
 	if current_line:
 		add_line(current_line,target, host, keepLastLine=lastLineCommited)
 
@@ -2108,7 +2125,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				if host.lineNumToReprintSet:
 					# visible range is from host.printedLines - host_window_height + 1 to host.printedLines
 					visibleLowerBound = host.printedLines - host_window_height + 1
-					for lineNumToReprint in host.lineNumToReprintSet:
+					lineNumToReprintSet = host.lineNumToReprintSet
+					host.lineNumToReprintSet = set()
+					for lineNumToReprint in lineNumToReprintSet:
 						# if the line is visible, we will reprint it
 						if visibleLowerBound <= lineNumToReprint <= host.printedLines:
 							if visibleLowerBound <= 0:
@@ -2121,7 +2140,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 							# 	 Thus we will not use any presistent color pair for old lines
 							cpl = host.current_color_pair if lineNumToReprint == host.printedLines else [-1,-1,1]
 							_curses_add_string_to_window(window=host_window, y=linePos + 1, line=host.output[lineNumToReprint], color_pair_list=cpl,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
-					host.lineNumToReprintSet = set()
 					host_window.refresh()
 			new_configured = False
 			last_refresh_time = time.perf_counter()
