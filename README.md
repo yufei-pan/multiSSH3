@@ -153,7 +153,7 @@ options:
                         The prefix of the IPMI interfaces (default: )
   -pre INTERFACE_IP_PREFIX, --interface_ip_prefix INTERFACE_IP_PREFIX
                         The prefix of the for the interfaces (default: None)
-  -q, -nw, --nowatch, --quiet
+  -q, -nw, --no_watch, --quiet
                         Quiet mode, no curses watch, only print the output. (default: False)
   -ww WINDOW_WIDTH, --window_width WINDOW_WIDTH
                         The minimum character length of the curses window. (default: 40)
@@ -263,7 +263,7 @@ mssh [options] <hosts> <commands>
 | `-j`         | `--json`                  | Output results in JSON format.                                                                            |
 |              | `--success_hosts`         | Also display hosts where commands succeeded.                                                              |
 | `-g`         | `--greppable`             | Output results in a greppable format.                                                                     |
-| `-nw`        | `--nowatch`               | Do not use curses mode; use simple output instead.                                                        |
+| `-nw`        | `--no_watch`               | Do not use curses mode; use simple output instead.                                                        |
 | `-su`        | `--skipunreachable`       | Skip hosts that are unreachable.                                                                          |
 | `-sh`        | `--skiphosts`             | Comma-separated list of hosts to skip.                                                                    |
 | `-V`         | `--version`               | Display the script version and exit.                                                                      |
