@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.62'
+version = '5.63'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-04-17'
+COMMIT_DATE = '2025-04-21'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2225,7 +2225,10 @@ def generate_output(hosts, usejson = False, greppable = False):
 		# remove hosts with returncode 0
 		hosts = [dict(host) for host in hosts if host.returncode != 0]
 		if not hosts:
-			return 'Success'
+			if usejson:
+				return '{"Success": true}'
+			else:
+				return 'Success'
 	else:
 		hosts = [dict(host) for host in hosts]
 	if usejson:
@@ -2976,6 +2979,7 @@ def main():
 	parser.add_argument('-ci','--copy_id', action='store_true', help='Copy the ssh id to the hosts')
 	parser.add_argument('-I','-nh','--no_history', action='store_true', help=f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}', default=DEFAULT_NO_HISTORY)
 	parser.add_argument('-hf','--history_file', type=str, help=f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})', default=DEFAULT_HISTORY_FILE)
+	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
@@ -2993,6 +2997,14 @@ def main():
 		if unknown:
 			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
 			args.commands += unknown
+	
+	if args.script:
+		args.no_watch = True
+		args.skip_unreachable = True
+		args.no_env = True
+		args.no_history = True
+		args.greppable = True
+		args.error_only = True
 			
 	if args.generate_config_file or args.store_config_file:
 		if args.store_config_file:
