@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.63'
+version = '5.64'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-04-21'
+COMMIT_DATE = '2025-05-02'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -225,8 +225,7 @@ class Host:
 		self.output = [] # the output of the command for curses
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
-		self.printedLines = -1 # the number of lines printed on the screen
-		self.lineNumToReprintSet = set() # line numbers to reprint
+		self.lineNumToPrintSet = set() # line numbers to reprint
 		self.lastUpdateTime = time.monotonic() # the last time the output was updated
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
@@ -248,7 +247,7 @@ class Host:
 	def __repr__(self):
 		# return the complete data structure
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, \
-output={self.output}, printedLines={self.printedLines}, lineNumToReprintSet={self.lineNumToReprintSet}, files={self.files}, ipmi={self.ipmi}, \
+output={self.output}, lineNumToPrintSet={self.lineNumToPrintSet}, files={self.files}, ipmi={self.ipmi}, \
 interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, \
 extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), \
 identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.current_color_pair}"
@@ -1129,7 +1128,7 @@ def __handle_reading_stream(stream,target, host):
 		current_line_str = current_line.decode('utf-8',errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
-		host.lineNumToReprintSet.add(len(host.output)-1)
+		host.lineNumToPrintSet.add(len(host.output)-1)
 		host.lastUpdateTime = time.monotonic()
 	current_line = bytearray()
 	lastLineCommited = True
@@ -1419,12 +1418,12 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 							if host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
 								host.output.pop()
 							host.output.append(timeoutLine)
-							host.lineNumToReprintSet.add(len(host.output)-1)
+							host.lineNumToPrintSet.add(len(host.output)-1)
 							timeoutLineAppended = True
 					elif host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
 						host.output.pop()
 						host.output.append('')
-						host.lineNumToReprintSet.add(len(host.output)-1)
+						host.lineNumToPrintSet.add(len(host.output)-1)
 						timeoutLineAppended = False
 				if _emo:
 					host.stderr.append('Ctrl C detected, Emergency Stop!')
@@ -1855,10 +1854,10 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	new_hosts_to_display = (running_hosts + failed_hosts + finished_hosts + waiting_hosts)[:max_num_hosts]
 	if not hosts_to_display:
 		return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
-	# we will compare the new_hosts_to_display with the old one, if some hosts are not in their original position, we will change its printedLines to 0
+	# we will compare the new_hosts_to_display with the old one, if some hosts are not in their original position, we will reprint all lines
 	for i, host in enumerate(new_hosts_to_display):
 		if host not in hosts_to_display or i != hosts_to_display.index(host):
-			host.printedLines = 0
+			host.lineNumToPrintSet.update(range(len(host.output)))
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason = 'New Configuration'):
@@ -1924,7 +1923,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		global __keyPressesIn
 		stdscr.nodelay(True)
 		# we generate a stats window at the top of the screen
-		stat_window = curses.newwin(1, max_x, 0, 0)
+		stat_window = curses.newwin(1, max_x+1, 0, 0)
 		stat_window.leaveok(True)
 		# We create a window for each host
 		host_windows = []
@@ -1935,7 +1934,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			x = (i % num_hosts_x) * host_window_width
 			#print(f"Creating a window at {y},{x}")
 			# We create the window
-			host_window = curses.newwin(host_window_height, host_window_width, y, x)
+			host_window = curses.newwin(host_window_height, host_window_width + 1, y, x)
 			host_window.idlok(True)
 			host_window.scrollok(True)
 			host_window.leaveok(True)
@@ -2084,60 +2083,33 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			hosts_to_display, host_stats = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display)
 			for host_window, host in zip(host_windows, hosts_to_display):
 				# we will only update the window if there is new output or the window is not fully printed
-				if new_configured or host.printedLines < len(host.output):
+				if new_configured:
+					host.lineNumToPrintSet.update(range(len(host.output)))
+					linePrintOut = f'{host.name}:[{host.command}]'.replace('\n', ' ').replace('\r', ' ').strip()
+					_curses_add_string_to_window(window=host_window, y=0, line=linePrintOut, color_pair_list=[-1, -1, 1],centered=True,fill_char='─',lead_str='┼',box_ansi_color=box_ansi_color)
+					# clear the window
+					for i in range(host_window_height - 1):
+						_curses_add_string_to_window(window=host_window, color_pair_list=[-1, -1, 1], y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
+				# for i in range(host.printedLines, len(host.output)):
+				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
+				# host.printedLines = len(host.output)
+				if host.lineNumToPrintSet:
 					try:
-						if new_configured:
-							host.printedLines = 0
-						#host_window.clear()
-						# we will try to center the name of the host with ┼ at the beginning and end and ─ in between
-						#linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
-						#linePrintOut = f'┼{(host.name+":["+host.command+"]")[:host_window_width - 2].center(host_window_width - 1, "─")}'.replace('\n', ' ').replace('\r', ' ').strip()
-						#host_window.addnstr(0, 0, linePrintOut, host_window_width - 1)
-						linePrintOut = f'{host.name}:[{host.command}]'.replace('\n', ' ').replace('\r', ' ').strip()
-						_curses_add_string_to_window(window=host_window, y=0, line=linePrintOut, color_pair_list=[-1, -1, 1],centered=True,fill_char='─',lead_str='┼',box_ansi_color=box_ansi_color)
-						#_add_line_with_ansi_colors(window=host_window, y=0, x=0, line=linePrintOut, n=host_window_width - 1, color_pair_list = host.current_color_pair)
-						# we will display the latest outputs of the host as much as we can
-						#for i, line in enumerate(host.output[-(host_window_height - 1):]):
-							# print(f"Printng a line at {i + 1} with length of {len('│'+line[:host_window_width - 1])}")
-							# time.sleep(10)
-							#linePrintOut = ('│'+line[:host_window_width - 2].replace('\n', ' ').replace('\r', ' ')).strip()
-							#host_window.addnstr(i + 1, 0, linePrintOut, host_window_width - 1)
-							#_curses_add_string_to_window(window=host_window, y=i + 1, line=line, color_pair_list=host.current_color_pair,lead_str='│')
-						# we draw the rest of the available lines
-						# for i in range(len(host.output), host_window_height - 1):
-						# 	# print(f"Printng a line at {i + 1} with length of {len('│')}")
-						# 	host_window.addnstr(i + 1, 0, '│'.ljust(host_window_width - 1, ' '), host_window_width - 1)
-						for i in range(host.printedLines, len(host.output)):
-							_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
-						for i in range(len(host.output), host_window_height - 1):
-							_curses_add_string_to_window(window=host_window, y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
-						host.printedLines = len(host.output)
-						host_window.refresh()
+						# visible range is from len(host.output) - host_window_height + 1 to len(host.output)
+						visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
+						lineNumToPrintSet = host.lineNumToPrintSet.copy()
+						host.lineNumToPrintSet = set()
+						for lineNumToReprint in sorted(lineNumToPrintSet):
+							# if the line is visible, we will reprint it
+							if visibleLowerBound <= lineNumToReprint <= len(host.output):
+								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 					except Exception as e:
 						# import traceback
 						# print(str(e).strip())
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
 							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
-				if host.lineNumToReprintSet:
-					# visible range is from host.printedLines - host_window_height + 1 to host.printedLines
-					visibleLowerBound = host.printedLines - host_window_height + 1
-					lineNumToReprintSet = host.lineNumToReprintSet
-					host.lineNumToReprintSet = set()
-					for lineNumToReprint in lineNumToReprintSet:
-						# if the line is visible, we will reprint it
-						if visibleLowerBound <= lineNumToReprint <= host.printedLines:
-							if visibleLowerBound <= 0:
-								# this means all lines are visible
-								linePos = lineNumToReprint
-							else:
-								# calculate the position of the line to reprint
-								linePos = lineNumToReprint - visibleLowerBound
-							# Note: color can be incorrect if repainting an old line with new colors already initialized,
-							# 	 Thus we will not use any presistent color pair for old lines
-							cpl = host.current_color_pair if lineNumToReprint == host.printedLines else [-1,-1,1]
-							_curses_add_string_to_window(window=host_window, y=linePos + 1, line=host.output[lineNumToReprint], color_pair_list=cpl,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
-					host_window.refresh()
+				host_window.refresh()
 			new_configured = False
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
