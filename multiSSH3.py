@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.65'
+version = '5.66'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-05-06'
@@ -67,7 +67,7 @@ CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '/etc/multiSSH3.config.json'] # The first one has the highest priority
 
 
-# TODO: Add terminal TUI with history support
+# TODO: Add terminal TUI
 
 #%% ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
@@ -1769,28 +1769,27 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 	Returns:
 		None
 	"""
-	if window.getmaxyx()[0] == 0 or window.getmaxyx()[1] == 0 or x >= window.getmaxyx()[1]:
+	maxY, maxX = window.getmaxyx()
+	if maxY == 0 or maxX == 0 or x >= maxX:
 		return
 	if x < 0:
-		x = window.getmaxyx()[1] + x
+		x = maxX + x
 	if number_of_char_to_write == -1:
-		numChar = window.getmaxyx()[1] - x -1
+		numChar = maxX - x -1
 	elif number_of_char_to_write == 0:
 		return
-	elif number_of_char_to_write + x > window.getmaxyx()[1]:
-		numChar = window.getmaxyx()[1] - x -1
 	else:
-		numChar = number_of_char_to_write
+		numChar = min(number_of_char_to_write,maxX - x -1)
 	if numChar < 0:
 		return
-	if y < 0 or  y >= window.getmaxyx()[0]:
-		if keep_top_n_lines > window.getmaxyx()[0] -1:
-			keep_top_n_lines = window.getmaxyx()[0] -1
+	if y < 0 or  y >= maxY:
+		if keep_top_n_lines > maxY -1:
+			keep_top_n_lines = maxY -1
 		if keep_top_n_lines < 0:
 			keep_top_n_lines = 0
 		window.move(keep_top_n_lines,0)
 		window.deleteln()
-		y = window.getmaxyx()[0] - 1
+		y = maxY - 1
 	line = line.replace('\n', ' ').replace('\r', ' ')
 	if parse_ansi_colors:
 		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
