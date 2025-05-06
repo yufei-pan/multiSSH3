@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.64'
+version = '5.65'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-02'
+COMMIT_DATE = '2025-05-06'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1942,7 +1942,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		# If there is space left, we will draw the bottom border
 		bottom_border = None
 		if y + host_window_height  < org_dim[0]:
-			bottom_border = curses.newwin(1, max_x, y + host_window_height, 0)
+			bottom_border = curses.newwin(1, max_x + 1, y + host_window_height, 0)
 			bottom_border.leaveok(True)
 			#bottom_border.clear()
 			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
