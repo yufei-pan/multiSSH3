@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.66'
+version = '5.67'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-06'
+COMMIT_DATE = '2025-05-08'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2457,7 +2457,8 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 repeat = repeat,interval = interval,
 						 shortend = shortend)
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
-	programName = sys.argv[0] if (sys.argv and sys.argv[0]) else 'mssh'
+	filePath = os.path.abspath(__file__)
+	programName = filePath if filePath else 'mssh'
 	return f'{programName} {argsStr} {hostStr} {commandStr}'
 
 #%% ------------ Record History Block ----------------
