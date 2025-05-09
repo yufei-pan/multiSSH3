@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.67'
+version = '5.68'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-08'
+COMMIT_DATE = '2025-05-09'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -389,6 +389,7 @@ if __curses_available:
 #%% ------------ Exportable Help Functions ----------------
 # check if command sshpass is available
 _binPaths = {}
+_binCalled = set(['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id'])
 def check_path(program_name):
 	global __configs_from_file
 	global _binPaths
@@ -403,7 +404,7 @@ def check_path(program_name):
 		return True
 	return False
 
-[check_path(program) for program in ['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id']]
+[check_path(program) for program in _binCalled]
 
 def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
 	'''
@@ -2906,7 +2907,8 @@ def main():
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments
-	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file chain: {CONFIG_FILE_CHAIN!r}')
+	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file chain: {CONFIG_FILE_CHAIN!r}',
+								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}')
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
