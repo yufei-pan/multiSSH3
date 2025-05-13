@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.69'
+version = '5.70'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-09'
+COMMIT_DATE = '2025-05-12'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2438,7 +2438,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = DEFAULT_NO_HISTORY,
 						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILE,
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
-						 shortend = False):
+						 shortend = False,tabSeperated = False):
 	_ = called
 	_ = returnUnfinished
 	_ = willUpdateUnreachableHosts
@@ -2462,7 +2462,10 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	filePath = os.path.abspath(__file__)
 	programName = filePath if filePath else 'mssh'
-	return f'{programName} {argsStr} {hostStr} {commandStr}'
+	if tabSeperated:
+		return f'{programName}\t{argsStr}\t{hostStr}\t{commandStr}'
+	else:
+		return f'{programName} {argsStr} {hostStr} {commandStr}'
 
 #%% ------------ Record History Block ----------------
 def record_command_history(kwargs):
@@ -2486,7 +2489,7 @@ def record_command_history(kwargs):
 			for name in sig.parameters
 			if name in kwargs
 		}
-		strCommand = getStrCommand(**wanted)
+		strCommand = getStrCommand(**wanted,shortend=True,tabSeperated=True)
 		with open(history_file, 'a') as f:
 			# it follows <timestamp>\t<strCommand>\n
 			f.write(f'{int(time.time())}\t{strCommand}\n')
