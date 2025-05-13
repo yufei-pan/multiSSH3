@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.70'
+version = '5.71'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-12'
+COMMIT_DATE = '2025-05-13'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1191,12 +1191,13 @@ def __handle_writing_stream(stream,stop_event,host):
 			line = '> ' + ''.join(__keyPressesIn[sentInput]).encode().decode().replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
+			host.lineNumToPrintSet.add(len(host.output)-1)
 			sentInput += 1
 			host.lastUpdateTime = time.monotonic()
 		else:
 			time.sleep(0.01) # sleep for 10ms
 	if sentInput < len(__keyPressesIn) - 1 :
-		eprint(f"Warning: {len(__keyPressesIn)-sentInput} key presses are not sent before the process is terminated!")
+		eprint(f"Warning: {len(__keyPressesIn)-sentInput} lines of key presses are not sent before the process is terminated!")
 	# # send the last line
 	# if __keyPressesIn and __keyPressesIn[-1]:
 	#     stream.write(''.join(__keyPressesIn[-1]).encode())
@@ -2263,7 +2264,7 @@ def generate_output(hosts, usejson = False, greppable = False):
 			rtnStr += "User Inputs: \n  "
 			rtnStr += '\n  '.join(CMDsOut)
 			rtnStr += '\n'
-			__keyPressesIn = [[]]
+			__keyPressesIn[-1].clear()
 		if __global_suppress_printout and not outputs:
 			rtnStr += 'Success'
 	return rtnStr
