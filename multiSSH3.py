@@ -54,10 +54,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.71'
+version = '5.72'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-13'
+COMMIT_DATE = '2025-05-21'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1854,19 +1854,19 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	waiting_hosts = [host for host in hosts if host.returncode is None and not host.output]
 	new_hosts_to_display = (running_hosts + failed_hosts + finished_hosts + waiting_hosts)[:max_num_hosts]
 	if not hosts_to_display:
-		return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
+		return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, set(new_hosts_to_display)
 	# we will compare the new_hosts_to_display with the old one, if some hosts are not in their original position, we will reprint all lines
+	rearrangedHosts = set()
 	for i, host in enumerate(new_hosts_to_display):
 		if host not in hosts_to_display or i != hosts_to_display.index(host):
-			host.lineNumToPrintSet.update(range(len(host.output)))
-	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}
+			rearrangedHosts.add(host)
+	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason = 'New Configuration'):
 	_ = config_reason
 	try:
 		box_ansi_color = None
 		org_dim = stdscr.getmaxyx()
-		new_configured = True
 		# To do this, first we need to know the size of the terminal
 		max_y, max_x = org_dim
 		# we will use one line to print the aggregated stats for the hosts.
@@ -1890,7 +1890,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		max_num_hosts = max_num_hosts_x * max_num_hosts_y
 		if max_num_hosts < 1:
 			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal too small to display any hosts')
-		hosts_to_display , host_stats = _get_hosts_to_display(hosts, max_num_hosts)
+		hosts_to_display , host_stats, rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts)
 		if len(hosts_to_display) == 0:
 			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'No hosts to display')
 		# Now we calculate the actual number of hosts we will display for x and y
@@ -2081,16 +2081,15 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			if time.perf_counter() - last_refresh_time < 0.01:
 				time.sleep(max(0,0.01 - time.perf_counter() + last_refresh_time))
 			#stdscr.clear()
-			hosts_to_display, host_stats = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display)
 			for host_window, host in zip(host_windows, hosts_to_display):
 				# we will only update the window if there is new output or the window is not fully printed
-				if new_configured:
-					host.lineNumToPrintSet.update(range(len(host.output)))
+				if host in rearrangedHosts:
 					linePrintOut = f'{host.name}:[{host.command}]'.replace('\n', ' ').replace('\r', ' ').strip()
 					_curses_add_string_to_window(window=host_window, y=0, line=linePrintOut, color_pair_list=[-1, -1, 1],centered=True,fill_char='─',lead_str='┼',box_ansi_color=box_ansi_color)
 					# clear the window
 					for i in range(host_window_height - 1):
 						_curses_add_string_to_window(window=host_window, color_pair_list=[-1, -1, 1], y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
+					host.lineNumToPrintSet.update(range(len(host.output)))
 				# for i in range(host.printedLines, len(host.output)):
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
@@ -2111,7 +2110,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						if org_dim != stdscr.getmaxyx():
 							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
 				host_window.refresh()
-			new_configured = False
+			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display)
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
 		import traceback
