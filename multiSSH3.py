@@ -54,7 +54,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.72'
+version = '5.73'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-05-21'
@@ -1824,14 +1824,14 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 				charsWritten += min(len(segment), numChar - charsWritten)
 	# if we have finished printing segments but we still have space, we will fill it with fill_char
 	trail_fill_length = numChar - charsWritten - len(trail_str)
-	if trail_fill_length > 0:
-		window.addnstr(y, x + charsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length, boxAttr)
+	if trail_fill_length > 0 and fill_char:
+		window.addnstr(y, x + charsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length , boxAttr)
 		charsWritten += trail_fill_length
 	if len(trail_str) > 0 and charsWritten < numChar:
 		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxAttr)
 		charsWritten += min(len(trail_str), numChar - charsWritten)
 
-def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
+def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexOffset = 0):
 	'''
 	Generate a list for the hosts to be displayed on the screen. This is used to display as much relevant information as possible.
 
@@ -1852,7 +1852,9 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None):
 	failed_hosts = [host for host in hosts if host.returncode is not None and host.returncode != 0]
 	finished_hosts = [host for host in hosts if host.returncode is not None and host.returncode == 0]
 	waiting_hosts = [host for host in hosts if host.returncode is None and not host.output]
-	new_hosts_to_display = (running_hosts + failed_hosts + finished_hosts + waiting_hosts)[:max_num_hosts]
+	new_hosts_to_display = (running_hosts + failed_hosts + finished_hosts + waiting_hosts)
+	new_hosts_to_display = new_hosts_to_display[indexOffset:] + new_hosts_to_display[:indexOffset]
+	new_hosts_to_display = new_hosts_to_display[:max_num_hosts]
 	if not hosts_to_display:
 		return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, set(new_hosts_to_display)
 	# we will compare the new_hosts_to_display with the old one, if some hosts are not in their original position, we will reprint all lines
@@ -1949,6 +1951,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
 			_curses_add_string_to_window(window=bottom_border, y=0, line='-' * (max_x - 1),fill_char='-',box_ansi_color=box_ansi_color)
 			bottom_border.refresh()
+		indexOffset = 0
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
 			# Check for keypress
 			key = stdscr.getch()
@@ -1981,6 +1984,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == 125 and not __keyPressesIn[-1]: # 125 is the key code for }
 					# if last line is empty, we will reconfigure the ww to be larger
 					return (lineToDisplay,curserPosition , min_char_len +1, min_line_len, single_window, 'Increase character length')
+				elif key == 60 and not __keyPressesIn[-1]: # 60 is the key code for <
+					indexOffset = (indexOffset - 1 ) % len(hosts)
+				elif key == 62 and not __keyPressesIn[-1]: # 62 is the key code for >
+					indexOffset  = (indexOffset +1 ) % len(hosts)
 				# We handle positional keys
 				# if the key is up arrow, we will move the line to display up
 				elif key == 259: # 259 is the key code for up arrow
@@ -1989,7 +1996,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == 258: # 258 is the key code for down arrow
 					lineToDisplay = min(lineToDisplay + 1, -1)
 				# if the key is left arrow, we will move the cursor left
-				elif key == 260: # 260 is the key code for left arrow
+				elif key == 260: # 260 is the key │code for left arrow
 					curserPosition = min(max(curserPosition - 1, 0), len(__keyPressesIn[lineToDisplay]) -1)
 				# if the key is right arrow, we will move the cursor right
 				elif key == 261: # 261 is the key code for right arrow
@@ -2042,7 +2049,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			# We generate the aggregated stats if user did not input anything
 			if not __keyPressesIn[lineToDisplay]:
 				#stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
-				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "
+				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} i:{indexOffset} "
 			else:
 				# we use the stat bar to display the key presses
 				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
@@ -2102,15 +2109,16 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						for lineNumToReprint in sorted(lineNumToPrintSet):
 							# if the line is visible, we will reprint it
 							if visibleLowerBound <= lineNumToReprint <= len(host.output):
-								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
+								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 					except Exception as e:
 						# import traceback
 						# print(str(e).strip())
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
 							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
-				host_window.refresh()
-			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display)
+				host_window.noutrefresh()
+			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display, indexOffset)
+			curses.doupdate()
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
 		import traceback
