@@ -10,6 +10,7 @@ __curses_available = False
 __resource_lib_available = False
 try:
 	import curses
+	import curses.panel
 	__curses_available = True
 except ImportError:
 	pass
@@ -54,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.73'
+version = '5.74'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-05-21'
+COMMIT_DATE = '2025-06-03'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1868,6 +1869,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 	_ = config_reason
 	try:
 		box_ansi_color = None
+		refresh_all = True
 		org_dim = stdscr.getmaxyx()
 		# To do this, first we need to know the size of the terminal
 		max_y, max_x = org_dim
@@ -1951,6 +1953,33 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
 			_curses_add_string_to_window(window=bottom_border, y=0, line='-' * (max_x - 1),fill_char='-',box_ansi_color=box_ansi_color)
 			bottom_border.refresh()
+		help_window_hight = min(14, max_y)
+		help_window_width = min(31, max_x)
+		# Create a centered help window
+		help_window_y = (max_y - help_window_hight) // 2
+		help_window_x = (max_x - help_window_width) // 2
+		help_window = curses.newwin(help_window_hight, help_window_width, help_window_y, help_window_x)
+		help_window.leaveok(True)
+		help_window.scrollok(True)
+		help_window.idlok(True)
+		help_window.box()
+		_curses_add_string_to_window(window=help_window,y=0,line='Help', color_pair_list=[-1,-1,1], centered=True, fill_char='─', lead_str='┌', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=1,line='?       : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=2,line='_ or +  : Change window hight', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=3,line='{ or }  : Change window width', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=4,line='< or >  : Change host index', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=5,line='|(pipe) : Toggle single host', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=6,line='Ctrl+D  : Exit', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=7,line='Ctrl+R  : Force refresh', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=8,line='↑ or ↓  : Navigate history', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=9,line='← or →  : Move cursor', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=10,line='PgUp/Dn : Scroll history by 5', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=11,line='Home/End: Jump cursor', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=12,line='Esc     : Clear line', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		help_panel = curses.panel.new_panel(help_window)
+		help_panel.hide()
+		help_shown = False
+		curses.panel.update_panels()
 		indexOffset = 0
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
 			# Check for keypress
@@ -1961,7 +1990,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# When we encounter a newline, we add a new list to the list of lists. ( a new line of input )
 				# with open('keylog.txt','a') as f:
 				#     f.write(str(key)+'\n')
-				if key == 410: # 410 is the key code for resize
+				if key == 410 or key == curses.KEY_RESIZE: # 410 is the key code for resize
 					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize requested')    
 				# if the user pressed ctrl + d and the last line is empty, we will exit by adding 'exit\n' to the last line
 				elif key == 4 and not __keyPressesIn[-1]:
@@ -1991,12 +2020,15 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# We handle positional keys
 				# if the key is up arrow, we will move the line to display up
 				elif key == 259: # 259 is the key code for up arrow
+					# also scroll curserPosition to last if it is currently at the last line and curserPosition is at 0
 					lineToDisplay = max(lineToDisplay - 1, -len(__keyPressesIn))
+					if lineToDisplay == -2 and not __keyPressesIn[-1]:
+						curserPosition = len(__keyPressesIn[lineToDisplay])
 				# if the key is down arrow, we will move the line to display down
 				elif key == 258: # 258 is the key code for down arrow
 					lineToDisplay = min(lineToDisplay + 1, -1)
 				# if the key is left arrow, we will move the cursor left
-				elif key == 260: # 260 is the key │code for left arrow
+				elif key == 260: # 260 is the key code for left arrow
 					curserPosition = min(max(curserPosition - 1, 0), len(__keyPressesIn[lineToDisplay]) -1)
 				# if the key is right arrow, we will move the cursor right
 				elif key == 261: # 261 is the key code for right arrow
@@ -2013,6 +2045,23 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# if the key is end, we will move the cursor to the end of the line
 				elif key == 360: # 360 is the key code for end
 					curserPosition = len(__keyPressesIn[lineToDisplay])
+				elif key == curses.KEY_REFRESH or key == curses.KEY_F5 or key == 18: # 18 is the key code for ctrl + R
+					# if the key is refresh, we will refresh the screen
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Refresh requested')
+				elif key == curses.KEY_EXIT or key == 27: # 27 is the key code for ESC
+					# if the key is exit, we will exit the program
+					return 
+				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
+					# if the key is help, we will display the help message
+					if not help_shown:
+						help_panel.show()
+						help_shown = True
+					else:
+						help_panel.hide()
+						help_shown = False
+						refresh_all = True
+						#return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Help closed')
+					curses.panel.update_panels()
 			# We are left with these are keys that mofidy the current line.
 				else:
 					# This means the user have done scrolling and is committing to modify the current line.
@@ -2058,7 +2107,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
 				displayCurserPosition = min(curserPosition,len(encodedLine) -1)
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
-			if stats != old_stat :
+			if stats != old_stat or refresh_all:
 				old_stat = stats
 				# calculate the real curser position in stats as we centered the stats
 				# if 'Send CMD: ' in stats:
@@ -2078,7 +2127,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				#target_length = max_x - 2 + len('\x1b[33m\x1b[0m\x1b[31m\x1b[0m\x1b[32m\x1b[0m')
 				#bottom_stats = '└'+ f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "[:target_length].center(target_length, "─")
 				bottom_stats = f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "
-				if bottom_stats != old_bottom_stat:
+				if bottom_stats != old_bottom_stat or refresh_all:
 					old_bottom_stat = bottom_stats
 					#bottom_border.clear()
 					#bottom_border.addnstr(0, 0, bottom_stats, max_x - 1)
@@ -2087,6 +2136,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			# set the maximum refresh rate to 100 Hz
 			if time.perf_counter() - last_refresh_time < 0.01:
 				time.sleep(max(0,0.01 - time.perf_counter() + last_refresh_time))
+			if refresh_all:
+				rearrangedHosts = set(hosts_to_display)
+				refresh_all = False
 			#stdscr.clear()
 			for host_window, host in zip(host_windows, hosts_to_display):
 				# we will only update the window if there is new output or the window is not fully printed
