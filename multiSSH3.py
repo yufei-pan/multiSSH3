@@ -55,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.74'
+version = '5.75'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-06-03'
+COMMIT_DATE = '2025-06-17'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -313,6 +313,7 @@ DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
+DEFAULT_ENCODING = 'utf-8'
 SSH_STRICT_HOST_KEY_CHECKING = False
 ERROR_MESSAGES_TO_IGNORE = [
 	'Pseudo-terminal will not be allocated because stdin is not a terminal',
@@ -360,6 +361,7 @@ __curses_color_table = {}
 __curses_current_color_index = 10
 __max_connections_nofile_limit_supported = 0
 __thread_start_delay = 0
+_encoding = DEFAULT_ENCODING
 if __resource_lib_available:
 	# Get the current limits
 	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -1123,11 +1125,12 @@ def __handle_reading_stream(stream,target, host):
 	Returns:
 		None
 	'''
+	global _encoding
 	def add_line(current_line,target, host, keepLastLine=True):
 		if not keepLastLine:
 			target.pop()
 			host.output.pop()
-		current_line_str = current_line.decode('utf-8',errors='backslashreplace')
+		current_line_str = current_line.decode(_encoding,errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
 		host.lineNumToPrintSet.add(len(host.output)-1)
@@ -1158,7 +1161,7 @@ def __handle_reading_stream(stream,target, host):
 				current_line.append(char[0])
 			else:
 				# curser is bigger than the length of the line
-				current_line += b' '*(curser_position - len(current_line)) + char
+				current_line += b' '*(curser_position - len(current_line)) + char[0]
 			curser_position += 1
 		if time.monotonic() - previousUpdateTime > 0.1:
 			# if the time since the last update is more than 10ms, we update the output
@@ -1181,15 +1184,16 @@ def __handle_writing_stream(stream,stop_event,host):
 		None
 	'''
 	global __keyPressesIn
+	global _encoding
 	# __keyPressesIn is a list of lists. 
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
 	sentInput = 0
 	while not stop_event.is_set():
 		if sentInput < len(__keyPressesIn) - 1 :
-			stream.write(''.join(__keyPressesIn[sentInput]).encode())
+			stream.write(''.join(__keyPressesIn[sentInput]).encode(encoding=_encoding,errors='backslashreplace'))
 			stream.flush()
-			line = '> ' + ''.join(__keyPressesIn[sentInput]).encode().decode().replace('\n', '↵')
+			line = '> ' + ''.join(__keyPressesIn[sentInput]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
@@ -1866,6 +1870,7 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexO
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason = 'New Configuration'):
+	global _encoding
 	_ = config_reason
 	try:
 		box_ansi_color = None
@@ -2101,7 +2106,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} i:{indexOffset} "
 			else:
 				# we use the stat bar to display the key presses
-				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode().decode().strip('\n') + ' '
+				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').strip('\n') + ' '
 				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
 				# format the stats line with chracter at curser position inverted using ansi escape sequence
 				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
@@ -2253,6 +2258,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 def generate_output(hosts, usejson = False, greppable = False):
 	global __keyPressesIn
 	global __global_suppress_printout
+	global __encoding
 	if __global_suppress_printout:
 		# remove hosts with returncode 0
 		hosts = [dict(host) for host in hosts if host.returncode != 0]
@@ -2286,7 +2292,7 @@ def generate_output(hosts, usejson = False, greppable = False):
 		rtnStr += pretty_format_table(rtnList)
 		rtnStr += '*'*80+'\n'
 		if __keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
+			CMDsOut = [''.join(cmd).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 			#rtnStr += '\n'
 	else:
@@ -2317,7 +2323,7 @@ def generate_output(hosts, usejson = False, greppable = False):
 		if not __global_suppress_printout or outputs:
 			rtnStr += '*'*80+'\n'
 		if __keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode('unicode_escape').decode().replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
+			CMDsOut = [''.join(cmd).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
 			#rtnStr += f"Key presses: {''.join(__keyPressesIn).encode('unicode_escape').decode()}\n"
 			#rtnStr += f"Key presses: {__keyPressesIn}\n"
 			rtnStr += "User Inputs: \n  "
@@ -2915,6 +2921,7 @@ def generate_default_config(args):
 		'DEFAULT_GREPPABLE_MODE': args.greppable,
 		'DEFAULT_SKIP_UNREACHABLE': args.skip_unreachable,
 		'DEFAULT_SKIP_HOSTS': args.skip_hosts,
+		'DEFAULT_ENCODING': args.encoding,
 		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
 		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
 	}
@@ -2970,6 +2977,7 @@ def main():
 	global _env_file
 	global __DEBUG_MODE
 	global __configs_from_file
+	global _encoding
 	_emo = False
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
@@ -3021,6 +3029,7 @@ def main():
 	parser.add_argument('-I','-nh','--no_history', action='store_true', help=f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}', default=DEFAULT_NO_HISTORY)
 	parser.add_argument('-hf','--history_file', type=str, help=f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})', default=DEFAULT_HISTORY_FILE)
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
+	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	
 	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
@@ -3109,6 +3118,8 @@ def main():
 		# set timeout to the default script timeout if timeout is not set
 		if args.timeout == DEFAULT_CLI_TIMEOUT:
 			args.timeout = DEFAULT_TIMEOUT
+	
+	_encoding = args.encoding
 
 	if not __global_suppress_printout:
 		cmdStr = getStrCommand(args.hosts,args.commands,

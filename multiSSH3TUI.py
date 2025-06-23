@@ -1,45 +1,57 @@
-from collections import defaultdict
-from typing import List, Set, Dict
+import collections
+
+IGNORE_CLI_MARKS_TRANSLATION = str.maketrans('', '', f'-"\'$()[]|<>&#!;_')
 
 class CommandSearcher:
-    """
-    Efficiently search through a list of shell-history commands for any containing a given substring.
-    Uses a fixed-length k-gram inverted index for fast candidate lookup.
-    """
-    def __init__(self, commands, k=3):
-        """
-        :param commands: List[str] of history commands to index
-        :param k: length of k-grams to build index on (trade-off between index size and search speed)
-        """
-        self.commands = list(commands)
-        self.k = k
-        self.index = {}  # maps k-gram -> set of command indices
-        for idx, cmd in enumerate(self.commands):
-            seen = set()
-            for i in range(len(cmd) - k + 1):
-                gram = cmd[i:i+k]
-                if gram not in seen:
-                    self.index.setdefault(gram, set()).add(idx)
-                    seen.add(gram)
+	def __init__(self, commands, k=3):
+		self.commands = collections.Counter(commands)
+		self.k = k
+		self.commands_indexed_by_word = collections.defaultdict(collections.Counter)
+		self.words_indexed_by_kgram = collections.defaultdict(collections.Counter)
+		self._build_index()
 
-    def search(self, query):
-        """
-        Return all commands containing the substring `query`.
-        :param query: substring to search for
-        :return: List[str] of matching commands
-        """
-        # For very short queries, fallback to scanning
-        if len(query) < self.k:
-            return [cmd for cmd in self.commands if query in cmd]
+	def _build_index(self):
+		for command, count in self.commands.items():
+			words = command.lower().translate(IGNORE_CLI_MARKS_TRANSLATION).replace('/',' ').split()
+			for word in words:
+				if not word:
+					continue
+				self.commands_indexed_by_word[word][command] += count
+				if len(word) >= self.k:
+					head = word[:self.k]
+					tail = word[-self.k:]
+					self.words_indexed_by_kgram[head][word] += count
+					if head != tail:
+						self.words_indexed_by_kgram[tail][word] += count
+	
+	def search_commands(self, query, n=10):
+		query = query.lower().translate(IGNORE_CLI_MARKS_TRANSLATION).replace('/',' ').split()
+		if not query:
+			return []
+		results = collections.Counter()
+		for word in query:
+			if not word:
+				continue
+			if not results:
+				results = self.commands_indexed_by_word[word].copy()
+			else:
+				# restrict results to only those that match all words in the query
+				results &= self.commands_indexed_by_word[word]
+		return results.most_common(n)
 
-        # Collect candidate sets via k-gram index
-        grams = [query[i:i+self.k] for i in range(len(query) - self.k + 1)]
-        # If any gram not in index, no match
-        if any(g not in self.index for g in grams):
-            return []
-        # Intersect candidate index sets
-        candidates = set.intersection(*(self.index[g] for g in grams))
-        # Verify actual substring presence
-        return [self.commands[i] for i in candidates if query in self.commands[i]]
+	def search_words(self, query, n=10):
+		query = query.lower().translate(IGNORE_CLI_MARKS_TRANSLATION).replace('/',' ')
+		if not query:
+			return []
+		head = query[:self.k]
+		tail = query[-self.k:]
+		results = collections.Counter()
+		if head in self.words_indexed_by_kgram:
+			results += self.words_indexed_by_kgram[head]
+		if tail in self.words_indexed_by_kgram and head != tail:
+			results += self.words_indexed_by_kgram[tail]
+		return results.most_common(n)
+
+
 
 
