@@ -55,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.75'
+version = '5.76'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-06-17'
+COMMIT_DATE = '2025-06-25'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -77,6 +77,24 @@ def eprint(*args, **kwargs):
 	except Exception as e:
 		print(f"Error: Cannot print to stderr: {e}")
 		print(*args, **kwargs)
+
+def _exit_with_code(code, message=None):
+	'''
+	Exit the program with a specific code and print a message
+
+	Args:
+		code (int): The exit code
+		message (str, optional): The message to print. Defaults to None.
+
+	Returns:
+		None
+	'''
+	global __returnZero
+	if message:
+		eprint('Exiting: '+ message)
+	if __returnZero:
+		code = 0
+	sys.exit(code)
 
 def signal_handler(sig, frame):
 	'''
@@ -98,7 +116,7 @@ def signal_handler(sig, frame):
 		# wait for 0.1 seconds to allow the threads to exit
 		time.sleep(0.1)
 		os.system(f'pkill -ef {os.path.basename(__file__)}')
-		sys.exit(0)
+		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
 
 # def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
 # 	"""
@@ -303,6 +321,7 @@ DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
 DEFAULT_SINGLE_WINDOW = False
 DEFAULT_ERROR_ONLY = False
 DEFAULT_NO_OUTPUT = False
+DEFAULT_RETURN_ZERO = False
 DEFAULT_NO_ENV = False
 DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
 DEFAULT_NO_HISTORY = False
@@ -362,6 +381,7 @@ __curses_current_color_index = 10
 __max_connections_nofile_limit_supported = 0
 __thread_start_delay = 0
 _encoding = DEFAULT_ENCODING
+__returnZero = DEFAULT_RETURN_ZERO
 if __resource_lib_available:
 	# Get the current limits
 	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -2761,7 +2781,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
 		if not commands:
-			sys.exit(0)
+			_exit_with_code(0, "Copy id finished, no commands to run")
 	if files and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
@@ -2778,8 +2798,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				except:
 					pathSet.update(glob.glob(file,recursive=True))
 			if not pathSet:
-				eprint(f'Warning: No source files at {files!r} are found after resolving globs!')
-				sys.exit(66)
+				_exit_with_code(66, f'No source files at {files!r} are found after resolving globs!')
 		else:
 			pathSet = set(files)
 		if file_sync:
@@ -2796,7 +2815,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint("Error: the number of commands must be the same as the number of hosts")
 			eprint(f"Number of commands: {len(commands)}")
 			eprint(f"Number of hosts: {len(set(targetHostDic) - set(skipHostSet))}")
-			sys.exit(255)
+			_exit_with_code(255, "Number of commands and hosts do not match")
 		if not __global_suppress_printout:
 			eprint('-'*80)
 			eprint("Running in one on one mode")
@@ -2911,6 +2930,7 @@ def generate_default_config(args):
 		'DEFAULT_SINGLE_WINDOW': args.single_window,
 		'DEFAULT_ERROR_ONLY': args.error_only,
 		'DEFAULT_NO_OUTPUT': args.no_output,
+		'DEFAULT_RETURN_ZERO': args.return_zero,
 		'DEFAULT_NO_ENV': args.no_env,
 		'DEFAULT_ENV_FILE': args.env_file,
 		'DEFAULT_NO_HISTORY': args.no_history,
@@ -2945,8 +2965,7 @@ def write_default_config(args,CONFIG_FILE = None):
 		elif inStr.lower().strip().startswith('o'):
 			backup = False
 		else:
-			eprint("Aborted")
-			sys.exit(1)
+			_exit_with_code(0, "Aborted by user, no config file written")
 	try:
 		if backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
@@ -2955,8 +2974,7 @@ def write_default_config(args,CONFIG_FILE = None):
 		eprint(f"Do you want to continue writing the new config file to {CONFIG_FILE!r}? (y/n)")
 		inStr = input_with_timeout_and_countdown(10)
 		if not inStr or not inStr.lower().strip().startswith('y'):
-			eprint("Aborted")
-			sys.exit(1)
+			_exit_with_code(0, "Aborted by user, no config file written")
 	try:
 		with open(CONFIG_FILE,'w') as f:
 			json.dump(__configs_from_file,f,indent=4)
@@ -2978,6 +2996,7 @@ def main():
 	global __DEBUG_MODE
 	global __configs_from_file
 	global _encoding
+	global __returnZero
 	_emo = False
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
@@ -3010,6 +3029,7 @@ def main():
 	parser.add_argument('-B','-sw','--single_window', action='store_true', help=f'Use a single window for all hosts. (default: {DEFAULT_SINGLE_WINDOW})', default=DEFAULT_SINGLE_WINDOW)
 	parser.add_argument('-R','-eo','--error_only', action='store_true', help=f'Only print the error output. (default: {DEFAULT_ERROR_ONLY})', default=DEFAULT_ERROR_ONLY)
 	parser.add_argument('-Q',"-no","--no_output", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
+	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})", default=DEFAULT_RETURN_ZERO)
 	parser.add_argument('-C','--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
 	parser.add_argument("--env_file", type=str, help=f"The file to load the mssh file based environment variables from. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILE})", default=DEFAULT_ENV_FILE)
 	parser.add_argument("-m","--max_connections", type=int, help=f"Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
@@ -3055,7 +3075,10 @@ def main():
 		args.no_history = True
 		args.greppable = True
 		args.error_only = True
-			
+	
+	if args.return_zero:
+		__returnZero = True
+
 	if args.generate_config_file or args.store_config_file:
 		if args.store_config_file:
 			configFileToWriteTo = args.store_config_file
@@ -3071,7 +3094,7 @@ def main():
 			if configFileToWriteTo:
 				with open(configFileToWriteTo,'r') as f:
 					eprint(f"Config file content: \n{f.read()}")
-			sys.exit(0)
+			_exit_with_code(0)
 	if args.config_file:
 		if os.path.exists(args.config_file):
 			__configs_from_file.update(load_config_file(os.path.expanduser(args.config_file)))
@@ -3094,7 +3117,7 @@ def main():
 		elif inStr.lower().strip().startswith('m'):
 			eprint(f"\nRunning multiple commands: {', '.join(args.commands)!r} on all hosts")
 		else:
-			sys.exit(0)
+			_exit_with_code(0, "Aborted by user, no commands to run")
 
 	if args.key or args.use_key:
 		if not args.key:
@@ -3179,7 +3202,7 @@ def main():
 		# os.system(f'pkill -ef  {os.path.basename(__file__)}')
 		# os._exit(mainReturnCode)
 	
-	sys.exit(__mainReturnCode)
+	_exit_with_code(__mainReturnCode)
 
 if __name__ == "__main__":
 	main()
