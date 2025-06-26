@@ -55,7 +55,7 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.76'
+version = '5.77'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-06-25'
@@ -2545,6 +2545,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 history_file = history_file, env_file = env_file,
 						 repeat = repeat,interval = interval,
 						 shortend = shortend)
+	commands = [command.replace('"', '\\"') for command in commands]
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	filePath = os.path.abspath(__file__)
 	programName = filePath if filePath else 'mssh'
