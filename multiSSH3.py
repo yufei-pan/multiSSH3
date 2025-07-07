@@ -55,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.77'
+version = '5.78'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-06-25'
+COMMIT_DATE = '2025-06-26'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -246,6 +246,7 @@ class Host:
 		self.stderr = [] # the stderr of the command
 		self.lineNumToPrintSet = set() # line numbers to reprint
 		self.lastUpdateTime = time.monotonic() # the last time the output was updated
+		self.lastPrintedUpdateTime = 0 # the last time the output was printed
 		self.files = files # the files to be copied to the host
 		self.ipmi = ipmi # whether to use ipmi to connect to the host
 		self.shell = shell # whether to use shell to run the command
@@ -260,6 +261,9 @@ class Host:
 		self.identity_file = identity_file
 		self.ip = ip if ip else getIP(name)
 		self.current_color_pair = [-1, -1, 1]
+		self.output_buffer = io.BytesIO()
+		self.stdout_buffer = io.BytesIO()
+		self.stderr_buffer = io.BytesIO()
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -1133,7 +1137,7 @@ def expand_hostnames(hosts):
 
 
 #%% ------------ Run Command Block ----------------
-def __handle_reading_stream(stream,target, host):
+def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
 	Read the stream and append the lines to the target list
 
@@ -1146,50 +1150,63 @@ def __handle_reading_stream(stream,target, host):
 		None
 	'''
 	global _encoding
-	def add_line(current_line,target, host, keepLastLine=True):
-		if not keepLastLine:
-			target.pop()
-			host.output.pop()
-		current_line_str = current_line.decode(_encoding,errors='backslashreplace')
+	def add_line(buffer,target, host):
+		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
 		host.lineNumToPrintSet.add(len(host.output)-1)
-		host.lastUpdateTime = time.monotonic()
-	current_line = bytearray()
-	lastLineCommited = True
-	curser_position = 0
-	previousUpdateTime = time.monotonic()
+		buffer.seek(0)
+		buffer.truncate(0)
+		host.output_buffer.seek(0)
+		host.output_buffer.truncate(0)
+
 	for char in iter(lambda:stream.read(1), b''):
+		host.lastUpdateTime = time.monotonic()
 		if char == b'\n':
-			add_line(current_line,target, host, keepLastLine=lastLineCommited)
-			current_line = bytearray()
-			lastLineCommited = True
-			curser_position = 0
-			previousUpdateTime = time.monotonic()
+			add_line(buffer,target, host)
 			continue
 		elif char == b'\r':
-			curser_position = 0
+			buffer.seek(0)
+			host.output_buffer.seek(0)
 		elif char == b'\x08':
 			# backspace
-			if curser_position > 0:
-				curser_position -= 1
+			if buffer.tell() > 0:
+				buffer.seek(buffer.tell() - 1)
+				buffer.truncate()
+			if host.output_buffer.tell() > 0:
+				host.output_buffer.seek(host.output_buffer.tell() - 1)
+				host.output_buffer.truncate()
 		else:
-			# over write the character if the curser is not at the end of the line
-			if curser_position < len(current_line):
-				current_line[curser_position] = char[0]
-			elif curser_position == len(current_line):
-				current_line.append(char[0])
-			else:
-				# curser is bigger than the length of the line
-				current_line += b' '*(curser_position - len(current_line)) + char[0]
-			curser_position += 1
-		if time.monotonic() - previousUpdateTime > 0.1:
-			# if the time since the last update is more than 10ms, we update the output
-			add_line(current_line,target, host, keepLastLine=lastLineCommited)
-			lastLineCommited = False
-			previousUpdateTime = time.monotonic()
-	if current_line:
-		add_line(current_line,target, host, keepLastLine=lastLineCommited)
+			# normal character
+			buffer.write(char)
+			host.output_buffer.write(char)
+		# if the length of the buffer is greater than 100, we try to decode the buffer to find if there are any unicode line change chars
+		if buffer.tell() % 100 == 0 and buffer.tell() > 0:
+			try:
+				# try to decode the buffer to find if there are any unicode line change chars
+				decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
+				lines = decodedLine.splitlines()
+				if len(lines) > 1:
+					# if there are multiple lines, we add them to the target
+					for line in lines[:-1]:
+						# for all lines except the last one, we add them to the target
+						target.append(line)
+						host.output.append(line)
+						host.lineNumToPrintSet.add(len(host.output)-1)
+					# we keep the last line in the buffer
+					buffer.seek(0)
+					buffer.truncate(0)
+					buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
+					host.output_buffer.seek(0)
+					host.output_buffer.truncate(0)
+					host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
+				
+			except UnicodeDecodeError:
+				# if there is a unicode decode error, we just skip this character
+				continue
+	if buffer.tell() > 0:
+		# if there is still some data in the buffer, we add it to the target
+		add_line(buffer,target, host)
 
 def __handle_writing_stream(stream,stop_event,host):
 	'''
@@ -1208,28 +1225,28 @@ def __handle_writing_stream(stream,stop_event,host):
 	# __keyPressesIn is a list of lists. 
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
-	sentInput = 0
+	sentInputPos = 0
 	while not stop_event.is_set():
-		if sentInput < len(__keyPressesIn) - 1 :
-			stream.write(''.join(__keyPressesIn[sentInput]).encode(encoding=_encoding,errors='backslashreplace'))
+		if sentInputPos < len(__keyPressesIn) - 1 :
+			stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
 			stream.flush()
-			line = '> ' + ''.join(__keyPressesIn[sentInput]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\n', '↵')
+			line = '> ' + ''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
-			sentInput += 1
+			sentInputPos += 1
 			host.lastUpdateTime = time.monotonic()
 		else:
 			time.sleep(0.01) # sleep for 10ms
-	if sentInput < len(__keyPressesIn) - 1 :
-		eprint(f"Warning: {len(__keyPressesIn)-sentInput} lines of key presses are not sent before the process is terminated!")
+	if sentInputPos < len(__keyPressesIn) - 1 :
+		eprint(f"Warning: {len(__keyPressesIn)-sentInputPos} lines of key presses are not sent before the process is terminated!")
 	# # send the last line
 	# if __keyPressesIn and __keyPressesIn[-1]:
 	#     stream.write(''.join(__keyPressesIn[-1]).encode())
 	#     stream.flush()
 	#     host.output.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
-	return sentInput
+	return sentInputPos
 	
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 	'''
@@ -1415,11 +1432,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 			#host.stdout = []
 			proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
 			# create a thread to handle stdout
-			stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host), daemon=True)
+			stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
 			stdout_thread.start()
 			# create a thread to handle stderr
 			#host.stderr = []
-			stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host), daemon=True)
+			stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host,host.stderr_buffer), daemon=True)
 			stderr_thread.start()
 			# create a thread to handle stdin
 			stdin_stop_event = threading.Event()
@@ -1479,9 +1496,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 				except subprocess.TimeoutExpired:
 					pass
 				if stdout:
-					__handle_reading_stream(io.BytesIO(stdout),host.stdout, host)
+					__handle_reading_stream(io.BytesIO(stdout),host.stdout, host,host.stdout_buffer)
 				if stderr:
-					__handle_reading_stream(io.BytesIO(stderr),host.stderr, host)
+					__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
 				# if the last line in host.stderr is Connection to * closed., we will remove it
 			host.returncode = proc.poll()
 			if host.returncode is None:
@@ -2174,6 +2191,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					for i in range(host_window_height - 1):
 						_curses_add_string_to_window(window=host_window, color_pair_list=[-1, -1, 1], y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 					host.lineNumToPrintSet.update(range(len(host.output)))
+					host.lastPrintedUpdateTime = 0
 				# for i in range(host.printedLines, len(host.output)):
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
@@ -2193,7 +2211,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
 							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
+				if host.lastPrintedUpdateTime != host.lastUpdateTime and host.output_buffer.tell() > 0:
+					# this means there is still output in the buffer, we will print it
+					# we will print the output in the window
+					_curses_add_string_to_window(window=host_window, y=len(host.output) + 1, line=host.output_buffer.getvalue().decode(_encoding,errors='backslashreplace'), color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 				host_window.noutrefresh()
+				host.lastPrintedUpdateTime = host.lastUpdateTime
 			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display, indexOffset)
 			curses.doupdate()
 			last_refresh_time = time.perf_counter()
