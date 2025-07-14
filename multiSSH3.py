@@ -55,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.78'
+version = '5.80'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-06-26'
+COMMIT_DATE = '2025-07-09'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1399,7 +1399,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 				else:
 					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rpB'] + localExtraArgs + extraargs +['--']+fileArgs
+					formatedCMD = [_binPaths['scp'],'-rp'] + localExtraArgs + extraargs +['--']+fileArgs
 				else:
 					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
 			else:
@@ -2443,7 +2443,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 			# check for the old content, only update if the new content is different
 			if not os.path.exists(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')):
 				with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'w') as f:
-					f.writelines(f'{host},{expTime}' for host,expTime in unavailableHosts.values())
+					f.writelines(f'{host},{expTime}' for host,expTime in unavailableHosts.items())
 			else:
 				oldDic = {}
 				try:
@@ -2568,7 +2568,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 history_file = history_file, env_file = env_file,
 						 repeat = repeat,interval = interval,
 						 shortend = shortend)
-	commands = [command.replace('"', '\\"') for command in commands]
+	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in commands]
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	filePath = os.path.abspath(__file__)
 	programName = filePath if filePath else 'mssh'
@@ -3008,23 +3008,9 @@ def write_default_config(args,CONFIG_FILE = None):
 		eprint(f'Printing the config file to stdout:')
 		print(json.dumps(__configs_from_file, indent=4))
 
-#%% ------------ Wrapper Block ----------------
-def main():
-	global _emo
-	global __global_suppress_printout
-	global __mainReturnCode
-	global __failedHosts
-	global __ipmiiInterfaceIPPrefix
+#%% ------------ Argument Processing -----------------
+def get_parser():
 	global _binPaths
-	global _env_file
-	global __DEBUG_MODE
-	global __configs_from_file
-	global _encoding
-	global __returnZero
-	_emo = False
-	# We handle the signal
-	signal.signal(signal.SIGINT, signal_handler)
-	# We parse the arguments
 	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file chain: {CONFIG_FILE_CHAIN!r}',
 								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}')
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
@@ -3075,18 +3061,20 @@ def main():
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
 	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
-	
-	# parser.add_argument('-u', '--user', metavar='user', type=str, nargs=1,
-	#                     help='the user to use to connect to the hosts')
-	#args = parser.parse_args()
+	return parser
 
+def process_args(args = None):
+	parser = get_parser()
+	# We handle the signal
+	signal.signal(signal.SIGINT, signal_handler)
+	# We parse the arguments
 	# if python version is 3.7 or higher, use parse_intermixed_args
 	try:
-		args = parser.parse_intermixed_args()
+		args = parser.parse_intermixed_args(args)
 	except Exception :
 		#eprint(f"Error while parsing arguments: {e!r}")
 		# try to parse the arguments using parse_known_args
-		args, unknown = parser.parse_known_args()
+		args, unknown = parser.parse_known_args(args)
 		# if there are unknown arguments, we will try to parse them again using parse_args
 		if unknown:
 			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
@@ -3099,10 +3087,14 @@ def main():
 		args.no_history = True
 		args.greppable = True
 		args.error_only = True
-	
-	if args.return_zero:
-		__returnZero = True
 
+	if args.unavailable_host_expiry <= 0:
+		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
+		args.unavailable_host_expiry = 10
+	return args
+
+def process_config_file(args):
+	global __configs_from_file
 	if args.generate_config_file or args.store_config_file:
 		if args.store_config_file:
 			configFileToWriteTo = args.store_config_file
@@ -3124,11 +3116,12 @@ def main():
 			__configs_from_file.update(load_config_file(os.path.expanduser(args.config_file)))
 		else:
 			eprint(f"Warning: Config file {args.config_file!r} not found, ignoring it.")
+	return args
 
-	_env_file = args.env_file
-	__DEBUG_MODE = args.debug
 	# if there are more than 1 commands, and every command only consists of one word,
 	# we will ask the user to confirm if they want to run multiple commands or just one command.
+
+def process_commands(args):
 	if not args.file and len(args.commands) > 1 and all([len(command.split()) == 1 for command in args.commands]):
 		eprint(f"Multiple one word command detected, what to do? (1/m/n)")
 		eprint(f"1:  Run 1 command [{' '.join(args.commands)}] on all hosts ( default )")
@@ -3142,7 +3135,9 @@ def main():
 			eprint(f"\nRunning multiple commands: {', '.join(args.commands)!r} on all hosts")
 		else:
 			_exit_with_code(0, "Aborted by user, no commands to run")
+	return args
 
+def process_keys(args):
 	if args.key or args.use_key:
 		if not args.key:
 			args.key = find_ssh_key_file()
@@ -3151,23 +3146,43 @@ def main():
 				args.key = find_ssh_key_file(args.key)
 			elif not os.path.exists(args.key):
 				eprint(f"Warning: Identity file {args.key!r} not found. Passing to ssh anyway. Proceed with caution.")
+	return args
 
+
+def set_global_with_args(args):
+	global _emo
+	global __ipmiiInterfaceIPPrefix
+	global _env_file
+	global __DEBUG_MODE
+	global __configs_from_file
+	global _encoding
+	global __returnZero
+	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
+	_env_file = args.env_file
+	__DEBUG_MODE = args.debug
+	_encoding = args.encoding
+	if args.return_zero:
+		__returnZero = True
 
-	if args.no_output:
-		__global_suppress_printout = True
-	
-	if args.unavailable_host_expiry <= 0:
-		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
-		args.unavailable_host_expiry = 10
+#%% ------------ Wrapper Block ----------------
+def main():
+	global __global_suppress_printout
+	global __mainReturnCode
+	global __failedHosts
+	args = process_args()
+	args = process_config_file(args)
+	args = process_commands(args)
+	args = process_keys(args)
+	set_global_with_args(args)
 	
 	if args.use_script_timeout:
 		# set timeout to the default script timeout if timeout is not set
 		if args.timeout == DEFAULT_CLI_TIMEOUT:
 			args.timeout = DEFAULT_TIMEOUT
 	
-	_encoding = args.encoding
-
+	if args.no_output:
+		__global_suppress_printout = True
 	if not __global_suppress_printout:
 		cmdStr = getStrCommand(args.hosts,args.commands,
 						 oneonone=args.oneonone,timeout=args.timeout,password=args.password,
@@ -3199,9 +3214,7 @@ def main():
 							 history_file = args.history_file,
 							 )
 		#print('*'*80)
-
 		#if not __global_suppress_printout: eprint('-'*80)
-	
 	succeededHosts = set()
 	for host in hosts:
 		if host.returncode and host.returncode != 0:
