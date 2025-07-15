@@ -55,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.80'
+version = '5.81'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-07-09'
+COMMIT_DATE = '2025-07-15'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -934,7 +934,7 @@ def compact_hostnames(Hostnames,verify = True):
 			if not __global_suppress_printout:
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 			compact_hosts = hostSet
-	return compact_hosts
+	return sorted(compact_hosts)
 
 #%% ------------ Expanding Hostnames ----------------
 @cache_decorator
@@ -2355,7 +2355,7 @@ def generate_output(hosts, usejson = False, greppable = False):
 			outputs.setdefault(hostPrintOut, set()).add(host['name'])
 		rtnStr = ''
 		for output, hostSet in outputs.items():
-			compact_hosts = sorted(compact_hostnames(hostSet))
+			compact_hosts = compact_hostnames(hostSet)
 			rtnStr += '*'*80+'\n'
 			if __global_suppress_printout:
 				rtnStr += f'Abnormal returncode produced by {",".join(compact_hosts)}:\n'
@@ -2493,8 +2493,7 @@ def formHostStr(host) -> str:
 	if 'local_shell' in host:
 		host.remove('local_shell')
 		host.add('localhost')
-	host = ','.join(host)
-	return host
+	return ','.join(compact_hostnames(host))
 
 @cache_decorator
 def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
@@ -2777,7 +2776,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	skipHostsDic = expand_hostnames(skipHostStr.split(','))
 	skipHostSet = set(skipHostsDic).union(skipHostsDic.values())
 	if skipHostSet:
-		eprint(f"Skipping hosts: \"{' '.join(sorted(compact_hostnames(skipHostSet)))}\"")
+		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
@@ -3227,12 +3226,12 @@ def main():
 	if __mainReturnCode > 0:
 		if not __global_suppress_printout: 
 			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
-			eprint(f'failed_hosts: {",".join(sorted(compact_hostnames(__failedHosts)))}')
+			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts))}')
 	else:
 		if not __global_suppress_printout: eprint('Complete. All hosts returned 0.')
 	
 	if args.success_hosts and not __global_suppress_printout:
-		eprint(f'succeeded_hosts: {",".join(sorted(compact_hostnames(succeededHosts)))}')
+		eprint(f'succeeded_hosts: {",".join(compact_hostnames(succeededHosts))}')
 
 	if threading.active_count() > 1 and not __global_suppress_printout: 
 		eprint(f'Remaining active thread: {threading.active_count()}')
