@@ -55,10 +55,10 @@ except AttributeError:
 		# If neither is available, use a dummy decorator
 		def cache_decorator(func):
 			return func
-version = '5.81'
+version = '5.83'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-07-15'
+COMMIT_DATE = '2025-07-21'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2298,11 +2298,8 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		#time.sleep(0.25)
 
 #%% ------------ Generate Output Block ----------------
-def generate_output(hosts, usejson = False, greppable = False):
-	global __keyPressesIn
-	global __global_suppress_printout
-	global __encoding
-	if __global_suppress_printout:
+def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]]):
+	if quiet:
 		# remove hosts with returncode 0
 		hosts = [dict(host) for host in hosts if host.returncode != 0]
 		if not hosts:
@@ -2334,8 +2331,8 @@ def generate_output(hosts, usejson = False, greppable = False):
 			rtnList.append(['','','',''])
 		rtnStr += pretty_format_table(rtnList)
 		rtnStr += '*'*80+'\n'
-		if __keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
+		if keyPressesIn[-1]:
+			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 			#rtnStr += '\n'
 	else:
@@ -2357,23 +2354,21 @@ def generate_output(hosts, usejson = False, greppable = False):
 		for output, hostSet in outputs.items():
 			compact_hosts = compact_hostnames(hostSet)
 			rtnStr += '*'*80+'\n'
-			if __global_suppress_printout:
+			if quiet:
 				rtnStr += f'Abnormal returncode produced by {",".join(compact_hosts)}:\n'
 				rtnStr += output+'\n'
 			else:
 				rtnStr += f'These hosts: "{",".join(compact_hosts)}" have a response of:\n'
 				rtnStr += output+'\n'
-		if not __global_suppress_printout or outputs:
+		if not quiet or outputs:
 			rtnStr += '*'*80+'\n'
-		if __keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in __keyPressesIn if cmd]
-			#rtnStr += f"Key presses: {''.join(__keyPressesIn).encode('unicode_escape').decode()}\n"
-			#rtnStr += f"Key presses: {__keyPressesIn}\n"
+		if keyPressesIn[-1]:
+			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
 			rtnStr += "User Inputs: \n  "
 			rtnStr += '\n  '.join(CMDsOut)
 			rtnStr += '\n'
-			__keyPressesIn[-1].clear()
-		if __global_suppress_printout and not outputs:
+			keyPressesIn[-1].clear()
+		if quiet and not outputs:
 			rtnStr += 'Success'
 	return rtnStr
 
@@ -2389,7 +2384,10 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	Returns:
 		str: The pretty output generated 
 	'''
-	rtnStr = generate_output(hosts,usejson,greppable)
+	global __global_suppress_printout
+	global _encoding
+	global __keyPressesIn
+	rtnStr = generate_output(hosts,usejson,greppable,quiet=__global_suppress_printout,encoding=_encoding,keyPressesIn=__keyPressesIn)
 	if not quiet:
 		print(rtnStr)
 	return rtnStr
@@ -2424,56 +2422,56 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 				sleep_interval *= 1.1
 		for thread in threads:
 			thread.join(timeout=3)
-	# update the unavailable hosts and global unavailable hosts
-	if willUpdateUnreachableHosts:
-		availableHosts = set()
-		for host in hosts:
-			if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.stderr[-1].strip().startswith('Timeout!') and host.returncode == 124)):
-				unavailableHosts[host.name] =  int(time.monotonic())
-				__globalUnavailableHosts[host.name] =  int(time.monotonic())
-			else:
-				availableHosts.add(host.name)
-				if host.name in unavailableHosts:
-					del unavailableHosts[host.name]
-				if host.name in __globalUnavailableHosts:
-					del __globalUnavailableHosts[host.name]
-		if __DEBUG_MODE:
-			print(f'Unreachable hosts: {unavailableHosts}')
-		try:
-			# check for the old content, only update if the new content is different
-			if not os.path.exists(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')):
-				with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'w') as f:
-					f.writelines(f'{host},{expTime}' for host,expTime in unavailableHosts.items())
-			else:
-				oldDic = {}
-				try:
-					with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
-						for line in f:
-							line = line.strip()
-							if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
-								hostname = line.split(',')[0]
-								expireTime = int(line.split(',')[1])
-								if expireTime < time.monotonic() and hostname not in availableHosts:
-									oldDic[hostname] = expireTime
-				except:
-					pass
-				# add new entries
-				oldDic.update(unavailableHosts)
-				with open(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),'w') as f:
-					for key, value in oldDic.items():
-						f.write(f'{key},{value}\n')
-				os.replace(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'))
-		except Exception as e:
-			eprint(f'Error writing to temporary file: {e!r}')
-			import traceback
-			eprint(traceback.format_exc())
+		# update the unavailable hosts and global unavailable hosts
+		if willUpdateUnreachableHosts:
+			availableHosts = set()
+			for host in hosts:
+				if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.stderr[-1].strip().startswith('Timeout!') and host.returncode == 124)):
+					unavailableHosts[host.name] =  int(time.monotonic())
+					__globalUnavailableHosts[host.name] =  int(time.monotonic())
+				else:
+					availableHosts.add(host.name)
+					if host.name in unavailableHosts:
+						del unavailableHosts[host.name]
+					if host.name in __globalUnavailableHosts:
+						del __globalUnavailableHosts[host.name]
+			if __DEBUG_MODE:
+				print(f'Unreachable hosts: {unavailableHosts}')
+			try:
+				# check for the old content, only update if the new content is different
+				if not os.path.exists(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')):
+					with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'w') as f:
+						f.writelines(f'{host},{expTime}' for host,expTime in unavailableHosts.items())
+				else:
+					oldDic = {}
+					try:
+						with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
+							for line in f:
+								line = line.strip()
+								if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
+									hostname = line.split(',')[0]
+									expireTime = int(line.split(',')[1])
+									if expireTime < time.monotonic() and hostname not in availableHosts:
+										oldDic[hostname] = expireTime
+					except:
+						pass
+					# add new entries
+					oldDic.update(unavailableHosts)
+					with open(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),'w') as f:
+						for key, value in oldDic.items():
+							f.write(f'{key},{value}\n')
+					os.replace(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'))
+			except Exception as e:
+				eprint(f'Error writing to temporary file: {e!r}')
+				import traceback
+				eprint(traceback.format_exc())
 
 	# print the output, if the output of multiple hosts are the same, we aggragate them
 	if not called:
 		print_output(hosts,json,greppable=greppable)
 
 #%% ------------ Stringfy Block ----------------
-@cache_decorator
+
 def formHostStr(host) -> str:
 	"""
 	Forms a comma-separated string of hosts.
