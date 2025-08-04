@@ -43,22 +43,48 @@ import tempfile
 import math
 from itertools import count
 import queue
-
+import typing
 try:
 	# Check if functiools.cache is available
-	cache_decorator = functools.cache
-except AttributeError:
-	try:
-		# Check if functools.lru_cache is available
-		cache_decorator = functools.lru_cache(maxsize=None)
-	except AttributeError:
-		# If neither is available, use a dummy decorator
-		def cache_decorator(func):
-			return func
-version = '5.83'
+	# cache_decorator = functools.cache
+	def cache_decorator(user_function):
+		def _make_hashable(item):
+			if isinstance(item, typing.Mapping):
+				# Sort items so that {'a':1, 'b':2} and {'b':2, 'a':1} hash the same
+				return tuple(
+					( _make_hashable(k), _make_hashable(v) )
+					for k, v in sorted(item.items(), key=lambda item: item[0])
+				)
+			if isinstance(item, (list, set, tuple)):
+				return tuple(_make_hashable(e) for e in item)
+			# Fallback: assume item is already hashable
+			return item
+		def decorating_function(user_function):
+			# Create the real cached function
+			cached_func = functools.lru_cache(maxsize=None)(user_function)
+			@functools.wraps(user_function)
+			def wrapper(*args, **kwargs):
+				# Convert all args/kwargs to hashable equivalents
+				hashable_args = tuple(_make_hashable(a) for a in args)
+				hashable_kwargs = {
+					k: _make_hashable(v) for k, v in kwargs.items()
+				}
+				# Call the lru-cached version
+				return cached_func(*hashable_args, **hashable_kwargs)
+			# Expose cache statistics and clear method
+			wrapper.cache_info = cached_func.cache_info
+			wrapper.cache_clear = cached_func.cache_clear
+			return wrapper
+		return decorating_function(user_function)
+except :
+	# If lrucache is not available, use a dummy decorator
+	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
+	def cache_decorator(func):
+		return func
+version = '5.84'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-07-21'
+COMMIT_DATE = '2025-07-31'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -264,6 +290,7 @@ class Host:
 		self.output_buffer = io.BytesIO()
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
+		self.thread = None
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -386,6 +413,7 @@ __max_connections_nofile_limit_supported = 0
 __thread_start_delay = 0
 _encoding = DEFAULT_ENCODING
 __returnZero = DEFAULT_RETURN_ZERO
+__running_threads = set()
 if __resource_lib_available:
 	# Get the current limits
 	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -580,6 +608,22 @@ def pretty_format_table(data, delimiter = '\t',header = None):
 				outTable.append(row_format.format(*row))
 	return '\n'.join(outTable) + '\n'
 
+def join_threads(threads=__running_threads,timeout=None):
+	'''
+	Join threads
+
+	@params:
+		threads: The threads to join
+		timeout: The timeout
+
+	@returns:
+		None
+	'''
+	global __running_threads
+	for thread in threads:
+		thread.join(timeout=timeout)
+	if threads is __running_threads:
+		__running_threads = {t for t in threads if t.is_alive()}
 #%% ------------ Compacting Hostnames ----------------
 def __tokenize_hostname(hostname):
 	"""
@@ -1569,8 +1613,9 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cp
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
 	threads = [threading.Thread(target=run_command, args=(host, sem,timeout,password), daemon=True) for host in hosts]
-	for thread in threads:
+	for thread, host in zip(threads, hosts):
 		thread.start()
+		host.thread = thread
 		time.sleep(__thread_start_delay)
 	return threads
 
@@ -2465,10 +2510,12 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 				eprint(f'Error writing to temporary file: {e!r}')
 				import traceback
 				eprint(traceback.format_exc())
-
+		if not called:
+			print_output(hosts,json,greppable=greppable)
+	else:
+		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
-	if not called:
-		print_output(hosts,json,greppable=greppable)
+
 
 #%% ------------ Stringfy Block ----------------
 
