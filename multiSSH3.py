@@ -81,10 +81,10 @@ except :
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.84'
+version = '5.85'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-07-31'
+COMMIT_DATE = '2025-08-13'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -624,6 +624,19 @@ def join_threads(threads=__running_threads,timeout=None):
 		thread.join(timeout=timeout)
 	if threads is __running_threads:
 		__running_threads = {t for t in threads if t.is_alive()}
+
+def format_commands(commands):
+	if not commands:
+		commands = []
+	else:
+		commands = [commands] if isinstance(commands,str) else commands
+		# reformat commands into a list of strings, join the iterables if they are not strings
+		try:
+			commands = [' '.join(command) if not isinstance(command,str) else command for command in commands]
+		except:
+			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures.")
+	return commands
+
 #%% ------------ Compacting Hostnames ----------------
 def __tokenize_hostname(hostname):
 	"""
@@ -2612,7 +2625,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 history_file = history_file, env_file = env_file,
 						 repeat = repeat,interval = interval,
 						 shortend = shortend)
-	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in commands]
+	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in format_commands(commands)]
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	filePath = os.path.abspath(__file__)
 	programName = filePath if filePath else 'mssh'
@@ -2761,15 +2774,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if max_connections > __max_connections_nofile_limit_supported * 2:
 			# we need to throttle thread start to avoid hitting the nofile limit
 			__thread_start_delay = 0.001
-	if not commands:
-		commands = []
-	else:
-		commands = [commands] if isinstance(commands,str) else commands
-		# reformat commands into a list of strings, join the iterables if they are not strings
-		try:
-			commands = [' '.join(command) if not isinstance(command,str) else command for command in commands]
-		except:
-			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures.")
+	commands = format_commands(commands)
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
