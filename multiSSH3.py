@@ -81,10 +81,10 @@ except :
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.85'
+version = '5.86'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-08-13'
+COMMIT_DATE = '2025-10-07'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -1964,7 +1964,7 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexO
 			rearrangedHosts.add(host)
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
 
-def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW, config_reason = 'New Configuration'):
+def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
 	global _encoding
 	_ = config_reason
 	try:
@@ -1983,9 +1983,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			min_line_len_local = max_y-1
 		# return True if the terminal is too small
 		if max_x < 2 or max_y < 2:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal too small')
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal too small')
 		if min_char_len_local < 1 or min_line_len_local < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Minimum character or line length too small')
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Minimum character or line length too small')
 		# We need to figure out how many hosts we can fit in the terminal
 		# We will need at least 2 lines per host, one for its name, one for its output
 		# Each line will be at least 61 characters long (60 for the output, 1 for the borders)
@@ -1993,10 +1993,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		max_num_hosts_y = max_y // (min_line_len_local + 1)
 		max_num_hosts = max_num_hosts_x * max_num_hosts_y
 		if max_num_hosts < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal too small to display any hosts')
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal too small to display any hosts')
 		hosts_to_display , host_stats, rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts)
 		if len(hosts_to_display) == 0:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'No hosts to display')
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'No hosts to display')
 		# Now we calculate the actual number of hosts we will display for x and y
 		optimal_len_x = max(min_char_len_local, 80)
 		num_hosts_x = min(max(min(max_num_hosts_x, max_x // optimal_len_x),1),len(hosts_to_display))
@@ -2017,7 +2017,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		host_window_height = max_y // num_hosts_y
 		host_window_width = max_x // num_hosts_x
 		if host_window_height < 1 or host_window_width < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Host window too small')
+			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Host window too small')
 
 		old_stat = ''
 		old_bottom_stat = ''
@@ -2078,7 +2078,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		_curses_add_string_to_window(window=help_window,y=12,line='Esc     : Clear line', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		help_panel = curses.panel.new_panel(help_window)
 		help_panel.hide()
-		help_shown = False
 		curses.panel.update_panels()
 		indexOffset = 0
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
@@ -2091,7 +2090,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# with open('keylog.txt','a') as f:
 				#     f.write(str(key)+'\n')
 				if key == 410 or key == curses.KEY_RESIZE: # 410 is the key code for resize
-					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize requested')    
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize requested')    
 				# if the user pressed ctrl + d and the last line is empty, we will exit by adding 'exit\n' to the last line
 				elif key == 4 and not __keyPressesIn[-1]:
 					__keyPressesIn[-1].extend('exit\n')
@@ -2099,20 +2098,20 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == 95 and not __keyPressesIn[-1]: # 95 is the key code for _
 					# if last line is empty, we will reconfigure the wh to be smaller
 					if min_line_len != 1:
-						return (lineToDisplay,curserPosition , min_char_len , max(min_line_len -1,1), single_window, 'Decrease line length')
+						return (lineToDisplay,curserPosition , min_char_len , max(min_line_len -1,1), single_window,help_shown, 'Decrease line length')
 				elif key == 43 and not __keyPressesIn[-1]: # 43 is the key code for +
 					# if last line is empty, we will reconfigure the wh to be larger
-					return (lineToDisplay,curserPosition , min_char_len , min_line_len +1, single_window, 'Increase line length')
+					return (lineToDisplay,curserPosition , min_char_len , min_line_len +1, single_window,help_shown, 'Increase line length')
 				elif key == 123 and not __keyPressesIn[-1]: # 123 is the key code for {
 					# if last line is empty, we will reconfigure the ww to be smaller
 					if min_char_len != 1:
-						return (lineToDisplay,curserPosition , max(min_char_len -1,1), min_line_len, single_window, 'Decrease character length')
+						return (lineToDisplay,curserPosition , max(min_char_len -1,1), min_line_len, single_window,help_shown, 'Decrease character length')
 				elif key == 124 and not __keyPressesIn[-1]: # 124 is the key code for |
 					# if last line is empty, we will toggle the single window mode
-					return (lineToDisplay,curserPosition , min_char_len, min_line_len, not single_window, 'Toggle single window mode')
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, not single_window,help_shown, 'Toggle single window mode')
 				elif key == 125 and not __keyPressesIn[-1]: # 125 is the key code for }
 					# if last line is empty, we will reconfigure the ww to be larger
-					return (lineToDisplay,curserPosition , min_char_len +1, min_line_len, single_window, 'Increase character length')
+					return (lineToDisplay,curserPosition , min_char_len +1, min_line_len, single_window,help_shown, 'Increase character length')
 				elif key == 60 and not __keyPressesIn[-1]: # 60 is the key code for <
 					indexOffset = (indexOffset - 1 ) % len(hosts)
 				elif key == 62 and not __keyPressesIn[-1]: # 62 is the key code for >
@@ -2147,11 +2146,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					curserPosition = len(__keyPressesIn[lineToDisplay])
 				elif key == curses.KEY_REFRESH or key == curses.KEY_F5 or key == 18: # 18 is the key code for ctrl + R
 					# if the key is refresh, we will refresh the screen
-					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Refresh requested')
+					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Refresh requested')
 				elif key == curses.KEY_EXIT or key == 27: # 27 is the key code for ESC
 					# if the key is exit, we will exit the program
 					return 
-				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
+				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1 or key == 8: # 63 is the key code for ?
 					# if the key is help, we will display the help message
 					if not help_shown:
 						help_panel.show()
@@ -2194,7 +2193,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						curserPosition += 1
 			# reconfigure when the terminal size changes
 			if org_dim != stdscr.getmaxyx():
-				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
+				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
 			# We generate the aggregated stats if user did not input anything
 			if not __keyPressesIn[lineToDisplay]:
 				#stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
@@ -2268,7 +2267,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						# print(str(e).strip())
 						# print(traceback.format_exc().strip())
 						if org_dim != stdscr.getmaxyx():
-							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Terminal resize detected')
+							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
 				if host.lastPrintedUpdateTime != host.lastUpdateTime and host.output_buffer.tell() > 0:
 					# this means there is still output in the buffer, we will print it
 					# we will print the output in the window
@@ -2276,11 +2275,14 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				host_window.noutrefresh()
 				host.lastPrintedUpdateTime = host.lastUpdateTime
 			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display, indexOffset)
+			if help_shown:
+				help_window.touchwin()
+				help_window.noutrefresh()
 			curses.doupdate()
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
 		import traceback
-		return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, f'Error: {str(e)}',traceback.format_exc())
+		return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, f'Error: {str(e)}',traceback.format_exc())
 	return None
 
 def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
@@ -2330,7 +2332,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		stdscr.refresh()
 	except:
 		pass
-	params = (-1,0 , min_char_len, min_line_len, single_window,'new config')
+	params = (-1,0 , min_char_len, min_line_len, single_window,False,'new config')
 	while params:
 		params = __generate_display(stdscr, hosts, *params)
 		if not params:
@@ -2341,17 +2343,17 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 		# print the current configuration
 		stdscr.clear()
 		try:
-			stdscr.addstr(0, 0, f"{params[5]}, Reloading Configuration: min_char_len={params[2]}, min_line_len={params[3]}, single_window={params[4]} with window size {stdscr.getmaxyx()} and {len(hosts)} hosts...")
-			if len(params) > 6:
+			stdscr.addstr(0, 0, f"{params[6]}, Reloading Configuration: min_char_len={params[2]}, min_line_len={params[3]}, single_window={params[4]} with window size {stdscr.getmaxyx()} and {len(hosts)} hosts...")
+			if len(params) > 7:
 				# traceback is available, print it
 				i = 1
-				for line in params[6].split('\n'):
+				for line in params[7].split('\n'):
 					stdscr.addstr(i, 0, line)
 					i += 1
 			stdscr.refresh()
 		except:
 			pass
-		params = params[:5] + ('new config',)
+		params = params[:6] + ('new config',)
 		time.sleep(0.01)
 		#time.sleep(0.25)
 
