@@ -83,10 +83,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.88'
+version = '5.90'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-10-13'
+COMMIT_DATE = '2025-10-17'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -374,6 +374,7 @@ DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
 DEFAULT_ENCODING = 'utf-8'
+DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.75
 SSH_STRICT_HOST_KEY_CHECKING = False
 ERROR_MESSAGES_TO_IGNORE = [
 	'Pseudo-terminal will not be allocated because stdin is not a terminal',
@@ -767,6 +768,30 @@ class OrderedMultiSet(deque):
 			return None
 		return self[-1]
 
+def get_terminal_size():
+	'''
+	Get the terminal size
+
+	@params:
+		None
+
+	@returns:
+		(int,int): the number of columns and rows of the terminal
+	'''
+	try:
+		import os
+		_tsize = os.get_terminal_size()
+	except Exception:
+		try:
+			import fcntl
+			import struct
+			import termios
+			packed = fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0))
+			_tsize = struct.unpack('HHHH', packed)[:2]
+		except Exception:
+			import shutil
+			_tsize = shutil.get_terminal_size(fallback=(120, 30))
+	return _tsize
 #%% ------------ Compacting Hostnames ----------------
 def __tokenize_hostname(hostname):
 	"""
@@ -2514,23 +2539,24 @@ def can_merge(line_bag1, line_bag2, threshold):
 	return len(line_bag1.symmetric_difference(line_bag2)) < max((len(line_bag1) + len(line_bag2)) * (1 - threshold),1)
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold):
-	output.append('*'*80)
+	terminal_length = get_terminal_size()[0]
+	output.append(('├'+'─'*(terminal_length-1)))
 	indexes = {hostname: 0 for hostname in merging_hostnames}
 	working_indexes = indexes.copy()
+	previousBuddies = set()
 	while indexes:
 		futures = {}
-		previousBuddies = set()
 		defer = False
 		sorted_working_indexes = sorted(working_indexes.items(), key=lambda x: x[1])
 		golden_hostname, golden_index = sorted_working_indexes[0]
-		buddy = [golden_hostname]
+		buddy = {golden_hostname}
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
 		for hostname, index in sorted_working_indexes[1:]:
 			if lineToAdd == outputs_by_hostname[hostname][index]:
-				buddy.append(hostname)
+				buddy.add(hostname)
 			else:
 				if hostname not in futures:
-					diff_display_item_count = max(len(outputs_by_hostname[hostname]) * (1 - diff_display_threshold),1)
+					diff_display_item_count = max(int(len(outputs_by_hostname[hostname]) * (1 - diff_display_threshold)),1)
 					tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
 					futures[hostname] = (OrderedMultiSet(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_index)
 				if lineToAdd in futures[hostname]:
@@ -2539,15 +2565,15 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 					defer = True
 					break
 		if not defer:
-			if set(buddy) != previousBuddies:
-				output.append(f"█>>> {','.join(buddy)}:")
-				previousBuddies = set(buddy)
+			if buddy != previousBuddies:
+				output.append(f"├─ {','.join(compact_hostnames(buddy))}")
+				previousBuddies = buddy
 			output.append(lineToAdd)
 			for hostname in buddy:
 				indexes[hostname] += 1
 				if indexes[hostname] >= len(outputs_by_hostname[hostname]):
-					del indexes[hostname]
-					del futures[hostname]
+					indexes.pop(hostname, None)
+					futures.pop(hostname, None)
 					continue
 				#advance futures
 				if hostname in futures:
@@ -2562,15 +2588,87 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 			working_indexes = indexes.copy()
 
 def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold):
+	terminal_length = get_terminal_size()[0]
 	output = []
 	for merging_hostnames in merge_groups:
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold)
 	for hostname in remaining_hostnames:
-		output.append('*'*80)
+		output.append('├'+'─'*(terminal_length-1))
+		output.append(f"├─ {hostname}")
 		output.extend(outputs_by_hostname[hostname])
 	return output
 
-def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]],diff_display_threshold = 0.8):
+def get_host_raw_output(hosts):
+	outputs_by_hostname = {}
+	line_bag_by_hostname = {}
+	hostnames_by_line_bag_len = {}
+	for host in hosts:
+		hostPrintOut = ["│█ EXECUTED COMMAND"]
+		hostPrintOut.extend(['│ ' + line for line in host['command'].splitlines()])
+		lineBag = {(0,host['command'])}
+		prevLine = host['command']
+		if host['stdout']:
+			hostPrintOut.append('│▓ STDOUT:')
+			hostPrintOut.extend(['│ ' + line for line in host['stdout']])
+			lineBag.add((prevLine,1))
+			lineBag.add((1,host['stdout'][0]))
+			if len(host['stdout']) > 1:
+				lineBag.update(zip(host['stdout'], host['stdout'][1:]))
+			lineBag.update(host['stdout'])
+			prevLine = host['stdout'][-1]
+		if host['stderr']:
+			if host['stderr'][0].strip().startswith('ssh: connect to host ') and host['stderr'][0].strip().endswith('Connection refused'):
+				host['stderr'][0] = 'SSH not reachable!'
+			elif host['stderr'][-1].strip().endswith('Connection timed out'):
+				host['stderr'][-1] = 'SSH connection timed out!'
+			elif host['stderr'][-1].strip().endswith('No route to host'):
+				host['stderr'][-1] = 'Cannot find host!'
+			if host['stderr']:
+				hostPrintOut.append('│▒ STDERR:')
+				hostPrintOut.extend(['│ ' + line for line in host['stderr']])
+				lineBag.add((prevLine,2))
+				lineBag.add((2,host['stderr'][0]))
+				lineBag.update(host['stderr'])
+				if len(host['stderr']) > 1:
+					lineBag.update(zip(host['stderr'], host['stderr'][1:]))
+				prevLine = host['stderr'][-1]
+		hostPrintOut.append(f"│░ RETURN CODE: {host['returncode']}")
+		lineBag.add((prevLine,f"{host['returncode']}"))
+		outputs_by_hostname[host['name']] = hostPrintOut
+		line_bag_by_hostname[host['name']] = lineBag
+		hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host['name'])
+	return outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted(hostnames_by_line_bag_len)
+
+def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold):
+	merge_groups = []
+	for line_bag_len in hostnames_by_line_bag_len.copy():
+		for this_hostname in hostnames_by_line_bag_len.get(line_bag_len, set()).copy():
+			if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
+				continue
+			this_line_bag = line_bag_by_hostname[this_hostname]
+			target_threshold = line_bag_len * (2 - diff_display_threshold)
+			merge_group = []
+			for other_line_bag_len in sorted_hostnames_by_line_bag_len_keys:
+				if other_line_bag_len > target_threshold:
+					break
+				if other_line_bag_len < line_bag_len:
+					continue
+				for other_hostname in hostnames_by_line_bag_len.get(other_line_bag_len, set()).copy():
+					if this_hostname == other_hostname:
+						continue
+					if can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
+						merge_group.append(other_hostname)
+						hostnames_by_line_bag_len[line_bag_len].discard(this_hostname)
+						hostnames_by_line_bag_len[other_line_bag_len].remove(other_hostname)
+						if not hostnames_by_line_bag_len[other_line_bag_len]:
+							del hostnames_by_line_bag_len[other_line_bag_len]
+						del line_bag_by_hostname[other_hostname]
+			if merge_group:
+				merge_group.append(this_hostname)
+				merge_groups.append(merge_group)
+	return merge_groups
+
+def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]]):
 	if quiet:
 		# remove hosts with returncode 0
 		hosts = [dict(host) for host in hosts if host.returncode != 0]
@@ -2608,69 +2706,16 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 			#rtnStr += '\n'
 	else:
-		if diff_display_threshold <= 0 or diff_display_threshold > 1:
-			eprint("Warning: diff_display_threshold should be between 0 and 1. Setting to default value of 0.9")
+		try:
+			diff_display_threshold = float(DEFAULT_DIFF_DISPLAY_THRESHOLD)
+			if diff_display_threshold < 0 or diff_display_threshold > 1:
+				raise ValueError
+		except Exception:
+			eprint("Warning: diff_display_threshold should be a float between 0 and 1. Setting to default value of 0.9")
 			diff_display_threshold = 0.9
-		outputs_by_hostname = {}
-		line_bag_by_hostname = {}
-		hostnames_by_line_bag_len = {}
-		merge_groups = []
-		for host in hosts:
-			hostPrintOut = ["■ Command:",f"{host['command']}","■ stdout:"]
-			lineBag = {(0,host['command'])}
-			prevLine = host['command']
-			if host['stdout']:
-				hostPrintOut.extend(host['stdout'])
-				lineBag.add((prevLine,1))
-				lineBag.add((1,host['stdout'][0]))
-				if len(host['stdout']) > 1:
-					lineBag.update(zip(host['stdout'], host['stdout'][1:]))
-				prevLine = host['stdout'][-1]
-			if host['stderr']:
-				if host['stderr'][0].strip().startswith('ssh: connect to host ') and host['stderr'][0].strip().endswith('Connection refused'):
-					host['stderr'][0] = 'SSH not reachable!'
-				elif host['stderr'][-1].strip().endswith('Connection timed out'):
-					host['stderr'][-1] = 'SSH connection timed out!'
-				elif host['stderr'][-1].strip().endswith('No route to host'):
-					host['stderr'][-1] = 'Cannot find host!'
-				if host['stderr']:
-					hostPrintOut.append('▄ stderr:')
-					hostPrintOut.extend(host['stderr'])
-					lineBag.add((prevLine,2))
-					lineBag.add((2,host['stderr'][0]))
-					if len(host['stderr']) > 1:
-						lineBag.update(zip(host['stderr'], host['stderr'][1:]))
-					prevLine = host['stderr'][-1]
-			hostPrintOut.append(f"■ return_code: {host['returncode']}")
-			lineBag.add((prevLine,f"{host['returncode']}"))
-			outputs_by_hostname[host['name']] = hostPrintOut
-			line_bag_by_hostname[host['name']] = lineBag
-			hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host['name'])
-		sorted_hostnames_by_line_bag_len = sorted(hostnames_by_line_bag_len)
-		for line_bag_len in sorted_hostnames_by_line_bag_len:
-			for this_hostname in hostnames_by_line_bag_len.get(line_bag_len, set()).copy():
-				if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
-					continue
-				this_line_bag = line_bag_by_hostname[this_hostname]
-				target_threshold = line_bag_len * (2 - diff_display_threshold)
-				merge_group = []
-				for other_line_bag_len in sorted_hostnames_by_line_bag_len:
-					if other_line_bag_len > target_threshold:
-						break
-					if other_line_bag_len < line_bag_len:
-						continue
-					for other_hostname in hostnames_by_line_bag_len.get(other_line_bag_len, set()).copy():
-						if this_hostname == other_hostname:
-							continue
-						if can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
-							merge_group.append(other_hostname)
-							hostnames_by_line_bag_len[other_line_bag_len].remove(other_hostname)
-							if not hostnames_by_line_bag_len[other_line_bag_len]:
-								del hostnames_by_line_bag_len[other_line_bag_len]
-							del line_bag_by_hostname[other_hostname]
-				if merge_group:
-					merge_group.append(this_hostname)
-					merge_groups.append(merge_group)
+		terminal_length = get_terminal_size()[0]
+		outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys = get_host_raw_output(hosts)
+		merge_groups = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
 		# get the remaining hostnames in the hostnames_by_line_bag_len
 		remaining_hostnames = set()
 		for hostnames in hostnames_by_line_bag_len.values():
@@ -2678,13 +2723,13 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold)
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			outputs.append("░ User Inputs:")
+			outputs.append("├─ User Inputs:".ljust(terminal_length-1,'─'))
 			outputs.extend(CMDsOut)
 			keyPressesIn[-1].clear()
 		if quiet and not outputs:
 			rtnStr = 'Success'
 		else:
-			rtnStr = '\n'.join(outputs + ['*'*80])
+			rtnStr = '\n'.join(outputs + [('╘'+'─'*(terminal_length-1))])
 	return rtnStr
 
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
@@ -3308,6 +3353,7 @@ def generate_default_config(args):
 		'DEFAULT_SKIP_UNREACHABLE': args.skip_unreachable,
 		'DEFAULT_SKIP_HOSTS': args.skip_hosts,
 		'DEFAULT_ENCODING': args.encoding,
+		'DEFAULT_DIFF_DISPLAY_THRESHOLD': args.diff_display_threshold,
 		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
 		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
 	}
@@ -3404,6 +3450,7 @@ def get_parser():
 	parser.add_argument('-hf','--history_file', type=str, help=f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})', default=DEFAULT_HISTORY_FILE)
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
 	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
+	parser.add_argument('-ddt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. Set to 0 to always display the diff. (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
@@ -3505,6 +3552,7 @@ def set_global_with_args(args):
 	global __returnZero
 	global DEFAULT_IPMI_USERNAME
 	global DEFAULT_IPMI_PASSWORD
+	global DEFAULT_DIFF_DISPLAY_THRESHOLD
 	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 	_env_file = args.env_file
@@ -3516,6 +3564,7 @@ def set_global_with_args(args):
 		DEFAULT_IPMI_USERNAME = args.ipmi_username
 	if args.ipmi_password:
 		DEFAULT_IPMI_PASSWORD = args.ipmi_password
+	DEFAULT_DIFF_DISPLAY_THRESHOLD = args.diff_display_threshold
 
 #%% ------------ Wrapper Block ----------------
 def main():
