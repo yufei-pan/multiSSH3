@@ -24,6 +24,7 @@ import string
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import typing
@@ -83,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.90'
+version = '5.91'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-10-17'
@@ -376,6 +377,7 @@ DEFAULT_SKIP_HOSTS = ''
 DEFAULT_ENCODING = 'utf-8'
 DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.75
 SSH_STRICT_HOST_KEY_CHECKING = False
+FORCE_TRUECOLOR = False
 ERROR_MESSAGES_TO_IGNORE = [
 	'Pseudo-terminal will not be allocated because stdin is not a terminal',
 	'Connection to .* closed',
@@ -792,6 +794,135 @@ def get_terminal_size():
 			import shutil
 			_tsize = shutil.get_terminal_size(fallback=(120, 30))
 	return _tsize
+
+@cache_decorator
+def get_terminal_color_capability():
+	global FORCE_TRUECOLOR
+	if not sys.stdout.isatty():
+		return 'None'
+	term = os.environ.get("TERM", "")
+	if term == "dumb":
+		return 'None'
+	elif term == "linux":
+		return '8'
+	elif FORCE_TRUECOLOR:
+		return '24bit'
+	colorterm = os.environ.get("COLORTERM", "")
+	if colorterm in ("truecolor", "24bit", "24-bit"):
+		return '24bit'
+	if term in ("xterm-truecolor", "xterm-24bit", "xterm-kitty", "alacritty", "wezterm", "foot", "terminology"):
+		return '24bit'
+	elif "256" in term:
+		return '256'
+	try:
+		curses.setupterm()
+		colors = curses.tigetnum("colors")
+		# tigetnum returns -1 if the capability isn’t defined
+		if colors >= 16777216:
+			return '24bit'
+		elif colors >= 256:
+			return '256'
+		elif colors >= 16:
+			return '16'
+		elif colors > 0:
+			return '8'
+		else:
+			return 'None'
+	except Exception:
+		return 'None'
+
+@cache_decorator
+def get_xterm256_palette():
+	palette = []
+	# 0–15: system colors (we'll just fill with dummy values;
+	# you could fill in real RGB if you need to)
+	system_colors = [
+		(0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0),
+		(0, 0, 128), (128, 0, 128), (0, 128, 128), (192, 192, 192),
+		(128, 128, 128), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+		(0, 0, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+	]
+	palette.extend(system_colors)
+	# 16–231: 6x6x6 color cube
+	levels = [0, 95, 135, 175, 215, 255]
+	for r in levels:
+		for g in levels:
+			for b in levels:
+				palette.append((r, g, b))
+	# 232–255: grayscale ramp, 24 steps from 8 to 238
+	for i in range(24):
+		level = 8 + i * 10
+		palette.append((level, level, level))
+	return palette
+
+@cache_decorator
+def rgb_to_xterm_index(r, g, b):
+	"""
+	Map 24-bit RGB to nearest xterm-256 color index.
+	r, g, b should be in 0-255.
+	Returns an int in 0-255.
+	"""
+	best_index = 0
+	best_dist = float('inf')
+	for i, (pr, pg, pb) in enumerate(get_xterm256_palette()):
+		dr = pr - r
+		dg = pg - g
+		db = pb - b
+		dist = dr*dr + dg*dg + db*db
+		if dist < best_dist:
+			best_dist = dist
+			best_index = i
+	return best_index
+
+@cache_decorator
+def hashable_to_color(n, brightness_threshold=500):
+	hash_value = hash(str(n))
+	r = (hash_value >> 16) & 0xFF
+	g = (hash_value >> 8) & 0xFF
+	b = hash_value & 0xFF
+	if (r + g + b) < brightness_threshold:
+		return hashable_to_color(hash_value, brightness_threshold)
+	return (r, g, b)
+
+__previous_ansi_color_index = -1
+@cache_decorator
+def string_to_unique_ansi_color(string):
+	'''
+	Convert a string to a unique ANSI color code
+
+	Args:
+		string (str): The string to convert
+
+	Returns:
+		int: The ANSI color code
+	'''
+	global __previous_ansi_color_index
+	# Use a hash function to generate a consistent integer from the string
+	color_capability = get_terminal_color_capability()
+	index = None
+	if color_capability == 'None':
+		return ''
+	elif color_capability == '16':
+		# Map to one of the 14 colors (31-37, 90-96), avoiding black and white
+		index = (hash(string) % 14) + 31
+		if index > 37:
+			index += 52  # Bright colors (90-97)
+	elif color_capability == '8':
+		index = (hash(string) % 6) + 31
+	r,g,b = hashable_to_color(string)
+	if color_capability == '256':
+		index = rgb_to_xterm_index(r,g,b)
+	if index:
+		if index == __previous_ansi_color_index:
+			return string_to_unique_ansi_color(hash(string))
+		__previous_ansi_color_index = index
+		if color_capability == '256':
+			return f'\033[38;5;{index}m'
+		else:
+			return f'\033[{index}m'
+	else:
+		return f'\033[38;2;{r};{g};{b}m'
+
 #%% ------------ Compacting Hostnames ----------------
 def __tokenize_hostname(hostname):
 	"""
@@ -2538,12 +2669,12 @@ def can_merge(line_bag1, line_bag2, threshold):
 		return False
 	return len(line_bag1.symmetric_difference(line_bag2)) < max((len(line_bag1) + len(line_bag2)) * (1 - threshold),1)
 
-def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold):
-	terminal_length = get_terminal_size()[0]
-	output.append(('├'+'─'*(terminal_length-1)))
+def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
 	indexes = {hostname: 0 for hostname in merging_hostnames}
 	working_indexes = indexes.copy()
 	previousBuddies = set()
+	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='├─ ', subsequent_indent='│- ')
+	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
 	while indexes:
 		futures = {}
 		defer = False
@@ -2566,9 +2697,14 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 					break
 		if not defer:
 			if buddy != previousBuddies:
-				output.append(f"├─ {','.join(compact_hostnames(buddy))}")
+				hostnameStr = ','.join(compact_hostnames(buddy))
+				hostnameLines = hostnameWrapper.wrap(hostnameStr)
+				hostnameLines = [line.ljust(line_length - 1) + '│' for line in hostnameLines]
+				color = string_to_unique_ansi_color(hostnameStr) if len(buddy) < len(merging_hostnames) else ''
+				hostnameLines[0] = f"\033[0m{color}{hostnameLines[0]}"
+				output.extend(hostnameLines)
 				previousBuddies = buddy
-			output.append(lineToAdd)
+			output.append(lineToAdd.ljust(line_length - 1) + '│')
 			for hostname in buddy:
 				indexes[hostname] += 1
 				if indexes[hostname] >= len(outputs_by_hostname[hostname]):
@@ -2587,29 +2723,41 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 					futures[hostname] = (tracking_multiset, tracking_index)
 			working_indexes = indexes.copy()
 
-def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold):
-	terminal_length = get_terminal_size()[0]
+def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
 	output = []
+	output.append(('┌'+'─'*(line_length-2) + '┐'))
 	for merging_hostnames in merge_groups:
-		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold)
+		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
+		output.append('\033[0m├'+'─'*(line_length-2) + '┤')
 	for hostname in remaining_hostnames:
-		output.append('├'+'─'*(terminal_length-1))
-		output.append(f"├─ {hostname}")
-		output.extend(outputs_by_hostname[hostname])
+		hostnameLines = textwrap.wrap(hostname, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
+									initial_indent='├─ ', subsequent_indent='│- ')
+		output.extend(line.ljust(line_length - 1) + '│' for line in hostnameLines)
+		output.extend(line.ljust(line_length - 1) + '│' for line in outputs_by_hostname[hostname])
+		output.append('\033[0m├'+'─'*(line_length-2) + '┤')
+	if output:
+		output.pop()
+	# if output and output[0] and output[0].startswith('├'):
+	# 	output[0] = '┌' + output[0][1:]
 	return output
 
-def get_host_raw_output(hosts):
+def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
 	hostnames_by_line_bag_len = {}
+	text_wrapper = textwrap.TextWrapper(width=terminal_width - 2, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
+									 initial_indent='│ ', subsequent_indent='│-')
+	max_length = 20
 	for host in hosts:
-		hostPrintOut = ["│█ EXECUTED COMMAND"]
-		hostPrintOut.extend(['│ ' + line for line in host['command'].splitlines()])
+		hostPrintOut = ["│█ EXECUTED COMMAND:"]
+		for line in host['command'].splitlines():
+			hostPrintOut.extend(text_wrapper.wrap(line))
 		lineBag = {(0,host['command'])}
 		prevLine = host['command']
 		if host['stdout']:
 			hostPrintOut.append('│▓ STDOUT:')
-			hostPrintOut.extend(['│ ' + line for line in host['stdout']])
+			for line in host['stdout']:
+				hostPrintOut.extend(text_wrapper.wrap(line))
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host['stdout'][0]))
 			if len(host['stdout']) > 1:
@@ -2625,7 +2773,8 @@ def get_host_raw_output(hosts):
 				host['stderr'][-1] = 'Cannot find host!'
 			if host['stderr']:
 				hostPrintOut.append('│▒ STDERR:')
-				hostPrintOut.extend(['│ ' + line for line in host['stderr']])
+				for line in host['stderr']:
+					hostPrintOut.extend(text_wrapper.wrap(line))
 				lineBag.add((prevLine,2))
 				lineBag.add((2,host['stderr'][0]))
 				lineBag.update(host['stderr'])
@@ -2634,10 +2783,11 @@ def get_host_raw_output(hosts):
 				prevLine = host['stderr'][-1]
 		hostPrintOut.append(f"│░ RETURN CODE: {host['returncode']}")
 		lineBag.add((prevLine,f"{host['returncode']}"))
+		max_length = max(max_length, max(map(len, hostPrintOut)))
 		outputs_by_hostname[host['name']] = hostPrintOut
 		line_bag_by_hostname[host['name']] = lineBag
 		hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host['name'])
-	return outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted(hostnames_by_line_bag_len)
+	return outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted(hostnames_by_line_bag_len), min(max_length+2,terminal_width)
 
 def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold):
 	merge_groups = []
@@ -2658,7 +2808,7 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 						continue
 					if can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
 						merge_group.append(other_hostname)
-						hostnames_by_line_bag_len[line_bag_len].discard(this_hostname)
+						hostnames_by_line_bag_len.get(line_bag_len, set()).discard(this_hostname)
 						hostnames_by_line_bag_len[other_line_bag_len].remove(other_hostname)
 						if not hostnames_by_line_bag_len[other_line_bag_len]:
 							del hostnames_by_line_bag_len[other_line_bag_len]
@@ -2714,22 +2864,26 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			eprint("Warning: diff_display_threshold should be a float between 0 and 1. Setting to default value of 0.9")
 			diff_display_threshold = 0.9
 		terminal_length = get_terminal_size()[0]
-		outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys = get_host_raw_output(hosts)
+		outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_length = get_host_raw_output(hosts,terminal_length)
 		merge_groups = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
 		# get the remaining hostnames in the hostnames_by_line_bag_len
 		remaining_hostnames = set()
 		for hostnames in hostnames_by_line_bag_len.values():
 			remaining_hostnames.update(hostnames)
-		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold)
+		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			outputs.append("├─ User Inputs:".ljust(terminal_length-1,'─'))
-			outputs.extend(CMDsOut)
+			outputs.append("├─ User Inputs:".ljust(line_length -1,'─')+'┤')
+			cmdOut = []
+			for line in CMDsOut:
+				cmdOut.extend(textwrap.wrap(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
+									 initial_indent='│ ', subsequent_indent='│-'))
+			outputs.extend(cmd.ljust(line_length -1)+'│' for cmd in cmdOut)
 			keyPressesIn[-1].clear()
 		if quiet and not outputs:
 			rtnStr = 'Success'
 		else:
-			rtnStr = '\n'.join(outputs + [('╘'+'─'*(terminal_length-1))])
+			rtnStr = '\n'.join(outputs + [('\033[0m└'+'─'*(line_length-2)+'┘')])
 	return rtnStr
 
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
@@ -3356,6 +3510,7 @@ def generate_default_config(args):
 		'DEFAULT_DIFF_DISPLAY_THRESHOLD': args.diff_display_threshold,
 		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
 		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
+		'FORCE_TRUECOLOR': args.force_truecolor,
 	}
 
 def write_default_config(args,CONFIG_FILE = None):
@@ -3400,7 +3555,7 @@ def write_default_config(args,CONFIG_FILE = None):
 def get_parser():
 	global _binPaths
 	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file chain: {CONFIG_FILE_CHAIN!r}',
-								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}')
+								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}\n Terminal color capability: {get_terminal_color_capability()}',)
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
@@ -3451,6 +3606,7 @@ def get_parser():
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
 	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
 	parser.add_argument('-ddt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. Set to 0 to always display the diff. (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
+	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
@@ -3553,6 +3709,7 @@ def set_global_with_args(args):
 	global DEFAULT_IPMI_USERNAME
 	global DEFAULT_IPMI_PASSWORD
 	global DEFAULT_DIFF_DISPLAY_THRESHOLD
+	global FORCE_TRUECOLOR
 	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 	_env_file = args.env_file
@@ -3565,6 +3722,7 @@ def set_global_with_args(args):
 	if args.ipmi_password:
 		DEFAULT_IPMI_PASSWORD = args.ipmi_password
 	DEFAULT_DIFF_DISPLAY_THRESHOLD = args.diff_display_threshold
+	FORCE_TRUECOLOR = args.force_truecolor
 
 #%% ------------ Wrapper Block ----------------
 def main():
