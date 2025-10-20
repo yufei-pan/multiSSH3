@@ -12,6 +12,7 @@ import getpass
 import glob
 import io
 import ipaddress
+import itertools
 import json
 import math
 import os
@@ -29,7 +30,7 @@ import threading
 import time
 import typing
 import uuid
-from collections import Counter, deque
+from collections import Counter, deque, defaultdict, UserDict
 from itertools import count, product
 
 __curses_available = False
@@ -84,10 +85,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.91'
+version = '5.92'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-10-17'
+COMMIT_DATE = '2025-10-20'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -152,33 +153,6 @@ def signal_handler(sig, frame):
 		time.sleep(0.1)
 		os.system(f'pkill -ef {os.path.basename(__file__)}')
 		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
-
-# def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
-# 	"""
-# 	Read an input from the user with a timeout and a countdown.
-
-# 	Parameters:
-# 	timeout (int): The timeout value in seconds.
-# 	prompt (str): The prompt message to display to the user. Default is 'Please enter your selection'.
-
-# 	Returns:
-# 	str or None: The user input if received within the timeout, or None if no input is received.
-# 	"""
-# 	import select
-# 	# Print the initial prompt with the countdown
-# 	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
-# 	# Loop until the timeout
-# 	for remaining in range(timeout, 0, -1):
-# 		# If there is an input, return it
-# 		# this only works on linux
-# 		if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-# 			return input().strip()
-# 		# Print the remaining time
-# 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
-# 		# Wait a second
-# 		time.sleep(1)
-# 	# If there is no input, return None
-# 	return None
 
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
 	"""
@@ -312,6 +286,13 @@ extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={
 identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.current_color_pair}"
 	def __str__(self):
 		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
+	def get_output_hash(self):
+		return hash((
+			self.command,
+			tuple(self.stdout),
+			tuple(self.stderr),
+			self.returncode
+		))
 
 #%% ------------ Load Defaults ( Config ) File ----------------
 def load_config_file(config_file):
@@ -650,8 +631,6 @@ def format_commands(commands):
 			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures. Error: {e}")
 	return commands
 
-
-
 class OrderedMultiSet(deque):
 	"""
 	A deque extension with O(1) average lookup time.
@@ -668,29 +647,55 @@ class OrderedMultiSet(deque):
 		self._counter[item] -= 1
 		if self._counter[item] == 0:
 			del self._counter[item]
-		return self._counter.get(item, 0)
-	def append(self, item,left=False):
+	def append(self, item):
 		"""Add item to the right end. O(1)."""
-		removed = None
-		if self.maxlen is not None and len(self) == self.maxlen:
-			removed = self[-1] if left else self[0]  # Item that will be removed
-			self.__decrease_count(removed)
-		super().appendleft(item) if left else super().append(item) 
+		if len(self) == self.maxlen:
+			self.__decrease_count(self[0])
+		super().append(item) 
 		self._counter[item] += 1
-		return removed
 	def appendleft(self, item):
 		"""Add item to the left end. O(1)."""
-		return self.append(item,left=True)
-	def pop(self,left=False):
+		if len(self) == self.maxlen:
+			self.__decrease_count(self[-1])
+		super().appendleft(item)
+		self._counter[item] += 1
+	def pop(self):
 		"""Remove and return item from right end. O(1)."""
-		if not self:
+		try:
+			item = super().pop()
+			self.__decrease_count(item)
+			return item
+		except IndexError:
 			return None
-		item = super().popleft() if left else super().pop()
-		self.__decrease_count(item)
-		return item
 	def popleft(self):
 		"""Remove and return item from left end. O(1)."""
-		return self.pop(left=True)
+		try:
+			item = super().popleft()
+			self.__decrease_count(item)
+			return item
+		except IndexError:
+			return None
+	def put(self, item):
+		"""Alias for append, but return removed item - add to right end (FIFO put)."""
+		removed = None
+		if len(self) == self.maxlen:
+			removed = self[0]  # Item that will be removed
+			self.__decrease_count(removed)
+		super().append(item) 
+		self._counter[item] += 1
+		return removed
+	def put_left(self, item):
+		"""Alias for appendleft, but return removed item - add to left end (LIFO put)."""
+		removed = None
+		if len(self) == self.maxlen:
+			removed = self[-1]  # Item that will be removed
+			self.__decrease_count(removed)
+		super().appendleft(item)
+		self._counter[item] += 1
+		return removed
+	def get(self):
+		"""Alias for popleft - remove from left end (FIFO get)."""
+		return self.popleft()
 	def remove(self, value):
 		"""Remove first occurrence of value. O(n)."""
 		if value not in self._counter:
@@ -703,16 +708,34 @@ class OrderedMultiSet(deque):
 		self._counter.clear()
 	def extend(self, iterable):
 		"""Extend deque by appending elements from iterable. O(k)."""
-		for item in iterable:
-			self.append(item)
+		# if maxlen is set, and the new length exceeds maxlen, we clear then efficiently extend
+		try:
+			if not self.maxlen or len(self) + len(iterable) <= self.maxlen:
+				super().extend(iterable)
+				self._counter.update(iterable)
+			elif len(iterable) >= self.maxlen:
+				self.clear()
+				if isinstance(iterable, (list, tuple)):
+					iterable = iterable[-self.maxlen:]
+				else:
+					iterable = itertools.islice(iterable, len(iterable) - self.maxlen, None)
+				super().extend(iterable)
+				self._counter.update(iterable)
+			else:
+				# Need to remove oldest items to make space
+				num_to_remove = len(self) + len(iterable) - self.maxlen
+				for _ in range(num_to_remove):
+					self.__decrease_count(super().popleft())
+				super().extend(iterable)
+				self._counter.update(iterable)
+		except TypeError:
+			return self.extend(list(iterable))
 	def extendleft(self, iterable):
 		"""Extend left side by appending elements from iterable. O(k)."""
 		for item in iterable:
 			self.appendleft(item)
 	def rotate(self, n=1):
 		"""Rotate deque n steps to the right. O(k) where k = min(n, len)."""
-		if not self:
-			return
 		super().rotate(n)
 	def __contains__(self, item):
 		"""Check if item exists in deque. O(1) average."""
@@ -753,22 +776,18 @@ class OrderedMultiSet(deque):
 		if self.maxlen is not None:
 			return f"OrderedMultiSet({list(self)}, maxlen={self.maxlen})"
 		return f"OrderedMultiSet({list(self)})"
-	def put(self, item,left=False):
-		"""Alias for append - add to right end (FIFO put)."""
-		return self.append(item,left=left)
-	def get(self,left=True):
-		"""Alias for popleft - remove from left end (FIFO get)."""
-		return self.pop(left=left)
 	def peek(self):
 		"""Return leftmost item without removing it."""
-		if not self:
+		try:
+			return self[0]
+		except IndexError:
 			return None
-		return self[0]
 	def peek_right(self):
 		"""Return rightmost item without removing it."""
-		if not self:
+		try:
+			return self[-1]
+		except IndexError:
 			return None
-		return self[-1]
 
 def get_terminal_size():
 	'''
@@ -1267,10 +1286,15 @@ def compact_hostnames(Hostnames,verify = True):
 		['sub-s[1-2]']
 	"""
 	global __global_suppress_printout
-	if not isinstance(Hostnames, frozenset):
-		hostSet = frozenset(Hostnames)
-	else:
-		hostSet = Hostnames
+	# if not isinstance(Hostnames, frozenset):
+	# 	hostSet = frozenset(Hostnames)
+	# else:
+	# 	hostSet = Hostnames
+	hostSet = frozenset(
+		hostname.strip()
+		for hostnames_str in Hostnames
+		for hostname in hostnames_str.split(',')
+	)
 	compact_hosts = __compact_hostnames(hostSet)
 	if verify:
 		if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
@@ -1502,51 +1526,53 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		buffer.truncate(0)
 		host.output_buffer.seek(0)
 		host.output_buffer.truncate(0)
-
-	for char in iter(lambda:stream.read(1), b''):
-		host.lastUpdateTime = time.monotonic()
-		if char == b'\n':
-			add_line(buffer,target, host)
-			continue
-		elif char == b'\r':
-			buffer.seek(0)
-			host.output_buffer.seek(0)
-		elif char == b'\x08':
-			# backspace
-			if buffer.tell() > 0:
-				buffer.seek(buffer.tell() - 1)
-				buffer.truncate()
-			if host.output_buffer.tell() > 0:
-				host.output_buffer.seek(host.output_buffer.tell() - 1)
-				host.output_buffer.truncate()
-		else:
-			# normal character
-			buffer.write(char)
-			host.output_buffer.write(char)
-		# if the length of the buffer is greater than 100, we try to decode the buffer to find if there are any unicode line change chars
-		if buffer.tell() % 100 == 0 and buffer.tell() > 0:
-			try:
-				# try to decode the buffer to find if there are any unicode line change chars
-				decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
-				lines = decodedLine.splitlines()
-				if len(lines) > 1:
-					# if there are multiple lines, we add them to the target
-					for line in lines[:-1]:
-						# for all lines except the last one, we add them to the target
-						target.append(line)
-						host.output.append(line)
-						host.lineNumToPrintSet.add(len(host.output)-1)
-					# we keep the last line in the buffer
-					buffer.seek(0)
-					buffer.truncate(0)
-					buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-					host.output_buffer.seek(0)
-					host.output_buffer.truncate(0)
-					host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-				
-			except UnicodeDecodeError:
-				# if there is a unicode decode error, we just skip this character
+	try:
+		for char in iter(lambda:stream.read(1), b''):
+			host.lastUpdateTime = time.monotonic()
+			if char == b'\n':
+				add_line(buffer,target, host)
 				continue
+			elif char == b'\r':
+				buffer.seek(0)
+				host.output_buffer.seek(0)
+			elif char == b'\x08':
+				# backspace
+				if buffer.tell() > 0:
+					buffer.seek(buffer.tell() - 1)
+					buffer.truncate()
+				if host.output_buffer.tell() > 0:
+					host.output_buffer.seek(host.output_buffer.tell() - 1)
+					host.output_buffer.truncate()
+			else:
+				# normal character
+				buffer.write(char)
+				host.output_buffer.write(char)
+			# if the length of the buffer is greater than 100, we try to decode the buffer to find if there are any unicode line change chars
+			if buffer.tell() % 100 == 0 and buffer.tell() > 0:
+				try:
+					# try to decode the buffer to find if there are any unicode line change chars
+					decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
+					lines = decodedLine.splitlines()
+					if len(lines) > 1:
+						# if there are multiple lines, we add them to the target
+						for line in lines[:-1]:
+							# for all lines except the last one, we add them to the target
+							target.append(line)
+							host.output.append(line)
+							host.lineNumToPrintSet.add(len(host.output)-1)
+						# we keep the last line in the buffer
+						buffer.seek(0)
+						buffer.truncate(0)
+						buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
+						host.output_buffer.seek(0)
+						host.output_buffer.truncate(0)
+						host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
+					
+				except UnicodeDecodeError:
+					# if there is a unicode decode error, we just skip this character
+					continue
+	except ValueError:
+		pass
 	if buffer.tell() > 0:
 		# if there is still some data in the buffer, we add it to the target
 		add_line(buffer,target, host)
@@ -1590,7 +1616,7 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.output.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
-	
+
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
@@ -2655,46 +2681,69 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_C
 
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
-	bag1_iter = iter(line_bag1)
-	found = False
-	for _ in range(max(int(len(line_bag1) * (1-threshold)),1)):
-		try:
-			item = next(bag1_iter)
-		except StopIteration:
-			break
-		if item in line_bag2:
-			found = True
-			break
-	if not found:
-		return False
-	return len(line_bag1.symmetric_difference(line_bag2)) < max((len(line_bag1) + len(line_bag2)) * (1 - threshold),1)
+	if threshold > 0.5:
+		samples = itertools.islice(line_bag1, max(int(len(line_bag1) * (1 - threshold)),1))
+		if not line_bag2.intersection(samples):
+			return False
+	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
 	indexes = {hostname: 0 for hostname in merging_hostnames}
-	working_indexes = indexes.copy()
+	working_index_keys = set(indexes.keys())
 	previousBuddies = set()
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='├─ ', subsequent_indent='│- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
+	diff_display_item_count = max(1,int(max(map(len, outputs_by_hostname.values())) * (1 - diff_display_threshold)))
+	def get_multiset_index_for_hostname(hostname):
+		index = indexes[hostname]
+		tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
+		return [OrderedMultiSet(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_index]
+	# futuresChainMap = ChainMap()
+	class futureDict(UserDict):
+		def __missing__(self, key):
+			value = get_multiset_index_for_hostname(key)
+			self[key] = value
+			# futuresChainMap.maps.append(value[0]._counter)
+			return value
+		# def initializeHostnames(self, hostnames):
+		# 	entries = {hostname: get_multiset_index_for_hostname(hostname) for hostname in hostnames}
+		# 	self.update(entries)
+		# 	futuresChainMap.maps.extend(entry[0]._counter for entry in entries.values())
+	futures = futureDict()
+	currentLines = defaultdict(set)
+	for hostname in merging_hostnames:
+		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
-		futures = {}
 		defer = False
-		sorted_working_indexes = sorted(working_indexes.items(), key=lambda x: x[1])
-		golden_hostname, golden_index = sorted_working_indexes[0]
-		buddy = {golden_hostname}
+		# sorted_working_hostnames = sorted(working_index_keys, key=lambda hn: indexes[hn])
+		golden_hostname = min(working_index_keys, key=lambda hn: indexes[hn])
+		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
-		for hostname, index in sorted_working_indexes[1:]:
-			if lineToAdd == outputs_by_hostname[hostname][index]:
-				buddy.add(hostname)
-			else:
-				if hostname not in futures:
-					diff_display_item_count = max(int(len(outputs_by_hostname[hostname]) * (1 - diff_display_threshold)),1)
-					tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
-					futures[hostname] = (OrderedMultiSet(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_index)
-				if lineToAdd in futures[hostname]:
-					for hn in buddy:
-						del working_indexes[hn]
-					defer = True
-					break
+		# for hostname, index in sorted_working_indexes[1:]:
+		# 	if lineToAdd == outputs_by_hostname[hostname][index]:
+		# 		buddy.add(hostname)
+		# 	else:
+		# 		futureLines,tracking_index = futures[hostname]
+		# 		if lineToAdd in futureLines:
+		# 			for hn in buddy:
+		# 				working_indexes.pop(hn,None)
+		# 			defer = True
+		# 			break
+		buddy = currentLines[lineToAdd].copy()
+		if len(buddy) < len(working_index_keys):
+			# we need to check the futures then
+			# thisCounter = None
+			# if golden_hostname in futures:
+			# 	thisCounter = futures[golden_hostname][0]._counter
+			# 	futuresChainMap.maps.remove(thisCounter)
+			for hostname in working_index_keys - buddy - set(futures.keys()):
+				futures[hostname] # ensure it's initialized
+			# futures.initializeHostnames(working_index_keys - buddy - futures.keys())
+			if any(lineToAdd in futures[hostname][0] for hostname in working_index_keys - buddy):
+				defer = True
+				working_index_keys -= buddy
+			# if thisCounter is not None:
+			# 	futuresChainMap.maps.append(thisCounter)
 		if not defer:
 			if buddy != previousBuddies:
 				hostnameStr = ','.join(compact_hostnames(buddy))
@@ -2705,23 +2754,33 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				output.extend(hostnameLines)
 				previousBuddies = buddy
 			output.append(lineToAdd.ljust(line_length - 1) + '│')
+			currentLines[lineToAdd].difference_update(buddy)
+			if not currentLines[lineToAdd]:
+				del currentLines[lineToAdd]
 			for hostname in buddy:
+				# currentLines[lineToAdd].remove(hostname)
+				# if not currentLines[lineToAdd]:
+				# 	del currentLines[lineToAdd]
 				indexes[hostname] += 1
-				if indexes[hostname] >= len(outputs_by_hostname[hostname]):
+				try:
+					currentLines[outputs_by_hostname[hostname][indexes[hostname]]].add(hostname)
+				except IndexError:
 					indexes.pop(hostname, None)
 					futures.pop(hostname, None)
+					# if future:
+					# 	futuresChainMap.maps.remove(future[0]._counter)
 					continue
 				#advance futures
 				if hostname in futures:
+					futures[hostname][1] += 1
 					tracking_multiset, tracking_index = futures[hostname]
-					tracking_index += 1
 					if tracking_index < len(outputs_by_hostname[hostname]):
 						line = outputs_by_hostname[hostname][tracking_index]
 						tracking_multiset.append(line)
 					else:
-						tracking_multiset.pop_left()
-					futures[hostname] = (tracking_multiset, tracking_index)
-			working_indexes = indexes.copy()
+						tracking_multiset.popleft()
+					#futures[hostname] = (tracking_multiset, tracking_index)
+			working_index_keys = set(indexes.keys())
 
 def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
 	output = []
@@ -2741,6 +2800,20 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 	# 	output[0] = '┌' + output[0][1:]
 	return output
 
+def pre_merge_hosts(hosts):
+	'''Merge hosts with identical outputs.'''
+	output_groups = defaultdict(list)
+	# Group hosts by their output identity
+	for host in hosts:
+		identity = host.get_output_hash()
+		output_groups[identity].append(host)
+	# Create merged hosts
+	merged_hosts = []
+	for group in output_groups.values():
+		group[0].name = ','.join(host.name for host in group)
+		merged_hosts.append(group[0])
+	return merged_hosts
+
 def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
@@ -2748,67 +2821,78 @@ def get_host_raw_output(hosts, terminal_width):
 	text_wrapper = textwrap.TextWrapper(width=terminal_width - 2, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
 									 initial_indent='│ ', subsequent_indent='│-')
 	max_length = 20
+	hosts = pre_merge_hosts(hosts)
 	for host in hosts:
 		hostPrintOut = ["│█ EXECUTED COMMAND:"]
-		for line in host['command'].splitlines():
+		for line in host.command.splitlines():
 			hostPrintOut.extend(text_wrapper.wrap(line))
-		lineBag = {(0,host['command'])}
-		prevLine = host['command']
-		if host['stdout']:
+		# hostPrintOut.extend(itertools.chain.from_iterable(text_wrapper.wrap(line) for line in host['command'].splitlines()))
+		lineBag = {(0,host.command)}
+		prevLine = host.command
+		if host.stdout:
 			hostPrintOut.append('│▓ STDOUT:')
-			for line in host['stdout']:
-				hostPrintOut.extend(text_wrapper.wrap(line))
-			lineBag.add((prevLine,1))
-			lineBag.add((1,host['stdout'][0]))
-			if len(host['stdout']) > 1:
-				lineBag.update(zip(host['stdout'], host['stdout'][1:]))
-			lineBag.update(host['stdout'])
-			prevLine = host['stdout'][-1]
-		if host['stderr']:
-			if host['stderr'][0].strip().startswith('ssh: connect to host ') and host['stderr'][0].strip().endswith('Connection refused'):
-				host['stderr'][0] = 'SSH not reachable!'
-			elif host['stderr'][-1].strip().endswith('Connection timed out'):
-				host['stderr'][-1] = 'SSH connection timed out!'
-			elif host['stderr'][-1].strip().endswith('No route to host'):
-				host['stderr'][-1] = 'Cannot find host!'
-			if host['stderr']:
-				hostPrintOut.append('│▒ STDERR:')
-				for line in host['stderr']:
+			for line in host.stdout:
+				if len(line) < terminal_width - 2:
+					hostPrintOut.append(f"│ {line}")
+				else:
 					hostPrintOut.extend(text_wrapper.wrap(line))
+			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
+			lineBag.add((prevLine,1))
+			lineBag.add((1,host.stdout[0]))
+			if len(host.stdout) > 1:
+				lineBag.update(zip(host.stdout, host.stdout[1:]))
+			lineBag.update(host.stdout)
+			prevLine = host.stdout[-1]
+		if host.stderr:
+			if host.stderr[0].strip().startswith('ssh: connect to host ') and host.stderr[0].strip().endswith('Connection refused'):
+				host.stderr[0] = 'SSH not reachable!'
+			elif host.stderr[-1].strip().endswith('Connection timed out'):
+				host.stderr[-1] = 'SSH connection timed out!'
+			elif host.stderr[-1].strip().endswith('No route to host'):
+				host.stderr[-1] = 'Cannot find host!'
+			if host.stderr:
+				hostPrintOut.append('│▒ STDERR:')
+				for line in host.stderr:
+					if len(line) < terminal_width - 2:
+						hostPrintOut.append(f"│ {line}")
+					else:
+						hostPrintOut.extend(text_wrapper.wrap(line))
 				lineBag.add((prevLine,2))
-				lineBag.add((2,host['stderr'][0]))
-				lineBag.update(host['stderr'])
-				if len(host['stderr']) > 1:
-					lineBag.update(zip(host['stderr'], host['stderr'][1:]))
-				prevLine = host['stderr'][-1]
-		hostPrintOut.append(f"│░ RETURN CODE: {host['returncode']}")
-		lineBag.add((prevLine,f"{host['returncode']}"))
+				lineBag.add((2,host.stderr[0]))
+				lineBag.update(host.stderr)
+				if len(host.stderr) > 1:
+					lineBag.update(zip(host.stderr, host.stderr[1:]))
+				prevLine = host.stderr[-1]
+		hostPrintOut.append(f"│░ RETURN CODE: {host.returncode}")
+		lineBag.add((prevLine,f"{host.returncode}"))
 		max_length = max(max_length, max(map(len, hostPrintOut)))
-		outputs_by_hostname[host['name']] = hostPrintOut
-		line_bag_by_hostname[host['name']] = lineBag
-		hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host['name'])
+		outputs_by_hostname[host.name] = hostPrintOut
+		line_bag_by_hostname[host.name] = lineBag
+		hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host.name)
 	return outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted(hostnames_by_line_bag_len), min(max_length+2,terminal_width)
 
 def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold):
 	merge_groups = []
-	for line_bag_len in hostnames_by_line_bag_len.copy():
+	remaining_hostnames = set()
+	for lbl_i, line_bag_len in enumerate(sorted_hostnames_by_line_bag_len_keys):
 		for this_hostname in hostnames_by_line_bag_len.get(line_bag_len, set()).copy():
-			if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
+			# if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
+			# 	continue
+			try:
+				this_line_bag = line_bag_by_hostname.pop(this_hostname)
+				hostnames_by_line_bag_len.get(line_bag_len, set()).discard(this_hostname)
+			except KeyError:
 				continue
-			this_line_bag = line_bag_by_hostname[this_hostname]
 			target_threshold = line_bag_len * (2 - diff_display_threshold)
 			merge_group = []
-			for other_line_bag_len in sorted_hostnames_by_line_bag_len_keys:
+			for other_line_bag_len in sorted_hostnames_by_line_bag_len_keys[lbl_i:]:
 				if other_line_bag_len > target_threshold:
 					break
-				if other_line_bag_len < line_bag_len:
-					continue
+				# if other_line_bag_len < line_bag_len:
+				# 	continue
 				for other_hostname in hostnames_by_line_bag_len.get(other_line_bag_len, set()).copy():
-					if this_hostname == other_hostname:
-						continue
 					if can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
 						merge_group.append(other_hostname)
-						hostnames_by_line_bag_len.get(line_bag_len, set()).discard(this_hostname)
 						hostnames_by_line_bag_len[other_line_bag_len].remove(other_hostname)
 						if not hostnames_by_line_bag_len[other_line_bag_len]:
 							del hostnames_by_line_bag_len[other_line_bag_len]
@@ -2816,23 +2900,24 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 			if merge_group:
 				merge_group.append(this_hostname)
 				merge_groups.append(merge_group)
-	return merge_groups
+				# del line_bag_by_hostname[this_hostname]
+			else:
+				remaining_hostnames.add(this_hostname)
+	return merge_groups, remaining_hostnames
 
 def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]]):
 	if quiet:
 		# remove hosts with returncode 0
-		hosts = [dict(host) for host in hosts if host.returncode != 0]
+		hosts = [host for host in hosts if host.returncode != 0]
 		if not hosts:
 			if usejson:
 				return '{"Success": true}'
 			else:
 				return 'Success'
-	else:
-		hosts = [dict(host) for host in hosts]
 	if usejson:
 		# [print(dict(host)) for host in hosts]
 		#print(json.dumps([dict(host) for host in hosts],indent=4))
-		rtnStr = json.dumps(hosts,indent=4)
+		rtnStr = json.dumps([dict(host) for host in hosts],indent=4)
 	elif greppable:
 		# transform hosts to a 2d list
 		rtnStr = '*'*80+'\n'
@@ -2840,14 +2925,14 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		for host in hosts:
 			#header = f"{host['name']} | rc: {host['returncode']} | "
 			hostAdded = False
-			for line in host['stdout']:
-				rtnList.append([host['name'],f"rc: {host['returncode']}",'stdout',line])
+			for line in host.stdout:
+				rtnList.append([host.name,f"rc: {host.returncode}",'stdout',line])
 				hostAdded = True
-			for line in host['stderr']:
-				rtnList.append([host['name'],f"rc: {host['returncode']}",'stderr',line])
+			for line in host.stderr:
+				rtnList.append([host.name,f"rc: {host.returncode}",'stderr',line])
 				hostAdded = True
 			if not hostAdded:
-				rtnList.append([host['name'],f"rc: {host['returncode']}",'N/A','<EMPTY>'])
+				rtnList.append([host.name,f"rc: {host.returncode}",'N/A','<EMPTY>'])
 			rtnList.append(['','','',''])
 		rtnStr += pretty_format_table(rtnList)
 		rtnStr += '*'*80+'\n'
@@ -2865,11 +2950,7 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			diff_display_threshold = 0.9
 		terminal_length = get_terminal_size()[0]
 		outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_length = get_host_raw_output(hosts,terminal_length)
-		merge_groups = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
-		# get the remaining hostnames in the hostnames_by_line_bag_len
-		remaining_hostnames = set()
-		for hostnames in hostnames_by_line_bag_len.values():
-			remaining_hostnames.update(hostnames)
+		merge_groups ,remaining_hostnames = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
 		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
@@ -2880,8 +2961,8 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 									 initial_indent='│ ', subsequent_indent='│-'))
 			outputs.extend(cmd.ljust(line_length -1)+'│' for cmd in cmdOut)
 			keyPressesIn[-1].clear()
-		if quiet and not outputs:
-			rtnStr = 'Success'
+		if not outputs:
+			rtnStr = 'Success' if quiet else ''
 		else:
 			rtnStr = '\n'.join(outputs + [('\033[0m└'+'─'*(line_length-2)+'┘')])
 	return rtnStr
@@ -2901,6 +2982,8 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	global __global_suppress_printout
 	global _encoding
 	global __keyPressesIn
+	for host in hosts:
+		host.output.clear()
 	rtnStr = generate_output(hosts,usejson,greppable,quiet=__global_suppress_printout,encoding=_encoding,keyPressesIn=__keyPressesIn)
 	if not quiet:
 		print(rtnStr)
@@ -3554,8 +3637,8 @@ def write_default_config(args,CONFIG_FILE = None):
 #%% ------------ Argument Processing -----------------
 def get_parser():
 	global _binPaths
-	parser = argparse.ArgumentParser(description=f'Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command. Config file chain: {CONFIG_FILE_CHAIN!r}',
-								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}\n Terminal color capability: {get_terminal_color_capability()}',)
+	parser = argparse.ArgumentParser(description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
+								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}\n Terminal color capability: {get_terminal_color_capability()}\nConfig file chain: {CONFIG_FILE_CHAIN!r}',)
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
