@@ -47,7 +47,6 @@ try:
 except ImportError:
 	pass
 
-
 try:
 	# Check if functiools.cache is available
 	# cache_decorator = functools.cache
@@ -85,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.92'
+version = '5.93'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-10-20'
@@ -3688,7 +3687,7 @@ def get_parser():
 	parser.add_argument('-hf','--history_file', type=str, help=f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})', default=DEFAULT_HISTORY_FILE)
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
 	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
-	parser.add_argument('-ddt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. Set to 0 to always display the diff. (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
+	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
