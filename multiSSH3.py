@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.93'
+version = '5.94'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-10-20'
+COMMIT_DATE = '2025-10-21'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -345,7 +345,16 @@ DEFAULT_ERROR_ONLY = False
 DEFAULT_NO_OUTPUT = False
 DEFAULT_RETURN_ZERO = False
 DEFAULT_NO_ENV = False
-DEFAULT_ENV_FILE = '/etc/profile.d/hosts.sh'
+DEFAULT_ENV_FILE = ''
+DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
+					 '~/.bashrc',
+					 '~/.zshrc',
+					 '~/host.env',
+					 '~/hosts.env',
+					 '.env',
+					 'host.env',
+					 'hosts.env',
+					 ]
 DEFAULT_NO_HISTORY = False
 DEFAULT_HISTORY_FILE = '~/.mssh_history'
 DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
@@ -386,6 +395,9 @@ if __ERROR_MESSAGES_TO_IGNORE_REGEX:
 	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
 else:
 	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
+if DEFAULT_ENV_FILE:
+	if DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
+		DEFAULT_ENV_FILES.append(DEFAULT_ENV_FILE)
 
 #%% Load mssh Functional Global Variables
 __global_suppress_printout = False
@@ -393,7 +405,7 @@ __mainReturnCode = 0
 __failedHosts = set()
 __wildCharacters = ['*','?','x']
 _no_env = DEFAULT_NO_ENV
-_env_file = DEFAULT_ENV_FILE
+_env_files = DEFAULT_ENV_FILES
 __globalUnavailableHosts = dict()
 __ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
 __keyPressesIn = [[]]
@@ -475,35 +487,65 @@ def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
 	return None
 
 @cache_decorator
-def readEnvFromFile(environemnt_file = ''):
+def readEnvFromFile():
 	'''
 	Read the environment variables from env_file
 	Returns:
 		dict: A dictionary of environment variables
 	'''
-	global env
-	try:
-		if env:
-			return env
-	except Exception:
-		env = {}
-	global _env_file
-	if environemnt_file:
-		envf = environemnt_file
-	else:
-		envf = _env_file if _env_file else DEFAULT_ENV_FILE
-	if os.path.exists(envf):
-		with open(envf,'r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
+	global _env_files
+	global _no_env
+	envfs = _env_files if _env_files else DEFAULT_ENV_FILES
+	translator = str.maketrans('&|"', ';;\'')
+	replacement_re = re.compile(r'\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})')
+	environemnt = {}
+	scrubCounter = 0
+	for envf in envfs:
+		envf = os.path.expanduser(os.path.expandvars(envf))
+		if os.path.exists(envf):
+			with open(envf,'r') as f:
+				lines = f.readlines()
+			for line in lines:
+				line = line.strip()
+				if not line or line.startswith('#') or '=' not in line:
 					continue
-				key, value = line.replace('export ', '', 1).strip().split('=', 1)
-				key = key.strip().strip('"').strip("'")
-				value = value.strip().strip('"').strip("'")
-				# avoid infinite recursion
-				if key != value:
-					env[key] = value.strip('"').strip("'")
-	return env
+				line = line.translate(translator)
+				commands = re.split(r";(?=(?:[^']*'[^']*')*[^']*$)", line)
+				for command in commands:
+					if not command or command.startswith('#') or '=' not in command or command.startswith('alias '):
+						continue
+					fields = re.split(r" (?=(?:[^']*'[^']*')*[^']*$)", command)
+					for field in fields:
+						try:
+							if field.startswith('export '):
+								field = field.replace('export ', '', 1).strip()
+							if not field or field.startswith('#') or '=' not in field:
+								continue
+							key, _, values = field.partition('=')
+							key = key.strip().strip("'")
+							values = values.strip().strip("'")
+							if '$' in values:
+								scrubCounter += 16
+							if key and values and key != values:
+								environemnt[key] = values
+						except Exception:
+							continue
+	while scrubCounter:
+		scrubCounter -= 1
+		found = False
+		for key, value in environemnt.items():
+			if '$' in value:
+				for match in replacement_re.findall(value):
+					ref_key = match.strip('${}')
+					ref_value = environemnt.get(ref_key) if ref_key != key else None
+					if not ref_value and not _no_env:
+						ref_value = os.environ.get(ref_key)
+					if ref_value:
+						environemnt[key] = value.replace(match, ref_value)
+						found = True
+		if not found:
+			break
+	return environemnt
 
 def replace_magic_strings(string,keys,value,case_sensitive=False):
 	'''
@@ -3099,7 +3141,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
 						 file_sync = False, error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY, no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILE,
+						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILES,
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
 						 shortend = False) -> str:
 	argsList = []
@@ -3143,8 +3185,8 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 		argsList.append(f'--unavailable_host_expiry={unavailable_host_expiry}' if not shortend else f'-uhe={unavailable_host_expiry}')
 	if no_env:
 		argsList.append('--no_env')
-	if env_file and env_file != DEFAULT_ENV_FILE:
-		argsList.append(f'--env_file="{env_file}"' if not shortend else f'-ef="{env_file}"')
+	if env_file and env_file != DEFAULT_ENV_FILES:
+		argsList.extend([f'--env_file="{ef}"' for ef in env_file] if not shortend else [f'-ef="{ef}"' for ef in env_file])
 	if no_history:
 		argsList.append('--no_history' if not shortend else '-nh')
 	if history_file and history_file != DEFAULT_HISTORY_FILE:
@@ -3167,7 +3209,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILE,
+						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILES,
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
 						 shortend = False,tabSeperated = False):
 	_ = called
@@ -3579,7 +3621,7 @@ def generate_default_config(args):
 		'DEFAULT_NO_OUTPUT': args.no_output,
 		'DEFAULT_RETURN_ZERO': args.return_zero,
 		'DEFAULT_NO_ENV': args.no_env,
-		'DEFAULT_ENV_FILE': args.env_file,
+		'DEFAULT_ENV_FILES': args.env_file,
 		'DEFAULT_NO_HISTORY': args.no_history,
 		'DEFAULT_HISTORY_FILE': args.history_file,
 		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * os.cpu_count() else None,
@@ -3668,7 +3710,7 @@ def get_parser():
 	parser.add_argument('-Q',"-no","--no_output", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
 	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})", default=DEFAULT_RETURN_ZERO)
 	parser.add_argument('-C','--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
-	parser.add_argument("--env_file", type=str, help=f"The file to load the mssh file based environment variables from. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILE})", default=DEFAULT_ENV_FILE)
+	parser.add_argument("--env_file", action='append', help=f"The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILES})", default=DEFAULT_ENV_FILES)
 	parser.add_argument("-m","--max_connections", type=int, help="Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument('-w',"--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as well. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
@@ -3783,7 +3825,7 @@ def process_keys(args):
 def set_global_with_args(args):
 	global _emo
 	global __ipmiiInterfaceIPPrefix
-	global _env_file
+	global _env_files
 	global __DEBUG_MODE
 	global __configs_from_file
 	global _encoding
@@ -3794,7 +3836,7 @@ def set_global_with_args(args):
 	global FORCE_TRUECOLOR
 	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
-	_env_file = args.env_file
+	_env_files = args.env_file
 	__DEBUG_MODE = args.debug
 	_encoding = args.encoding
 	if args.return_zero:
