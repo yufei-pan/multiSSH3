@@ -84,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.95'
+version = '5.96'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-10-21'
@@ -2892,12 +2892,13 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
 	output = []
 	output.append(('┌'+'─'*(line_length-2) + '┐'))
+	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='├─ ', subsequent_indent='│- ')
+	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
 	for merging_hostnames in merge_groups:
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append('\033[0m├'+'─'*(line_length-2) + '┤')
 	for hostname in remaining_hostnames:
-		hostnameLines = textwrap.wrap(hostname, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
-									initial_indent='├─ ', subsequent_indent='│- ')
+		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
 		output.extend(line.ljust(line_length - 1) + '│' for line in hostnameLines)
 		output.extend(line.ljust(line_length - 1) + '│' for line in outputs_by_hostname[hostname])
 		output.append('\033[0m├'+'─'*(line_length-2) + '┤')
@@ -2948,7 +2949,7 @@ def get_host_raw_output(hosts, terminal_width):
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
 			if len(host.stdout) > 1:
-				lineBag.update(itertools.pairwise(host.stdout))
+				lineBag.update(zip(host.stdout, host.stdout[1:]))
 			lineBag.update(host.stdout)
 			prevLine = host.stdout[-1]
 		if host.stderr:
@@ -2970,7 +2971,7 @@ def get_host_raw_output(hosts, terminal_width):
 				lineBag.add((2,host.stderr[0]))
 				lineBag.update(host.stderr)
 				if len(host.stderr) > 1:
-					lineBag.update(itertools.pairwise(host.stderr))
+					lineBag.update(zip(host.stderr, host.stderr[1:]))
 				prevLine = host.stderr[-1]
 		hostPrintOut.append(f"│░ RETURN CODE: {host.returncode}")
 		lineBag.add((prevLine,f"{host.returncode}"))
@@ -3757,7 +3758,7 @@ def get_parser():
 	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
-	parser.add_argument('-s','-fs','--file_sync', action='store_true', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})', default=DEFAULT_FILE_SYNC)
+	parser.add_argument('-s','-fs','--file_sync',nargs='?', action='append', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})',const=True, default=[DEFAULT_FILE_SYNC])
 	parser.add_argument('-W','--scp', action='store_true', help=f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})', default=DEFAULT_SCP)
 	parser.add_argument('-G','-gm','--gather_mode', action='store_true', help='Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
@@ -3828,7 +3829,18 @@ def process_args(args = None):
 		args.no_history = True
 		args.greppable = True
 		args.error_only = True
-
+	
+	if args.file_sync:
+		for path in args.file_sync:
+			if path and isinstance(path, str):
+				if args.file:
+					if path not in args.file:
+						args.file.append(path)
+				else:
+					args.file = [path]
+		args.file_sync = any(args.file_sync)
+	else:
+		args.file_sync = False
 	if args.unavailable_host_expiry <= 0:
 		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
 		args.unavailable_host_expiry = 10
