@@ -30,7 +30,7 @@ import threading
 import time
 import typing
 import uuid
-from collections import Counter, deque, defaultdict, UserDict
+from collections import Counter, deque, defaultdict
 from itertools import count, product
 
 __curses_available = False
@@ -84,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.94'
+version = '5.95'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-10-21'
@@ -99,6 +99,7 @@ CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 ERRORS = []
 
 # TODO: Add terminal TUI
+# TODO: Change -fs behavior
 
 #%% ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
@@ -364,7 +365,7 @@ DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
 DEFAULT_ENCODING = 'utf-8'
-DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.75
+DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.6
 SSH_STRICT_HOST_KEY_CHECKING = False
 FORCE_TRUECOLOR = False
 ERROR_MESSAGES_TO_IGNORE = [
@@ -683,28 +684,25 @@ class OrderedMultiSet(deque):
 		self._counter = Counter()
 		if iterable is not None:
 			self.extend(iterable)
-	def __decrease_count(self, item):
-		"""Decrease count of item in counter."""
-		self._counter[item] -= 1
-		if self._counter[item] == 0:
-			del self._counter[item]
 	def append(self, item):
 		"""Add item to the right end. O(1)."""
 		if len(self) == self.maxlen:
-			self.__decrease_count(self[0])
+			self._counter -= Counter([self[0]])
+			# self._counter[self[0]] -= 1
+			# self._counter += Counter()
 		super().append(item) 
 		self._counter[item] += 1
 	def appendleft(self, item):
 		"""Add item to the left end. O(1)."""
 		if len(self) == self.maxlen:
-			self.__decrease_count(self[-1])
+			self._counter -= Counter([self[-1]])
 		super().appendleft(item)
 		self._counter[item] += 1
 	def pop(self):
 		"""Remove and return item from right end. O(1)."""
 		try:
 			item = super().pop()
-			self.__decrease_count(item)
+			self._counter -= Counter([item])
 			return item
 		except IndexError:
 			return None
@@ -712,7 +710,7 @@ class OrderedMultiSet(deque):
 		"""Remove and return item from left end. O(1)."""
 		try:
 			item = super().popleft()
-			self.__decrease_count(item)
+			self._counter -= Counter([item])
 			return item
 		except IndexError:
 			return None
@@ -721,7 +719,7 @@ class OrderedMultiSet(deque):
 		removed = None
 		if len(self) == self.maxlen:
 			removed = self[0]  # Item that will be removed
-			self.__decrease_count(removed)
+			self._counter -= Counter([removed])
 		super().append(item) 
 		self._counter[item] += 1
 		return removed
@@ -730,7 +728,7 @@ class OrderedMultiSet(deque):
 		removed = None
 		if len(self) == self.maxlen:
 			removed = self[-1]  # Item that will be removed
-			self.__decrease_count(removed)
+			self._counter -= Counter([removed])
 		super().appendleft(item)
 		self._counter[item] += 1
 		return removed
@@ -742,7 +740,7 @@ class OrderedMultiSet(deque):
 		if value not in self._counter:
 			return None
 		super().remove(value)
-		self.__decrease_count(value)
+		self._counter -= Counter([value])
 	def clear(self):
 		"""Remove all items. O(1)."""
 		super().clear()
@@ -763,24 +761,61 @@ class OrderedMultiSet(deque):
 				super().extend(iterable)
 				self._counter.update(iterable)
 			else:
-				# Need to remove oldest items to make space
-				num_to_remove = len(self) + len(iterable) - self.maxlen
-				for _ in range(num_to_remove):
-					self.__decrease_count(super().popleft())
+				num_to_keep = self.maxlen - len(iterable)
+				self.truncateright(num_to_keep)
 				super().extend(iterable)
 				self._counter.update(iterable)
 		except TypeError:
 			return self.extend(list(iterable))
 	def extendleft(self, iterable):
 		"""Extend left side by appending elements from iterable. O(k)."""
-		for item in iterable:
-			self.appendleft(item)
+		# if maxlen is set, and the new length exceeds maxlen, we clear then efficiently extendleft
+		try:
+			if not self.maxlen or len(self) + len(iterable) <= self.maxlen:
+				super().extendleft(iterable)
+				self._counter.update(iterable)
+			elif len(iterable) >= self.maxlen:
+				self.clear()
+				if isinstance(iterable, (list, tuple)):
+					iterable = iterable[:self.maxlen]
+				else:
+					iterable = itertools.islice(iterable, 0, self.maxlen)
+				super().extendleft(iterable)
+				self._counter.update(iterable)
+			else:
+				num_to_keep = self.maxlen - len(iterable)
+				self.truncate(num_to_keep)
+				super().extendleft(iterable)
+				self._counter.update(iterable)
+		except TypeError:
+			return self.extendleft(list(iterable))
+	def update(self, iterable):
+		"""Extend deque by appending elements from iterable. Alias for extend. O(k)."""
+		return self.extend(iterable)
+	def updateleft(self, iterable):
+		"""Extend left side by appending elements from iterable. Alias for extendleft. O(k)."""
+		return self.extendleft(iterable)
+	def truncate(self, n):
+		"""Truncate to keep left n items. O(n)."""
+		kept = list(itertools.islice(self, n))
+		dropped = Counter(itertools.islice(self, n, None))
+		super().clear()
+		super().extend(kept)
+		self._counter -= dropped
+	def truncateright(self, n):
+		"""Truncate to keep right n items. O(n)."""
+		kept = list(itertools.islice(self, len(self) - n, None))
+		dropped = Counter(itertools.islice(self, 0, len(self) - n))
+		super().clear()
+		super().extend(kept)
+		self._counter -= dropped
 	def rotate(self, n=1):
 		"""Rotate deque n steps to the right. O(k) where k = min(n, len)."""
 		super().rotate(n)
 	def __contains__(self, item):
 		"""Check if item exists in deque. O(1) average."""
-		return item in self._counter
+		# return item in self._counter
+		return super().__contains__(item)
 	def count(self, item):
 		"""Return number of occurrences of item. O(1)."""
 		return self._counter[item]
@@ -788,14 +823,14 @@ class OrderedMultiSet(deque):
 		"""Set item at index. O(1) for access, O(1) for counter update."""
 		old_value = self[index]
 		super().__setitem__(index, value)
-		self.__decrease_count(old_value)
+		self._counter -= Counter([old_value])
 		self._counter[value] += 1
 		return old_value
 	def __delitem__(self, index):
 		"""Delete item at index. O(n) for deletion, O(1) for counter update."""
 		value = self[index]
 		super().__delitem__(index)
-		self.__decrease_count(value)
+		self._counter -= Counter([value])
 		return value
 	def insert(self, index, value):
 		"""Insert value at index. O(n) for insertion, O(1) for counter update."""
@@ -829,6 +864,28 @@ class OrderedMultiSet(deque):
 			return self[-1]
 		except IndexError:
 			return None
+	def __iadd__(self, value):
+		return self.extend(value)
+	def __add__(self, value):
+		new_deque = self.copy()
+		new_deque.extend(value)
+		return new_deque
+	def __mul__(self, value):
+		new_deque = OrderedMultiSet(maxlen=self.maxlen)
+		for _ in range(value):
+			new_deque.extend(self)
+		return new_deque
+	def __imul__(self, value):
+		if value <= 0:
+			self.clear()
+			return self
+		for _ in range(value - 1):
+			self.extend(self)
+		return self
+	def __eq__(self, value):
+		if isinstance(value, OrderedMultiSet):
+			return self._counter == value._counter
+		return super().__eq__(value)
 
 def get_terminal_size():
 	'''
@@ -2729,8 +2786,9 @@ def can_merge(line_bag1, line_bag2, threshold):
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
-	indexes = {hostname: 0 for hostname in merging_hostnames}
-	working_index_keys = set(indexes.keys())
+	#indexes = {hostname: 0 for hostname in merging_hostnames}
+	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
+	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='├─ ', subsequent_indent='│- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
@@ -2738,26 +2796,41 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 	def get_multiset_index_for_hostname(hostname):
 		index = indexes[hostname]
 		tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
-		return [OrderedMultiSet(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_index]
+		tracking_iter = itertools.islice(outputs_by_hostname[hostname], tracking_index)
+		return [deque(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_iter]
 	# futuresChainMap = ChainMap()
-	class futureDict(UserDict):
-		def __missing__(self, key):
-			value = get_multiset_index_for_hostname(key)
-			self[key] = value
-			# futuresChainMap.maps.append(value[0]._counter)
-			return value
-		# def initializeHostnames(self, hostnames):
-		# 	entries = {hostname: get_multiset_index_for_hostname(hostname) for hostname in hostnames}
-		# 	self.update(entries)
-		# 	futuresChainMap.maps.extend(entry[0]._counter for entry in entries.values())
-	futures = futureDict()
+	# class futureDict(UserDict):
+	# 	def __missing__(self, key):
+	# 		value = get_multiset_index_for_hostname(key)
+	# 		self[key] = value
+	# 		# futuresChainMap.maps.append(value[0]._counter)
+	# 		return value
+	# 	# def initializeHostnames(self, hostnames):
+	# 	# 	entries = {hostname: get_multiset_index_for_hostname(hostname) for hostname in hostnames}
+	# 	# 	self.update(entries)
+	# 	# 	futuresChainMap.maps.extend(entry[0]._counter for entry in entries.values())
+	def advance(dict,key):
+		try:
+			value = dict[key]
+			value[0].append(next(value[1]))
+		except StopIteration:
+			try:
+				value[0].popleft()
+			except IndexError:
+				pass
+		except KeyError:
+			pass
+	# futures = futureDict()
+	# for hostname in merging_hostnames:
+	# 	futures[hostname]  # ensure it's initialized
+	futures = {hostname: get_multiset_index_for_hostname(hostname) for hostname in merging_hostnames}
 	currentLines = defaultdict(set)
 	for hostname in merging_hostnames:
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
 		defer = False
 		# sorted_working_hostnames = sorted(working_index_keys, key=lambda hn: indexes[hn])
-		golden_hostname = min(working_index_keys, key=lambda hn: indexes[hn])
+		golden_hostname = min(working_index_keys, key=indexes.get)
 		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
 		# for hostname, index in sorted_working_indexes[1:]:
@@ -2777,8 +2850,8 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 			# if golden_hostname in futures:
 			# 	thisCounter = futures[golden_hostname][0]._counter
 			# 	futuresChainMap.maps.remove(thisCounter)
-			for hostname in working_index_keys - buddy - set(futures.keys()):
-				futures[hostname] # ensure it's initialized
+			# for hostname in working_index_keys - buddy - set(futures.keys()):
+			# 	futures[hostname] # ensure it's initialized
 			# futures.initializeHostnames(working_index_keys - buddy - futures.keys())
 			if any(lineToAdd in futures[hostname][0] for hostname in working_index_keys - buddy):
 				defer = True
@@ -2798,11 +2871,12 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 			currentLines[lineToAdd].difference_update(buddy)
 			if not currentLines[lineToAdd]:
 				del currentLines[lineToAdd]
+			indexes.update(buddy)
 			for hostname in buddy:
 				# currentLines[lineToAdd].remove(hostname)
 				# if not currentLines[lineToAdd]:
 				# 	del currentLines[lineToAdd]
-				indexes[hostname] += 1
+				# indexes[hostname] += 1
 				try:
 					currentLines[outputs_by_hostname[hostname][indexes[hostname]]].add(hostname)
 				except IndexError:
@@ -2812,15 +2886,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 					# 	futuresChainMap.maps.remove(future[0]._counter)
 					continue
 				#advance futures
-				if hostname in futures:
-					futures[hostname][1] += 1
-					tracking_multiset, tracking_index = futures[hostname]
-					if tracking_index < len(outputs_by_hostname[hostname]):
-						line = outputs_by_hostname[hostname][tracking_index]
-						tracking_multiset.append(line)
-					else:
-						tracking_multiset.popleft()
-					#futures[hostname] = (tracking_multiset, tracking_index)
+				advance(futures, hostname)
 			working_index_keys = set(indexes.keys())
 
 def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
@@ -2872,16 +2938,17 @@ def get_host_raw_output(hosts, terminal_width):
 		prevLine = host.command
 		if host.stdout:
 			hostPrintOut.append('│▓ STDOUT:')
-			for line in host.stdout:
-				if len(line) < terminal_width - 2:
-					hostPrintOut.append(f"│ {line}")
-				else:
-					hostPrintOut.extend(text_wrapper.wrap(line))
+			# for line in host.stdout:
+			# 	if len(line) < terminal_width - 2:
+			# 		hostPrintOut.append(f"│ {line}")
+			# 	else:
+			# 		hostPrintOut.extend(text_wrapper.wrap(line))
+			hostPrintOut.extend(f"│ {line}" for line in host.stdout)
 			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
 			if len(host.stdout) > 1:
-				lineBag.update(zip(host.stdout, host.stdout[1:]))
+				lineBag.update(itertools.pairwise(host.stdout))
 			lineBag.update(host.stdout)
 			prevLine = host.stdout[-1]
 		if host.stderr:
@@ -2893,16 +2960,17 @@ def get_host_raw_output(hosts, terminal_width):
 				host.stderr[-1] = 'Cannot find host!'
 			if host.stderr:
 				hostPrintOut.append('│▒ STDERR:')
-				for line in host.stderr:
-					if len(line) < terminal_width - 2:
-						hostPrintOut.append(f"│ {line}")
-					else:
-						hostPrintOut.extend(text_wrapper.wrap(line))
+				# for line in host.stderr:
+				# 	if len(line) < terminal_width - 2:
+				# 		hostPrintOut.append(f"│ {line}")
+				# 	else:
+				# 		hostPrintOut.extend(text_wrapper.wrap(line))
+				hostPrintOut.extend(f"│ {line}" for line in host.stderr)
 				lineBag.add((prevLine,2))
 				lineBag.add((2,host.stderr[0]))
 				lineBag.update(host.stderr)
 				if len(host.stderr) > 1:
-					lineBag.update(zip(host.stderr, host.stderr[1:]))
+					lineBag.update(itertools.pairwise(host.stderr))
 				prevLine = host.stderr[-1]
 		hostPrintOut.append(f"│░ RETURN CODE: {host.returncode}")
 		lineBag.add((prevLine,f"{host.returncode}"))
