@@ -84,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.96'
+version = '5.97'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-10-21'
@@ -420,6 +420,11 @@ __thread_start_delay = 0
 _encoding = DEFAULT_ENCODING
 __returnZero = DEFAULT_RETURN_ZERO
 __running_threads = set()
+__control_master_string = '''Host *
+  ControlMaster auto
+  ControlPath /run/user/%i/ssh_sockets_%C
+  ControlPersist 3600
+'''
 if __resource_lib_available:
 	# Get the current limits
 	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -1388,14 +1393,14 @@ def compact_hostnames(Hostnames,verify = True):
 	# 	hostSet = frozenset(Hostnames)
 	# else:
 	# 	hostSet = Hostnames
-	hostSet = frozenset(
+	hostSet = frozenset(expand_hostnames(
 		hostname.strip()
 		for hostnames_str in Hostnames
 		for hostname in hostnames_str.split(',')
-	)
+	))
 	compact_hosts = __compact_hostnames(hostSet)
 	if verify:
-		if set(expand_hostnames(compact_hosts)) != set(expand_hostnames(hostSet)):
+		if frozenset(expand_hostnames(compact_hosts)) != hostSet:
 			if not __global_suppress_printout:
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 			compact_hosts = hostSet
@@ -2918,7 +2923,7 @@ def pre_merge_hosts(hosts):
 	# Create merged hosts
 	merged_hosts = []
 	for group in output_groups.values():
-		group[0].name = ','.join(host.name for host in group)
+		group[0].name = ','.join(compact_hostnames(host.name for host in group))
 		merged_hosts.append(group[0])
 	return merged_hosts
 
@@ -2931,6 +2936,7 @@ def get_host_raw_output(hosts, terminal_width):
 	max_length = 20
 	hosts = pre_merge_hosts(hosts)
 	for host in hosts:
+		max_length = max(max_length, len(max(host.name.split(','), key=len)) + 3)
 		hostPrintOut = ["│█ EXECUTED COMMAND:"]
 		for line in host.command.splitlines():
 			hostPrintOut.extend(text_wrapper.wrap(line))
@@ -3800,6 +3806,7 @@ def get_parser():
 	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
 	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
+	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
@@ -3859,7 +3866,7 @@ def process_config_file(args):
 		else:
 			configFileToWriteTo = args.config_file
 		write_default_config(args,configFileToWriteTo)
-		if not args.commands:
+		if not args.commands and not args.file:
 			if configFileToWriteTo:
 				with open(configFileToWriteTo,'r') as f:
 					eprint(f"Config file content: \n{f.read()}")
@@ -3901,6 +3908,35 @@ def process_keys(args):
 				eprint(f"Warning: Identity file {args.key!r} not found. Passing to ssh anyway. Proceed with caution.")
 	return args
 
+def process_control_master_config(args):
+	global __control_master_string
+	if args.add_control_master_config:
+		try:
+			if not os.path.exists(os.path.expanduser('~/.ssh')):
+				os.makedirs(os.path.expanduser('~/.ssh'),mode=0o700)
+			ssh_config_file = os.path.expanduser('~/.ssh/config')
+			if not os.path.exists(ssh_config_file):
+				with open(ssh_config_file,'w') as f:
+					f.write(__control_master_string)
+				os.chmod(ssh_config_file,0o644)
+			else:
+				with open(ssh_config_file,'r') as f:
+					ssh_config_content = f.readlines()
+				if set(map(str.strip,ssh_config_content)).issuperset(set(map(str.strip,__control_master_string.splitlines()))):
+					eprint("ControlMaster configuration already exists in ~/.ssh/config, skipping adding:")
+					eprint(__control_master_string)
+				else:
+					with open(ssh_config_file,'a') as f:
+						f.write('\n# Added by multiSSH3.py to speed up subsequent connections\n')
+						f.write(__control_master_string)
+					eprint("ControlMaster configuration added to ~/.ssh/config.")
+		except Exception as e:
+			eprint(f"Error adding ControlMaster configuration: {e}")
+			import traceback
+			traceback.print_exc()
+		if not args.commands and not args.file:
+			_exit_with_code(0, "Done configuring ControlMaster.")
+	return args
 
 def set_global_with_args(args):
 	global _emo
@@ -3937,6 +3973,7 @@ def main():
 	args = process_config_file(args)
 	args = process_commands(args)
 	args = process_keys(args)
+	args = process_control_master_config(args)
 	set_global_with_args(args)
 	
 	if args.use_script_timeout:
