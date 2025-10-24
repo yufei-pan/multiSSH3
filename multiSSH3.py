@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.97'
+version = '5.98'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-10-21'
+COMMIT_DATE = '2025-10-24'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -377,6 +377,24 @@ ERROR_MESSAGES_TO_IGNORE = [
 	'Killed by signal',
 	'Connection reset by peer',
 ]
+__DEFAULT_COLOR_PALETTE = {
+	'cyan': (86, 173, 188),
+	'green': (114, 180, 43),
+	'magenta': (140, 107, 200),
+	'red': (196, 38, 94),
+	'white': (227, 227, 221),
+	'yellow': (179, 180, 43),
+	'blue': (106, 126, 200),
+	'bright_black': (102, 102, 102),
+	'bright_blue': (129, 154, 255),
+	'bright_cyan': (102, 217, 239),
+	'bright_green': (126, 226, 46),
+	'bright_magenta': (174, 129, 255),
+	'bright_red': (249, 38, 114),
+	'bright_white': (248, 248, 242),
+	'bright_yellow': (226, 226, 46),
+}
+COLOR_PALETTE = __DEFAULT_COLOR_PALETTE.copy()
 _DEFAULT_CALLED = True
 _DEFAULT_RETURN_UNFINISHED = False
 _DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
@@ -936,6 +954,8 @@ def get_terminal_color_capability():
 		return '24bit'
 	elif "256" in term:
 		return '256'
+	elif "16" in term:
+		return '16'
 	try:
 		curses.setupterm()
 		colors = curses.tigetnum("colors")
@@ -954,96 +974,120 @@ def get_terminal_color_capability():
 		return 'None'
 
 @cache_decorator
-def get_xterm256_palette():
-	palette = []
-	# 0–15: system colors (we'll just fill with dummy values;
-	# you could fill in real RGB if you need to)
-	system_colors = [
-		(0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0),
-		(0, 0, 128), (128, 0, 128), (0, 128, 128), (192, 192, 192),
-		(128, 128, 128), (255, 0, 0), (0, 255, 0), (255, 255, 0),
-		(0, 0, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
-	]
-	palette.extend(system_colors)
-	# 16–231: 6x6x6 color cube
-	levels = [0, 95, 135, 175, 215, 255]
-	for r in levels:
-		for g in levels:
-			for b in levels:
-				palette.append((r, g, b))
-	# 232–255: grayscale ramp, 24 steps from 8 to 238
-	for i in range(24):
-		level = 8 + i * 10
-		palette.append((level, level, level))
-	return palette
+def rgb_to_ansi_color_string(r, g, b):
+	"""
+	Return an ANSI escape sequence setting the foreground to (r,g,b)
+	approximated to the terminal's capability, or '' if none.
+	"""
+	cap = get_terminal_color_capability()
+	if cap == 'None':
+		return ''
+	if cap == '24bit':
+		return f'\x1b[38;2;{r};{g};{b}m'
+	if cap == '256':
+		idx = _rgb_to_256_color(r, g, b)
+		return f'\x1b[38;5;{idx}m'
+	if cap == '16':
+		idx = _rgb_to_16_color(r, g, b)
+		# 0–7 = 30–37, 8–15 = 90–97
+		if idx < 8:
+			return f'\x1b[{30 + idx}m'
+		else:
+			return f'\x1b[{90 + (idx - 8)}m'
+	if cap == '8':
+		idx = _rgb_to_8_color(r, g, b)
+		return f'\x1b[{30 + idx}m'
+	return ''
 
-@cache_decorator
-def rgb_to_xterm_index(r, g, b):
+def _rgb_to_256_color(r, g, b):
 	"""
-	Map 24-bit RGB to nearest xterm-256 color index.
-	r, g, b should be in 0-255.
-	Returns an int in 0-255.
+	Map (r,g,b) to the 256-color cube or grayscale ramp.
 	"""
-	best_index = 0
+	# if it’s already gray, use the 232–255 grayscale ramp
+	if r == g == b:
+		# 24 shades from 232 to 255
+		return 232 + int(round(r / 255 * 23))
+	# else map each channel to 0–5
+	def to6(v):
+		return int(round(v / 255 * 5))
+	r6, g6, b6 = to6(r), to6(g), to6(b)
+	return 16 + 36 * r6 + 6 * g6 + b6
+
+def _rgb_to_16_color(r, g, b):
+	"""
+	Pick the nearest of the 16 ANSI standard colors.
+	Returns an index 0-15.
+	"""
+	palette = [
+		(0, 0, 0),       # 0 black
+		(128, 0, 0),     # 1 red
+		(0, 128, 0),     # 2 green
+		(128, 128, 0),   # 3 yellow
+		(0, 0, 128),     # 4 blue
+		(128, 0, 128),   # 5 magenta
+		(0, 128, 128),   # 6 cyan
+		(192, 192, 192), # 7 white (light gray)
+		(128, 128, 128), # 8 bright black (dark gray)
+		(255, 0, 0),     # 9 bright red
+		(0, 255, 0),     # 10 bright green
+		(255, 255, 0),   # 11 bright yellow
+		(0, 0, 255),     # 12 bright blue
+		(255, 0, 255),   # 13 bright magenta
+		(0, 255, 255),   # 14 bright cyan
+		(255, 255, 255), # 15 bright white
+	]
+	best_idx = 0
 	best_dist = float('inf')
-	for i, (pr, pg, pb) in enumerate(get_xterm256_palette()):
-		dr = pr - r
-		dg = pg - g
-		db = pb - b
-		dist = dr*dr + dg*dg + db*db
+	for i, (pr, pg, pb) in enumerate(palette):
+		dist = (r - pr)**2 + (g - pg)**2 + (b - pb)**2
 		if dist < best_dist:
 			best_dist = dist
-			best_index = i
-	return best_index
+			best_idx = i
+	return best_idx
 
-@cache_decorator
-def hashable_to_color(n, brightness_threshold=500):
-	hash_value = hash(str(n))
+def _rgb_to_8_color(r, g, b):
+	"""
+	Reduce to 8 colors by mapping to the 16-color index then clamping 0-7.
+	"""
+	return _rgb_to_16_color(r//2, g//2, b//2)
+
+
+def int_to_color(hash_value, min_brightness=100,max_brightness=220):
 	r = (hash_value >> 16) & 0xFF
 	g = (hash_value >> 8) & 0xFF
 	b = hash_value & 0xFF
-	if (r + g + b) < brightness_threshold:
-		return hashable_to_color(hash_value, brightness_threshold)
+	brightness = math.sqrt(0.299 * r**2 + 0.587 * g**2 + 0.114 * b**2)
+	if brightness < min_brightness:
+		return int_to_color(hash(str(hash_value)), min_brightness, max_brightness)
+	if brightness > max_brightness:
+		return int_to_color(hash(str(hash_value)), min_brightness, max_brightness)
 	return (r, g, b)
 
-__previous_ansi_color_index = -1
+__previous_color_rgb = ()
 @cache_decorator
-def string_to_unique_ansi_color(string):
+def int_to_unique_ansi_color(number):
 	'''
-	Convert a string to a unique ANSI color code
+	Convert a number to a unique ANSI color code
 
 	Args:
-		string (str): The string to convert
-
+		number (int): The number to convert
 	Returns:
 		int: The ANSI color code
 	'''
-	global __previous_ansi_color_index
+	global __previous_color_rgb
 	# Use a hash function to generate a consistent integer from the string
 	color_capability = get_terminal_color_capability()
-	index = None
 	if color_capability == 'None':
 		return ''
-	elif color_capability == '16':
-		# Map to one of the 14 colors (31-37, 90-96), avoiding black and white
-		index = (hash(string) % 14) + 31
-		if index > 37:
-			index += 52  # Bright colors (90-97)
-	elif color_capability == '8':
-		index = (hash(string) % 6) + 31
-	r,g,b = hashable_to_color(string)
-	if color_capability == '256':
-		index = rgb_to_xterm_index(r,g,b)
-	if index:
-		if index == __previous_ansi_color_index:
-			return string_to_unique_ansi_color(hash(string))
-		__previous_ansi_color_index = index
-		if color_capability == '256':
-			return f'\033[38;5;{index}m'
-		else:
-			return f'\033[{index}m'
+	if color_capability == '24bit':
+		r, g, b = int_to_color(number)
 	else:
-		return f'\033[38;2;{r};{g};{b}m'
+		# for 256 colors and below, reduce brightness threshold as we do not have many color to work with
+		r, g, b = int_to_color(number, min_brightness=70, max_brightness=190)
+	if sum(abs(a - b) for a, b in zip((r, g, b), __previous_color_rgb)) <= 256:
+		r, g, b = int_to_color(hash(str(number)))
+	__previous_color_rgb = (r, g, b)
+	return rgb_to_ansi_color_string(r, g, b)
 
 #%% ------------ Compacting Hostnames ----------------
 def __tokenize_hostname(hostname):
@@ -2795,7 +2839,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
-	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='├─ ', subsequent_indent='│- ')
+	hostnameWrapper = textwrap.TextWrapper(width=line_length -1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='─ ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
 	diff_display_item_count = max(1,int(max(map(len, outputs_by_hostname.values())) * (1 - diff_display_threshold)))
 	def get_multiset_index_for_hostname(hostname):
@@ -2867,12 +2911,14 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 			if buddy != previousBuddies:
 				hostnameStr = ','.join(compact_hostnames(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
-				hostnameLines = [line.ljust(line_length - 1) + '│' for line in hostnameLines]
-				color = string_to_unique_ansi_color(hostnameStr) if len(buddy) < len(merging_hostnames) else ''
-				hostnameLines[0] = f"\033[0m{color}{hostnameLines[0]}"
+				hostnameLines = [line.ljust(line_length) for line in hostnameLines]
+				color = int_to_unique_ansi_color(hash(hostnameStr)) if len(buddy) < len(merging_hostnames) else ''
+				if color:
+					color = f"\033[0m{color}"
+				hostnameLines[0] = f"{color}{hostnameLines[0]}"
 				output.extend(hostnameLines)
 				previousBuddies = buddy
-			output.append(lineToAdd.ljust(line_length - 1) + '│')
+			output.append(lineToAdd.ljust(line_length))
 			currentLines[lineToAdd].difference_update(buddy)
 			if not currentLines[lineToAdd]:
 				del currentLines[lineToAdd]
@@ -2896,17 +2942,24 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 
 def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
 	output = []
-	output.append(('┌'+'─'*(line_length-2) + '┐'))
-	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='├─ ', subsequent_indent='│- ')
+	color_cap = get_terminal_color_capability()
+	if color_cap == 'None':
+		color_line = ''
+		color_reset = ''
+	else:
+		color_line =  rgb_to_ansi_color_string(*COLOR_PALETTE.get('white', __DEFAULT_COLOR_PALETTE['white']))
+		color_reset = '\033[0m'
+	output.append(color_line+'─'*(line_length)+color_reset)
+	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='─ ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
 	for merging_hostnames in merge_groups:
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
-		output.append('\033[0m├'+'─'*(line_length-2) + '┤')
+		output.append(color_line+'─'*(line_length)+color_reset)
 	for hostname in remaining_hostnames:
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
-		output.extend(line.ljust(line_length - 1) + '│' for line in hostnameLines)
-		output.extend(line.ljust(line_length - 1) + '│' for line in outputs_by_hostname[hostname])
-		output.append('\033[0m├'+'─'*(line_length-2) + '┤')
+		output.extend(line.ljust(line_length ) for line in hostnameLines)
+		output.extend(line.ljust(line_length ) for line in outputs_by_hostname[hostname])
+		output.append(color_line+'─'*(line_length)+color_reset)
 	if output:
 		output.pop()
 	# if output and output[0] and output[0].startswith('├'):
@@ -2931,26 +2984,40 @@ def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
 	hostnames_by_line_bag_len = {}
-	text_wrapper = textwrap.TextWrapper(width=terminal_width - 2, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
-									 initial_indent='│ ', subsequent_indent='│-')
+	text_wrapper = textwrap.TextWrapper(width=terminal_width - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
+									 initial_indent=' ', subsequent_indent='-')
 	max_length = 20
+	color_cap = get_terminal_color_capability()
+	if color_cap == 'None':
+		color_reset_str = ''
+		blue_str = ''
+		cyan_str = ''
+		green_str = ''
+		red_str = ''
+	else:
+		color_reset_str = '\033[0m'
+		blue_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('blue', __DEFAULT_COLOR_PALETTE['blue']))
+		cyan_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_cyan', __DEFAULT_COLOR_PALETTE['bright_cyan']))
+		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_green', __DEFAULT_COLOR_PALETTE['bright_green']))
+		red_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_red', __DEFAULT_COLOR_PALETTE['bright_red']))
 	hosts = pre_merge_hosts(hosts)
 	for host in hosts:
 		max_length = max(max_length, len(max(host.name.split(','), key=len)) + 3)
-		hostPrintOut = ["│█ EXECUTED COMMAND:"]
+		hostPrintOut = [f"{cyan_str}█{color_reset_str} EXECUTED COMMAND:"]
 		for line in host.command.splitlines():
 			hostPrintOut.extend(text_wrapper.wrap(line))
 		# hostPrintOut.extend(itertools.chain.from_iterable(text_wrapper.wrap(line) for line in host['command'].splitlines()))
 		lineBag = {(0,host.command)}
 		prevLine = host.command
 		if host.stdout:
-			hostPrintOut.append('│▓ STDOUT:')
+			hostPrintOut.append(f'{blue_str}▓{color_reset_str} STDOUT:')
 			# for line in host.stdout:
 			# 	if len(line) < terminal_width - 2:
-			# 		hostPrintOut.append(f"│ {line}")
+			# 		hostPrintOut.append(f" {line}")
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
-			hostPrintOut.extend(f"│ {line}" for line in host.stdout)
+			hostPrintOut.extend(f" {line}" for line in host.stdout)
+			max_length = max(max_length, max(map(len, host.stdout)))
 			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
@@ -2966,22 +3033,26 @@ def get_host_raw_output(hosts, terminal_width):
 			elif host.stderr[-1].strip().endswith('No route to host'):
 				host.stderr[-1] = 'Cannot find host!'
 			if host.stderr:
-				hostPrintOut.append('│▒ STDERR:')
+				hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
 				# for line in host.stderr:
 				# 	if len(line) < terminal_width - 2:
-				# 		hostPrintOut.append(f"│ {line}")
+				# 		hostPrintOut.append(f" {line}")
 				# 	else:
 				# 		hostPrintOut.extend(text_wrapper.wrap(line))
-				hostPrintOut.extend(f"│ {line}" for line in host.stderr)
+				hostPrintOut.extend(f" {line}" for line in host.stderr)
+				max_length = max(max_length, max(map(len, host.stderr)))
 				lineBag.add((prevLine,2))
 				lineBag.add((2,host.stderr[0]))
 				lineBag.update(host.stderr)
 				if len(host.stderr) > 1:
 					lineBag.update(zip(host.stderr, host.stderr[1:]))
 				prevLine = host.stderr[-1]
-		hostPrintOut.append(f"│░ RETURN CODE: {host.returncode}")
+		if host.returncode != 0:
+			codeColor = red_str
+		else:
+			codeColor = green_str
+		hostPrintOut.append(f"{codeColor}░{color_reset_str} RETURN CODE: {host.returncode}")
 		lineBag.add((prevLine,f"{host.returncode}"))
-		max_length = max(max_length, max(map(len, hostPrintOut)))
 		outputs_by_hostname[host.name] = hostPrintOut
 		line_bag_by_hostname[host.name] = lineBag
 		hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host.name)
@@ -3022,6 +3093,7 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 	return merge_groups, remaining_hostnames
 
 def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]]):
+	color_cap = get_terminal_color_capability()
 	if quiet:
 		# remove hosts with returncode 0
 		hosts = [host for host in hosts if host.returncode != 0]
@@ -3029,7 +3101,10 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			if usejson:
 				return '{"Success": true}'
 			else:
-				return 'Success'
+				if color_cap == 'None':
+					return 'Success'
+				else:
+					return '\033[32mSuccess\033[0m'
 	if usejson:
 		# [print(dict(host)) for host in hosts]
 		#print(json.dumps([dict(host) for host in hosts],indent=4))
@@ -3064,23 +3139,32 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		except Exception:
 			eprint("Warning: diff_display_threshold should be a float between 0 and 1. Setting to default value of 0.9")
 			diff_display_threshold = 0.9
+		
+		color_reset_str = '' if color_cap == 'None' else '\033[0m'
+		white_str = '' if color_cap == 'None' else rgb_to_ansi_color_string(*COLOR_PALETTE.get('white', __DEFAULT_COLOR_PALETTE['white']))
 		terminal_length = get_terminal_size()[0]
 		outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_length = get_host_raw_output(hosts,terminal_length)
 		merge_groups ,remaining_hostnames = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
 		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			outputs.append("├─ User Inputs:".ljust(line_length -1,'─')+'┤')
+			outputs.append(color_reset_str + "─ User Inputs:".ljust(line_length,'─'))
 			cmdOut = []
 			for line in CMDsOut:
 				cmdOut.extend(textwrap.wrap(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
-									 initial_indent='│ ', subsequent_indent='│-'))
-			outputs.extend(cmd.ljust(line_length -1)+'│' for cmd in cmdOut)
+									 initial_indent=' ', subsequent_indent='-'))
+			outputs.extend(cmd.ljust(line_length) for cmd in cmdOut)
 			keyPressesIn[-1].clear()
 		if not outputs:
-			rtnStr = 'Success' if quiet else ''
+			if quiet:
+				if color_cap == 'None':
+					return 'Success'
+				else:
+					return '\033[32mSuccess\033[0m'
+			else:
+				rtnStr = ''
 		else:
-			rtnStr = '\n'.join(outputs + [('\033[0m└'+'─'*(line_length-2)+'┘')])
+			rtnStr = '\n'.join(outputs + [white_str + '─' * (line_length) + color_reset_str])
 	return rtnStr
 
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
@@ -3126,7 +3210,15 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 			if total_sleeped > 0.1:
 				break
 		if any([host.returncode is None for host in hosts]):
-			curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
+			try:
+				curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
+			except Exception:
+				try:
+					curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
+				except Exception as e:
+					eprint(f"Curses print error: {e}")
+					import traceback
+					print(traceback.format_exc())
 	if not returnUnfinished:
 		# wait until all hosts have a return code
 		while any([host.returncode is None for host in hosts]):
