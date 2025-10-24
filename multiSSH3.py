@@ -84,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.98'
+version = '5.99'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-10-24'
@@ -2839,7 +2839,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
-	hostnameWrapper = textwrap.TextWrapper(width=line_length -1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='─ ', subsequent_indent='- ')
+	hostnameWrapper = textwrap.TextWrapper(width=line_length -1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
 	diff_display_item_count = max(1,int(max(map(len, outputs_by_hostname.values())) * (1 - diff_display_threshold)))
 	def get_multiset_index_for_hostname(hostname):
@@ -2874,6 +2874,13 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 	# 	futures[hostname]  # ensure it's initialized
 	futures = {hostname: get_multiset_index_for_hostname(hostname) for hostname in merging_hostnames}
 	currentLines = defaultdict(set)
+	color_cap = get_terminal_color_capability()
+	if color_cap == 'None':
+		green_str = ''
+		reset_str = ''
+	else:
+		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('green', __DEFAULT_COLOR_PALETTE['green']))
+		reset_str = '\033[0m'
 	for hostname in merging_hostnames:
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
@@ -2911,14 +2918,18 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 			if buddy != previousBuddies:
 				hostnameStr = ','.join(compact_hostnames(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
-				hostnameLines = [line.ljust(line_length) for line in hostnameLines]
-				color = int_to_unique_ansi_color(hash(hostnameStr)) if len(buddy) < len(merging_hostnames) else ''
-				if color:
-					color = f"\033[0m{color}"
-				hostnameLines[0] = f"{color}{hostnameLines[0]}"
+				# hostnameLines = [line.ljust(line_length) for line in hostnameLines]
+				if color_cap == 'None':
+					hostnameLines[0] = f"■{hostnameLines[0]}"
+				elif len(buddy) < len(merging_hostnames):
+					color = int_to_unique_ansi_color(hash(hostnameStr))
+					hostnameLines[0] = f"{color}■{hostnameLines[0]}"
+					hostnameLines[-1] += reset_str
+				else:
+					hostnameLines[0] = f"{green_str}■{reset_str}{hostnameLines[0]}"
 				output.extend(hostnameLines)
 				previousBuddies = buddy
-			output.append(lineToAdd.ljust(line_length))
+			output.append(lineToAdd)
 			currentLines[lineToAdd].difference_update(buddy)
 			if not currentLines[lineToAdd]:
 				del currentLines[lineToAdd]
@@ -2946,19 +2957,22 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 	if color_cap == 'None':
 		color_line = ''
 		color_reset = ''
+		green_str = ''
 	else:
 		color_line =  rgb_to_ansi_color_string(*COLOR_PALETTE.get('white', __DEFAULT_COLOR_PALETTE['white']))
 		color_reset = '\033[0m'
+		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('green', __DEFAULT_COLOR_PALETTE['green']))
 	output.append(color_line+'─'*(line_length)+color_reset)
-	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent='─ ', subsequent_indent='- ')
+	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
 	for merging_hostnames in merge_groups:
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append(color_line+'─'*(line_length)+color_reset)
 	for hostname in remaining_hostnames:
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
-		output.extend(line.ljust(line_length ) for line in hostnameLines)
-		output.extend(line.ljust(line_length ) for line in outputs_by_hostname[hostname])
+		hostnameLines[0] = f"{green_str}■{color_reset}{hostnameLines[0]}"
+		output.extend(hostnameLines)
+		output.extend(outputs_by_hostname[hostname])
 		output.append(color_line+'─'*(line_length)+color_reset)
 	if output:
 		output.pop()
@@ -3148,12 +3162,12 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			outputs.append(color_reset_str + "─ User Inputs:".ljust(line_length,'─'))
+			outputs.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
 			cmdOut = []
 			for line in CMDsOut:
 				cmdOut.extend(textwrap.wrap(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
 									 initial_indent=' ', subsequent_indent='-'))
-			outputs.extend(cmd.ljust(line_length) for cmd in cmdOut)
+			outputs.extend(cmdOut)
 			keyPressesIn[-1].clear()
 		if not outputs:
 			if quiet:
