@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '5.99'
+version = '6.00'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-10-24'
+COMMIT_DATE = '2025-10-29'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -3322,7 +3322,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
 						 file_sync = False, error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY, no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILES,
+						 history_file = DEFAULT_HISTORY_FILE, env_file = '', env_files = DEFAULT_ENV_FILES,
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
 						 shortend = False) -> str:
 	argsList = []
@@ -3366,8 +3366,10 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 		argsList.append(f'--unavailable_host_expiry={unavailable_host_expiry}' if not shortend else f'-uhe={unavailable_host_expiry}')
 	if no_env:
 		argsList.append('--no_env')
-	if env_file and env_file != DEFAULT_ENV_FILES:
-		argsList.extend([f'--env_file="{ef}"' for ef in env_file] if not shortend else [f'-ef="{ef}"' for ef in env_file])
+	if env_file:
+		argsList.append(f'--env_file="{env_file}"' if not shortend else f'-ef="{env_file}"')
+	if env_files:
+		argsList.extend([f'--env_files="{ef}"' for ef in env_files] if not shortend else [f'-efs="{ef}"' for ef in env_files])
 	if no_history:
 		argsList.append('--no_history' if not shortend else '-nh')
 	if history_file and history_file != DEFAULT_HISTORY_FILE:
@@ -3390,7 +3392,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = DEFAULT_ENV_FILES,
+						 history_file = DEFAULT_HISTORY_FILE, env_file = '', env_files = DEFAULT_ENV_FILES,
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
 						 shortend = False,tabSeperated = False):
 	_ = called
@@ -3410,7 +3412,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 no_env=no_env, greppable=greppable,skip_hosts = skip_hosts, 
 						 file_sync = file_sync,error_only = error_only, identity_file = identity_file,
 						 copy_id = copy_id, unavailable_host_expiry =unavailable_host_expiry,no_history = no_history,
-						 history_file = history_file, env_file = env_file,
+						 history_file = history_file, env_file = env_file, env_files = env_files,
 						 repeat = repeat,interval = interval,
 						 shortend = shortend)
 	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in format_commands(commands)]
@@ -3802,7 +3804,7 @@ def generate_default_config(args):
 		'DEFAULT_NO_OUTPUT': args.no_output,
 		'DEFAULT_RETURN_ZERO': args.return_zero,
 		'DEFAULT_NO_ENV': args.no_env,
-		'DEFAULT_ENV_FILES': args.env_file,
+		'DEFAULT_ENV_FILES': args.env_files,
 		'DEFAULT_NO_HISTORY': args.no_history,
 		'DEFAULT_HISTORY_FILE': args.history_file,
 		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * os.cpu_count() else None,
@@ -3891,7 +3893,8 @@ def get_parser():
 	parser.add_argument('-Q',"-no","--no_output", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
 	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})", default=DEFAULT_RETURN_ZERO)
 	parser.add_argument('-C','--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
-	parser.add_argument("--env_file", action='append', help=f"The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILES})", default=DEFAULT_ENV_FILES)
+	parser.add_argument('-ef',"--env_file", type=str, help="Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)", default='')
+	parser.add_argument('-efs',"--env_files", action='append', help=f"The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILES})")
 	parser.add_argument("-m","--max_connections", type=int, help="Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument('-w',"--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as well. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
@@ -4058,7 +4061,10 @@ def set_global_with_args(args):
 	global FORCE_TRUECOLOR
 	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
-	_env_files = args.env_file
+	if args.env_file:
+		_env_files = [args.env_file]
+	else:
+		_env_files = DEFAULT_ENV_FILES.extend(args.env_files) if args.env_files else DEFAULT_ENV_FILES
 	__DEBUG_MODE = args.debug
 	_encoding = args.encoding
 	if args.return_zero:
@@ -4098,7 +4104,7 @@ def main():
 						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key,
 						 copy_id=args.copy_id,unavailable_host_expiry=args.unavailable_host_expiry,no_history=args.no_history,
 						 history_file = args.history_file, 
-						 env_file = args.env_file,
+						 env_file = args.env_file,env_files = args.env_files,
 						 repeat = args.repeat,interval = args.interval)
 		eprint('> ' + cmdStr)
 	if args.error_only:
