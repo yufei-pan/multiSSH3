@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.00'
+version = '6.01'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-10-29'
+COMMIT_DATE = '2025-11-06'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -99,7 +99,6 @@ CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 ERRORS = []
 
 # TODO: Add terminal TUI
-# TODO: Change -fs behavior
 
 #%% ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
@@ -322,7 +321,7 @@ DEFAULT_HOSTS = 'all'
 DEFAULT_USERNAME = None
 DEFAULT_PASSWORD = ''
 DEFAULT_IDENTITY_FILE = None
-DEDAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
+DEFAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
 DEFAULT_USE_KEY = False
 DEFAULT_EXTRA_ARGS = None
 DEFAULT_ONE_ON_ONE = False
@@ -490,12 +489,12 @@ def check_path(program_name):
 
 [check_path(program) for program in _binCalled]
 
-def find_ssh_key_file(searchPath = DEDAULT_SSH_KEY_SEARCH_PATH):
+def find_ssh_key_file(searchPath = DEFAULT_SSH_KEY_SEARCH_PATH):
 	'''
 	Find the ssh public key file
 
 	Args:
-		searchPath (str, optional): The path to search. Defaults to DEDAULT_SSH_KEY_SEARCH_PATH.
+		searchPath (str, optional): The path to search. Defaults to DEFAULT_SSH_KEY_SEARCH_PATH.
 
 	Returns:
 		str: The path to the ssh key file
@@ -1814,6 +1813,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 		host.command = replace_magic_strings(host.command,['#I#'],str(host.i),case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#PASSWD#','#PASSWORD#'],passwds,case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#UUID#'],str(host.uuid),case_sensitive=False)
+		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip),case_sensitive=False)
 		formatedCMD = []
 		if host.extraargs and isinstance(host.extraargs, str):
 			extraargs = host.extraargs.split()
@@ -2012,8 +2012,6 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 			stdout_thread.join(timeout=1)
 			stderr_thread.join(timeout=1)
 			stdin_thread.join(timeout=1)
-			# here we handle the rest of the stdout after the subprocess returns
-			host.output.append('Pipe Closed. Trying to read the rest of the stdout...')
 			if not _emo:
 				stdout = None
 				stderr = None
@@ -2022,8 +2020,10 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 				except subprocess.TimeoutExpired:
 					pass
 				if stdout:
+					host.output.append('Trying to read the rest of the stdout...')
 					__handle_reading_stream(io.BytesIO(stdout),host.stdout, host,host.stdout_buffer)
 				if stderr:
+					host.output.append('Trying to read the rest of the stderr...')
 					__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
 				# if the last line in host.stderr is Connection to * closed., we will remove it
 			host.returncode = proc.poll()
@@ -2619,7 +2619,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == curses.KEY_EXIT or key == 27: # 27 is the key code for ESC
 					# if the key is exit, we will exit the program
 					return 
-				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1 or key == 8: # 63 is the key code for ?
+				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1 or key == 8: # 63 is the key code for ?, 8 is the key code for backspace
 					# if the key is help, we will display the help message
 					if not help_shown:
 						help_panel.show()
@@ -3228,6 +3228,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 				curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
 			except Exception:
 				try:
+					os.environ['TERM'] = 'xterm-256color'
 					curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
 				except Exception as e:
 					eprint(f"Curses print error: {e}")
@@ -3471,48 +3472,48 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
 						 history_file = DEFAULT_HISTORY_FILE,
 						 ):
-	f'''
-	Run the command on the hosts, aka multissh. main function
+	"""
+	Run commands on multiple hosts via SSH or IPMI.
 
-	Args:
-		hosts (str/iterable): A string of hosts seperated by space or comma / iterable of hosts. Default to {DEFAULT_HOSTS}.
-		commands (list): A list of commands to run on the hosts. When using files, defines the destination of the files. Defaults to None.
-		oneonone (bool, optional): Whether to run the commands one on one. Defaults to {DEFAULT_ONE_ON_ONE}.
-		timeout (int, optional): The timeout for the command. Defaults to {DEFAULT_TIMEOUT}.
-		password (str, optional): The password for the hosts. Defaults to {DEFAULT_PASSWORD}.
-		no_watch (bool, optional): Whether to print the output. Defaults to {DEFAULT_NO_WATCH}.
-		json (bool, optional): Whether to print the output in JSON format. Defaults to {DEFAULT_JSON_MODE}.
-		called (bool, optional): Whether the function is called by another function. Defaults to {_DEFAULT_CALLED}.
-		max_connections (int, optional): The maximum number of concurrent SSH sessions. Defaults to 4 * os.cpu_count().
-		files (list, optional): A list of files to be copied to the hosts. Defaults to None.
-		ipmi (bool, optional): Whether to use IPMI to connect to the hosts. Defaults to {DEFAULT_IPMI}.
-		interface_ip_prefix (str, optional): The prefix of the IPMI interface. Defaults to {DEFAULT_INTERFACE_IP_PREFIX}.
-		returnUnfinished (bool, optional): Whether to return the unfinished hosts. Defaults to {_DEFAULT_RETURN_UNFINISHED}.
-		scp (bool, optional): Whether to use scp instead of rsync. Defaults to {DEFAULT_SCP}.
-		gather_mode (bool, optional): Whether to use gather mode. Defaults to False.
-		username (str, optional): The username to use to connect to the hosts. Defaults to {DEFAULT_USERNAME}.
-		extraargs (str, optional): Extra arguments to pass to the ssh / rsync / scp command. Defaults to {DEFAULT_EXTRA_ARGS}.
-		skipUnreachable (bool, optional): Whether to skip unreachable hosts. Defaults to {DEFAULT_SKIP_UNREACHABLE}.
-		no_env (bool, optional): Whether to not read the current sat system environment variables. (Will still read from files) Defaults to {DEFAULT_NO_ENV}.
-		greppable (bool, optional): Whether to print the output in greppable format. Defaults to {DEFAULT_GREPPABLE_MODE}.
-		willUpdateUnreachableHosts (bool, optional): Whether to update the global unavailable hosts. Defaults to {_DEFAULT_UPDATE_UNREACHABLE_HOSTS}.
-		no_start (bool, optional): Whether to return the hosts without starting the command. Defaults to {_DEFAULT_NO_START}.
-		skip_hosts (str, optional): The hosts to skip. Defaults to {DEFAULT_SKIP_HOSTS}.
-		min_char_len (int, optional): The minimum character per line of the curses output. Defaults to {DEFAULT_CURSES_MINIMUM_CHAR_LEN}.
-		min_line_len (int, optional): The minimum line number for each window of the curses output. Defaults to {DEFAULT_CURSES_MINIMUM_LINE_LEN}.
-		single_window (bool, optional): Whether to use a single window for the curses output. Defaults to {DEFAULT_SINGLE_WINDOW}.
-		file_sync (bool, optional): Whether to use file sync mode to sync directories. Defaults to {DEFAULT_FILE_SYNC}.
-		error_only (bool, optional): Whether to only print the error output. Defaults to {DEFAULT_ERROR_ONLY}.
-		quiet (bool, optional): Whether to suppress all verbose printout, added for compatibility, avoid using. Defaults to False.
-		identity_file (str, optional): The identity file to use for the ssh connection. Defaults to {DEFAULT_IDENTITY_FILE}.
-		copy_id (bool, optional): Whether to copy the id to the hosts. Defaults to False.
-		unavailable_host_expiry (int, optional): The time in seconds to keep the unavailable hosts in the global unavailable hosts. Defaults to {DEFAULT_UNAVAILABLE_HOST_EXPIRY}.
-		no_history (bool, optional): Whether to not save the history of the command. Defaults to True.
-		history_file (str, optional): The file to save the history of the command. Defaults to {DEFAULT_HISTORY_FILE}.
+	Parameters:
+		hosts (str or iterable): Hosts to run the command on. Can be a string (comma/space-separated) or iterable. Default: DEFAULT_HOSTS.
+		commands (list or None): List of commands to run on the hosts. If files are used, defines the destination. Default: None.
+		oneonone (bool): If True, run each command on the corresponding host (1:1 mapping). Default: DEFAULT_ONE_ON_ONE.
+		timeout (int): Timeout for each command in seconds. Default: DEFAULT_TIMEOUT.
+		password (str): Password for SSH/IPMI authentication. Default: DEFAULT_PASSWORD.
+		no_watch (bool): If True, do not use curses TUI; just print output. Default: DEFAULT_NO_WATCH.
+		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.
+		called (bool): If True, function is called programmatically (not CLI). Default: _DEFAULT_CALLED.
+		max_connections (int): Maximum concurrent SSH sessions. Default: 4 * os.cpu_count().
+		files (list or None): Files to copy to hosts. Default: None.
+		ipmi (bool): Use IPMI instead of SSH. Default: DEFAULT_IPMI.
+		interface_ip_prefix (str or None): Override IP prefix for host connection. Default: DEFAULT_INTERFACE_IP_PREFIX.
+		returnUnfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
+		scp (bool): Use scp for file transfer (instead of rsync). Default: DEFAULT_SCP.
+		gather_mode (bool): Gather files from hosts (pull mode). Default: False.
+		username (str or None): Username for SSH/IPMI. Default: DEFAULT_USERNAME.
+		extraargs (str or list or None): Extra args for SSH/SCP/rsync. Default: DEFAULT_EXTRA_ARGS.
+		skipUnreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
+		no_env (bool): Do not load environment variables from shell. Default: DEFAULT_NO_ENV.
+		greppable (bool): Output in greppable table format. Default: DEFAULT_GREPPABLE_MODE.
+		willUpdateUnreachableHosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
+		no_start (bool): If True, return Host objects without running commands. Default: _DEFAULT_NO_START.
+		skip_hosts (str or None): Hosts to skip. Default: DEFAULT_SKIP_HOSTS.
+		curses_min_char_len (int): Minimum width per curses window. Default: DEFAULT_CURSES_MINIMUM_CHAR_LEN.
+		curses_min_line_len (int): Minimum height per curses window. Default: DEFAULT_CURSES_MINIMUM_LINE_LEN.
+		single_window (bool): Use a single curses window for all hosts. Default: DEFAULT_SINGLE_WINDOW.
+		file_sync (bool): Enable file sync mode (sync directories). Default: DEFAULT_FILE_SYNC.
+		error_only (bool): Only print error output. Default: DEFAULT_ERROR_ONLY.
+		quiet (bool): Suppress all output (overrides other output options). Default: False.
+		identity_file (str or None): SSH identity file. Default: DEFAULT_IDENTITY_FILE.
+		copy_id (bool): Use ssh-copy-id to copy public key to hosts. Default: False.
+		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
+		no_history (bool): Do not record command history. Default: True.
+		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.
 
 	Returns:
-		list: A list of Host objects
-	'''
+		list: List of Host objects representing each host/command run.
+	"""
 	global __globalUnavailableHosts
 	global __global_suppress_printout
 	global _no_env
@@ -3780,7 +3781,7 @@ def generate_default_config(args):
 		'DEFAULT_USERNAME': args.username,
 		'DEFAULT_PASSWORD': args.password,
 		'DEFAULT_IDENTITY_FILE': args.key if args.key and not os.path.isdir(args.key) else DEFAULT_IDENTITY_FILE,
-		'DEDAULT_SSH_KEY_SEARCH_PATH': args.key if args.key and os.path.isdir(args.key) else DEDAULT_SSH_KEY_SEARCH_PATH,
+		'DEFAULT_SSH_KEY_SEARCH_PATH': args.key if args.key and os.path.isdir(args.key) else DEFAULT_SSH_KEY_SEARCH_PATH,
 		'DEFAULT_USE_KEY': args.use_key,
 		'DEFAULT_EXTRA_ARGS': args.extraargs,
 		'DEFAULT_ONE_ON_ONE': args.oneonone,
@@ -3867,7 +3868,7 @@ def get_parser():
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
 	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
-	parser.add_argument('-k','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEDAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEDAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
+	parser.add_argument('-k','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})', default=DEFAULT_USE_KEY)
 	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
