@@ -1,9 +1,48 @@
 # multiSSH3
 
 ## Introduction
-A script that is able to issue commands to multiple hosts while monitoring their progress.
-Can be used in bash scripts for automation actions.
-Also able to be imported and / or use with Flexec SSH Backend to perform cluster automation actions.
+
+multiSSH3 is a fast, flexible way to run commands and move files across many hosts in parallel, while watching everything live. 
+
+Use it from the CLI for quick fleet actions or import it as a Python module for automation and orchestration. 
+
+multiSSH3 understands host groups from env files, expands ranges, reuses SSH sessions, and presents clean outputs for human or machine (json / table).
+
+## Highlights
+
+- Run commands on many hosts simultaneously and asynchronously ( configurable max connections )
+
+- Live interactive curses UI with per-host status. ( send input to all hosts asynchronously )
+
+- Broadcast / gather files (rsync -> scp), with --file_sync syntaxic sugar
+
+- Host discovery via env variables, files, ranges, and DNS; smart cached skip of unreachable hosts
+
+- IPMI support with interface IP prefixing and SSH fallback
+
+- Concurrency tuned for large fleets with resource-aware throttling
+
+- Easily persist defaults via config files; ControlMaster config helper for speed
+
+- Importable as a Python module for automation frameworks
+
+## Why use it?
+
+- If you think ansible is too slow
+
+- If you think ansible is too clunky / cluttered
+
+- If you think pdsh is too complicated / simple
+
+- If you think pdsh output is too messy
+
+- See progress in real time, not after-the-fact logs
+
+- Operate at scale without drowning your terminal
+
+- Keep your host definitions in simple env files and ranges ( customizable groupable DNS )
+
+- Drop-in for scripts: stable exit codes, compact summaries, and capable to produce machine-friendly output
 
 ## Install
 Install via
@@ -31,14 +70,14 @@ mssh -h
 to print the help message with current default values.
 
 Defaults are read from the following chain map stored as json files, top ones overwrite the bottom ones.:
-| `CONFIG_FILE_CHAIN` |
-| ------------- |
-| `./multiSSH3.config.json` |
-| `~/multiSSH3.config.json` |
-| `~/.multiSSH3.config.json` |
+| `CONFIG_FILE_CHAIN`                        |
+| ------------------------------------------ |
+| `./multiSSH3.config.json`                  |
+| `~/multiSSH3.config.json`                  |
+| `~/.multiSSH3.config.json`                 |
 | `~/.config/multiSSH3/multiSSH3.config.json`|
-| `/etc/multiSSH3.d/multiSSH3.config.json`|
-| `/etc/multiSSH3.config.json`|
+| `/etc/multiSSH3.d/multiSSH3.config.json`   |
+| `/etc/multiSSH3.config.json`               |
 
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
@@ -404,8 +443,8 @@ mssh -f ./data/ allServers /tmp/data/
 - Default is 4 * cpu_count connections.
 - Useful for limiting the number of simultaneous SSH connections to avoid overwhelming the compute resources / security limits
 - Note: mssh will open at least 3 files per connection. By default some linux systems will only set the ulimit -n to 1024 files. This means about 300 connections can be opened simultaneously. You can increase the ulimit -n value to allow more connections if needed.
-- You will observe `Warning: The number of maximum connections {max_connections} is larger than estimated limit {estimated_limit} .....` if the max connections is larger than estimated limit.
-- mssh will also throttle thread generation if the estimated limit is lower than 2 * `max_connections` to avoid hitting the file descriptor limit as python fill use some file descriptors when setting up threads.
+  - You will observe `Warning: The number of maximum connections {max_connections} is larger than estimated limit {estimated_limit} .....` if the max connections is larger than estimated limit.
+  - mssh will also throttle thread generation if the estimated limit is lower than `2 * max_connections` to avoid hitting the file descriptor limit as python will use some file descriptors when setting up threads.
 
 ### `-j, --json` | _`DEFAULT_JSON_OUTPUT`_
 - Output in json format.
