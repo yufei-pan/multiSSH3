@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.02'
+version = '6.03'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-11-10'
+COMMIT_DATE = '2025-11-11'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -519,6 +519,8 @@ def readEnvFromFile():
 	global _env_files
 	global _no_env
 	envfs = _env_files if _env_files else DEFAULT_ENV_FILES
+	if not envfs:
+		return {}
 	translator = str.maketrans('&|"', ';;\'')
 	replacement_re = re.compile(r'\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})')
 	environemnt = {}
@@ -2318,7 +2320,7 @@ def __parse_ansi_escape_sequence_to_curses_attr(escape_code,color_pair_list = No
 		color_pair_list[2] = 1
 	return color_pair_list[2]
 
-def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0):
+def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0,leave_space_for_cursor = False):
 	"""
 	Add a string to a curses window with / without ANSI color escape sequences translated to curses color pairs.
 
@@ -2336,12 +2338,15 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		trail_str: Trailing string to add to the line
 		box_ansi_color: ANSI color escape sequence for the box color
 		keep_top_n_lines: Number of lines to keep at the top of the window
-	
+		leave_space_for_cursor: Leave space for the cursor at the end of the line
+
 	Returns:
 		None
 	"""
 	maxY, maxX = window.getmaxyx()
-	if maxY == 0 or maxX == 0 or x >= maxX:
+	if leave_space_for_cursor:
+		maxX -= 1
+	if maxY == 0 or maxX <= 0 or x >= maxX:
 		return
 	if x < 0:
 		x = maxX + x
@@ -2730,7 +2735,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						for lineNumToReprint in sorted(lineNumToPrintSet):
 							# if the line is visible, we will reprint it
 							if visibleLowerBound <= lineNumToReprint <= len(host.output):
-								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
+								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='',leave_space_for_cursor=True)
 					except Exception:
 						# import traceback
 						# print(str(e).strip())
@@ -3805,7 +3810,7 @@ def generate_default_config(args):
 		'DEFAULT_NO_OUTPUT': args.no_output,
 		'DEFAULT_RETURN_ZERO': args.return_zero,
 		'DEFAULT_NO_ENV': args.no_env,
-		'DEFAULT_ENV_FILES': args.env_files,
+		'DEFAULT_ENV_FILES': DEFAULT_ENV_FILES + args.env_files,
 		'DEFAULT_NO_HISTORY': args.no_history,
 		'DEFAULT_HISTORY_FILE': args.history_file,
 		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * os.cpu_count() else None,
@@ -3895,7 +3900,7 @@ def get_parser():
 	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})", default=DEFAULT_RETURN_ZERO)
 	parser.add_argument('-C','--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
 	parser.add_argument('-ef',"--env_file", type=str, help="Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)", default='')
-	parser.add_argument('-efs',"--env_files", action='append', help=f"The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: {DEFAULT_ENV_FILES})")
+	parser.add_argument('-efs',"--env_files", action='append', help="The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: [])", default=[])
 	parser.add_argument("-m","--max_connections", type=int, help="Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
 	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
 	parser.add_argument('-w',"--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as well. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)

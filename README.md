@@ -8,6 +8,40 @@ Use it from the CLI for quick fleet actions or import it as a Python module for 
 
 multiSSH3 understands host groups from env files, expands ranges, reuses SSH sessions, and presents clean outputs for human or machine (json / table).
 
+![CLI output hi](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/cli_hi.png)
+
+![CLI output free](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/cli_free.png)
+
+![Curses UI](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/curses_ui.png)
+
+![Curses Help](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/curses_help.png)
+
+![Curses Single Window](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/curses_single_window.png)
+
+![JSON Output](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/json_output.png)
+
+![Table Output](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/table_output.png)
+
+![File Broadcast](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/file_broadcast.png)
+
+![File Sync](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/file_sync.png)
+
+![File Gather](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/file_gather.png)
+
+![IPMI Support](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/ipmi_support.png)
+
+![N-Host Diff](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/n_host_diff.png)
+
+![Hostname Range Expansion](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/hostname_range_expansion.png)
+
+![IP Range Expansion](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/ip_range_expansion.png)
+
+![Return Code Summary](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/return_code_summary.png)
+
+![Compared to Ansible ad-hoc](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/compare_ansible_ad_hoc.png)
+
+![Compared to pdsh](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/compare_pdsh.png)
+
 ## Highlights
 
 - Run commands on many hosts simultaneously and asynchronously ( configurable max connections )
@@ -58,6 +92,7 @@ multissh
 multissh3
 multiSSH3
 ```
+Need Python 3.6+
 
 ## Configuration
 ### Config File Chain
