@@ -195,8 +195,8 @@ mssh cache all inputs and send them to all hosts when they are ready to receive 
 
 By default, it will try to fit everything inside your window. 
 ```bash
-DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
-DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
+DEFAULT_WINDOW_WIDTH = 40
+DEFAULT_WINDOW_HEIGHT = 1
 ```
 While leaving minimum 40 characters / 1 line for each host display by default. You can modify this by using `-ww WINDOW_WIDTH, --window_width WINDOW_WIDTH` and `-wh WINDOW_HEIGHT, --window_height WINDOW_HEIGHT`.
 
@@ -241,15 +241,15 @@ mssh will replace some magic strings in the command string with host specific va
 
 ## Options
 
-Here details the options for multiSSH3 6.01 @ 2025-11-06
+Here details the options for multiSSH3 6.02 @ 2025-11-10
 
-### `-u USERNAME, --username USERNAME` | _`DEFAULT_USERNAME`_
+### `-u, --username USERNAME` | _`DEFAULT_USERNAME`_
 - You can specify the username for all hosts using this option and / or specifying username@hostname per host in the host list.
 
-### `-p PASSWORD, --password PASSWORD` | _`DEFAULT_PASSWORD`_
+### `-p, --password PASSWORD` | _`DEFAULT_PASSWORD`_
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
 
-### `-k [KEY], --key [KEY], --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
+### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
 - This option implies `--use_key`.
 - If this option is not specified but `--use_key` is specified, it will search for identity files in `DEFAULT_IDENTITY_FILE`.
@@ -259,7 +259,7 @@ Here details the options for multiSSH3 6.01 @ 2025-11-06
 - Attempt to use public key authentication to connect to the hosts.
 - Will search for identity file in `DEFAULT_IDENTITY_FILE` if `--identity` is not specified.
 
-### `-ea EXTRAARGS, --extraargs EXTRAARGS` | _`DEFAULT_EXTRA_ARGS`_
+### `-ea, --extraargs EXTRAARGS` | _`DEFAULT_EXTRA_ARGS`_
 - Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.
 - Example:
 ```bash
@@ -270,12 +270,12 @@ mssh -ea="--delete" -f ./data/ allServers /tmp/data/
 - Run commands in one-on-one mode, where each command corresponds to each host, front to back.
 - If command list length is not equal to expanded host list length, an error will be raised.
 
-### `-f FILE, --file FILE` | None
+### `-f, --file FILE` | None
 - The file to be copied to the hosts. Use -f multiple times to copy multiple files.
 - When file is specified, the command(s) will be treated as the destination path(s) on the remote hosts.
 - By default, rsync will be tried first on linux, scp will be used on windows or if rsync have failed to on linux.
 
-### `-s [FILE_SYNC], -fs [FILE_SYNC], --file_sync [FILE_SYNC]` | _`DEFAULT_FILE_SYNC`_
+### `-s, -fs, --file_sync [FILE_SYNC]` | _`DEFAULT_FILE_SYNC`_
 - Operate in file sync mode, sync path in `<COMMANDS>` from this machine to `<HOSTS>`.
 - Treat `--file <FILE>` and `<COMMANDS>` both as source and source
 - Destination path will be inferred from source path ( Absolute Path ).
@@ -298,7 +298,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Will send remote files specified in `<FILE>` to local path specified in `<COMMANDS>`.
 - Likely you will need to combine with the [Command String Replacement](#command-string-replacement) feature to let each host transfer to a different local path.
 
-### `-t TIMEOUT, --timeout TIMEOUT` | _`DEFAULT_CLI_TIMEOUT`_
+### `-t, --timeout TIMEOUT` | _`DEFAULT_CLI_TIMEOUT`_
 - Timeout for each command in seconds.
 - When using 0, timeout is disabled.
 - For CLI interface, will use `DEFAULT_CLI_TIMEOUT` as default.
@@ -308,12 +308,12 @@ mssh -f ./data/ allServers /tmp/data/
 - In CLI, use `DEFAULT_TIMEOUT` as timeout value instead of `DEFAULT_CLI_TIMEOUT`.
 - This is to emulate the module interface behavior as if using in a script.
 
-### `-r REPEAT, --repeat REPEAT` | _`DEFAULT_REPEAT`_
+### `-r, --repeat REPEAT` | _`DEFAULT_REPEAT`_
 - Repeat the commands for a number of times.
 - Commands will be repeated in sequence for the specified number of times.
 - Between repeats, it will wait for `--interval INTERVAL` seconds.
 
-### `-i INTERVAL, --interval INTERVAL` | _`DEFAULT_INTERVAL`_
+### `-i, --interval INTERVAL` | _`DEFAULT_INTERVAL`_
 - Interval between command repeats in seconds.
 - Only effective when `REPEAT` is greater than 1.
 - Note: will wait for `INTERVAL` seconds before first run if `REPEAT` is greater than 1.
@@ -325,31 +325,206 @@ mssh -f ./data/ allServers /tmp/data/
 - Ex: `10.0.0.1` + `DEFAULT_IPMI_INTERFACE_IP_PREFIX='192.168'` -> `192.168.0.1`
 - Will retry using original ip and run `ipmitool` over ssh if ipmi connection had failed. ( Will append ipmitool to the command if not present )
 
-### `-mpre IPMI_INTERFACE_IP_PREFIX, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX` | _`DEFAULT_IPMI_INTERFACE_IP_PREFIX`_
+### `-mpre, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX` | _`DEFAULT_IPMI_INTERFACE_IP_PREFIX`_
 - The prefix of the IPMI interfaces. Will replace the resolved IP address with the given prefix when using ipmi mode.
 - This will take precedence over `INTERFACE_IP_PREFIX` when in ipmi mode.
 - Ex: `10.0.0.1` + `-mpre '192.168'` -> `192.168.0.1`
 
-### `-pre INTERFACE_IP_PREFIX, --interface_ip_prefix INTERFACE_IP_PREFIX` | _`DEFAULT_INTERFACE_IP_PREFIX`_
+### `-pre, --interface_ip_prefix INTERFACE_IP_PREFIX` | _`DEFAULT_INTERFACE_IP_PREFIX`_
 - The prefix of the for the interfaces. Will replace the resolved IP address with the given prefix when connecting to the host.
 - Will prioritize `IPMI_INTERFACE_IP_PREFIX` if it exists when in ipmi mode.
 - Ex: `10.0.0.1` + `-pre '172.30'` -> `172.30.0.1`
 
-...
+### `-iu, --ipmi_username IPMI_USERNAME` | _`DEFAULT_IPMI_USERNAME`_
+- The username to use to connect to the hosts via ipmi.
+- This will be used when `--ipmi` is specified.
+- If this is not specified, `DEFAULT_USERNAME` will be used in ipmi mode.
+
+### `-ip, --ipmi_password IPMI_PASSWORD` | _`DEFAULT_IPMI_PASSWORD`_
+- The password to use to connect to the hosts via ipmi.
+- This will be used when `--ipmi` is specified.
+- If this is not specified, `DEFAULT_PASSWORD` will be used in ipmi mode.
+
+### `-S, -q, -nw, --no_watch` | _`DEFAULT_NO_WATCH`_
+- Disable the curses terminal display and only print the output.
+- Note this will not be 'quiet mode' traditionally, please use `-Q, -no, --quiet, --no_output` to disable output.
+- Useful in scripting to reduce runtime and terminal flashing.
+
+### `-ww, --window_width WINDOW_WIDTH` | _`DEFAULT_WINDOW_WIDTH`_
+- The minimum character length of the curses window.
+- Default is 40 characters.
+- Will try to fit as many hosts as possible in the terminal window while leaving at least this many characters for each host display.
+- You can modify this value in curses display by pressing `_` or `+`.
+
+### `-wh, --window_height WINDOW_HEIGHT` | _`DEFAULT_WINDOW_HEIGHT`_
+- The minimum line height of the curses window.
+- Default is 1 line.
+- Will try to fit as many hosts as possible in the terminal window while leaving at least this many lines for each host display.
+- You can modify this value in curses display by pressing `{` or `}`.
+- Terminal will overflow if it is smaller than ww * wh.
+
+### `-B, -sw, --single_window` | _`DEFAULT_SINGLE_WINDOW`_
+- Use a single window mode for curses display.
+- This shows a single large window for a host for detailed monitoring.
+- You can rotate between hosts by pressing `<` or `>` in curses display. ( also works in non single window mode )
+- You can toggle single window mode in curses display by pressing `|` ( pipe ).
+
+### `-R, -eo, --error_only` | _`DEFAULT_ERROR_ONLY`_
+- Print `Success` if all hosts returns zero.
+- Only print output for the hosts that returns non-zero.
+- Useful in scripting to reduce output.
+
+### `-Q, -no, --no_output, --quiet` | _`DEFAULT_NO_OUTPUT`_
+- Do not print any output.
+- Note: if using without `--no_watch`, the curses display will still be shown.
+- Useful in scripting when failure is expected.
+- Note: return code will still be returned correctly unless `-Z, -rz, --return_zero` is specified.
+
+### `-Z, -rz, --return_zero` | _`DEFAULT_RETURN_ZERO`_
+- Return 0 even if there are errors.
+- Useful in scripting when failure is expected and bash is set to exit when error occurs.
+
+### `-C, --no_env` | _`DEFAULT_NO_ENV`_
+- Do not load the command line environment variables for hostname resolution.
+- Only use `/etc/hosts` -> env files specified in `--env_files ENV_FILES` -> DNS for hostname resolution.
+- Useful when environment variables can interfere with hostname resolution ( for example not reloading environment variables after refreshing them ).
+
+### `-ef, --env_file ENV_FILE` | None
+- Replace the env file look up chain with this env_file. ( Still work with `--no_env` )
+- Only this file will be used for env file hostname resolution.
+- Useful when you want to use a specific env file for hostname resolution.
+
+### `-efs, --env_files ENV_FILES` | _`DEFAULT_ENV_FILES`_
+- The files to load the environment variables for hostname resolution.
+- Can specify multiple. Load first to last. ( Still work with `--no_env` )
+- Useful when you want to add additional env files for hostname resolution.
+
+### `-m, --max_connections MAX_CONNECTIONS` | _`DEFAULT_MAX_CONNECTIONS`_
+- The maximum number of concurrent connections to establish.
+- Default is 4 * cpu_count connections.
+- Useful for limiting the number of simultaneous SSH connections to avoid overwhelming the compute resources / security limits
+- Note: mssh will open at least 3 files per connection. By default some linux systems will only set the ulimit -n to 1024 files. This means about 300 connections can be opened simultaneously. You can increase the ulimit -n value to allow more connections if needed.
+- You will observe `Warning: The number of maximum connections {max_connections} is larger than estimated limit {estimated_limit} .....` if the max connections is larger than estimated limit.
+- mssh will also throttle thread generation if the estimated limit is lower than 2 * `max_connections` to avoid hitting the file descriptor limit as python fill use some file descriptors when setting up threads.
+
+### `-j, --json` | _`DEFAULT_JSON_OUTPUT`_
+- Output in json format.
+- Will also respect `-R, -eo, --error_only` and `-Q, -no, --quiet, --no_output` options.
+
+### `-w, --success_hosts` | _`DEFAULT_SUCCESS_HOSTS`_
+- By default, a summary of failed hosts is printed.
+- Use this option to also print the hosts that succeeded in summary as well.
+- Useful when you want to do something with the succeeded hosts later.
+- Note: you can directly use the failed / succeeded host list string as it should be fully compatible with mssh host input.
+
+### `-P, -g, --greppable, --table` | _`DEFAULT_GREPPABLE_OUTPUT`_
+- Output in greppable table.
+- Each line contains: Hostname / Resolved Name / Return Code / Output Type/ Output
+- Note a host can have multiple lines if the output contains multiple lines.
+- Useful in a script if we are piping the output to a log file for later grepping.
+
+### `-x, -su, --skip_unreachable` | _`DEFAULT_SKIP_UNREACHABLE`_
+- Skip unreachable hosts.
+- Note: Timedout Hosts are considered unreachable.
+- By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
+- Unreachable hosts will be tried again when their timeout expires.
+- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in a temperary file called __{username}_multiSSH3_UNAVAILABLE_HOSTS.csv in the system temp folder.
+- To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
+
+### `-a, -nsu, --no_skip_unreachable` | not _`DEFAULT_SKIP_UNREACHABLE`_
+- Do not skip unreachable hosts.
+- This forms an mutually exclusive pair with `-x, -su, --skip_unreachable`.
+- This option sets `skip_unreachable` to false.
+
+### `-uhe, --unavailable_host_expiry UNAVAILABLE_HOST_EXPIRY` | _`DEFAULT_UNAVAILABLE_HOST_EXPIRY`_
+- The expiry time in seconds for unreachable hosts stored in the temperary unavailable hosts file.
+- Default is 600 seconds ( 10 minutes ).
+- Note: because mssh stores a hostname: expire_time pair in the unavailable hosts file, opeartor is able to use different expiry time for different runs to control how long unreachable hosts are skipped and they will be expired at the correct time.
+- Note: because mssh stores the expire time in monotonic time. In most systems, this means the expiry time will not persist across system reboots. ( and also the fact it is store in the system temp folder ) although the unavailable hosts can accidentally persist across reboots if the system is rebooted often and the `unavailable_host_expiry` is set to a very large value.
+
+### `-X, -sh, --skip_hosts SKIP_HOSTS` | _`DEFAULT_SKIP_HOSTS`_
+- A comma separated list of hosts to skip. 
+- This field will be expanded in the same way as the host list.
+- Useful when you want to skip some hosts temporarily without modifying the host list.
+
+### `--generate_config_file` | False
+- Generate a config file with the current command line options.
+- Outputs to stdout if `--config_file` is not specified.
+
+### `--config_file [CONFIG_FILE]` | None
+- Additional config file path to load options from.
+- Will be loaded last thus overwriting other config file values.
+- Use without value to use `multiSSH3.config.json` in the current working directory.
+- Also used with `--generate_config_file` to specify output path.
+
+### `--store_config_file [STORE_CONFIG_FILE]` | None
+- Store the current command line options to a config file.
+- Equivalent to `--generate_config_file --config_file [STORE_CONFIG_FILE]`
+- Outputs to `multiSSH3.config.json` in the current working directory if no path is specified.
+
+### `--debug` | False
+- Enable debug mode.
+- Print host specific debug messages to hosts's stderr.
+
+### `-ci, --copy_id` | False
+- `copy_id` mode, use `ssh-copy-id` to copy public key to the hosts.
+- Will use the identity file if specified in `-k, --key, --identity [KEY]`
+- Will respect `-u, --username` and `-p, --password` options for username and password. ( password will need `sshpass` to be installed, or it will prompt for password interactively )
+
+### `-I, -nh, --no_history` | _`DEFAULT_NO_HISTORY`_
+- Do not store command history.
+- By default, mssh store command history in `HISTORY_FILE`.
+- Useful in scripts when you do not want to store command history.
+
+### `-hf, --history_file HISTORY_FILE` | _`DEFAULT_HISTORY_FILE`_
+- The file to store command history.
+- By default, mssh store command history in `~/.mssh_history`.
+- The history file is a TSV ( tab separated values ) file with each line containing: timestamp, mssh_path, options, hosts, commands.
+
+### `--script` | False
+- Script mode, syntatic sugar for `-SCRIPT` or `--no_watch --skip_unreachable --no_env --no_history --greppable --error_only`.
+- Useful when using mssh in shell scripts.
+
+### `-e, --encoding ENCODING` | _`DEFAULT_ENCODING`_
+- The encoding to use for decoding the output from the hosts.
+- Default is `utf-8`.
+
+### `-dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD` | _`DEFAULT_DIFF_DISPLAY_THRESHOLD`_
+- The threshold of different lines to total lines ratio to trigger N-body diff display mode.
+- When the output difference ratio exceeds this threshold, mssh will display the diff between outputs instead of the full outputs.
+- Useful when the outputs are large and mostly similar.
+- Set to 1.0 to always use diff display mode.
+- Set to 0.0 to never use diff display mode.
+- Note: This uses custom N-body diff algorithm. Uses some memory.
+
+### `--force_truecolor` | _`DEFAULT_FORCE_TRUECOLOR`_
+- Force enable truecolor support in curses display.
+- Useful when your terminal supports truecolor but is not detected correctly.
+
+### `--add_control_master_config` | False
+- Add ControlMaster configuration to your `~/.ssh/config` file to enable persistent ssh connections.
+- This will help speed up connections to multiple hosts.
+- The configuration added is:
+```config
+Host *
+  ControlMaster auto
+  ControlPath /run/user/%i/ssh_sockets_%C
+  ControlPersist 3600
+```
+
+### `-V, --version` | False
+- Print the version of multiSSH3 and exit.
+- Will also print the found system binary for calling when setting up connections.
 
 ## Usage
 
 Use ```mssh --help``` for more info.
 
-Below is a sample help message output from multiSSH3 6.01 @ 2025-11-06
+Below is a sample help message output from multiSSH3 6.02 @ 2025-11-10
 
 ```bash
 $ mssh -h
-usage: mssh [-h] [-u USERNAME] [-p PASSWORD] [-k [KEY]] [-uk] [-ea EXTRAARGS] [-11] [-f FILE] [-s [FILE_SYNC]] [-W] [-G] [-t TIMEOUT] [-T] [-r REPEAT] [-i INTERVAL] [-M] [-mpre IPMI_INTERFACE_IP_PREFIX]
-            [-pre INTERFACE_IP_PREFIX] [-iu IPMI_USERNAME] [-ip IPMI_PASSWORD] [-S] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-B] [-R] [-Q] [-Z] [-C] [-ef ENV_FILE] [-efs ENV_FILES] [-m MAX_CONNECTIONS] [-j] [-w]
-            [-P] [-x | -a] [-uhe UNAVAILABLE_HOST_EXPIRY] [-X SKIP_HOSTS] [--generate_config_file] [--config_file [CONFIG_FILE]] [--store_config_file [STORE_CONFIG_FILE]] [--debug] [-ci] [-I] [-hf HISTORY_FILE]
-            [--script] [-e ENCODING] [-dt DIFF_DISPLAY_THRESHOLD] [--force_truecolor] [--add_control_master_config] [-V]
-            [hosts] [commands ...]
+usage: multiSSH3.py [-h] [-u USERNAME] [-p PASSWORD] [-k [IDENTITY_FILE]] [-uk] [-ea EXTRAARGS] [-11] [-f FILE] [-s [FILE_SYNC]] [-W] [-G] [-t TIMEOUT] [-T] [-r REPEAT] [-i INTERVAL] [-M] [-mpre IPMI_INTERFACE_IP_PREFIX] [-pre INTERFACE_IP_PREFIX] [-iu IPMI_USERNAME] [-ip IPMI_PASSWORD] [-S] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-B] [-R] [-Q] [-Z] [-C] [-ef ENV_FILE] [-efs ENV_FILES] [-m MAX_CONNECTIONS] [-j] [-w] [-P] [-x | -a] [-uhe UNAVAILABLE_HOST_EXPIRY] [-X SKIP_HOSTS] [--generate_config_file] [--config_file [CONFIG_FILE]] [--store_config_file [STORE_CONFIG_FILE]] [--debug] [-ci] [-I] [-hf HISTORY_FILE] [--script] [-e ENCODING] [-dt DIFF_DISPLAY_THRESHOLD] [--force_truecolor] [--add_control_master_config] [-V] [hosts] [commands ...]
 
 Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.
 
@@ -359,58 +534,58 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -u USERNAME, --username USERNAME
+  -u, --username USERNAME
                         The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: None)
-  -p PASSWORD, --password PASSWORD
+  -p, --password PASSWORD
                         The password to use to connect to the hosts, (default: )
-  -k [KEY], --key [KEY], --identity [KEY]
+  -k, --identity_file, --key, --identity [IDENTITY_FILE]
                         The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use ~/.ssh/ (default: None)
   -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
-  -ea EXTRAARGS, --extraargs EXTRAARGS
+  -ea, --extraargs EXTRAARGS
                         Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: None)
   -11, --oneonone       Run one corresponding command on each host. (default: False)
-  -f FILE, --file FILE  The file to be copied to the hosts. Use -f multiple times to copy multiple files
-  -s [FILE_SYNC], -fs [FILE_SYNC], --file_sync [FILE_SYNC]
+  -f, --file FILE       The file to be copied to the hosts. Use -f multiple times to copy multiple files
+  -s, -fs, --file_sync [FILE_SYNC]
                         Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: False)
   -W, --scp             Use scp for copying files instead of rsync. Need to use this on windows. (default: False)
   -G, -gm, --gather_mode
                         Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS> (default: False)
-  -t TIMEOUT, --timeout TIMEOUT
+  -t, --timeout TIMEOUT
                         Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: 0)
   -T, --use_script_timeout
                         Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: 50)
-  -r REPEAT, --repeat REPEAT
-                        Repeat the command for a number of times (default: 1)
-  -i INTERVAL, --interval INTERVAL
+  -r, --repeat REPEAT   Repeat the command for a number of times (default: 1)
+  -i, --interval INTERVAL
                         Interval between repeats in seconds (default: 0)
   -M, --ipmi            Use ipmitool to run the command. (default: False)
-  -mpre IPMI_INTERFACE_IP_PREFIX, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX
+  -mpre, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX
                         The prefix of the IPMI interfaces (default: )
-  -pre INTERFACE_IP_PREFIX, --interface_ip_prefix INTERFACE_IP_PREFIX
+  -pre, --interface_ip_prefix INTERFACE_IP_PREFIX
                         The prefix of the for the interfaces (default: None)
-  -iu IPMI_USERNAME, --ipmi_username IPMI_USERNAME
+  -iu, --ipmi_username IPMI_USERNAME
                         The username to use to connect to the hosts via ipmi. (default: ADMIN)
-  -ip IPMI_PASSWORD, --ipmi_password IPMI_PASSWORD
+  -ip, --ipmi_password IPMI_PASSWORD
                         The password to use to connect to the hosts via ipmi. (default: )
-  -S, -q, -nw, --no_watch, --quiet
+  -S, -q, -nw, --no_watch
                         Quiet mode, no curses watch, only print the output. (default: False)
-  -ww WINDOW_WIDTH, --window_width WINDOW_WIDTH
+  -ww, --window_width WINDOW_WIDTH
                         The minimum character length of the curses window. (default: 40)
-  -wh WINDOW_HEIGHT, --window_height WINDOW_HEIGHT
+  -wh, --window_height WINDOW_HEIGHT
                         The minimum line height of the curses window. (default: 1)
   -B, -sw, --single_window
                         Use a single window for all hosts. (default: False)
   -R, -eo, --error_only
                         Only print the error output. (default: False)
-  -Q, -no, --no_output  Do not print the output. (default: False)
+  -Q, -no, --no_output, --quiet
+                        Do not print the output. (default: False)
   -Z, -rz, --return_zero
                         Return 0 even if there are errors. (default: False)
   -C, --no_env          Do not load the command line environment variables. (default: False)
-  -ef ENV_FILE, --env_file ENV_FILE
+  -ef, --env_file ENV_FILE
                         Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)
-  -efs ENV_FILES, --env_files ENV_FILES
+  -efs, --env_files ENV_FILES
                         The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: ['/etc/profile.d/hosts.sh', '~/.bashrc', '~/.zshrc', '~/host.env', '~/hosts.env', '.env', 'host.env', 'hosts.env'])
-  -m MAX_CONNECTIONS, --max_connections MAX_CONNECTIONS
+  -m, --max_connections MAX_CONNECTIONS
                         Max number of connections to use (default: 4 * cpu_count)
   -j, --json            Output in json format. (default: False)
   -w, --success_hosts   Output the hosts that succeeded in summary as well. (default: False)
@@ -420,9 +595,9 @@ options:
                         Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: True)
   -a, -nsu, --no_skip_unreachable
                         Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: False)
-  -uhe UNAVAILABLE_HOST_EXPIRY, --unavailable_host_expiry UNAVAILABLE_HOST_EXPIRY
+  -uhe, --unavailable_host_expiry UNAVAILABLE_HOST_EXPIRY
                         Time in seconds to expire the unavailable hosts (default: 600)
-  -X SKIP_HOSTS, -sh SKIP_HOSTS, --skip_hosts SKIP_HOSTS
+  -X, -sh, --skip_hosts SKIP_HOSTS
                         Skip the hosts in the list. (default: None)
   --generate_config_file
                         Store / generate the default config file from command line argument and current config at --config_file / stdout
@@ -434,12 +609,12 @@ options:
   -ci, --copy_id        Copy the ssh id to the hosts
   -I, -nh, --no_history
                         Do not record the command to history. Default: False
-  -hf HISTORY_FILE, --history_file HISTORY_FILE
+  -hf, --history_file HISTORY_FILE
                         The file to store the history. (default: ~/.mssh_history)
   --script              Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only
-  -e ENCODING, --encoding ENCODING
+  -e, --encoding ENCODING
                         The encoding to use for the output. (default: utf-8)
-  -dt DIFF_DISPLAY_THRESHOLD, --diff_display_threshold DIFF_DISPLAY_THRESHOLD
+  -dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD
                         The threshold of lines to display the diff when files differ. {0-1} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: 0.6)
   --force_truecolor     Force truecolor output even when not in a truecolor terminal. (default: False)
   --add_control_master_config
@@ -511,7 +686,7 @@ multiSSH3.join_threads()
 The run_command_on_hosts function includes almost all the options available in the CLI. ( some options modify the [global variables](#all-changable-config-options--global-variables-) and can be set before calling the function. )
 
 ```python
-def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,history_file = DEFAULT_HISTORY_FILE,
+def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,history_file = DEFAULT_HISTORY_FILE,
 ):
 	"""
 	Run commands on multiple hosts via SSH or IPMI.
@@ -526,7 +701,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.
 		called (bool): If True, function is called programmatically (not CLI). Default: _DEFAULT_CALLED.
 		max_connections (int): Maximum concurrent SSH sessions. Default: 4 * os.cpu_count().
-		files (list or None): Files to copy to hosts. Default: None.
+		file (list or None): Files to copy to hosts. Default: None.
 		ipmi (bool): Use IPMI instead of SSH. Default: DEFAULT_IPMI.
 		interface_ip_prefix (str or None): Override IP prefix for host connection. Default: DEFAULT_INTERFACE_IP_PREFIX.
 		returnUnfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
@@ -540,8 +715,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		willUpdateUnreachableHosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
 		no_start (bool): If True, return Host objects without running commands. Default: _DEFAULT_NO_START.
 		skip_hosts (str or None): Hosts to skip. Default: DEFAULT_SKIP_HOSTS.
-		curses_min_char_len (int): Minimum width per curses window. Default: DEFAULT_CURSES_MINIMUM_CHAR_LEN.
-		curses_min_line_len (int): Minimum height per curses window. Default: DEFAULT_CURSES_MINIMUM_LINE_LEN.
+		window_width (int): Minimum width per curses window. Default: DEFAULT_WINDOW_WIDTH.
+		window_height (int): Minimum height per curses window. Default: DEFAULT_WINDOW_HEIGHT.
 		single_window (bool): Use a single curses window for all hosts. Default: DEFAULT_SINGLE_WINDOW.
 		file_sync (bool): Enable file sync mode (sync directories). Default: DEFAULT_FILE_SYNC.
 		error_only (bool): Only print error output. Default: DEFAULT_ERROR_ONLY.
@@ -587,8 +762,8 @@ DEFAULT_INTERFACE_IP_PREFIX = None
 DEFAULT_IPMI_USERNAME = 'ADMIN'
 DEFAULT_IPMI_PASSWORD = ''
 DEFAULT_NO_WATCH = False
-DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
-DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
+DEFAULT_WINDOW_WIDTH = 40
+DEFAULT_WINDOW_HEIGHT = 1
 DEFAULT_SINGLE_WINDOW = False
 DEFAULT_ERROR_ONLY = False
 DEFAULT_NO_OUTPUT = False

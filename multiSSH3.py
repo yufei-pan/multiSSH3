@@ -338,8 +338,8 @@ DEFAULT_INTERFACE_IP_PREFIX = None
 DEFAULT_IPMI_USERNAME = 'ADMIN'
 DEFAULT_IPMI_PASSWORD = ''
 DEFAULT_NO_WATCH = False
-DEFAULT_CURSES_MINIMUM_CHAR_LEN = 40
-DEFAULT_CURSES_MINIMUM_LINE_LEN = 1
+DEFAULT_WINDOW_WIDTH = 40
+DEFAULT_WINDOW_HEIGHT = 1
 DEFAULT_SINGLE_WINDOW = False
 DEFAULT_ERROR_ONLY = False
 DEFAULT_NO_OUTPUT = False
@@ -2433,7 +2433,7 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexO
 			rearrangedHosts.add(host)
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
 
-def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
+def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
 	global _encoding
 	_ = config_reason
 	try:
@@ -2754,7 +2754,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, f'Error: {str(e)}',traceback.format_exc())
 	return None
 
-def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW):
+def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW):
 	'''
 	Print the output of the hosts on the screen
 
@@ -3205,8 +3205,8 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 
 #%% ------------ Run / Process Hosts Block ----------------
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, no_watch, json, called, greppable,
-					  unavailableHosts:dict,willUpdateUnreachableHosts,curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, 
-					  curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,single_window = DEFAULT_SINGLE_WINDOW,
+					  unavailableHosts:dict,willUpdateUnreachableHosts,window_width = DEFAULT_WINDOW_WIDTH, 
+					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
 					  unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY):
 	global __globalUnavailableHosts
 	global _no_env
@@ -3225,11 +3225,11 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 				break
 		if any([host.returncode is None for host in hosts]):
 			try:
-				curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
+				curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
 			except Exception:
 				try:
 					os.environ['TERM'] = 'xterm-256color'
-					curses.wrapper(curses_print, hosts, threads, min_char_len = curses_min_char_len, min_line_len = curses_min_line_len, single_window = single_window)
+					curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
 				except Exception as e:
 					eprint(f"Curses print error: {e}")
 					import traceback
@@ -3390,18 +3390,18 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
-						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
+						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = '', env_files = DEFAULT_ENV_FILES,
+						 history_file = DEFAULT_HISTORY_FILE, env_file = '', env_files = [],
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
-						 shortend = False,tabSeperated = False):
+						 shortend = False,tabSeperated = False,**kwargs) -> str:
 	_ = called
 	_ = returnUnfinished
 	_ = willUpdateUnreachableHosts
 	_ = no_start
-	_ = curses_min_char_len
-	_ = curses_min_line_len
+	_ = window_width
+	_ = window_height
 	_ = single_window
 	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
 	hostStr = formHostStr(hosts)
@@ -3464,13 +3464,13 @@ def record_command_history(kwargs):
 #%% ------------ Main Block ----------------
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
+						 file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
-						 skip_hosts = DEFAULT_SKIP_HOSTS, curses_min_char_len = DEFAULT_CURSES_MINIMUM_CHAR_LEN, curses_min_line_len = DEFAULT_CURSES_MINIMUM_LINE_LEN,
+						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
-						 history_file = DEFAULT_HISTORY_FILE,
+						 history_file = DEFAULT_HISTORY_FILE,**kwargs
 						 ):
 	"""
 	Run commands on multiple hosts via SSH or IPMI.
@@ -3485,7 +3485,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.
 		called (bool): If True, function is called programmatically (not CLI). Default: _DEFAULT_CALLED.
 		max_connections (int): Maximum concurrent SSH sessions. Default: 4 * os.cpu_count().
-		files (list or None): Files to copy to hosts. Default: None.
+		file (list or None): Files to copy to hosts. Default: None.
 		ipmi (bool): Use IPMI instead of SSH. Default: DEFAULT_IPMI.
 		interface_ip_prefix (str or None): Override IP prefix for host connection. Default: DEFAULT_INTERFACE_IP_PREFIX.
 		returnUnfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
@@ -3499,8 +3499,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		willUpdateUnreachableHosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
 		no_start (bool): If True, return Host objects without running commands. Default: _DEFAULT_NO_START.
 		skip_hosts (str or None): Hosts to skip. Default: DEFAULT_SKIP_HOSTS.
-		curses_min_char_len (int): Minimum width per curses window. Default: DEFAULT_CURSES_MINIMUM_CHAR_LEN.
-		curses_min_line_len (int): Minimum height per curses window. Default: DEFAULT_CURSES_MINIMUM_LINE_LEN.
+		window_width (int): Minimum width per curses window. Default: DEFAULT_WINDOW_WIDTH.
+		window_height (int): Minimum height per curses window. Default: DEFAULT_WINDOW_HEIGHT.
 		single_window (bool): Use a single curses window for all hosts. Default: DEFAULT_SINGLE_WINDOW.
 		file_sync (bool): Enable file sync mode (sync directories). Default: DEFAULT_FILE_SYNC.
 		error_only (bool): Only print error output. Default: DEFAULT_ERROR_ONLY.
@@ -3641,39 +3641,39 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
 					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
-					   curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,
+					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
 		else:
 			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
 		if not commands:
 			_exit_with_code(0, "Copy id finished, no commands to run")
-	if files and not commands:
+	if file and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
 	if file_sync:
 		# set the files to the union of files and commands
-		files = set(files+commands) if files else set(commands)
-	if files:
+		file = set(file+commands) if file else set(commands)
+	if file:
 		# try to resolve files first (like * etc)
 		if not gather_mode:
 			pathSet = set()
-			for file in files:
+			for file in file:
 				try:
 					pathSet.update(glob.glob(file,include_hidden=True,recursive=True))
 				except Exception:
 					pathSet.update(glob.glob(file,recursive=True))
 			if not pathSet:
-				_exit_with_code(66, f'No source files at {files!r} are found after resolving globs!')
+				_exit_with_code(66, f'No source files at {file!r} are found after resolving globs!')
 		else:
-			pathSet = set(files)
+			pathSet = set(file)
 		if file_sync:
 			# use abosolute path for file sync
 			commands = [os.path.abspath(file) for file in pathSet]
-			files = []
+			file = []
 		else:
-			files = list(pathSet)
+			file = list(pathSet)
 		if __DEBUG_MODE:
-			eprint(f"Files: {files!r}")
+			eprint(f"Files: {file!r}")
 	if oneonone:
 		hosts = []
 		if len(commands) != len(set(targetHostDic) - set(skipHostSet)):
@@ -3693,7 +3693,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			if file_sync:
 				hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host]))
 			else:
-				hosts.append(Host(host, command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
+				hosts.append(Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
 			if not __global_suppress_printout: 
 				eprint(f"Running command: {command!r} on host: {host!r}")
 		if not __global_suppress_printout:
@@ -3702,7 +3702,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
 					  returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					  unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
-					  curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,
+					  window_width = window_width, window_height = window_height,
 					  single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
 		return hosts
 	else:
@@ -3720,10 +3720,10 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if file_sync:
 					eprint("Error: file sync mode need to be specified with at least one path to sync.")
 					return []
-				elif files:
+				elif file:
 					eprint("Error: files need to be specified with at least one path to sync")
 				else:
-					hosts.append(Host(host, '', files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host]))
+					hosts.append(Host(host, '', files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host]))
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -3734,7 +3734,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
 					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
-					   curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,
+					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
 			return hosts
 		for command in commands:
@@ -3749,7 +3749,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if file_sync:
 					hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
 				else:
-					hosts.append(Host(host, command, files = files,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
+					hosts.append(Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -3758,7 +3758,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
 					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
-					   curses_min_char_len = curses_min_char_len, curses_min_line_len = curses_min_line_len,
+					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
 			allHosts += hosts
 		return allHosts
@@ -3780,8 +3780,8 @@ def generate_default_config(args):
 		'DEFAULT_HOSTS': args.hosts,
 		'DEFAULT_USERNAME': args.username,
 		'DEFAULT_PASSWORD': args.password,
-		'DEFAULT_IDENTITY_FILE': args.key if args.key and not os.path.isdir(args.key) else DEFAULT_IDENTITY_FILE,
-		'DEFAULT_SSH_KEY_SEARCH_PATH': args.key if args.key and os.path.isdir(args.key) else DEFAULT_SSH_KEY_SEARCH_PATH,
+		'DEFAULT_IDENTITY_FILE': args.identity_file if args.identity_file and not os.path.isdir(args.identity_file) else DEFAULT_IDENTITY_FILE,
+		'DEFAULT_SSH_KEY_SEARCH_PATH': args.identity_file if args.identity_file and os.path.isdir(args.identity_file) else DEFAULT_SSH_KEY_SEARCH_PATH,
 		'DEFAULT_USE_KEY': args.use_key,
 		'DEFAULT_EXTRA_ARGS': args.extraargs,
 		'DEFAULT_ONE_ON_ONE': args.oneonone,
@@ -3798,8 +3798,8 @@ def generate_default_config(args):
 		'DEFAULT_IPMI_USERNAME': args.ipmi_username,
 		'DEFAULT_IPMI_PASSWORD': args.ipmi_password,
 		'DEFAULT_NO_WATCH': args.no_watch,
-		'DEFAULT_CURSES_MINIMUM_CHAR_LEN': args.window_width,
-		'DEFAULT_CURSES_MINIMUM_LINE_LEN': args.window_height,
+		'DEFAULT_WINDOW_WIDTH': args.window_width,
+		'DEFAULT_WINDOW_HEIGHT': args.window_height,
 		'DEFAULT_SINGLE_WINDOW': args.single_window,
 		'DEFAULT_ERROR_ONLY': args.error_only,
 		'DEFAULT_NO_OUTPUT': args.no_output,
@@ -3868,7 +3868,7 @@ def get_parser():
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
 	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
-	parser.add_argument('-k','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
+	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})', default=DEFAULT_USE_KEY)
 	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
@@ -3886,12 +3886,12 @@ def get_parser():
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})", default=DEFAULT_INTERFACE_IP_PREFIX)
 	parser.add_argument('-iu','--ipmi_username', type=str,help=f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})',default=DEFAULT_IPMI_USERNAME)
 	parser.add_argument('-ip','--ipmi_password', type=str,help=f'The password to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_PASSWORD})',default=DEFAULT_IPMI_PASSWORD)
-	parser.add_argument('-S',"-q","-nw","--no_watch","--quiet", action='store_true', help=f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
-	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_CURSES_MINIMUM_CHAR_LEN})", default=DEFAULT_CURSES_MINIMUM_CHAR_LEN)
-	parser.add_argument("-wh",'--window_height', type=int, help=f"The minimum line height of the curses window. (default: {DEFAULT_CURSES_MINIMUM_LINE_LEN})", default=DEFAULT_CURSES_MINIMUM_LINE_LEN)
+	parser.add_argument('-S',"-q","-nw","--no_watch", action='store_true', help=f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
+	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_WINDOW_WIDTH})", default=DEFAULT_WINDOW_WIDTH)
+	parser.add_argument("-wh",'--window_height', type=int, help=f"The minimum line height of the curses window. (default: {DEFAULT_WINDOW_HEIGHT})", default=DEFAULT_WINDOW_HEIGHT)
 	parser.add_argument('-B','-sw','--single_window', action='store_true', help=f'Use a single window for all hosts. (default: {DEFAULT_SINGLE_WINDOW})', default=DEFAULT_SINGLE_WINDOW)
 	parser.add_argument('-R','-eo','--error_only', action='store_true', help=f'Only print the error output. (default: {DEFAULT_ERROR_ONLY})', default=DEFAULT_ERROR_ONLY)
-	parser.add_argument('-Q',"-no","--no_output", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
+	parser.add_argument('-Q',"-no","--no_output","--quiet", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
 	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})", default=DEFAULT_RETURN_ZERO)
 	parser.add_argument('-C','--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
 	parser.add_argument('-ef',"--env_file", type=str, help="Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)", default='')
@@ -4008,14 +4008,14 @@ def process_commands(args):
 	return args
 
 def process_keys(args):
-	if args.key or args.use_key:
-		if not args.key:
-			args.key = find_ssh_key_file()
+	if args.identity_file or args.use_key:
+		if not args.identity_file:
+			args.identity_file = find_ssh_key_file()
 		else:
-			if os.path.isdir(os.path.expanduser(args.key)):
-				args.key = find_ssh_key_file(args.key)
-			elif not os.path.exists(args.key):
-				eprint(f"Warning: Identity file {args.key!r} not found. Passing to ssh anyway. Proceed with caution.")
+			if os.path.isdir(os.path.expanduser(args.identity_file)):
+				args.identity_file = find_ssh_key_file(args.identity_file)
+			elif not os.path.exists(args.identity_file):
+				eprint(f"Warning: Identity file {args.identity_file!r} not found. Passing to ssh anyway. Proceed with caution.")
 	return args
 
 def process_control_master_config(args):
@@ -4065,7 +4065,7 @@ def set_global_with_args(args):
 	if args.env_file:
 		_env_files = [args.env_file]
 	else:
-		_env_files = DEFAULT_ENV_FILES.extend(args.env_files) if args.env_files else DEFAULT_ENV_FILES
+		_env_files = DEFAULT_ENV_FILES + args.env_files if args.env_files else DEFAULT_ENV_FILES
 	__DEBUG_MODE = args.debug
 	_encoding = args.encoding
 	if args.return_zero:
@@ -4097,16 +4097,7 @@ def main():
 	if args.no_output:
 		__global_suppress_printout = True
 	if not __global_suppress_printout:
-		cmdStr = getStrCommand(args.hosts,args.commands,
-						 oneonone=args.oneonone,timeout=args.timeout,password=args.password,
-						 no_watch=args.no_watch,json=args.json,called=args.no_output,max_connections=args.max_connections,
-						 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
-						 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
-						 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key,
-						 copy_id=args.copy_id,unavailable_host_expiry=args.unavailable_host_expiry,no_history=args.no_history,
-						 history_file = args.history_file, 
-						 env_file = args.env_file,env_files = args.env_files,
-						 repeat = args.repeat,interval = args.interval)
+		cmdStr = getStrCommand(**vars(args))
 		eprint('> ' + cmdStr)
 	if args.error_only:
 		__global_suppress_printout = True
@@ -4118,15 +4109,7 @@ def main():
 
 		if not __global_suppress_printout: 
 			eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
-		hosts = run_command_on_hosts(args.hosts,args.commands,
-							 oneonone=args.oneonone,timeout=args.timeout,password=args.password,
-							 no_watch=args.no_watch,json=args.json,called=args.no_output,max_connections=args.max_connections,
-							 files=args.file,file_sync=args.file_sync,ipmi=args.ipmi,interface_ip_prefix=args.interface_ip_prefix,scp=args.scp,gather_mode = args.gather_mode,username=args.username,
-							 extraargs=args.extraargs,skipUnreachable=args.skip_unreachable,no_env=args.no_env,greppable=args.greppable,skip_hosts = args.skip_hosts,
-							 curses_min_char_len = args.window_width, curses_min_line_len = args.window_height,single_window=args.single_window,error_only=args.error_only,identity_file=args.key,
-							 copy_id=args.copy_id,unavailable_host_expiry=args.unavailable_host_expiry,no_history=args.no_history,
-							 history_file = args.history_file,
-							 )
+		hosts = run_command_on_hosts(**vars(args),called=False)
 		#print('*'*80)
 		#if not __global_suppress_printout: eprint('-'*80)
 	succeededHosts = set()
