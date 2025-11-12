@@ -8,39 +8,66 @@ Use it from the CLI for quick fleet actions or import it as a Python module for 
 
 multiSSH3 understands host groups from env files, expands ranges, reuses SSH sessions, and presents clean outputs for human or machine (json / table).
 
-![CLI output hi](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/cli_hi.png)
+### Demo Video
+![Video Demo](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/multiSSH3_demo.mp4)
 
-![CLI output free](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/cli_free.png)
+### Screenshots
 
-![Curses UI](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/curses_ui.png)
+#### *Running `date` on host group `all`*
+![CLI output date](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/cli_date.png "CLI output date")
 
-![Curses Help](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/curses_help.png)
+#### *Running `free` on host group `all`*
+![CLI output free](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/cli_free.png "CLI output free")
 
-![Curses Single Window](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/curses_single_window.png)
+#### *Running `ping` on host group `all`*
+![Curses UI](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/curses_ui.png "Curses UI")
 
-![JSON Output](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/json_output.png)
+#### *Curses Help Window within curses display*
+![Curses Help](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/curses_help.png "Curses Help")
 
-![Table Output](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/table_output.png)
+#### *Curses single window mode with key '|'*
+![Curses Single Window](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/curses_single_window.png "Curses Single Window")
 
-![File Broadcast](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/file_broadcast.png)
+#### *Running `free -h` on host group `all` with json output*
+![JSON Output](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/json_output.png "JSON Output")
 
-![File Sync](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/file_sync.png)
+#### *Running `free -h` on host group `all` with greppable table output*
+![Table Output](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/table_output.png "Table Output")
 
-![File Gather](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/file_gather.png)
+#### *Broadcasting `./test.txt` to host group `us` at `/tmp/test.txt`*
+![File Broadcast](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/file_broadcast.png "File Broadcast")
 
-![IPMI Support](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/ipmi_support.png)
+#### *Syncing `/tmp/test.txt` from local machine to host group `all` (at `/tmp/test.txt`)*
+![File Sync](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/file_sync.png "File Sync")
 
-![N-Host Diff](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/n_host_diff.png)
+#### *Gathering `/tmp/test.txt` from host group `all` to local machine at `/tmp/test/<hostname>_test.txt`*
+![File Gather](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/file_gather.png "File Gather")
 
-![Hostname Range Expansion](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/hostname_range_expansion.png)
+#### *Running `power status` using ipmitool on host group `all` with IPMI interface prefixing* 
+![IPMI Support](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/ipmi_support.png "IPMI Support")
+> Note: `DB6` in image does not have IPMI over ethernet connection. It had failed back to running `ipmitool` over ssh.
 
-![IP Range Expansion](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/ip_range_expansion.png)
+#### *Running `date; df -h` on host group `all` showing the N-Host Diff (default threshold at 0.6)* 
+![N-Host Diff](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/n_host_diff.png "N-Host Diff")
 
-![Return Code Summary](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/return_code_summary.png)
+#### *Running `echo hi` on host range `<hostname>[10-20]*`* 
+![Hostname Range Expansion](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/hostname_range_expansion.png "Hostname Range Expansion")
 
-![Compared to Ansible ad-hoc](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/compare_ansible_ad_hoc.png)
+#### *Running `echo hi` on host range `127.0.0.1-100`* 
+![IP Range Expansion](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/ip_range_expansion.png "IP Range Expansion")
 
-![Compared to pdsh](https://raw.githubusercontent.com/yufepan/multiSSH3/main/docs/compare_pdsh.png)
+#### *Summary shown with some hosts reporting error* 
+![Return Code Summary](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/return_code_summary.png "Return Code Summary")
+
+#### *Command syntax / output / runtime comparism with Ansible ad-hoc* 
+![Compared to Ansible ad-hoc](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/compare_ansible_ad_hoc.png "Compared to Ansible ad-hoc")
+> Note: if you like to use ansible, you will likely be running playbooks. This comparison is just for showing ansible is not for running ad-hoc commands.
+
+#### *Command syntax / Runtime comparism with pdsh* 
+![Compared to pdsh time](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/compare_pdsh_time.png "Compared to pdsh time")
+
+#### *Output comparism with pdsh* 
+![Compared to pdsh output](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/compare_pdsh_output.png "Compared to pdsh output")
 
 ## Highlights
 
@@ -59,6 +86,10 @@ multiSSH3 understands host groups from env files, expands ranges, reuses SSH ses
 - Easily persist defaults via config files; ControlMaster config helper for speed
 
 - Importable as a Python module for automation frameworks
+
+- No client side code / dependencies! ( calling system ssh / rsync / scp )
+
+- Support windows with openssh (server and client) !
 
 ## Why use it?
 
