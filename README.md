@@ -11,6 +11,8 @@ multiSSH3 understands host groups from env files, expands ranges, reuses SSH ses
 ### Demo Video
 ![Video Demo](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/multiSSH3_demo.mp4)
 
+https://github.com/user-attachments/assets/5121bb20-4b32-4000-8081-2ad39571781e
+
 ### Screenshots
 
 #### *Running `date` on host group `all`*
