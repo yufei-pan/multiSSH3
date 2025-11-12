@@ -84,7 +84,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.03'
+version = '6.04'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2025-11-11'
@@ -2713,6 +2713,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				rearrangedHosts = set(hosts_to_display)
 				refresh_all = False
 			#stdscr.clear()
+			hostWindowUpdated = False
 			for host_window, host in zip(host_windows, hosts_to_display):
 				# we will only update the window if there is new output or the window is not fully printed
 				if host in rearrangedHosts:
@@ -2723,6 +2724,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						_curses_add_string_to_window(window=host_window, color_pair_list=[-1, -1, 1], y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 					host.lineNumToPrintSet.update(range(len(host.output)))
 					host.lastPrintedUpdateTime = 0
+					hostWindowUpdated = True
 				# for i in range(host.printedLines, len(host.output)):
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
@@ -2735,7 +2737,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						for lineNumToReprint in sorted(lineNumToPrintSet):
 							# if the line is visible, we will reprint it
 							if visibleLowerBound <= lineNumToReprint <= len(host.output):
-								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='',leave_space_for_cursor=True)
+								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
+								hostWindowUpdated = True
 					except Exception:
 						# import traceback
 						# print(str(e).strip())
@@ -2746,6 +2749,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					# this means there is still output in the buffer, we will print it
 					# we will print the output in the window
 					_curses_add_string_to_window(window=host_window, y=len(host.output) + 1, line=host.output_buffer.getvalue().decode(_encoding,errors='backslashreplace'), color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
+					hostWindowUpdated = True
+				if hostWindowUpdated:
+					maxY, _ = host_window.getmaxyx()
+					host_window.vline(1, 0, curses.ACS_VLINE, maxY - 1)
 				host_window.noutrefresh()
 				host.lastPrintedUpdateTime = host.lastUpdateTime
 			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display, indexOffset)
@@ -2753,6 +2760,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				help_window.touchwin()
 				help_window.noutrefresh()
 			curses.doupdate()
+			hostWindowUpdated = False
 			last_refresh_time = time.perf_counter()
 	except Exception as e:
 		import traceback
