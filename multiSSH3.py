@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.04'
+version = '6.05'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-11-11'
+COMMIT_DATE = '2025-11-13'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -292,6 +292,31 @@ identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.curre
 			tuple(self.stderr),
 			self.returncode
 		))
+	def copy(self):
+		newHost = Host(
+			name=self.name,
+			command=self.command,
+			files=self.files,
+			ipmi=self.ipmi,
+			interface_ip_prefix=self.interface_ip_prefix,
+			scp=self.scp,
+			extraargs=self.extraargs,
+			gatherMode=self.gatherMode,
+			identity_file=self.identity_file,
+			shell=self.shell,
+			i=self.i,
+			uuid=self.uuid,
+			ip=self.ip
+		)
+		newHost.returncode = self.returncode
+		newHost.output = self.output.copy()
+		newHost.stdout = self.stdout.copy()
+		newHost.stderr = self.stderr.copy()
+		newHost.lineNumToPrintSet = self.lineNumToPrintSet.copy()
+		newHost.lastUpdateTime = self.lastUpdateTime
+		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
+		newHost.current_color_pair = self.current_color_pair.copy()
+		return newHost
 
 #%% ------------ Load Defaults ( Config ) File ----------------
 def load_config_file(config_file):
@@ -3000,12 +3025,11 @@ def pre_merge_hosts(hosts):
 	for host in hosts:
 		identity = host.get_output_hash()
 		output_groups[identity].append(host)
-	# Create merged hosts
-	merged_hosts = []
 	for group in output_groups.values():
 		group[0].name = ','.join(compact_hostnames(host.name for host in group))
-		merged_hosts.append(group[0])
-	return merged_hosts
+		for i in range(1,len(group)):
+			hosts.remove(group[i])
+	return hosts
 
 def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
@@ -3027,7 +3051,6 @@ def get_host_raw_output(hosts, terminal_width):
 		cyan_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_cyan', __DEFAULT_COLOR_PALETTE['bright_cyan']))
 		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_green', __DEFAULT_COLOR_PALETTE['bright_green']))
 		red_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_red', __DEFAULT_COLOR_PALETTE['bright_red']))
-	hosts = pre_merge_hosts(hosts)
 	for host in hosts:
 		max_length = max(max_length, len(max(host.name.split(','), key=len)) + 3)
 		hostPrintOut = [f"{cyan_str}█{color_reset_str} EXECUTED COMMAND:"]
@@ -3220,7 +3243,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, no_watch, json, called, greppable,
 					  unavailableHosts:dict,willUpdateUnreachableHosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
-					  unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY):
+					  unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,pre_merge = True):
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
@@ -3298,6 +3321,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 				eprint(f'Error writing to temporary file: {e!r}')
 				import traceback
 				eprint(traceback.format_exc())
+		if pre_merge:
+			hosts = pre_merge_hosts(hosts)
 		if not called:
 			print_output(hosts,json,greppable=greppable)
 	else:
@@ -3477,13 +3502,13 @@ def record_command_history(kwargs):
 #%% ------------ Main Block ----------------
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
+						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
-						 history_file = DEFAULT_HISTORY_FILE,**kwargs
+						 history_file = DEFAULT_HISTORY_FILE, pre_merge_hosts = ..., **kwargs
 						 ):
 	"""
 	Run commands on multiple hosts via SSH or IPMI.
@@ -3499,6 +3524,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		called (bool): If True, function is called programmatically (not CLI). Default: _DEFAULT_CALLED.
 		max_connections (int): Maximum concurrent SSH sessions. Default: 4 * os.cpu_count().
 		file (list or None): Files to copy to hosts. Default: None.
+		files (list or None): Deprecated: Files to copy to hosts. Default: None.
 		ipmi (bool): Use IPMI instead of SSH. Default: DEFAULT_IPMI.
 		interface_ip_prefix (str or None): Override IP prefix for host connection. Default: DEFAULT_INTERFACE_IP_PREFIX.
 		returnUnfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
@@ -3523,6 +3549,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
 		no_history (bool): Do not record command history. Default: True.
 		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.
+		pre_merge_hosts (bool): Pre-merge all hosts with identical outputs. Default: True.
 
 	Returns:
 		list: List of Host objects representing each host/command run.
@@ -3600,6 +3627,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			unavailableHosts = dict()
 			skipUnreachable = True
+	if pre_merge_hosts is ...:
+		pre_merge_hosts = not called
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
@@ -3609,7 +3638,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		hosts = frozenset(hosts.keys())
 	hostStr = formHostStr(hosts)
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
-
+	if files:
+		if not file:
+			file = files
+		else:
+			file = list(file) + list(files)
 	if username:
 		userStr = f'{username.strip()}@'
 		# we also append this userStr to all hostStr which does not have username already defined
@@ -3655,7 +3688,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					   window_width = window_width, window_height = window_height,
-					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
+					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
 		else:
 			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
 		if not commands:
@@ -3716,7 +3749,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					  returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					  unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					  window_width = window_width, window_height = window_height,
-					  single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
+					  single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 		return hosts
 	else:
 		allHosts = []
@@ -3748,7 +3781,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					   window_width = window_width, window_height = window_height,
-					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
+					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 			return hosts
 		for command in commands:
 			hosts = []
@@ -3772,7 +3805,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					   window_width = window_width, window_height = window_height,
-					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry)
+					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 			allHosts += hosts
 		return allHosts
 
@@ -4091,11 +4124,11 @@ def set_global_with_args(args):
 	FORCE_TRUECOLOR = args.force_truecolor
 
 #%% ------------ Wrapper Block ----------------
-def main():
+def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
-	args = process_args()
+	args = process_args(args)
 	args = process_config_file(args)
 	args = process_commands(args)
 	args = process_keys(args)
