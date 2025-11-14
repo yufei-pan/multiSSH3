@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.05'
+version = '6.06'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-11-13'
+COMMIT_DATE = '2025-11-14'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -3240,7 +3240,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	return rtnStr
 
 #%% ------------ Run / Process Hosts Block ----------------
-def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, no_watch, json, called, greppable,
+def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,willUpdateUnreachableHosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
 					  unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,pre_merge = True):
@@ -3323,7 +3323,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 				eprint(traceback.format_exc())
 		if pre_merge:
 			hosts = pre_merge_hosts(hosts)
-		if not called:
+		if not no_output:
 			print_output(hosts,json,greppable=greppable)
 	else:
 		__running_threads.update(threads)
@@ -3508,7 +3508,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
-						 history_file = DEFAULT_HISTORY_FILE, pre_merge_hosts = ..., **kwargs
+						 history_file = DEFAULT_HISTORY_FILE, pre_merge_hosts = ..., no_output = ..., **kwargs
 						 ):
 	"""
 	Run commands on multiple hosts via SSH or IPMI.
@@ -3549,7 +3549,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
 		no_history (bool): Do not record command history. Default: True.
 		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.
-		pre_merge_hosts (bool): Pre-merge all hosts with identical outputs. Default: True.
+		pre_merge_hosts (bool): Pre-merge all hosts with identical outputs. Default: not called.
+		no_output (bool): If True, do not print output after execution. Default: called.
 
 	Returns:
 		list: List of Host objects representing each host/command run.
@@ -3629,6 +3630,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			skipUnreachable = True
 	if pre_merge_hosts is ...:
 		pre_merge_hosts = not called
+	if no_output is ...:
+		no_output = called
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
@@ -3685,7 +3688,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					os.system(command)
 			if hosts:
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
+					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
@@ -3746,7 +3749,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint('-'*80)
 		if not no_start: 
 			processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					  returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
+					  returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
 					  unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					  window_width = window_width, window_height = window_height,
 					  single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
@@ -3778,7 +3781,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				eprint("Warning: no_start is set, the command will not be started. As we are in interactive mode, no action will be done.")
 			else:
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
+					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
@@ -3802,7 +3805,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				eprint('-'*80)
 			if not no_start: 
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, called=called, greppable=greppable,
+					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
 					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
