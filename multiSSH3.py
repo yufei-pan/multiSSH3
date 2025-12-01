@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.06'
+version = '6.07'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-11-14'
+COMMIT_DATE = '2025-12-01'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -201,6 +201,7 @@ def getIP(hostname: str,local=False):
 		str: The IP address of the hostname
 	'''
 	global _etc_hosts
+	global DEFAULT_HOST_FILE
 	if '@' in hostname:
 		_, hostname = hostname.rsplit('@',1)
 	# First we check if the hostname is an IP address
@@ -209,9 +210,9 @@ def getIP(hostname: str,local=False):
 		return hostname
 	except ValueError:
 		pass
-	# Then we check /etc/hosts
-	if not _etc_hosts and os.path.exists('/etc/hosts'):
-		with open('/etc/hosts','r') as f:
+	# Then we check DEFAULT_HOST_FILE
+	if not _etc_hosts and os.path.exists(DEFAULT_HOST_FILE):
+		with open(DEFAULT_HOST_FILE,'r') as f:
 			for line in f:
 				if line.startswith('#') or not line.strip():
 					continue
@@ -388,6 +389,7 @@ DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
+DEFAULT_HOST_FILE = '/etc/hosts'
 DEFAULT_ENCODING = 'utf-8'
 DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.6
 SSH_STRICT_HOST_KEY_CHECKING = False
@@ -3863,6 +3865,7 @@ def generate_default_config(args):
 		'DEFAULT_GREPPABLE_MODE': args.greppable,
 		'DEFAULT_SKIP_UNREACHABLE': args.skip_unreachable,
 		'DEFAULT_SKIP_HOSTS': args.skip_hosts,
+		'DEFAULT_HOST_FILE': args.host_file,
 		'DEFAULT_ENCODING': args.encoding,
 		'DEFAULT_DIFF_DISPLAY_THRESHOLD': args.diff_display_threshold,
 		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
@@ -3966,6 +3969,7 @@ def get_parser():
 	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
+	parser.add_argument('--host_file', type=str,help=f'File containing list of hosts to run the command on, one host per line. Default:{DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
@@ -4109,6 +4113,7 @@ def set_global_with_args(args):
 	global DEFAULT_IPMI_PASSWORD
 	global DEFAULT_DIFF_DISPLAY_THRESHOLD
 	global FORCE_TRUECOLOR
+	global DEFAULT_HOST_FILE
 	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 	if args.env_file:
@@ -4125,6 +4130,8 @@ def set_global_with_args(args):
 		DEFAULT_IPMI_PASSWORD = args.ipmi_password
 	DEFAULT_DIFF_DISPLAY_THRESHOLD = args.diff_display_threshold
 	FORCE_TRUECOLOR = args.force_truecolor
+	if args.host_file:
+		DEFAULT_HOST_FILE = args.host_file
 
 #%% ------------ Wrapper Block ----------------
 def main(args = None):
