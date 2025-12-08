@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.07'
+version = '6.08'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-12-01'
+COMMIT_DATE = '2025-12-04'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -363,6 +363,7 @@ DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
 DEFAULT_INTERFACE_IP_PREFIX = None
 DEFAULT_IPMI_USERNAME = 'ADMIN'
 DEFAULT_IPMI_PASSWORD = ''
+DEAFULT_IPMI_ARGS=''
 DEFAULT_NO_WATCH = False
 DEFAULT_WINDOW_WIDTH = 40
 DEFAULT_WINDOW_HEIGHT = 1
@@ -453,6 +454,7 @@ _no_env = DEFAULT_NO_ENV
 _env_files = DEFAULT_ENV_FILES
 __globalUnavailableHosts = dict()
 __ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
+__ipmi_args = DEAFULT_IPMI_ARGS
 __keyPressesIn = [[]]
 _emo = False
 __curses_global_color_pairs = {(-1,-1):1}
@@ -1792,7 +1794,7 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
 
-def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
+def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = ...):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
 
@@ -1815,11 +1817,16 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 	global DEFAULT_USERNAME
 	global DEFAULT_PASSWORD
 	global SSH_STRICT_HOST_KEY_CHECKING
+	global __ipmi_args
+	global DEAFULT_IPMI_ARGS
 	if retry_limit < 0:
 		host.output.append('Error: Retry limit reached!')
 		host.stderr.append('Error: Retry limit reached!')
 		host.returncode = 1
 		return
+	if ipmi_args is ...:
+		ipmi_args = __ipmi_args
+	prePasword = passwds
 	try:
 		localExtraArgs = []
 		
@@ -1889,9 +1896,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 				if not host.command:
 					host.command = 'power status'
 				if 'sh' in _binPaths:
-					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {" ".join(extraargs)} {host.command}']
+					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {ipmi_args} {" ".join(extraargs)} {host.command}']
 				else:
-					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P {passwds}'] + extraargs + [host.command]
+					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P {passwds}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + extraargs + [host.command]
 			elif 'ssh' in _binPaths:
 				host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
 				if __DEBUG_MODE:
@@ -1902,7 +1909,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 					host.command = 'ipmitool power status'
 				else:
 					host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
-				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
+				run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
 				return
 			else:
 				host.output.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
@@ -1921,7 +1928,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
+				run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
 		else:
 			if host.files:
 				if host.scp:
@@ -2071,10 +2078,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 		# except os error too many open files
 		except OSError as e:
 			if e.errno == 24:  # Errno 24 corresponds to "Too many open files"
+				host.returncode = None
 				host.output.append("Warning: Too many open files. retrying...")
 				# Handle the error, e.g., clean up, retry logic, or exit
 				time.sleep(0.1)
-				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
+				run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
 			else:
 				# Re-raise the exception if it's not the specific one
 				raise
@@ -2087,23 +2095,37 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 5):
 			host.returncode = -1
 	# If using ipmi, we will try again using ssh if ipmi connection is not successful
 	if host.ipmi and host.returncode != 0 and any(['Unable to establish IPMI' in line for line in host.stderr]):
+		host.returncode = None
 		host.stderr = []
-		host.output.append('IPMI connection failed! Trying SSH connection...')
-		if __DEBUG_MODE:
-			host.stderr.append('IPMI connection failed! Trying SSH connection...')
-		host.ipmi = False
-		host.interface_ip_prefix = None
-		host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
-		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
+		if ipmi_args:
+			if DEAFULT_IPMI_ARGS and ipmi_args != DEAFULT_IPMI_ARGS:
+				host.output.append(f'IPMI connection failed with arg {ipmi_args}! Trying DEFAULT_IPMI_ARGS:{DEAFULT_IPMI_ARGS}')
+				if __DEBUG_MODE:
+					host.stderr.append(f'IPMI connection failed with arg {ipmi_args}! Trying DEFAULT_IPMI_ARGS:{DEAFULT_IPMI_ARGS}')
+				ipmi_args = DEAFULT_IPMI_ARGS
+			else:
+				host.output.append(f'IPMI connection failed with arg {ipmi_args}! Trying without args...')
+				if __DEBUG_MODE:
+					host.stderr.append(f'IPMI connection failed with arg {ipmi_args}! Trying without args...')
+				ipmi_args = ''
+		else:
+			host.output.append('IPMI connection failed! Trying SSH connection...')
+			if __DEBUG_MODE:
+				host.stderr.append('IPMI connection failed! Trying SSH connection...')
+			host.ipmi = False
+			host.interface_ip_prefix = None
+			host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
+		run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
 	# If transfering files, we will try again using scp if rsync connection is not successful
 	if host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
+		host.returncode = None
 		host.stderr = []
 		host.stdout = []
 		host.output.append('Rsync connection failed! Trying SCP connection...')
 		if __DEBUG_MODE:
 			host.stderr.append('Rsync connection failed! Trying SCP connection...')
 		host.scp = True
-		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1)
+		run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
 
 #%% ------------ Start Threading Block ----------------
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
@@ -3848,6 +3870,7 @@ def generate_default_config(args):
 		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
 		'DEFAULT_IPMI_USERNAME': args.ipmi_username,
 		'DEFAULT_IPMI_PASSWORD': args.ipmi_password,
+		'DEAFULT_IPMI_ARGS': args.ipmi_args,
 		'DEFAULT_NO_WATCH': args.no_watch,
 		'DEFAULT_WINDOW_WIDTH': args.window_width,
 		'DEFAULT_WINDOW_HEIGHT': args.window_height,
@@ -3873,15 +3896,16 @@ def generate_default_config(args):
 		'FORCE_TRUECOLOR': args.force_truecolor,
 	}
 
-def write_default_config(args,CONFIG_FILE = None):
+def write_default_config(args,CONFIG_FILE = None, force = False):
+	global __configs_from_file
 	default_config = generate_default_config(args)
 	# apply the updated defualt_config to __configs_from_file and write that to file
 	__configs_from_file.update(default_config)
 	if not CONFIG_FILE:
 		print(json.dumps(__configs_from_file, indent=4))
 		return
-	backup = True
-	if os.path.exists(CONFIG_FILE):
+	backup = not force
+	if not force and os.path.exists(CONFIG_FILE):
 		eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
 		eprint("o:  Overwrite the file")
 		eprint(f"b:  Rename the current config file at {CONFIG_FILE!r}.bak forcefully and write the new config file (default)")
@@ -3938,6 +3962,7 @@ def get_parser():
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})", default=DEFAULT_INTERFACE_IP_PREFIX)
 	parser.add_argument('-iu','--ipmi_username', type=str,help=f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})',default=DEFAULT_IPMI_USERNAME)
 	parser.add_argument('-ip','--ipmi_password', type=str,help=f'The password to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_PASSWORD})',default=DEFAULT_IPMI_PASSWORD)
+	parser.add_argument('-ia','--ipmi_args',type=str,help=f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: {DEAFULT_IPMI_ARGS})',default=DEAFULT_IPMI_ARGS)
 	parser.add_argument('-S',"-q","-nw","--no_watch", action='store_true', help=f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
 	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_WINDOW_WIDTH})", default=DEFAULT_WINDOW_WIDTH)
 	parser.add_argument("-wh",'--window_height', type=int, help=f"The minimum line height of the curses window. (default: {DEFAULT_WINDOW_HEIGHT})", default=DEFAULT_WINDOW_HEIGHT)
@@ -3957,9 +3982,9 @@ def get_parser():
 	su_group.add_argument('-a',"-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument('-uhe','--unavailable_host_expiry', type=int, help=f"Time in seconds to expire the unavailable hosts (default: {DEFAULT_UNAVAILABLE_HOST_EXPIRY})", default=DEFAULT_UNAVAILABLE_HOST_EXPIRY)
 	parser.add_argument('-X',"-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
-	parser.add_argument('--generate_config_file', action='store_true', help='Store / generate the default config file from command line argument and current config at --config_file / stdout')
-	parser.add_argument('--config_file', type=str,nargs='?', help='Additional config file to use, will pioritize over config chains. When using with store_config_file, will store the resulting config file at this location. Use without a path will use multiSSH3.config.json',const='multiSSH3.config.json',default=None)
-	parser.add_argument('--store_config_file',type = str,nargs='?',help='Store the default config file from command line argument and current config. Same as --store_config_file --config_file=<path>',const='multiSSH3.config.json')
+	parser.add_argument('--generate_config_file', action='store_true', help='Restore / generate using the build-in default configs with default config file chain and command line argument to write to --config_file / stdout')
+	parser.add_argument('--config_file', type=str,nargs='?', help='Additional config file to apply, Warning: will over write CLI options. When using with generate_config_file, will store the resulting config file at this location. Use without a path will use multiSSH3.config.json',const='multiSSH3.config.json',default=None)
+	parser.add_argument('--store_config_file',type = str,nargs='?',help='Refresh / store the specified config file with new params and command line args into the config file. Defaults to ./multiSSH3.config.json or --config_file if supplied.',const=...)
 	parser.add_argument('--debug', action='store_true', help='Print debug information')
 	parser.add_argument('-ci','--copy_id', action='store_true', help='Copy the ssh id to the hosts')
 	parser.add_argument('-I','-nh','--no_history', action='store_true', help=f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}', default=DEFAULT_NO_HISTORY)
@@ -3976,6 +4001,21 @@ def get_parser():
 def process_args(args = None):
 	global DEFAULT_IPMI_USERNAME
 	global DEFAULT_IPMI_PASSWORD
+	global __configs_from_file
+	cfp = 	parser = argparse.ArgumentParser(add_help=False)
+	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
+	cfp.add_argument('--generate_config_file', action='store_true')
+	try:
+		cfpa, args = cfp.parse_known_args(args)
+		if cfpa.config_file and not cfpa.generate_config_file:
+			if os.path.exists(cfpa.config_file):
+				configs = load_config_file(os.path.expanduser(cfpa.config_file))
+				globals().update(configs)
+				__configs_from_file.update(configs)
+			else:
+				eprint(f"Warning: Config file {args.config_file!r} not found, ignoring it.")
+	except Exception:
+		pass
 	parser = get_parser()
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
@@ -3991,7 +4031,11 @@ def process_args(args = None):
 		if unknown:
 			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
 			args.commands += unknown
-	
+	try:
+		args.config_file = cfpa.config_file
+		args.generate_config_file = cfpa.generate_config_file
+	except Exception:
+		pass
 	if args.script:
 		args.no_watch = True
 		args.skip_unreachable = True
@@ -4014,31 +4058,25 @@ def process_args(args = None):
 	if args.unavailable_host_expiry <= 0:
 		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
 		args.unavailable_host_expiry = 10
+
 	return args
 
 def process_config_file(args):
 	global __configs_from_file
 	if args.generate_config_file or args.store_config_file:
 		if args.store_config_file:
-			configFileToWriteTo = args.store_config_file
-			if args.config_file:
-				if os.path.exists(args.config_file):
-					__configs_from_file.update(load_config_file(os.path.expanduser(args.config_file)))
-				else:
-					eprint(f"Warning: Pre store config file {args.config_file!r} not found.")
+			if args.store_config_file is ...:
+				configFileToWriteTo = args.config_file if args.config_file else './multiSSH3.config.json'
+			else:
+				configFileToWriteTo = args.store_config_file
 		else:
 			configFileToWriteTo = args.config_file
-		write_default_config(args,configFileToWriteTo)
+		write_default_config(args,configFileToWriteTo,force=args.store_config_file)
 		if not args.commands and not args.file:
 			if configFileToWriteTo:
 				with open(configFileToWriteTo,'r') as f:
 					eprint(f"Config file content: \n{f.read()}")
 			_exit_with_code(0)
-	if args.config_file:
-		if os.path.exists(args.config_file):
-			__configs_from_file.update(load_config_file(os.path.expanduser(args.config_file)))
-		else:
-			eprint(f"Warning: Config file {args.config_file!r} not found, ignoring it.")
 	return args
 
 	# if there are more than 1 commands, and every command only consists of one word,
@@ -4106,7 +4144,6 @@ def set_global_with_args(args):
 	global __ipmiiInterfaceIPPrefix
 	global _env_files
 	global __DEBUG_MODE
-	global __configs_from_file
 	global _encoding
 	global __returnZero
 	global DEFAULT_IPMI_USERNAME
@@ -4114,6 +4151,7 @@ def set_global_with_args(args):
 	global DEFAULT_DIFF_DISPLAY_THRESHOLD
 	global FORCE_TRUECOLOR
 	global DEFAULT_HOST_FILE
+	global __ipmi_args
 	_emo = False
 	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 	if args.env_file:
@@ -4132,6 +4170,7 @@ def set_global_with_args(args):
 	FORCE_TRUECOLOR = args.force_truecolor
 	if args.host_file:
 		DEFAULT_HOST_FILE = args.host_file
+	__ipmi_args = args.ipmi_args
 
 #%% ------------ Wrapper Block ----------------
 def main(args = None):
