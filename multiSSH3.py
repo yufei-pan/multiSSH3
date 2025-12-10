@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.08'
+version = '6.09'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-12-04'
+COMMIT_DATE = '2025-12-09'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -3264,15 +3264,15 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	return rtnStr
 
 #%% ------------ Run / Process Hosts Block ----------------
-def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinished, no_watch, json, no_output, greppable,
-					  unavailableHosts:dict,willUpdateUnreachableHosts,window_width = DEFAULT_WINDOW_WIDTH, 
+def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
+					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
 					  unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,pre_merge = True):
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
-	if __curses_available and not no_watch and threads and not returnUnfinished  and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
+	if __curses_available and not no_watch and threads and not return_unfinished  and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
 		total_sleeped = 0
 		while any([host.returncode is None for host in hosts]):
 			time.sleep(sleep_interval)  # avoid busy-waiting
@@ -3294,7 +3294,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 					eprint(f"Curses print error: {e}")
 					import traceback
 					print(traceback.format_exc())
-	if not returnUnfinished:
+	if not return_unfinished:
 		# wait until all hosts have a return code
 		while any([host.returncode is None for host in hosts]):
 			time.sleep(sleep_interval)  # avoid busy-waiting
@@ -3303,7 +3303,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, returnUnfinishe
 		for thread in threads:
 			thread.join(timeout=3)
 		# update the unavailable hosts and global unavailable hosts
-		if willUpdateUnreachableHosts:
+		if will_update_unreachable_hosts:
 			availableHosts = set()
 			for host in hosts:
 				if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.stderr[-1].strip().startswith('Timeout!') and host.returncode == 124)):
@@ -3381,7 +3381,7 @@ def formHostStr(host) -> str:
 def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
-						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
+						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
 						 file_sync = False, error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY, no_history = DEFAULT_NO_HISTORY,
@@ -3423,7 +3423,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 		argsList.append(f'--username="{username}"' if not shortend else f'-u="{username}"')
 	if extraargs and extraargs != DEFAULT_EXTRA_ARGS:
 		argsList.append(f'--extraargs="{extraargs}"' if not shortend else f'-ea="{extraargs}"')
-	if skipUnreachable:
+	if skip_unreachable:
 		argsList.append('--skip_unreachable' if not shortend else '-su')
 	if unavailable_host_expiry and unavailable_host_expiry != DEFAULT_UNAVAILABLE_HOST_EXPIRY:
 		argsList.append(f'--unavailable_host_expiry={unavailable_host_expiry}' if not shortend else f'-uhe={unavailable_host_expiry}')
@@ -3449,9 +3449,9 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 
 def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
-						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
+						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
+						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
+						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = DEFAULT_NO_HISTORY,
@@ -3459,8 +3459,8 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
 						 shortend = False,tabSeperated = False,**kwargs) -> str:
 	_ = called
-	_ = returnUnfinished
-	_ = willUpdateUnreachableHosts
+	_ = return_unfinished
+	_ = will_update_unreachable_hosts
 	_ = no_start
 	_ = window_width
 	_ = window_height
@@ -3471,7 +3471,7 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 	argsStr = __formCommandArgStr(oneonone = oneonone, timeout = timeout,password = password,
 						 no_watch = no_watch,json = json,max_connections=max_connections,
 						 files = files,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,
-						 scp=scp,gather_mode = gather_mode,username=username,extraargs=extraargs,skipUnreachable=skipUnreachable,
+						 scp=scp,gather_mode = gather_mode,username=username,extraargs=extraargs,skip_unreachable=skip_unreachable,
 						 no_env=no_env, greppable=greppable,skip_hosts = skip_hosts, 
 						 file_sync = file_sync,error_only = error_only, identity_file = identity_file,
 						 copy_id = copy_id, unavailable_host_expiry =unavailable_host_expiry,no_history = no_history,
@@ -3526,9 +3526,9 @@ def record_command_history(kwargs):
 #%% ------------ Main Block ----------------
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,
-						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
+						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
+						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
+						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
@@ -3551,15 +3551,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		files (list or None): Deprecated: Files to copy to hosts. Default: None.
 		ipmi (bool): Use IPMI instead of SSH. Default: DEFAULT_IPMI.
 		interface_ip_prefix (str or None): Override IP prefix for host connection. Default: DEFAULT_INTERFACE_IP_PREFIX.
-		returnUnfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
+		return_unfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
 		scp (bool): Use scp for file transfer (instead of rsync). Default: DEFAULT_SCP.
 		gather_mode (bool): Gather files from hosts (pull mode). Default: False.
 		username (str or None): Username for SSH/IPMI. Default: DEFAULT_USERNAME.
 		extraargs (str or list or None): Extra args for SSH/SCP/rsync. Default: DEFAULT_EXTRA_ARGS.
-		skipUnreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
+		skip_unreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
 		no_env (bool): Do not load environment variables from shell. Default: DEFAULT_NO_ENV.
 		greppable (bool): Output in greppable table format. Default: DEFAULT_GREPPABLE_MODE.
-		willUpdateUnreachableHosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
+		will_update_unreachable_hosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
 		no_start (bool): If True, return Host objects without running commands. Default: _DEFAULT_NO_START.
 		skip_hosts (str or None): Hosts to skip. Default: DEFAULT_SKIP_HOSTS.
 		window_width (int): Minimum width per curses window. Default: DEFAULT_WINDOW_WIDTH.
@@ -3635,10 +3635,10 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
 		# if called,
-		# if skipUnreachable is not set, we default to skip unreachable hosts within one command call
-		if skipUnreachable is None:
-			skipUnreachable = True
-		if skipUnreachable:
+		# if skip_unreachable is not set, we default to skip unreachable hosts within one command call
+		if skip_unreachable is None:
+			skip_unreachable = True
+		if skip_unreachable:
 			unavailableHosts = __globalUnavailableHosts
 		else:
 			unavailableHosts = dict()
@@ -3647,11 +3647,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		__global_suppress_printout = True
 	else:
 		# if run in command line ( or emulating running in command line, we default to skip unreachable hosts within one command call )
-		if skipUnreachable:
+		if skip_unreachable:
 			unavailableHosts = __globalUnavailableHosts
 		else:
 			unavailableHosts = dict()
-			skipUnreachable = True
+			skip_unreachable = True
 	if pre_merge_hosts is ...:
 		pre_merge_hosts = not called
 	if no_output is ...:
@@ -3712,8 +3712,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					os.system(command)
 			if hosts:
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
+					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
+					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
 		else:
@@ -3758,7 +3758,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint('-'*80)
 			eprint("Running in one on one mode")
 		for host, command in zip(targetHostDic, commands):
-			if not ipmi and skipUnreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
+			if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 				eprint(f"Skipping unavailable host: {host}")
 				continue
 			if host in skipHostSet or targetHostDic[host] in skipHostSet:
@@ -3773,8 +3773,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint('-'*80)
 		if not no_start: 
 			processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					  returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					  unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
+					  return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
+					  unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
 					  window_width = window_width, window_height = window_height,
 					  single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 		return hosts
@@ -3784,7 +3784,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			# run in interactive mode ssh mode
 			hosts = []
 			for host in targetHostDic:
-				if not ipmi and skipUnreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
+				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 					if not __global_suppress_printout:
 						print(f"Skipping unavailable host: {host}")
 					continue
@@ -3805,15 +3805,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				eprint("Warning: no_start is set, the command will not be started. As we are in interactive mode, no action will be done.")
 			else:
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
+					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
+					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 			return hosts
 		for command in commands:
 			hosts = []
 			for host in targetHostDic:
-				if not ipmi and skipUnreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
+				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 					if not __global_suppress_printout:
 						print(f"Skipping unavailable host: {host}")
 					continue
@@ -3829,8 +3829,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				eprint('-'*80)
 			if not no_start: 
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   returnUnfinished=returnUnfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					   unavailableHosts=unavailableHosts,willUpdateUnreachableHosts=willUpdateUnreachableHosts,
+					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
+					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 			allHosts += hosts
