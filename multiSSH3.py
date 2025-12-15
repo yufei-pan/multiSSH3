@@ -2117,7 +2117,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 			host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
 		run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
 	# If transfering files, we will try again using scp if rsync connection is not successful
-	if host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
+	elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
 		host.returncode = None
 		host.stderr = []
 		host.stdout = []
@@ -3425,6 +3425,8 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 		argsList.append(f'--extraargs="{extraargs}"' if not shortend else f'-ea="{extraargs}"')
 	if skip_unreachable:
 		argsList.append('--skip_unreachable' if not shortend else '-su')
+	else:
+		argsList.append('--no_skip_unreachable' if not shortend else '-nsu')
 	if unavailable_host_expiry and unavailable_host_expiry != DEFAULT_UNAVAILABLE_HOST_EXPIRY:
 		argsList.append(f'--unavailable_host_expiry={unavailable_host_expiry}' if not shortend else f'-uhe={unavailable_host_expiry}')
 	if no_env:

@@ -774,8 +774,8 @@ class Host:
 
 ```python
 import multiSSH3
-ethReachableHosts = multiSSH3.run_command_on_hosts(nodesToCheck,['echo hi'],returnUnfinished = True) # returnUnfinished will return the host objects immediately without waiting for all hosts to finish.
-ipmiReachableHosts = multiSSH3.run_command_on_hosts(nodesToCheck,['power status'], timeout = timeout, ipmi=True, password=password, skipUnreachable=False) # ipmi command
+ethReachableHosts = multiSSH3.run_command_on_hosts(nodesToCheck,['echo hi'],return_unfinished = True) # return_unfinished will return the host objects immediately without waiting for all hosts to finish.
+ipmiReachableHosts = multiSSH3.run_command_on_hosts(nodesToCheck,['power status'], timeout = timeout, ipmi=True, password=password, skip_unreachable=False) # ipmi command
 # You can use blocks like the following block to wait on a specific host list to finish ( That does respect timeout even if the host is hanging )
 # Following block also implement an exponential backoff.
 sleep_interval = 0.0001
@@ -793,7 +793,7 @@ multiSSH3.join_threads()
 The run_command_on_hosts function includes almost all the options available in the CLI. ( some options modify the [global variables](#all-changable-config-options--global-variables-) and can be set before calling the function. )
 
 ```python
-def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,returnUnfinished = _DEFAULT_RETURN_UNFINISHED,scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skipUnreachable=DEFAULT_SKIP_UNREACHABLE,no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,willUpdateUnreachableHosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,history_file = DEFAULT_HISTORY_FILE,
+def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,history_file = DEFAULT_HISTORY_FILE,
 ):
 	"""
 	Run commands on multiple hosts via SSH or IPMI.
@@ -811,15 +811,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		file (list or None): Files to copy to hosts. Default: None.
 		ipmi (bool): Use IPMI instead of SSH. Default: DEFAULT_IPMI.
 		interface_ip_prefix (str or None): Override IP prefix for host connection. Default: DEFAULT_INTERFACE_IP_PREFIX.
-		returnUnfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
+		return_unfinished (bool): If True, return hosts even if not finished. Default: _DEFAULT_RETURN_UNFINISHED.
 		scp (bool): Use scp for file transfer (instead of rsync). Default: DEFAULT_SCP.
 		gather_mode (bool): Gather files from hosts (pull mode). Default: False.
 		username (str or None): Username for SSH/IPMI. Default: DEFAULT_USERNAME.
 		extraargs (str or list or None): Extra args for SSH/SCP/rsync. Default: DEFAULT_EXTRA_ARGS.
-		skipUnreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
+		skip_unreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
 		no_env (bool): Do not load environment variables from shell. Default: DEFAULT_NO_ENV.
 		greppable (bool): Output in greppable table format. Default: DEFAULT_GREPPABLE_MODE.
-		willUpdateUnreachableHosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
+		will_update_unreachable_hosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
 		no_start (bool): If True, return Host objects without running commands. Default: _DEFAULT_NO_START.
 		skip_hosts (str or None): Hosts to skip. Default: DEFAULT_SKIP_HOSTS.
 		window_width (int): Minimum width per curses window. Default: DEFAULT_WINDOW_WIDTH.
@@ -937,13 +937,13 @@ __DEBUG_MODE = False
 
 > When imported and calling as a module, `called` will be set to _DEFAULT_CALLED.<br/>
 > When True, it sets several flags to make mssh behave better when called as a module.<br/>
-> - if skipUnreachable is not set, it will skip unreachable hosts within one command call
+> - if skip_unreachable is not set, it will skip unreachable hosts within one command call
 > - Will clear global keyboard input cache
 > - Will set global quiet mode to True
 
 > `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` is used to control whether to update the unreachable hosts file when mssh detects unreachable hosts.
 
-> `_DEFAULT_NO_START` is somewhat analogous to "demo mode" where mssh will return Host objects without actually allocating and starting the execution threads. Although they still can be started using `start_run_on_hosts()` but you should really be looking for `returnUnfinished` instead for asynchronicity.
+> `_DEFAULT_NO_START` is somewhat analogous to "demo mode" where mssh will return Host objects without actually allocating and starting the execution threads. Although they still can be started using `start_run_on_hosts()` but you should really be looking for `return_unfinished` instead for asynchronicity.
 
 > `_etc_hosts` is a custom dict to use instead of reading /etc/hosts file for hostname resolution.
 
