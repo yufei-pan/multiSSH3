@@ -2939,9 +2939,11 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 	color_cap = get_terminal_color_capability()
 	if color_cap == 'None':
 		green_str = ''
+		underline_bold_str = ''
 		reset_str = ''
 	else:
 		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('green', __DEFAULT_COLOR_PALETTE['green']))
+		underline_bold_str = '\033[4m\033[1m'
 		reset_str = '\033[0m'
 	for hostname in merging_hostnames:
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
@@ -2981,14 +2983,12 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				hostnameStr = ','.join(compact_hostnames(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
 				# hostnameLines = [line.ljust(line_length) for line in hostnameLines]
-				if color_cap == 'None':
-					hostnameLines[0] = f"■{hostnameLines[0]}"
-				elif len(buddy) < len(merging_hostnames):
+				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
 					hostnameLines[0] = f"{color}■{hostnameLines[0]}"
 					hostnameLines[-1] += reset_str
 				else:
-					hostnameLines[0] = f"{green_str}■{reset_str}{hostnameLines[0]}"
+					hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}{reset_str}"
 				output.extend(hostnameLines)
 				previousBuddies = buddy
 			output.append(lineToAdd)
@@ -3020,10 +3020,12 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 		color_line = ''
 		color_reset = ''
 		green_str = ''
+		underline_bold_str = ''
 	else:
 		color_line =  rgb_to_ansi_color_string(*COLOR_PALETTE.get('white', __DEFAULT_COLOR_PALETTE['white']))
 		color_reset = '\033[0m'
 		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('green', __DEFAULT_COLOR_PALETTE['green']))
+		underline_bold_str = '\033[4m\033[1m'
 	output.append(color_line+'─'*(line_length)+color_reset)
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
@@ -3032,7 +3034,7 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 		output.append(color_line+'─'*(line_length)+color_reset)
 	for hostname in remaining_hostnames:
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
-		hostnameLines[0] = f"{green_str}■{color_reset}{hostnameLines[0]}"
+		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}{color_reset}"
 		output.extend(hostnameLines)
 		output.extend(outputs_by_hostname[hostname])
 		output.append(color_line+'─'*(line_length)+color_reset)
