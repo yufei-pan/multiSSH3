@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.09'
+version = '6.10'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-12-09'
+COMMIT_DATE = '2025-02-03'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
