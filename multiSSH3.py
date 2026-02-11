@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.10'
+version = '6.11'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-02-03'
+COMMIT_DATE = '2025-02-09'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -3338,7 +3338,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 					except Exception:
 						pass
 					# add new entries
-					oldDic.update(unavailableHosts)
+					#oldDic.update(unavailableHosts)
+					for hostname, expTime in unavailableHosts.items():
+						if hostname not in oldDic or oldDic[hostname] < expTime:
+							oldDic[hostname] = expTime
 					with open(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),'w') as f:
 						for key, value in oldDic.items():
 							f.write(f'{key},{value}\n')
@@ -3603,17 +3606,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			unavailable_host_expiry = 10
 		try:
 			readed = False
-			if 0 < time.time() - os.path.getmtime(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')) < unavailable_host_expiry:
-
-				with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
-					for line in f:
-						line = line.strip()
-						if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
-							hostname = line.split(',')[0]
-							expireTime = int(line.split(',')[1])
-							if expireTime > time.monotonic():
-								__globalUnavailableHosts[hostname] = expireTime
-								readed = True
+			with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
+				for line in f:
+					line = line.strip()
+					if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
+						hostname = line.split(',')[0]
+						expireTime = int(line.split(',')[1])
+						if expireTime > time.monotonic():
+							__globalUnavailableHosts[hostname] = expireTime
+							readed = True
 			if readed and not __global_suppress_printout:
 				eprint(f"Read unavailable hosts from the file {os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')}")
 		except Exception as e:
