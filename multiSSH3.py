@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.11'
+version = '6.12'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-02-09'
+COMMIT_DATE = '2025-02-11'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2986,9 +2986,9 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
 					hostnameLines[0] = f"{color}■{hostnameLines[0]}"
-					hostnameLines[-1] += reset_str
 				else:
-					hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}{reset_str}"
+					hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
+				hostnameLines[-1] += reset_str
 				output.extend(hostnameLines)
 				previousBuddies = buddy
 			output.append(lineToAdd)
@@ -3034,7 +3034,8 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 		output.append(color_line+'─'*(line_length)+color_reset)
 	for hostname in remaining_hostnames:
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
-		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}{color_reset}"
+		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
+		hostnameLines[-1] += color_reset
 		output.extend(hostnameLines)
 		output.extend(outputs_by_hostname[hostname])
 		output.append(color_line+'─'*(line_length)+color_reset)
