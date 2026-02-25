@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.12'
+version = '6.13'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2025-02-11'
+COMMIT_DATE = '2026-02-24'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -3386,7 +3386,7 @@ def formHostStr(host) -> str:
 @cache_decorator
 def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
+						 file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
 						 file_sync = False, error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
@@ -3415,8 +3415,8 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 		argsList.append('--json' if not shortend else '-j')
 	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS:
 		argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
-	if files:
-		argsList.extend([f'--file="{file}"' for file in files] if not shortend else [f'-f="{file}"' for file in files])
+	if file:
+		argsList.extend([f'--file="{file}"' for file in file] if not shortend else [f'-f="{file}"' for file in file])
 	if ipmi:
 		argsList.append('--ipmi')
 	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX:
@@ -3457,7 +3457,7 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 
 def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 files = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
+						 file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
 						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
@@ -3475,10 +3475,10 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_O
 	_ = single_window
 	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
 	hostStr = formHostStr(hosts)
-	files = frozenset(files) if files else None
+	file = frozenset(file) if file else None
 	argsStr = __formCommandArgStr(oneonone = oneonone, timeout = timeout,password = password,
 						 no_watch = no_watch,json = json,max_connections=max_connections,
-						 files = files,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,
+						 file = file,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,
 						 scp=scp,gather_mode = gather_mode,username=username,extraargs=extraargs,skip_unreachable=skip_unreachable,
 						 no_env=no_env, greppable=greppable,skip_hosts = skip_hosts, 
 						 file_sync = file_sync,error_only = error_only, identity_file = identity_file,
