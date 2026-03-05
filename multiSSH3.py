@@ -84,10 +84,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.13'
+version = '6.14'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-02-24'
+COMMIT_DATE = '2026-03-05'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -2673,7 +2673,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == curses.KEY_EXIT or key == 27: # 27 is the key code for ESC
 					# if the key is exit, we will exit the program
 					return 
-				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1 or key == 8: # 63 is the key code for ?, 8 is the key code for backspace
+				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
 					# if the key is help, we will display the help message
 					if not help_shown:
 						help_panel.show()
