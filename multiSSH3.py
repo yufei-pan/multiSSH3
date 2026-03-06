@@ -30,8 +30,9 @@ import threading
 import time
 import typing
 import uuid
-from collections import Counter, deque, defaultdict
+from collections import Counter, defaultdict, deque
 from itertools import count, product
+from pprint import pformat
 
 __curses_available = False
 __resource_lib_available = False
@@ -84,7 +85,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.14'
+version = '6.15'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-03-05'
@@ -278,14 +279,9 @@ class Host:
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
 	def __repr__(self):
-		# return the complete data structure
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr}, \
-output={self.output}, lineNumToPrintSet={self.lineNumToPrintSet}, files={self.files}, ipmi={self.ipmi}, \
-interface_ip_prefix={self.interface_ip_prefix}, scp={self.scp}, gatherMode={self.gatherMode}, \
-extraargs={self.extraargs}, resolvedName={self.resolvedName}, i={self.i}, uuid={self.uuid}), \
-identity_file={self.identity_file}, ip={self.ip}, current_color_pair={self.current_color_pair}"
+		return f"Host(\n{pformat(self.__dict__)}\n)"
 	def __str__(self):
-		return f"Host(name={self.name}, command={self.command}, returncode={self.returncode}, stdout={self.stdout}, stderr={self.stderr})"
+		return f"Host(\n{pformat(dict(self))}\n)"
 	def get_output_hash(self):
 		return hash((
 			self.command,
