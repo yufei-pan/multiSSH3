@@ -3151,7 +3151,7 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 				# if other_line_bag_len < line_bag_len:
 				# 	continue
 				for other_hostname in hostnames_by_line_bag_len.get(other_line_bag_len, set()).copy():
-					if can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
+					if other_hostname in line_bag_by_hostname and can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
 						merge_group.append(other_hostname)
 						hostnames_by_line_bag_len[other_line_bag_len].remove(other_hostname)
 						if not hostnames_by_line_bag_len[other_line_bag_len]:
