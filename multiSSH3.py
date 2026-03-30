@@ -85,10 +85,10 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.16'
+version = '6.17'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-03-16'
+COMMIT_DATE = '2026-03-27'
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
 					 '~/multiSSH3.config.json',
@@ -388,7 +388,7 @@ DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
 DEFAULT_HOST_FILE = '/etc/hosts'
 DEFAULT_ENCODING = 'utf-8'
-DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.6
+DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
 SSH_STRICT_HOST_KEY_CHECKING = False
 FORCE_TRUECOLOR = False
 ERROR_MESSAGES_TO_IGNORE = [
