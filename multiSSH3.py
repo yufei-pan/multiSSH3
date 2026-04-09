@@ -34,20 +34,114 @@ from collections import Counter, defaultdict, deque
 from itertools import count, product
 from pprint import pformat
 
-__curses_available = False
-__resource_lib_available = False
-try:
-	import curses
-	import curses.panel
-	__curses_available = True
-except ImportError:
-	pass
-try:
-	import resource
-	__resource_lib_available = True
-except ImportError:
-	pass
 
+version = '6.18'
+VERSION = version
+__version__ = version
+COMMIT_DATE = '2026-04-09'
+# TODO: Add terminal TUI
+
+CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
+					 '~/multiSSH3.config.json',
+					 '~/.multiSSH3.config.json',
+					 '~/.config/multiSSH3/multiSSH3.config.json',
+					 '/etc/multiSSH3.d/multiSSH3.config.json',
+					 '/etc/multiSSH3.config.json'] # The first one has the highest priority
+
+ERRORS = []
+
+#%% ------------ User Defined Global Variables ----------------
+AUTHOR = 'Yufei Pan'
+AUTHOR_EMAIL = 'pan@zopyr.us'
+DEFAULT_HOSTS = 'all'
+DEFAULT_USERNAME = None
+DEFAULT_PASSWORD = ''
+DEFAULT_IDENTITY_FILE = None
+DEFAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
+DEFAULT_USE_KEY = False
+DEFAULT_EXTRA_ARGS = None
+DEFAULT_ONE_ON_ONE = False
+DEFAULT_SCP = False
+DEFAULT_FILE_SYNC = False
+DEFAULT_TIMEOUT = 50
+DEFAULT_CLI_TIMEOUT = 0
+DEFAULT_UNAVAILABLE_HOST_EXPIRY = 600
+DEFAULT_REPEAT = 1
+DEFAULT_INTERVAL = 0
+DEFAULT_IPMI = False
+DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
+DEFAULT_INTERFACE_IP_PREFIX = None
+DEFAULT_IPMI_USERNAME = 'ADMIN'
+DEFAULT_IPMI_PASSWORD = ''
+DEAFULT_IPMI_ARGS=''
+DEFAULT_NO_WATCH = False
+DEFAULT_WINDOW_WIDTH = 40
+DEFAULT_WINDOW_HEIGHT = 1
+DEFAULT_SINGLE_WINDOW = False
+DEFAULT_ERROR_ONLY = False
+DEFAULT_NO_OUTPUT = False
+DEFAULT_RETURN_ZERO = False
+DEFAULT_NO_ENV = False
+DEFAULT_ENV_FILE = ''
+DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
+					 '~/.bashrc',
+					 '~/.zshrc',
+					 '~/host.env',
+					 '~/hosts.env',
+					 '.env',
+					 'host.env',
+					 'hosts.env',
+					 ]
+DEFAULT_NO_HISTORY = False
+DEFAULT_HISTORY_FILE = '~/.mssh_history'
+DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+DEFAULT_JSON_MODE = False
+DEFAULT_PRINT_SUCCESS_HOSTS = False
+DEFAULT_GREPPABLE_MODE = False
+DEFAULT_SKIP_UNREACHABLE = True
+DEFAULT_SKIP_HOSTS = ''
+DEFAULT_HOST_FILE = '/etc/hosts'
+DEFAULT_ENCODING = 'utf-8'
+DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
+SSH_STRICT_HOST_KEY_CHECKING = False
+FORCE_TRUECOLOR = False
+ERROR_MESSAGES_TO_IGNORE = [
+	'Pseudo-terminal will not be allocated because stdin is not a terminal',
+	'Connection to .* closed',
+	'Warning: Permanently added',
+	'mux_client_request_session',
+	'disabling multiplexing',
+	'Killed by signal',
+	'Connection reset by peer',
+]
+POSSIBLE_SSH_KEY_FILES = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
+__DEFAULT_COLOR_PALETTE = {
+	'cyan': (86, 173, 188),
+	'green': (114, 180, 43),
+	'magenta': (140, 107, 200),
+	'red': (196, 38, 94),
+	'white': (227, 227, 221),
+	'yellow': (179, 180, 43),
+	'blue': (106, 126, 200),
+	'bright_black': (102, 102, 102),
+	'bright_blue': (129, 154, 255),
+	'bright_cyan': (102, 217, 239),
+	'bright_green': (126, 226, 46),
+	'bright_magenta': (174, 129, 255),
+	'bright_red': (249, 38, 114),
+	'bright_white': (248, 248, 242),
+	'bright_yellow': (226, 226, 46),
+}
+COLOR_PALETTE = __DEFAULT_COLOR_PALETTE.copy()
+_DEFAULT_CALLED = True
+_DEFAULT_RETURN_UNFINISHED = False
+_DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
+_DEFAULT_NO_START = False
+_etc_hosts = {}
+__ERROR_MESSAGES_TO_IGNORE_REGEX =None
+__DEBUG_MODE = False
+
+#%% ------------ Pre Helper Functions ----------------
 try:
 	# Check if functiools.cache is available
 	# cache_decorator = functools.cache
@@ -85,23 +179,7 @@ except Exception:
 	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
 	def cache_decorator(func):
 		return func
-version = '6.17'
-VERSION = version
-__version__ = version
-COMMIT_DATE = '2026-03-27'
 
-CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
-					 '~/multiSSH3.config.json',
-					 '~/.multiSSH3.config.json',
-					 '~/.config/multiSSH3/multiSSH3.config.json',
-					 '/etc/multiSSH3.d/multiSSH3.config.json',
-					 '/etc/multiSSH3.config.json'] # The first one has the highest priority
-
-ERRORS = []
-
-# TODO: Add terminal TUI
-
-#%% ------------ Pre Helper Functions ----------------
 def eprint(*args, **kwargs):
 	global ERRORS
 	try:
@@ -245,6 +323,126 @@ def _get_i():
 	'''
 	return next(_i_counter)
 
+#%% ------------ Load Defaults ( Config ) File ----------------
+def load_config_file(config_file):
+	'''
+	Load the config file to global variables
+
+	Args:
+		config_file (str): The config file
+
+	Returns:
+		dict: The config
+	'''
+	if not os.path.exists(config_file):
+		return {}
+	try:
+		with open(config_file,'r') as f:
+			config = json.load(f)
+	except Exception as e:
+		eprint(f"Error: Cannot load config file {config_file!r}: {e}")
+		return {}
+	return config
+
+#%% Load Config Based Default Global variables
+__configs_from_file = {}
+for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
+	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
+globals().update(__configs_from_file)
+# form the regex from the list
+if __ERROR_MESSAGES_TO_IGNORE_REGEX:
+	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
+	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
+else:
+	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
+if DEFAULT_ENV_FILE:
+	if DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
+		DEFAULT_ENV_FILES.append(DEFAULT_ENV_FILE)
+
+#%% Load mssh Functional Global Variables
+__global_suppress_printout = False
+__mainReturnCode = 0
+__failedHosts = set()
+__wildCharacters = ['*','?','x']
+_no_env = DEFAULT_NO_ENV
+_env_files = DEFAULT_ENV_FILES
+__globalUnavailableHosts = dict()
+__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
+__ipmi_args = DEAFULT_IPMI_ARGS
+__keyPressesIn = [[]]
+_emo = False
+__curses_global_color_pairs = {(-1,-1):1}
+__curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
+__curses_color_table = {}
+__curses_current_color_index = 10
+__max_connections_nofile_limit_supported = 0
+__thread_start_delay = 0
+_encoding = DEFAULT_ENCODING
+__returnZero = DEFAULT_RETURN_ZERO
+__running_threads = set()
+__control_master_string = '''Host *
+  ControlMaster auto
+  ControlPath /run/user/%i/ssh_sockets_%C
+  ControlPersist 3600
+'''
+__curses_available = False
+__resource_lib_available = False
+try:
+	import curses
+	import curses.panel
+	__curses_available = True
+except ImportError:
+	pass
+try:
+	import resource
+	__resource_lib_available = True
+except ImportError:
+	pass
+if __resource_lib_available:
+	# Get the current limits
+	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+	# Set the soft limit to the hard limit
+	resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
+	__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
+_binPaths = {}
+_binCalled = set(['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id'])
+def check_path(program_name):
+	global __configs_from_file
+	global _binPaths
+	config_key = f'_{program_name}Path'
+	program_path = (
+		__configs_from_file.get(config_key) or
+		globals().get(config_key) or
+		shutil.which(program_name)
+	)
+	if program_path:
+		_binPaths[program_name] = program_path
+		return True
+	return False
+
+[check_path(program) for program in _binCalled]
+
+#%% Mapping of ANSI 4-bit colors to curses colors
+if __curses_available:
+	ANSI_TO_CURSES_COLOR = {
+		30: curses.COLOR_BLACK,
+		31: curses.COLOR_RED,
+		32: curses.COLOR_GREEN,
+		33: curses.COLOR_YELLOW,
+		34: curses.COLOR_BLUE,
+		35: curses.COLOR_MAGENTA,
+		36: curses.COLOR_CYAN,
+		37: curses.COLOR_WHITE,
+		90: curses.COLOR_BLACK,   # Bright Black (usually gray)
+		91: curses.COLOR_RED,     # Bright Red
+		92: curses.COLOR_GREEN,   # Bright Green
+		93: curses.COLOR_YELLOW,  # Bright Yellow
+		94: curses.COLOR_BLUE,    # Bright Blue
+		95: curses.COLOR_MAGENTA, # Bright Magenta
+		96: curses.COLOR_CYAN,    # Bright Cyan
+		97: curses.COLOR_WHITE    # Bright White
+	}
+
 #%% ------------ Host Object ----------------
 class Host:
 	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=uuid.uuid4(),ip = None):
@@ -315,205 +513,7 @@ class Host:
 		newHost.current_color_pair = self.current_color_pair.copy()
 		return newHost
 
-#%% ------------ Load Defaults ( Config ) File ----------------
-def load_config_file(config_file):
-	'''
-	Load the config file to global variables
-
-	Args:
-		config_file (str): The config file
-
-	Returns:
-		dict: The config
-	'''
-	if not os.path.exists(config_file):
-		return {}
-	try:
-		with open(config_file,'r') as f:
-			config = json.load(f)
-	except Exception as e:
-		eprint(f"Error: Cannot load config file {config_file!r}: {e}")
-		return {}
-	return config
-
-#%% ------------ Global Variables ----------------
-AUTHOR = 'Yufei Pan'
-AUTHOR_EMAIL = 'pan@zopyr.us'
-DEFAULT_HOSTS = 'all'
-DEFAULT_USERNAME = None
-DEFAULT_PASSWORD = ''
-DEFAULT_IDENTITY_FILE = None
-DEFAULT_SSH_KEY_SEARCH_PATH = '~/.ssh/'
-DEFAULT_USE_KEY = False
-DEFAULT_EXTRA_ARGS = None
-DEFAULT_ONE_ON_ONE = False
-DEFAULT_SCP = False
-DEFAULT_FILE_SYNC = False
-DEFAULT_TIMEOUT = 50
-DEFAULT_CLI_TIMEOUT = 0
-DEFAULT_UNAVAILABLE_HOST_EXPIRY = 600
-DEFAULT_REPEAT = 1
-DEFAULT_INTERVAL = 0
-DEFAULT_IPMI = False
-DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
-DEFAULT_INTERFACE_IP_PREFIX = None
-DEFAULT_IPMI_USERNAME = 'ADMIN'
-DEFAULT_IPMI_PASSWORD = ''
-DEAFULT_IPMI_ARGS=''
-DEFAULT_NO_WATCH = False
-DEFAULT_WINDOW_WIDTH = 40
-DEFAULT_WINDOW_HEIGHT = 1
-DEFAULT_SINGLE_WINDOW = False
-DEFAULT_ERROR_ONLY = False
-DEFAULT_NO_OUTPUT = False
-DEFAULT_RETURN_ZERO = False
-DEFAULT_NO_ENV = False
-DEFAULT_ENV_FILE = ''
-DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
-					 '~/.bashrc',
-					 '~/.zshrc',
-					 '~/host.env',
-					 '~/hosts.env',
-					 '.env',
-					 'host.env',
-					 'hosts.env',
-					 ]
-DEFAULT_NO_HISTORY = False
-DEFAULT_HISTORY_FILE = '~/.mssh_history'
-DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
-DEFAULT_JSON_MODE = False
-DEFAULT_PRINT_SUCCESS_HOSTS = False
-DEFAULT_GREPPABLE_MODE = False
-DEFAULT_SKIP_UNREACHABLE = True
-DEFAULT_SKIP_HOSTS = ''
-DEFAULT_HOST_FILE = '/etc/hosts'
-DEFAULT_ENCODING = 'utf-8'
-DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
-SSH_STRICT_HOST_KEY_CHECKING = False
-FORCE_TRUECOLOR = False
-ERROR_MESSAGES_TO_IGNORE = [
-	'Pseudo-terminal will not be allocated because stdin is not a terminal',
-	'Connection to .* closed',
-	'Warning: Permanently added',
-	'mux_client_request_session',
-	'disabling multiplexing',
-	'Killed by signal',
-	'Connection reset by peer',
-]
-__DEFAULT_COLOR_PALETTE = {
-	'cyan': (86, 173, 188),
-	'green': (114, 180, 43),
-	'magenta': (140, 107, 200),
-	'red': (196, 38, 94),
-	'white': (227, 227, 221),
-	'yellow': (179, 180, 43),
-	'blue': (106, 126, 200),
-	'bright_black': (102, 102, 102),
-	'bright_blue': (129, 154, 255),
-	'bright_cyan': (102, 217, 239),
-	'bright_green': (126, 226, 46),
-	'bright_magenta': (174, 129, 255),
-	'bright_red': (249, 38, 114),
-	'bright_white': (248, 248, 242),
-	'bright_yellow': (226, 226, 46),
-}
-COLOR_PALETTE = __DEFAULT_COLOR_PALETTE.copy()
-_DEFAULT_CALLED = True
-_DEFAULT_RETURN_UNFINISHED = False
-_DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
-_DEFAULT_NO_START = False
-_etc_hosts = {}
-__ERROR_MESSAGES_TO_IGNORE_REGEX =None
-__DEBUG_MODE = False
-
-#%% Load Config Based Default Global variables
-__configs_from_file = {}
-for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
-	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
-globals().update(__configs_from_file)
-# form the regex from the list
-if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
-	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
-else:
-	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
-if DEFAULT_ENV_FILE:
-	if DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
-		DEFAULT_ENV_FILES.append(DEFAULT_ENV_FILE)
-
-#%% Load mssh Functional Global Variables
-__global_suppress_printout = False
-__mainReturnCode = 0
-__failedHosts = set()
-__wildCharacters = ['*','?','x']
-_no_env = DEFAULT_NO_ENV
-_env_files = DEFAULT_ENV_FILES
-__globalUnavailableHosts = dict()
-__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
-__ipmi_args = DEAFULT_IPMI_ARGS
-__keyPressesIn = [[]]
-_emo = False
-__curses_global_color_pairs = {(-1,-1):1}
-__curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
-__curses_color_table = {}
-__curses_current_color_index = 10
-__max_connections_nofile_limit_supported = 0
-__thread_start_delay = 0
-_encoding = DEFAULT_ENCODING
-__returnZero = DEFAULT_RETURN_ZERO
-__running_threads = set()
-__control_master_string = '''Host *
-  ControlMaster auto
-  ControlPath /run/user/%i/ssh_sockets_%C
-  ControlPersist 3600
-'''
-if __resource_lib_available:
-	# Get the current limits
-	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
-	# Set the soft limit to the hard limit
-	resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
-	__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
-
-#%% Mapping of ANSI 4-bit colors to curses colors
-if __curses_available:
-	ANSI_TO_CURSES_COLOR = {
-		30: curses.COLOR_BLACK,
-		31: curses.COLOR_RED,
-		32: curses.COLOR_GREEN,
-		33: curses.COLOR_YELLOW,
-		34: curses.COLOR_BLUE,
-		35: curses.COLOR_MAGENTA,
-		36: curses.COLOR_CYAN,
-		37: curses.COLOR_WHITE,
-		90: curses.COLOR_BLACK,   # Bright Black (usually gray)
-		91: curses.COLOR_RED,     # Bright Red
-		92: curses.COLOR_GREEN,   # Bright Green
-		93: curses.COLOR_YELLOW,  # Bright Yellow
-		94: curses.COLOR_BLUE,    # Bright Blue
-		95: curses.COLOR_MAGENTA, # Bright Magenta
-		96: curses.COLOR_CYAN,    # Bright Cyan
-		97: curses.COLOR_WHITE    # Bright White
-	}
 #%% ------------ Exportable Help Functions ----------------
-# check if command sshpass is available
-_binPaths = {}
-_binCalled = set(['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id'])
-def check_path(program_name):
-	global __configs_from_file
-	global _binPaths
-	config_key = f'_{program_name}Path'
-	program_path = (
-		__configs_from_file.get(config_key) or
-		globals().get(config_key) or
-		shutil.which(program_name)
-	)
-	if program_path:
-		_binPaths[program_name] = program_path
-		return True
-	return False
-
-[check_path(program) for program in _binCalled]
-
 def find_ssh_key_file(searchPath = DEFAULT_SSH_KEY_SEARCH_PATH):
 	'''
 	Find the ssh public key file
@@ -528,8 +528,7 @@ def find_ssh_key_file(searchPath = DEFAULT_SSH_KEY_SEARCH_PATH):
 		sshKeyPath = searchPath
 	else:
 		sshKeyPath ='~/.ssh'
-	possibleSshKeyFiles = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
-	for sshKeyFile in possibleSshKeyFiles:
+	for sshKeyFile in POSSIBLE_SSH_KEY_FILES:
 		if os.path.exists(os.path.expanduser(os.path.join(sshKeyPath,sshKeyFile))):
 			return os.path.join(sshKeyPath,sshKeyFile)
 	return None
@@ -3357,7 +3356,6 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 
 
 #%% ------------ Stringfy Block ----------------
-
 def formHostStr(host) -> str:
 	"""
 	Forms a comma-separated string of hosts.
@@ -3896,6 +3894,7 @@ def generate_default_config(args):
 		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
 		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
 		'FORCE_TRUECOLOR': args.force_truecolor,
+		'POSSIBLE_SSH_KEY_FILES': POSSIBLE_SSH_KEY_FILES,
 	}
 
 def write_default_config(args,CONFIG_FILE = None, force = False):
@@ -3939,9 +3938,17 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 
 #%% ------------ Argument Processing -----------------
 def get_parser():
-	global _binPaths
-	parser = argparse.ArgumentParser(description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
-								  epilog=f'Found bins: {list(_binPaths.values())}\n Missing bins: {_binCalled - set(_binPaths.keys())}\n Terminal color capability: {get_terminal_color_capability()}\nConfig file chain: {CONFIG_FILE_CHAIN!r}',)
+	parser = argparse.ArgumentParser(
+		description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
+		epilog=(
+			f"Terminal color capability: {get_terminal_color_capability()}\n"
+			f"Found bins: \n{pformat(set(_binPaths.values()))}\n"
+			f"Missing bins: \n{pformat(_binCalled - set(_binPaths.keys()))}\n"
+			f"Config file chain: \n{pformat(CONFIG_FILE_CHAIN)}\n"
+			f"Hosts Env files searched:\n{pformat(DEFAULT_ENV_FILES)}"
+		),
+		formatter_class=argparse.RawTextHelpFormatter,
+	)
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
