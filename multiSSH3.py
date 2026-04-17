@@ -30,15 +30,15 @@ import threading
 import time
 import typing
 import uuid
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict, deque, ChainMap
 from itertools import count, product
 from pprint import pformat
 
 
-version = '6.18'
+version = '6.20'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-04-09'
+COMMIT_DATE = '2026-04-16'
 # TODO: Add terminal TUI
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -70,10 +70,22 @@ DEFAULT_REPEAT = 1
 DEFAULT_INTERVAL = 0
 DEFAULT_IPMI = False
 DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
+DEFAULT_IPMI_USERNAME = 'admin'
+DEFAULT_IPMI_PASSWORD = 'admin'
+DEFAULT_IPMI_ARGS=''
+DEFAULT_IPMI_METHOD = 'ipmitool'
+DEFAULT_IPMI_RETRY_LOCKOUT_TIME = -1
+def get_default_ipmi_definition():
+	return {'interface_ip_prefix': DEFAULT_IPMI_INTERFACE_IP_PREFIX,
+	'username': DEFAULT_IPMI_USERNAME,
+	'password': DEFAULT_IPMI_PASSWORD,
+	'args': DEFAULT_IPMI_ARGS,
+	'ipmi_method': DEFAULT_IPMI_METHOD,
+	'hostname_keyword': '',
+	'retry_lockout_time': DEFAULT_IPMI_RETRY_LOCKOUT_TIME,
+}
+DEFAULT_IPMI_DEFINITIONS = [get_default_ipmi_definition()]
 DEFAULT_INTERFACE_IP_PREFIX = None
-DEFAULT_IPMI_USERNAME = 'ADMIN'
-DEFAULT_IPMI_PASSWORD = ''
-DEAFULT_IPMI_ARGS=''
 DEFAULT_NO_WATCH = False
 DEFAULT_WINDOW_WIDTH = 40
 DEFAULT_WINDOW_HEIGHT = 1
@@ -367,8 +379,6 @@ __wildCharacters = ['*','?','x']
 _no_env = DEFAULT_NO_ENV
 _env_files = DEFAULT_ENV_FILES
 __globalUnavailableHosts = dict()
-__ipmiiInterfaceIPPrefix = DEFAULT_IPMI_INTERFACE_IP_PREFIX
-__ipmi_args = DEAFULT_IPMI_ARGS
 __keyPressesIn = [[]]
 _emo = False
 __curses_global_color_pairs = {(-1,-1):1}
@@ -405,7 +415,7 @@ if __resource_lib_available:
 	resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
 	__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
 _binPaths = {}
-_binCalled = set(['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id'])
+_binCalled = set(['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id','redfishtool'])
 def check_path(program_name):
 	global __configs_from_file
 	global _binPaths
@@ -1789,7 +1799,7 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
 
-def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = ...):
+def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS),ipmi_definitions_list = ...):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
 
@@ -1804,45 +1814,67 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 	'''
 	global _emo
 	global __ERROR_MESSAGES_TO_IGNORE_REGEX
-	global __ipmiiInterfaceIPPrefix
 	global _binPaths
 	global __DEBUG_MODE
-	global DEFAULT_IPMI_USERNAME
-	global DEFAULT_IPMI_PASSWORD
 	global DEFAULT_USERNAME
 	global DEFAULT_PASSWORD
 	global SSH_STRICT_HOST_KEY_CHECKING
-	global __ipmi_args
-	global DEAFULT_IPMI_ARGS
 	if retry_limit < 0:
 		host.output.append('Error: Retry limit reached!')
 		host.stderr.append('Error: Retry limit reached!')
 		host.returncode = 1
 		return
-	if ipmi_args is ...:
-		ipmi_args = __ipmi_args
-	prePasword = passwds
+	ipmi_definition =  {}
+	username = None
+	sshLocalExtraArgs = []
+	ip_prefix = None
 	try:
-		localExtraArgs = []
-		
 		if not SSH_STRICT_HOST_KEY_CHECKING:
-			localExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
 		if host.identity_file:
-			localExtraArgs += ['-i',host.identity_file]
-		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(localExtraArgs)]
-		host.username = None
+			sshLocalExtraArgs += ['-i',host.identity_file]
+		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(sshLocalExtraArgs)]
 		host.address = host.name
 		if '@' in host.name:
-			host.username, host.address = host.name.rsplit('@',1)
+			username, host.address = host.name.rsplit('@',1)
+		if host.ipmi:
+			if ipmi_definitions_list is ...:
+				ipmi_definitions_list = [ipmi_definition for ipmi_definition in DEFAULT_IPMI_DEFINITIONS if not ipmi_definition.get('hostname_keyword') or str(ipmi_definition.get('hostname_keyword')).strip() in host.name]
+			if not ipmi_definitions_list:
+				host.output.append('Error: Exhausted all matching ipmi definitions!')
+				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
+				host.returncode = 1
+				return
+			ipmi_definition = dict(ChainMap(ipmi_definitions_list.pop(0),get_default_ipmi_definition()))
+			if ipmi_definition.get('ipmi_method') == 'ssh_ipmitool':
+				if not host.command:
+					host.command = 'ipmitool power status'
+				else:
+					host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
+				if username:
+					host.output.append(f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
+					if __DEBUG_MODE:
+						host.stderr.append(f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
+				username = ipmi_definition.get('username',username)
+				if passwds:
+					host.output.append(f'Warning: -p SSH_PASSWORD {passwds} is provided! Using the password from the ipmi definition if provided: {ipmi_definition.get("password")}')
+					if __DEBUG_MODE:
+						host.stderr.append(f'Warning: -p SSH_PASSWORD  {passwds} is provided! Using the password from the ipmi definition if provided: {ipmi_definition.get("password")}')
+				passwds = ipmi_definition.get('password',passwds)
+				if ipmi_definition.get('interface_ip_prefix') and ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
+					host.output.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
+					if __DEBUG_MODE:
+						host.stderr.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
+			else:
+				ip_prefix = ipmi_definition.get('interface_ip_prefix')
 		host.command = replace_magic_strings(host.command,['#HOST#','#HOSTNAME#'],host.address,case_sensitive=False)
-		if host.username:
-			host.command = replace_magic_strings(host.command,['#USER#','#USERNAME#'],host.username,case_sensitive=False)
+		if username:
+			host.command = replace_magic_strings(host.command,['#USER#','#USERNAME#'],username,case_sensitive=False)
 		else:
 			current_user = getpass.getuser()
 			host.command = replace_magic_strings(host.command,['#USER#','#USERNAME#'],current_user,case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#ID#'],str(id(host)),case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#I#'],str(host.i),case_sensitive=False)
-		host.command = replace_magic_strings(host.command,['#PASSWD#','#PASSWORD#'],passwds,case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#UUID#'],str(host.uuid),case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip),case_sensitive=False)
 		formatedCMD = []
@@ -1852,63 +1884,65 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 			extraargs = [str(arg) for arg in host.extraargs]
 		else:
 			extraargs = []
-		if __ipmiiInterfaceIPPrefix:
-			host.interface_ip_prefix = __ipmiiInterfaceIPPrefix if host.ipmi and not host.interface_ip_prefix else host.interface_ip_prefix
-		if host.interface_ip_prefix:
+		if not ip_prefix:
+			ip_prefix = host.interface_ip_prefix
+		if ip_prefix:
 			try:
 				hostOctets = host.ip.split('.')
-				prefixOctets = host.interface_ip_prefix.split('.')
+				prefixOctets = ip_prefix.split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
-				host.resolvedName = host.username + '@' if host.username else ''
-				host.resolvedName += host.address
 			except Exception:
-				host.resolvedName = host.name
+				host.output.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+				if __DEBUG_MODE:
+					host.stderr.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+		if username:
+			host.resolvedName = username + '@' + host.address
 		else:
-			host.resolvedName = host.name
+			host.resolvedName = host.address
 		if host.resolvedName:
 			host.command = replace_magic_strings(host.command,['#RESOLVEDNAME#','#RESOLVED#'],host.resolvedName,case_sensitive=False)
-		if host.ipmi:
-			if 'ipmitool' in _binPaths:
+			if __DEBUG_MODE:
+				host.stderr.append(f'Resolved name: {host.resolvedName}')
+		if host.ipmi and ipmi_definition.get('ipmi_method') != 'ssh_ipmitool':
+			#{interface_ip_prefix,username,password,args,ipmi_method,hostname_keyword,retry_lockout_time}
+			if ipmi_definition.get('ipmi_method') == 'ipmitool':
+				if 'ipmitool' not in _binPaths:
+					host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
+					if __DEBUG_MODE:
+						host.stderr.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
+					if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
+						ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
+					ipmi_definition['username'] = username
+					ipmi_definition['password'] = passwds
+					ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
+					ipmi_definitions_list.insert(0,ipmi_definition)
+					return run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 				if host.command.startswith('ipmitool '):
 					host.command = host.command.replace('ipmitool ','')
 				elif host.command.startswith(_binPaths['ipmitool']):
 					host.command = host.command.replace(_binPaths['ipmitool'],'')
-				if not host.username or host.username == DEFAULT_USERNAME:
-					if DEFAULT_IPMI_USERNAME:
-						host.username = DEFAULT_IPMI_USERNAME
-					elif DEFAULT_USERNAME:
-						host.username = DEFAULT_USERNAME
-					else:
-						host.username = 'ADMIN'
-				if not passwds or passwds == DEFAULT_PASSWORD:
-					if DEFAULT_IPMI_PASSWORD:
-						passwds = DEFAULT_IPMI_PASSWORD
-					elif DEFAULT_PASSWORD:
-						passwds = DEFAULT_PASSWORD
-					else:
-						host.output.append('Warning: Password not provided for ipmi! Using a default password `admin`.')
-						passwds = 'admin'
 				if not host.command:
 					host.command = 'power status'
+				ipmi_args = ipmi_definition.get('args','')
 				if 'sh' in _binPaths:
-					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {host.username} -P {passwds} {ipmi_args} {" ".join(extraargs)} {host.command}']
+					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {ipmi_definition.get("username",username)} -P {ipmi_definition.get("password",passwds)} {ipmi_args} {host.command}']
 				else:
-					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {host.username}',f'-P {passwds}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + extraargs + [host.command]
-			elif 'ssh' in _binPaths:
-				host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
-				if __DEBUG_MODE:
-					host.stderr.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
-				host.ipmi = False
-				host.interface_ip_prefix = None
+					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}',f'-P {ipmi_definition.get("password",passwds)}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
+			elif ipmi_definition.get('ipmi_method') == 'redfish':
+				if host.command.startswith('redfishtool '):
+					host.command = host.command.replace('redfishtool ','')
+				elif host.command.startswith(_binPaths['redfishtool']):
+					host.command = host.command.replace(_binPaths['redfishtool'],'')
 				if not host.command:
-					host.command = 'ipmitool power status'
+					host.command = 'Systems'
+				ipmi_args = ipmi_definition.get('args','')
+				if 'sh' in _binPaths:
+					formatedCMD = [_binPaths['sh'],'-c',f'redfishtool -S Always -a -r {host.address} -u {ipmi_definition.get("username",username)} -p {ipmi_definition.get("password",passwds)} {ipmi_args} {host.command}']
 				else:
-					host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
-				run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
-				return
+					formatedCMD = [_binPaths['redfishtool'],'-S', 'Always','-a','-r',host.address,'-u',ipmi_definition.get("username",username),'-p',ipmi_definition.get("password",passwds)] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
 			else:
-				host.output.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
-				host.stderr.append('Ipmitool not found on the local machine! Please install ipmitool to use ipmi mode.')
+				host.output.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
+				host.stderr.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.returncode = 1
 				return
 		elif host.shell:
@@ -1923,7 +1957,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
+				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 		else:
 			if host.files:
 				if host.scp:
@@ -1956,11 +1990,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 				else:
 					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rp'] + localExtraArgs + extraargs +['--']+fileArgs
+					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
 				else:
 					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
 			else:
-				formatedCMD = [_binPaths['ssh']] + localExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
+				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
 				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
 			elif passwds:
@@ -2077,7 +2111,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 				host.output.append("Warning: Too many open files. retrying...")
 				# Handle the error, e.g., clean up, retry logic, or exit
 				time.sleep(0.1)
-				run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
+				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 			else:
 				# Re-raise the exception if it's not the specific one
 				raise
@@ -2088,39 +2122,47 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7,ipmi_args = 
 			host.stderr.extend(traceback.format_exc().split('\n'))
 			host.output.extend(traceback.format_exc().split('\n'))
 			host.returncode = -1
-	# If using ipmi, we will try again using ssh if ipmi connection is not successful
-	if host.ipmi and host.returncode != 0 and any(['Unable to establish IPMI' in line for line in host.stderr]):
+	# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
+	if host.ipmi and host.returncode != 0:
 		host.returncode = None
-		host.stderr = []
-		if ipmi_args:
-			if DEAFULT_IPMI_ARGS and ipmi_args != DEAFULT_IPMI_ARGS:
-				host.output.append(f'IPMI connection failed with arg {ipmi_args}! Trying DEFAULT_IPMI_ARGS:{DEAFULT_IPMI_ARGS}')
-				if __DEBUG_MODE:
-					host.stderr.append(f'IPMI connection failed with arg {ipmi_args}! Trying DEFAULT_IPMI_ARGS:{DEAFULT_IPMI_ARGS}')
-				ipmi_args = DEAFULT_IPMI_ARGS
-			else:
-				host.output.append(f'IPMI connection failed with arg {ipmi_args}! Trying without args...')
-				if __DEBUG_MODE:
-					host.stderr.append(f'IPMI connection failed with arg {ipmi_args}! Trying without args...')
-				ipmi_args = ''
+		host.output.append('IPMI connection failed! Trying next ipmi definition...')
+		if __DEBUG_MODE:
+			host.stderr.append('IPMI connection failed! Trying next ipmi definition...')
 		else:
-			host.output.append('IPMI connection failed! Trying SSH connection...')
-			if __DEBUG_MODE:
-				host.stderr.append('IPMI connection failed! Trying SSH connection...')
-			host.ipmi = False
-			host.interface_ip_prefix = None
-			host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
-		run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
+			host.stdout = []
+			host.stderr = []
+		if ipmi_definition.get('retry_lockout_time'):
+			try:
+				sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
+				if sleep_seconds >= 0:
+					host.output.append(f'Sleeping for {sleep_seconds} seconds...')
+					if __DEBUG_MODE:
+						host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
+					time.sleep(sleep_seconds)
+			except Exception as e:
+				host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+				if __DEBUG_MODE:
+					host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+				time.sleep(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
+		if ipmi_definition.get('ipmi_method') == 'ipmitool':
+			if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
+				ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
+			ipmi_definition['username'] = username
+			ipmi_definition['password'] = passwds
+			ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
+			ipmi_definitions_list.append(ipmi_definition)
+		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 	# If transfering files, we will try again using scp if rsync connection is not successful
 	elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
 		host.returncode = None
-		host.stderr = []
-		host.stdout = []
 		host.output.append('Rsync connection failed! Trying SCP connection...')
 		if __DEBUG_MODE:
 			host.stderr.append('Rsync connection failed! Trying SCP connection...')
+		else:
+			host.stdout = []
+			host.stderr = []
 		host.scp = True
-		run_command(host,sem,timeout,prePasword,retry_limit=retry_limit - 1,ipmi_args=ipmi_args)
+		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 
 #%% ------------ Start Threading Block ----------------
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
@@ -3378,16 +3420,35 @@ def formHostStr(host) -> str:
 	return ','.join(compact_hostnames(host))
 
 @cache_decorator
-def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,
-						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,skip_hosts = DEFAULT_SKIP_HOSTS,
-						 file_sync = False, error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
-						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY, no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = '', env_files = DEFAULT_ENV_FILES,
-						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
-						 shortend = False) -> str:
+def __formCommandArgStr(shortend = False, **kwargs) -> str:
+	oneonone = kwargs.get('oneonone', DEFAULT_ONE_ON_ONE)
+	timeout = kwargs.get('timeout', DEFAULT_TIMEOUT)
+	password = kwargs.get('password', DEFAULT_PASSWORD)
+	no_watch = kwargs.get('no_watch', DEFAULT_NO_WATCH)
+	json = kwargs.get('json', DEFAULT_JSON_MODE)
+	max_connections = kwargs.get('max_connections', DEFAULT_MAX_CONNECTIONS)
+	file = kwargs.get('file', None)
+	ipmi = kwargs.get('ipmi', DEFAULT_IPMI)
+	interface_ip_prefix = kwargs.get('interface_ip_prefix', DEFAULT_INTERFACE_IP_PREFIX)
+	scp = kwargs.get('scp', DEFAULT_SCP)
+	gather_mode = kwargs.get('gather_mode', False)
+	username = kwargs.get('username', DEFAULT_USERNAME)
+	extraargs = kwargs.get('extraargs', DEFAULT_EXTRA_ARGS)
+	skip_unreachable = kwargs.get('skip_unreachable', DEFAULT_SKIP_UNREACHABLE)
+	no_env = kwargs.get('no_env', DEFAULT_NO_ENV)
+	greppable = kwargs.get('greppable', DEFAULT_GREPPABLE_MODE)
+	skip_hosts = kwargs.get('skip_hosts', DEFAULT_SKIP_HOSTS)
+	file_sync = kwargs.get('file_sync', False)
+	error_only = kwargs.get('error_only', DEFAULT_ERROR_ONLY)
+	identity_file = kwargs.get('identity_file', DEFAULT_IDENTITY_FILE)
+	copy_id = kwargs.get('copy_id', False)
+	unavailable_host_expiry = kwargs.get('unavailable_host_expiry', DEFAULT_UNAVAILABLE_HOST_EXPIRY)
+	no_history = kwargs.get('no_history', DEFAULT_NO_HISTORY)
+	history_file = kwargs.get('history_file', DEFAULT_HISTORY_FILE)
+	env_file = kwargs.get('env_file', '')
+	env_files = kwargs.get('env_files', DEFAULT_ENV_FILES)
+	repeat = kwargs.get('repeat', DEFAULT_REPEAT)
+	interval = kwargs.get('interval', DEFAULT_INTERVAL)
 	argsList = []
 	if oneonone:
 		argsList.append('--oneonone' if not shortend else '-11')
@@ -3449,37 +3510,22 @@ def __formCommandArgStr(oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT
 		argsList.append('--file_sync' if not shortend else '-fs')
 	return ' '.join(argsList)
 
-def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 file = None,ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
-						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
-						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
-						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY, identity_file = DEFAULT_IDENTITY_FILE,
-						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = DEFAULT_NO_HISTORY,
-						 history_file = DEFAULT_HISTORY_FILE, env_file = '', env_files = [],
-						 repeat = DEFAULT_REPEAT,interval = DEFAULT_INTERVAL,
-						 shortend = False,tabSeperated = False,**kwargs) -> str:
-	_ = called
-	_ = return_unfinished
-	_ = will_update_unreachable_hosts
-	_ = no_start
-	_ = window_width
-	_ = window_height
-	_ = single_window
+def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSeperated = False,**kwargs) -> str:
+	# Allow explicit kwargs to override base parameters when forwarding dicts.
+	hosts = kwargs.get('hosts', hosts)
+	commands = kwargs.get('commands', commands)
+	shortend = kwargs.get('shortend', shortend)
+	tabSeperated = kwargs.get('tabSeperated', tabSeperated)
 	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
 	hostStr = formHostStr(hosts)
-	file = frozenset(file) if file else None
-	argsStr = __formCommandArgStr(oneonone = oneonone, timeout = timeout,password = password,
-						 no_watch = no_watch,json = json,max_connections=max_connections,
-						 file = file,ipmi = ipmi,interface_ip_prefix = interface_ip_prefix,
-						 scp=scp,gather_mode = gather_mode,username=username,extraargs=extraargs,skip_unreachable=skip_unreachable,
-						 no_env=no_env, greppable=greppable,skip_hosts = skip_hosts, 
-						 file_sync = file_sync,error_only = error_only, identity_file = identity_file,
-						 copy_id = copy_id, unavailable_host_expiry =unavailable_host_expiry,no_history = no_history,
-						 history_file = history_file, env_file = env_file, env_files = env_files,
-						 repeat = repeat,interval = interval,
-						 shortend = shortend)
+	commandArgKwargs = dict(kwargs)
+	commandArgKwargs.pop('hosts', None)
+	commandArgKwargs.pop('commands', None)
+	commandArgKwargs.pop('shortend', None)
+	commandArgKwargs.pop('tabSeperated', None)
+	if commandArgKwargs.get('file'):
+		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
+	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
 	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in format_commands(commands)]
 	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
 	filePath = os.path.abspath(__file__)
@@ -3503,15 +3549,11 @@ def record_command_history(kwargs):
 	global __global_suppress_printout
 	global __DEBUG_MODE
 	try:
-		history_file = os.path.expanduser(kwargs.get('history_file', DEFAULT_HISTORY_FILE))
-		import inspect
-		sig = inspect.signature(getStrCommand)
-		wanted = {
-			name: kwargs[name]
-			for name in sig.parameters
-			if name in kwargs
-		}
-		strCommand = getStrCommand(**wanted,shortend=True,tabSeperated=True)
+		historyKwargs = dict(kwargs)
+		historyKwargs['shortend'] = True
+		historyKwargs['tabSeperated'] = True
+		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
+		strCommand = getStrCommand(**historyKwargs)
 		with open(history_file, 'a') as f:
 			# it follows <timestamp>\t<strCommand>\n
 			f.write(f'{int(time.time())}\t{strCommand}\n')
@@ -3867,10 +3909,13 @@ def generate_default_config(args):
 		'DEFAULT_INTERVAL': args.interval,
 		'DEFAULT_IPMI': args.ipmi,
 		'DEFAULT_IPMI_INTERFACE_IP_PREFIX': args.ipmi_interface_ip_prefix,
-		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
 		'DEFAULT_IPMI_USERNAME': args.ipmi_username,
 		'DEFAULT_IPMI_PASSWORD': args.ipmi_password,
 		'DEAFULT_IPMI_ARGS': args.ipmi_args,
+		'DEFAULT_IPMI_METHOD': args.ipmi_method,
+		'DEFAULT_IPMI_RETRY_LOCKOUT_TIME': args.ipmi_retry_lockout_time,
+		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
+		'DEFAULT_IPMI_DEFINITIONS': DEFAULT_IPMI_DEFINITIONS,
 		'DEFAULT_NO_WATCH': args.no_watch,
 		'DEFAULT_WINDOW_WIDTH': args.window_width,
 		'DEFAULT_WINDOW_HEIGHT': args.window_height,
@@ -3891,10 +3936,7 @@ def generate_default_config(args):
 		'DEFAULT_HOST_FILE': args.host_file,
 		'DEFAULT_ENCODING': args.encoding,
 		'DEFAULT_DIFF_DISPLAY_THRESHOLD': args.diff_display_threshold,
-		'SSH_STRICT_HOST_KEY_CHECKING': SSH_STRICT_HOST_KEY_CHECKING,
-		'ERROR_MESSAGES_TO_IGNORE': ERROR_MESSAGES_TO_IGNORE,
 		'FORCE_TRUECOLOR': args.force_truecolor,
-		'POSSIBLE_SSH_KEY_FILES': POSSIBLE_SSH_KEY_FILES,
 	}
 
 def write_default_config(args,CONFIG_FILE = None, force = False):
@@ -3951,11 +3993,11 @@ def get_parser():
 	)
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
-	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
-	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
+	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
+	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts via ssh, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
 	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})', default=DEFAULT_USE_KEY)
-	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
+	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
 	parser.add_argument('-s','-fs','--file_sync',nargs='?', action='append', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})',const=True, default=[DEFAULT_FILE_SYNC])
@@ -3971,7 +4013,9 @@ def get_parser():
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})", default=DEFAULT_INTERFACE_IP_PREFIX)
 	parser.add_argument('-iu','--ipmi_username', type=str,help=f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})',default=DEFAULT_IPMI_USERNAME)
 	parser.add_argument('-ip','--ipmi_password', type=str,help=f'The password to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_PASSWORD})',default=DEFAULT_IPMI_PASSWORD)
-	parser.add_argument('-ia','--ipmi_args',type=str,help=f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: {DEAFULT_IPMI_ARGS})',default=DEAFULT_IPMI_ARGS)
+	parser.add_argument('-ia','--ipmi_args',type=str,help=f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_ARGS})',default=DEFAULT_IPMI_ARGS)
+	parser.add_argument('-im','--ipmi_method', type=str,help=f'The method to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_METHOD})',default=DEFAULT_IPMI_METHOD)
+	parser.add_argument('-irlt','--ipmi_retry_lockout_time', type=int,help=f'The time in seconds to retry the lockout of the hosts via ipmi. (default: {DEFAULT_IPMI_RETRY_LOCKOUT_TIME})',default=DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
 	parser.add_argument('-S',"-q","-nw","--no_watch", action='store_true', help=f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
 	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_WINDOW_WIDTH})", default=DEFAULT_WINDOW_WIDTH)
 	parser.add_argument("-wh",'--window_height', type=int, help=f"The minimum line height of the curses window. (default: {DEFAULT_WINDOW_HEIGHT})", default=DEFAULT_WINDOW_HEIGHT)
@@ -4008,8 +4052,6 @@ def get_parser():
 	return parser
 
 def process_args(args = None):
-	global DEFAULT_IPMI_USERNAME
-	global DEFAULT_IPMI_PASSWORD
 	global __configs_from_file
 	cfp = 	parser = argparse.ArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
@@ -4067,7 +4109,27 @@ def process_args(args = None):
 	if args.unavailable_host_expiry <= 0:
 		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
 		args.unavailable_host_expiry = 10
-
+	default_ipmi_definition = get_default_ipmi_definition()
+	while DEFAULT_IPMI_DEFINITIONS:
+		last_definition = DEFAULT_IPMI_DEFINITIONS.pop()
+		if last_definition != default_ipmi_definition:
+			DEFAULT_IPMI_DEFINITIONS.append(last_definition)
+			break
+	fields = [
+		('interface_ip_prefix', args.ipmi_interface_ip_prefix),
+		('username', args.ipmi_username),
+		('password', args.ipmi_password),
+		('args', args.ipmi_args),
+		('ipmi_method', args.ipmi_method),
+		('retry_lockout_time', args.ipmi_retry_lockout_time),
+	]
+	modified = any(val != default_ipmi_definition[key] for key, val in fields)
+	for key, val in fields:
+		default_ipmi_definition[key] = val
+	if modified:
+		DEFAULT_IPMI_DEFINITIONS.insert(0, default_ipmi_definition)
+	else:
+		DEFAULT_IPMI_DEFINITIONS.append(default_ipmi_definition)
 	return args
 
 def process_config_file(args):
@@ -4150,19 +4212,14 @@ def process_control_master_config(args):
 
 def set_global_with_args(args):
 	global _emo
-	global __ipmiiInterfaceIPPrefix
 	global _env_files
 	global __DEBUG_MODE
 	global _encoding
 	global __returnZero
-	global DEFAULT_IPMI_USERNAME
-	global DEFAULT_IPMI_PASSWORD
 	global DEFAULT_DIFF_DISPLAY_THRESHOLD
 	global FORCE_TRUECOLOR
 	global DEFAULT_HOST_FILE
-	global __ipmi_args
 	_emo = False
-	__ipmiiInterfaceIPPrefix = args.ipmi_interface_ip_prefix
 	if args.env_file:
 		_env_files = [args.env_file]
 	else:
@@ -4171,15 +4228,10 @@ def set_global_with_args(args):
 	_encoding = args.encoding
 	if args.return_zero:
 		__returnZero = True
-	if args.ipmi_username:
-		DEFAULT_IPMI_USERNAME = args.ipmi_username
-	if args.ipmi_password:
-		DEFAULT_IPMI_PASSWORD = args.ipmi_password
 	DEFAULT_DIFF_DISPLAY_THRESHOLD = args.diff_display_threshold
 	FORCE_TRUECOLOR = args.force_truecolor
 	if args.host_file:
 		DEFAULT_HOST_FILE = args.host_file
-	__ipmi_args = args.ipmi_args
 
 #%% ------------ Wrapper Block ----------------
 def main(args = None):
