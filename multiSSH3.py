@@ -35,7 +35,7 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.20'
+version = '6.21'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-04-16'
@@ -337,6 +337,7 @@ def _get_i():
 
 #%% ------------ Load Defaults ( Config ) File ----------------
 def load_config_file(config_file):
+	global __working_config_file
 	'''
 	Load the config file to global variables
 
@@ -351,6 +352,7 @@ def load_config_file(config_file):
 	try:
 		with open(config_file,'r') as f:
 			config = json.load(f)
+		__working_config_file = config_file
 	except Exception as e:
 		eprint(f"Error: Cannot load config file {config_file!r}: {e}")
 		return {}
@@ -358,6 +360,7 @@ def load_config_file(config_file):
 
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
+__working_config_file = './multiSSH3.config.json'
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
 globals().update(__configs_from_file)
@@ -4035,9 +4038,9 @@ def get_parser():
 	su_group.add_argument('-a',"-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument('-uhe','--unavailable_host_expiry', type=int, help=f"Time in seconds to expire the unavailable hosts (default: {DEFAULT_UNAVAILABLE_HOST_EXPIRY})", default=DEFAULT_UNAVAILABLE_HOST_EXPIRY)
 	parser.add_argument('-X',"-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
-	parser.add_argument('--generate_config_file', action='store_true', help='Restore / generate using the build-in default configs with default config file chain and command line argument to write to --config_file / stdout')
-	parser.add_argument('--config_file', type=str,nargs='?', help='Additional config file to apply, Warning: will over write CLI options. When using with generate_config_file, will store the resulting config file at this location. Use without a path will use multiSSH3.config.json',const='multiSSH3.config.json',default=None)
-	parser.add_argument('--store_config_file',type = str,nargs='?',help='Refresh / store the specified config file with new params and command line args into the config file. Defaults to ./multiSSH3.config.json or --config_file if supplied.',const=...)
+	parser.add_argument('--generate_config_file', action='store_true', help='Restore / generate using the build-in default configs with default config file chain and command line argument to write to --store_config_file / stdout')
+	parser.add_argument('--config_file', type=str,nargs='?', help='Load additional config file to apply, Warning: will over write CLI options. Use without a path will use multiSSH3.config.json',const='multiSSH3.config.json',default=None)
+	parser.add_argument('--store_config_file',type = str,nargs='?',help=f'Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: {__working_config_file}',const=...)
 	parser.add_argument('--debug', action='store_true', help='Print debug information')
 	parser.add_argument('-ci','--copy_id', action='store_true', help='Copy the ssh id to the hosts')
 	parser.add_argument('-I','-nh','--no_history', action='store_true', help=f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}', default=DEFAULT_NO_HISTORY)
@@ -4055,10 +4058,9 @@ def process_args(args = None):
 	global __configs_from_file
 	cfp = 	parser = argparse.ArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
-	cfp.add_argument('--generate_config_file', action='store_true')
 	try:
 		cfpa, args = cfp.parse_known_args(args)
-		if cfpa.config_file and not cfpa.generate_config_file:
+		if cfpa.config_file:
 			if os.path.exists(cfpa.config_file):
 				configs = load_config_file(os.path.expanduser(cfpa.config_file))
 				globals().update(configs)
@@ -4084,7 +4086,6 @@ def process_args(args = None):
 			args.commands += unknown
 	try:
 		args.config_file = cfpa.config_file
-		args.generate_config_file = cfpa.generate_config_file
 	except Exception:
 		pass
 	if args.script:
@@ -4134,19 +4135,20 @@ def process_args(args = None):
 
 def process_config_file(args):
 	global __configs_from_file
+	global __working_config_file
 	if args.generate_config_file or args.store_config_file:
 		if args.store_config_file:
 			if args.store_config_file is ...:
-				configFileToWriteTo = args.config_file if args.config_file else './multiSSH3.config.json'
+				configFileToWriteTo = __working_config_file
 			else:
 				configFileToWriteTo = args.store_config_file
 		else:
-			configFileToWriteTo = args.config_file
-		write_default_config(args,configFileToWriteTo,force=args.store_config_file)
+			configFileToWriteTo = None
+		write_default_config(args,configFileToWriteTo,force=args.generate_config_file)
 		if not args.commands and not args.file:
 			if configFileToWriteTo:
 				with open(configFileToWriteTo,'r') as f:
-					eprint(f"Config file content: \n{f.read()}")
+					eprint(f"Config file {configFileToWriteTo} content: \n{f.read()}")
 			_exit_with_code(0)
 	return args
 
