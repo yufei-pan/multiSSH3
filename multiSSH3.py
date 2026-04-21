@@ -29,16 +29,16 @@ import textwrap
 import threading
 import time
 import typing
-import uuid
+from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap
 from itertools import count, product
 from pprint import pformat
 
 
-version = '6.21'
+version = '6.22'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-04-16'
+COMMIT_DATE = '2026-04-21'
 # TODO: Add terminal TUI
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -458,7 +458,7 @@ if __curses_available:
 
 #%% ------------ Host Object ----------------
 class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=uuid.uuid4(),ip = None):
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=...,ip = None):
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -478,7 +478,7 @@ class Host:
 		self.resolvedName = None # the resolved IP address of the host
 		# also store a globally unique integer i from 0
 		self.i = i if i != -1 else _get_i()
-		self.uuid = uuid
+		self.uuid = uuid if uuid is not ... else uuid4()
 		self.identity_file = identity_file
 		self.ip = ip if ip else getIP(name)
 		self.current_color_pair = [-1, -1, 1]
