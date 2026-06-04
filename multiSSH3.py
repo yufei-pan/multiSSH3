@@ -35,10 +35,10 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.22'
+version = '6.23'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-04-21'
+COMMIT_DATE = '2026-06-01'
 # TODO: Add terminal TUI
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -3383,10 +3383,11 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 					for hostname, expTime in unavailableHosts.items():
 						if hostname not in oldDic or oldDic[hostname] < expTime:
 							oldDic[hostname] = expTime
-					with open(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),'w') as f:
+					newFileName = os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.' + uuid4().hex)
+					with open(newFileName,'w') as f:
 						for key, value in oldDic.items():
 							f.write(f'{key},{value}\n')
-					os.replace(os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.new'),os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'))
+					os.replace(newFileName,os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'))
 			except Exception as e:
 				eprint(f'Error writing to temporary file: {e!r}')
 				import traceback
