@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import shutil
 import subprocess
@@ -13,16 +14,45 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MULTISSH3_PY = PACKAGE_ROOT / "multiSSH3.py"
 
 DEFAULT_LOOPBACK_HOSTS = ["127.0.0.1", "127.0.0.2", "127.0.0.3"]
+LOOPBACK_NET = ipaddress.ip_network("127.0.0.0/8")
+
+
+def _validate_loopback_host(host):
+	addr = ipaddress.ip_address(host.strip())
+	if addr not in LOOPBACK_NET:
+		raise ValueError(f"MSSH_TEST_HOSTS entry {host!r} is outside 127.0.0.0/8")
+	return str(addr)
 
 
 def parse_mssh_test_hosts():
 	raw = os.environ.get("MSSH_TEST_HOSTS", "").strip()
 	if not raw:
 		return list(DEFAULT_LOOPBACK_HOSTS)
-	return [h.strip() for h in raw.split(",") if h.strip()]
+	hosts = []
+	for entry in raw.split(","):
+		entry = entry.strip()
+		if not entry:
+			continue
+		try:
+			hosts.append(_validate_loopback_host(entry))
+		except ValueError as exc:
+			raise ValueError(f"Invalid MSSH_TEST_HOSTS entry: {exc}") from exc
+	return hosts
 
 
-def ssh_localhost_works():
+def _real_tty_available():
+	real_stdout = getattr(sys, "__stdout__", None)
+	if real_stdout is not None and real_stdout.isatty():
+		return True
+	try:
+		fd = os.open("/dev/tty", os.O_RDWR)
+		os.close(fd)
+		return True
+	except OSError:
+		return False
+
+
+def ssh_host_works(host):
 	ssh = shutil.which("ssh")
 	if not ssh:
 		return False
@@ -34,7 +64,7 @@ def ssh_localhost_works():
 				"-o", "ConnectTimeout=2",
 				"-o", "StrictHostKeyChecking=no",
 				"-o", "UserKnownHostsFile=/dev/null",
-				"127.0.0.1",
+				host,
 				"true",
 			],
 			capture_output=True,
@@ -45,13 +75,23 @@ def ssh_localhost_works():
 		return False
 
 
+def ssh_hosts_works(hosts):
+	return bool(hosts) and all(ssh_host_works(host) for host in hosts)
+
+
+def ssh_localhost_works():
+	return ssh_host_works("127.0.0.1")
+
+
 def tty_or_curses_ok():
 	try:
 		import curses
-		if not sys.stdout.isatty():
+		if not _real_tty_available():
 			return False
-		# Soft probe: import succeeds and we have a tty
-		return hasattr(curses, "wrapper")
+		if not hasattr(curses, "wrapper"):
+			return False
+		curses.setupterm()
+		return curses.tigetnum("cols") > 0
 	except Exception:
 		return False
 
@@ -113,7 +153,7 @@ def no_hostname_validation(monkeypatch):
 
 @pytest.fixture(scope="session")
 def _ssh_probe():
-	return ssh_localhost_works()
+	return ssh_hosts_works(parse_mssh_test_hosts())
 
 
 @pytest.fixture
