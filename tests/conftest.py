@@ -40,15 +40,37 @@ def parse_mssh_test_hosts():
 	return hosts
 
 
-def _real_tty_available():
+def _real_tty_fd():
 	real_stdout = getattr(sys, "__stdout__", None)
 	if real_stdout is not None and real_stdout.isatty():
-		return True
+		return real_stdout.fileno(), None
 	try:
 		fd = os.open("/dev/tty", os.O_RDWR)
-		os.close(fd)
-		return True
+		return fd, fd
 	except OSError:
+		return None, None
+
+
+def _real_tty_available():
+	fd, _ = _real_tty_fd()
+	return fd is not None
+
+
+def tty_or_curses_ok():
+	try:
+		import curses
+		fd, close_fd = _real_tty_fd()
+		if fd is None:
+			return False
+		if not hasattr(curses, "wrapper"):
+			return False
+		try:
+			curses.setupterm(fd=fd)
+			return curses.tigetnum("cols") > 0
+		finally:
+			if close_fd is not None:
+				os.close(close_fd)
+	except Exception:
 		return False
 
 
@@ -81,19 +103,6 @@ def ssh_hosts_works(hosts):
 
 def ssh_localhost_works():
 	return ssh_host_works("127.0.0.1")
-
-
-def tty_or_curses_ok():
-	try:
-		import curses
-		if not _real_tty_available():
-			return False
-		if not hasattr(curses, "wrapper"):
-			return False
-		curses.setupterm()
-		return curses.tigetnum("cols") > 0
-	except Exception:
-		return False
 
 
 def run_cli(args, timeout=30, check=False):

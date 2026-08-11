@@ -55,12 +55,14 @@ def test_ssh_hosts_works_requires_every_host(monkeypatch):
 
 def test_tty_or_curses_ok_uses_real_terminal(monkeypatch):
 	monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
-	monkeypatch.setattr(sys.__stdout__, "isatty", lambda: True)
+	monkeypatch.setattr("tests.conftest._real_tty_fd", lambda: (42, None))
+
+	setupterm_fds = []
 
 	class FakeCurses:
 		@staticmethod
-		def setupterm():
-			return None
+		def setupterm(term=None, fd=-1):
+			setupterm_fds.append(fd)
 
 		@staticmethod
 		def tigetnum(name):
@@ -70,6 +72,7 @@ def test_tty_or_curses_ok_uses_real_terminal(monkeypatch):
 
 	monkeypatch.setitem(sys.modules, "curses", FakeCurses())
 	assert tty_or_curses_ok() is True
+	assert setupterm_fds == [42]
 
 
 def test_tty_or_curses_ok_false_without_real_tty(monkeypatch):
