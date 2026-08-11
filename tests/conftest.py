@@ -51,11 +51,6 @@ def _real_tty_fd():
 		return None, None
 
 
-def _real_tty_available():
-	fd, _ = _real_tty_fd()
-	return fd is not None
-
-
 def tty_or_curses_ok():
 	try:
 		import curses

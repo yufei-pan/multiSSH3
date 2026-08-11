@@ -76,7 +76,5 @@ def test_tty_or_curses_ok_uses_real_terminal(monkeypatch):
 
 
 def test_tty_or_curses_ok_false_without_real_tty(monkeypatch):
-	monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
-	monkeypatch.setattr(sys.__stdout__, "isatty", lambda: False)
-	monkeypatch.setattr("tests.conftest._real_tty_available", lambda: False)
+	monkeypatch.setattr("tests.conftest._real_tty_fd", lambda: (None, None))
 	assert tty_or_curses_ok() is False
