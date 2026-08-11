@@ -35,16 +35,26 @@ def test_run_echo_localhost(ssh_mode, local_ssh_hosts, fake_host, monkeypatch):
 
 	host = fake_host("mock-a", "echo hi")
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	popen_calls = []
+
+	def fake_popen(argv, **kwargs):
+		popen_calls.append((argv, kwargs))
+		return FakeProc(stdout=b"hi\n")
+
 	monkeypatch.setattr(
 		multiSSH3.subprocess,
 		"Popen",
-		lambda *args, **kwargs: FakeProc(stdout=b"hi\n"),
+		fake_popen,
 	)
 
 	multiSSH3.run_command(host, sem, timeout=5)
 
 	assert host.returncode == 0
 	assert any("hi" in line for line in host.stdout)
+	assert len(popen_calls) == 1
+	argv, _kwargs = popen_calls[0]
+	assert argv[0] == "ssh"
+	assert argv[-3:] == ["--", "mock-a", "echo hi"]
 
 
 @pytest.mark.live_ssh
