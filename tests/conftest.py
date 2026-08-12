@@ -139,7 +139,7 @@ def restore_module_globals():
 	for k, v in saved.items():
 		setattr(multiSSH3, k, v if k != "__failedHosts" else set(v))
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
-	multiSSH3.join_threads(timeout=2)
+	multiSSH3.join_threads(multiSSH3.__running_threads, timeout=2)
 	_clear_expand_caches()
 
 
@@ -230,9 +230,3 @@ class CursesHarness:
 def curses_harness():
 	mode = "live" if tty_or_curses_ok() else "stub"
 	return CursesHarness(mode)
-
-
-def pytest_configure(config):
-	config.addinivalue_line("markers", "live_ssh: exercises real SSH when available")
-	config.addinivalue_line("markers", "live_tui: exercises real curses/tty when available")
-	config.addinivalue_line("markers", "smoke_optional: skip if optional binaries missing")

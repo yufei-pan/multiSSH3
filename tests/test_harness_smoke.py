@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from tests.conftest import (
+from conftest import (
 	parse_mssh_test_hosts,
 	run_cli,
 	ssh_hosts_works,
@@ -17,7 +17,8 @@ def test_version_cli():
 	assert "6." in (r.stdout + r.stderr)
 
 
-def test_parse_hosts_default():
+def test_parse_hosts_default(monkeypatch):
+	monkeypatch.delenv("MSSH_TEST_HOSTS", raising=False)
 	hosts = parse_mssh_test_hosts()
 	assert "127.0.0.1" in hosts
 	assert all(h.startswith("127.") for h in hosts)
@@ -48,14 +49,14 @@ def test_ssh_hosts_works_requires_every_host(monkeypatch):
 	def fake_ssh_host_works(host):
 		return host == "127.0.0.1"
 
-	monkeypatch.setattr("tests.conftest.ssh_host_works", fake_ssh_host_works)
+	monkeypatch.setattr("conftest.ssh_host_works", fake_ssh_host_works)
 	assert ssh_hosts_works(["127.0.0.1"]) is True
 	assert ssh_hosts_works(["127.0.0.1", "127.0.0.2"]) is False
 
 
 def test_tty_or_curses_ok_uses_real_terminal(monkeypatch):
 	monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
-	monkeypatch.setattr("tests.conftest._real_tty_fd", lambda: (42, None))
+	monkeypatch.setattr("conftest._real_tty_fd", lambda: (42, None))
 
 	setupterm_fds = []
 
@@ -76,5 +77,5 @@ def test_tty_or_curses_ok_uses_real_terminal(monkeypatch):
 
 
 def test_tty_or_curses_ok_false_without_real_tty(monkeypatch):
-	monkeypatch.setattr("tests.conftest._real_tty_fd", lambda: (None, None))
+	monkeypatch.setattr("conftest._real_tty_fd", lambda: (None, None))
 	assert tty_or_curses_ok() is False

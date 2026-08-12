@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import multiSSH3
-from tests.conftest import run_cli
+from conftest import run_cli
 
 
 def test_version_flag():
