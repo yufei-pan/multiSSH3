@@ -134,3 +134,61 @@ def test_run_on_hosts_username_prefix(monkeypatch):
 		will_update_unreachable_hosts=False,
 	)
 	assert hosts[0].name.startswith("bob@") or "bob" in hosts[0].name
+
+
+def test_file_sync_missing_globs_raises_when_called(monkeypatch, tmp_path):
+	_mock_run(monkeypatch)
+	missing = tmp_path / "does-not-exist-*.txt"
+	try:
+		multiSSH3.run_command_on_hosts(
+			hosts="mock-a",
+			commands=str(tmp_path / "dest"),
+			file=[str(missing)],
+			file_sync=True,
+			no_watch=True,
+			quiet=True,
+			no_history=True,
+			called=True,
+			will_update_unreachable_hosts=False,
+		)
+		assert False, "expected MultiSSHError"
+	except multiSSH3.MultiSSHError as e:
+		assert e.code == 66
+
+
+def test_oneonone_count_mismatch_raises_when_called(monkeypatch):
+	_mock_run(monkeypatch)
+	try:
+		multiSSH3.run_command_on_hosts(
+			hosts="mock-a,mock-b",
+			commands=["echo only-one"],
+			oneonone=True,
+			no_watch=True,
+			quiet=True,
+			no_history=True,
+			called=True,
+			will_update_unreachable_hosts=False,
+		)
+		assert False, "expected MultiSSHError"
+	except multiSSH3.MultiSSHError as e:
+		assert e.code == 255
+
+
+def test_file_sync_missing_globs_exits_when_cli(monkeypatch, tmp_path):
+	import pytest
+
+	_mock_run(monkeypatch)
+	missing = tmp_path / "does-not-exist-*.txt"
+	with pytest.raises(SystemExit) as ei:
+		multiSSH3.run_command_on_hosts(
+			hosts="mock-a",
+			commands=str(tmp_path / "dest"),
+			file=[str(missing)],
+			file_sync=True,
+			no_watch=True,
+			quiet=True,
+			no_history=True,
+			called=False,
+			will_update_unreachable_hosts=False,
+		)
+	assert ei.value.code == 66

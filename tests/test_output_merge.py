@@ -108,3 +108,33 @@ def test_generate_output_quiet_filters_success(fake_host):
 	out = multiSSH3.generate_output([ok, bad], greppable=True, quiet=True)
 	assert "fail" in out
 	assert "127.0.0.1" not in out
+
+
+def test_generate_output_errors_only_alias(fake_host):
+	ok = fake_host("127.0.0.1", "echo")
+	ok.stdout = ["ok"]
+	ok.returncode = 0
+	bad = fake_host("127.0.0.2", "false")
+	bad.stdout = ["fail"]
+	bad.returncode = 1
+	out = multiSSH3.generate_output([ok, bad], greppable=True, errors_only=True)
+	assert "fail" in out
+	assert "127.0.0.1" not in out
+
+
+def test_generate_output_quiet_still_works_with_errors_only_default(fake_host):
+	"""Existing quiet= callers must keep filtering; errors_only=None defers to quiet."""
+	ok = fake_host("127.0.0.1", "echo")
+	ok.stdout = ["ok"]
+	ok.returncode = 0
+	out = multiSSH3.generate_output([ok], usejson=True, quiet=True)
+	assert "Success" in out
+
+
+def test_generate_output_errors_only_false_overrides_quiet_false(fake_host):
+	ok = fake_host("127.0.0.1", "echo")
+	ok.stdout = ["ok"]
+	ok.returncode = 0
+	out = multiSSH3.generate_output([ok], usejson=True, quiet=False, errors_only=False)
+	assert "ok" in out
+	assert "127.0.0.1" in out

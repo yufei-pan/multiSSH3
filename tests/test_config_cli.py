@@ -34,3 +34,16 @@ def test_malformed_config_returns_empty(tmp_path, capsys):
 
 def test_missing_config_returns_empty(tmp_path):
 	assert multiSSH3.load_config_file(str(tmp_path / "nope.json")) == {}
+
+
+def test_apply_config_key_compat_deafult_ipmi_args():
+	cfg = {"DEAFULT_IPMI_ARGS": "-I lanplus"}
+	multiSSH3.apply_config_key_compat(cfg)
+	assert cfg["DEFAULT_IPMI_ARGS"] == "-I lanplus"
+	assert cfg["DEAFULT_IPMI_ARGS"] == "-I lanplus"
+
+
+def test_apply_config_key_compat_prefers_correct_key():
+	cfg = {"DEAFULT_IPMI_ARGS": "old", "DEFAULT_IPMI_ARGS": "new"}
+	multiSSH3.apply_config_key_compat(cfg)
+	assert cfg["DEFAULT_IPMI_ARGS"] == "new"

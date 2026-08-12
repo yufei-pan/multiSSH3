@@ -73,3 +73,5 @@ def test_generate_default_config_keys():
 	assert cfg["DEFAULT_HOSTS"] == "127.0.0.1"
 	assert "DEFAULT_TIMEOUT" in cfg
 	assert cfg["AUTHOR"] == multiSSH3.AUTHOR
+	assert "DEFAULT_IPMI_ARGS" in cfg
+	assert "DEAFULT_IPMI_ARGS" not in cfg

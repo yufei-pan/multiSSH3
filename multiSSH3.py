@@ -35,10 +35,10 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.23'
+version = '6.24'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-06-01'
+COMMIT_DATE = '2026-08-11'
 # TODO: Add terminal TUI
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -222,6 +222,27 @@ def _exit_with_code(code, message=None):
 		code = 0
 	sys.exit(code)
 
+
+class MultiSSHError(RuntimeError):
+	'''Raised for fatal errors when multiSSH3 is used as a library (called=True).'''
+	def __init__(self, message, code=1):
+		super().__init__(message)
+		self.code = code
+
+
+def _abort(code, message=None, *, called=True):
+	'''
+	Abort execution: raise MultiSSHError for library callers, or exit the process for CLI.
+
+	When run_command_on_hosts(..., called=True) hits a fatal condition, prefer raising
+	so embedders are not killed by sys.exit. CLI (called=False / main) still exits.
+	'''
+	if called:
+		if message:
+			eprint('Error: ' + message)
+		raise MultiSSHError(message or f'aborted with code {code}', code=code)
+	_exit_with_code(code, message)
+
 def signal_handler(sig, frame):
 	'''
 	Handle the Ctrl C signal
@@ -358,11 +379,26 @@ def load_config_file(config_file):
 		return {}
 	return config
 
+
+def apply_config_key_compat(configs):
+	'''
+	Normalize legacy / misspelled config keys in-place.
+
+	Configs written before 6.24 used DEAFULT_IPMI_ARGS (typo). Map it to
+	DEFAULT_IPMI_ARGS when the correct key is absent.
+	'''
+	if not configs:
+		return configs
+	if 'DEAFULT_IPMI_ARGS' in configs and 'DEFAULT_IPMI_ARGS' not in configs:
+		configs['DEFAULT_IPMI_ARGS'] = configs['DEAFULT_IPMI_ARGS']
+	return configs
+
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
 __working_config_file = './multiSSH3.config.json'
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
+apply_config_key_compat(__configs_from_file)
 globals().update(__configs_from_file)
 # form the regex from the list
 if __ERROR_MESSAGES_TO_IGNORE_REGEX:
@@ -978,6 +1014,14 @@ def get_terminal_size():
 
 @cache_decorator
 def get_terminal_color_capability():
+	'''
+	Detect the terminal's color capability string: 'None', '8', '16', '256', or '24bit'.
+
+	Note: This function is process-lifetime cached (lru_cache via cache_decorator) with no
+	arguments. The first call's result sticks for the rest of the process even if TERM,
+	COLORTERM, or FORCE_TRUECOLOR change later. That matches one-shot CLI usage; long-lived
+	embeds that mutate the environment should call cache_clear() (when available) first.
+	'''
 	global FORCE_TRUECOLOR
 	if not sys.stdout.isatty():
 		return 'None'
@@ -1582,6 +1626,14 @@ def __expand_hostname(text, validate=True):# -> set:
 
 	Returns:
 		set: A set of expanded hostnames
+
+	Notes (intentional behavior):
+		- Hex-looking ranges (both ends in hexdigits) expand with format(i, 'x'), so results
+		  are lowercase hex (e.g. [A-C] → a,b,c). Prefer [10-12] for decimal when digits alone
+		  would also match hexdigits.
+		- Mixed alphanumeric ranges walk string.digits + string.ascii_letters in that order
+		  (0-9 then A-Z then a-z), so [9-A] yields 9,A and [Z-a] yields Z then a — not a
+		  contiguous Unicode range.
 	'''
 	expandinghosts = [text]
 	expandedhosts = set()
@@ -3089,7 +3141,14 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 	return output
 
 def pre_merge_hosts(hosts):
-	'''Merge hosts with identical outputs.'''
+	'''
+	Merge hosts with identical outputs.
+
+	Note: After merging, the surviving host's `.name` is rewritten to a comma-joined
+	`compact_hostnames(...)` summary of the group (e.g. `node[1-3]`). Callers that need
+	per-host identity after merge should snapshot names beforehand; this rewrite is
+	intentional for compact human-readable summaries.
+	'''
 	output_groups = defaultdict(list)
 	# Group hosts by their output identity
 	for host in hosts:
@@ -3212,9 +3271,27 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 				remaining_hostnames.add(this_hostname)
 	return merge_groups, remaining_hostnames
 
-def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]]):
+def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]], errors_only = None):
+	'''
+	Format Host results for display / return.
+
+	Args:
+		hosts: Host objects to format
+		usejson: Emit JSON list of host dicts
+		greppable: Emit a greppable table
+		quiet: Historical alias for errors_only — when True (and errors_only is
+			None), drop hosts with returncode==0. Kept for API stability; prefer
+			errors_only. Not the same as CLI `--quiet` / suppressing printouts.
+		encoding: Output encoding for user-input display
+		keyPressesIn: Recorded keypress sequences for greppable footers
+		errors_only: When True, drop hosts with returncode==0 and emit only
+			failures (or a short "Success" if none failed). When None (default),
+			defer to quiet. Matches CLI `--error_only` semantics for formatting.
+	'''
+	if errors_only is None:
+		errors_only = quiet
 	color_cap = get_terminal_color_capability()
-	if quiet:
+	if errors_only:
 		# remove hosts with returncode 0
 		hosts = [host for host in hosts if host.returncode != 0]
 		if not hosts:
@@ -3276,7 +3353,7 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			outputs.extend(cmdOut)
 			keyPressesIn[-1].clear()
 		if not outputs:
-			if quiet:
+			if errors_only:
 				if color_cap == 'None':
 					return 'Success'
 				else:
@@ -3304,7 +3381,7 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	global __keyPressesIn
 	for host in hosts:
 		host.output.clear()
-	rtnStr = generate_output(hosts,usejson,greppable,quiet=__global_suppress_printout,encoding=_encoding,keyPressesIn=__keyPressesIn)
+	rtnStr = generate_output(hosts,usejson,greppable,encoding=_encoding,keyPressesIn=__keyPressesIn,errors_only=__global_suppress_printout)
 	if not quiet:
 		print(rtnStr)
 	return rtnStr
@@ -3768,7 +3845,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
 		if not commands:
-			_exit_with_code(0, "Copy id finished, no commands to run")
+			_abort(0, "Copy id finished, no commands to run", called=called)
 	if file and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
@@ -3785,7 +3862,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				except Exception:
 					pathSet.update(glob.glob(file,recursive=True))
 			if not pathSet:
-				_exit_with_code(66, f'No source files at {file!r} are found after resolving globs!')
+				_abort(66, f'No source files at {file!r} are found after resolving globs!', called=called)
 		else:
 			pathSet = set(file)
 		if file_sync:
@@ -3802,7 +3879,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint("Error: the number of commands must be the same as the number of hosts")
 			eprint(f"Number of commands: {len(commands)}")
 			eprint(f"Number of hosts: {len(set(targetHostDic) - set(skipHostSet))}")
-			_exit_with_code(255, "Number of commands and hosts do not match")
+			_abort(255, "Number of commands and hosts do not match", called=called)
 		if not __global_suppress_printout:
 			eprint('-'*80)
 			eprint("Running in one on one mode")
@@ -3918,7 +3995,7 @@ def generate_default_config(args):
 		'DEFAULT_IPMI_INTERFACE_IP_PREFIX': args.ipmi_interface_ip_prefix,
 		'DEFAULT_IPMI_USERNAME': args.ipmi_username,
 		'DEFAULT_IPMI_PASSWORD': args.ipmi_password,
-		'DEAFULT_IPMI_ARGS': args.ipmi_args,
+		'DEFAULT_IPMI_ARGS': args.ipmi_args,
 		'DEFAULT_IPMI_METHOD': args.ipmi_method,
 		'DEFAULT_IPMI_RETRY_LOCKOUT_TIME': args.ipmi_retry_lockout_time,
 		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
@@ -4067,6 +4144,7 @@ def process_args(args = None):
 		if cfpa.config_file:
 			if os.path.exists(cfpa.config_file):
 				configs = load_config_file(os.path.expanduser(cfpa.config_file))
+				apply_config_key_compat(configs)
 				globals().update(configs)
 				__configs_from_file.update(configs)
 			else:
