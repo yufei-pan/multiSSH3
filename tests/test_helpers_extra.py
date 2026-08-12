@@ -38,3 +38,27 @@ def test_get_terminal_size_fallback(monkeypatch):
 	cols, rows = multiSSH3.get_terminal_size()
 	assert cols == 100
 	assert rows == 40
+
+
+def test_join_threads_resolves_global_at_call_time():
+	"""Regression: default must not bind the set object at def time (multiCMD sentinel)."""
+	import threading
+
+	original = multiSSH3.__running_threads
+	multiSSH3.join_threads(timeout=0.01)
+	# After pruning, global may be a new set object
+	assert multiSSH3.join_threads.__defaults__[0] is ...
+
+	# Simulate processRunOnHosts assigning a fresh global set after a join
+	joined = []
+
+	def worker():
+		joined.append(True)
+
+	t = threading.Thread(target=worker)
+	multiSSH3.__running_threads = {t}
+	t.start()
+	multiSSH3.join_threads(timeout=2)  # must see the *current* global
+	assert joined == [True]
+	assert t not in multiSSH3.__running_threads or not t.is_alive()
+	multiSSH3.__running_threads = original

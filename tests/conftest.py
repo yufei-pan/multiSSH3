@@ -149,7 +149,7 @@ def restore_module_globals():
 			continue
 		setattr(multiSSH3, k, v)
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
-	multiSSH3.join_threads(multiSSH3.__running_threads, timeout=2)
+	multiSSH3.join_threads(timeout=2)
 	_clear_expand_caches()
 
 

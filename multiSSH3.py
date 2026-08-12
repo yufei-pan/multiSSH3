@@ -705,18 +705,21 @@ def pretty_format_table(data, delimiter = '\t',header = None):
 				outTable.append(row_format.format(*row))
 	return '\n'.join(outTable) + '\n'
 
-def join_threads(threads=__running_threads,timeout=None):
+def join_threads(threads=...,timeout=None):
 	'''
 	Join threads
 
 	@params:
-		threads: The threads to join
+		threads: The threads to join. Defaults to the current __running_threads set
+			(resolved at call time — do not bind the set object as a default arg).
 		timeout: The timeout
 
 	@returns:
 		None
 	'''
 	global __running_threads
+	if threads is ...:
+		threads = __running_threads
 	for thread in threads:
 		thread.join(timeout=timeout)
 	if threads is __running_threads:
