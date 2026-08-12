@@ -1,4 +1,5 @@
 dist
 multiSSH3.egg-info
 __pycache__
+.pytest_cache
 .worktrees
