@@ -219,6 +219,9 @@ class StubWindow:
 	def move(self, *args, **kwargs):
 		self.calls.append(("move", args, kwargs))
 
+	def deleteln(self, *args, **kwargs):
+		self.calls.append(("deleteln", args, kwargs))
+
 	def clrtoeol(self, *args, **kwargs):
 		self.calls.append(("clrtoeol", args, kwargs))
 
