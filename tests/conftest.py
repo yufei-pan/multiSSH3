@@ -116,6 +116,9 @@ def _clear_expand_caches():
 		"__expandIPv4Address",
 		"__expand_hostname",
 		"__expand_hostnames",
+		"get_terminal_color_capability",
+		"rgb_to_ansi_color_string",
+		"int_to_unique_ansi_color",
 	):
 		fn = getattr(multiSSH3, name, None)
 		if fn is not None and hasattr(fn, "cache_clear"):
@@ -133,11 +136,18 @@ def restore_module_globals():
 		"DEFAULT_PASSWORD": multiSSH3.DEFAULT_PASSWORD,
 		"SSH_STRICT_HOST_KEY_CHECKING": multiSSH3.SSH_STRICT_HOST_KEY_CHECKING,
 		"_etc_hosts": dict(getattr(multiSSH3, "_etc_hosts", {}) or {}),
+		"FORCE_TRUECOLOR": multiSSH3.FORCE_TRUECOLOR,
+		"__DEBUG_MODE": getattr(multiSSH3, "__DEBUG_MODE", False),
+		"__returnZero": multiSSH3.__returnZero,
+		"DEFAULT_DIFF_DISPLAY_THRESHOLD": multiSSH3.DEFAULT_DIFF_DISPLAY_THRESHOLD,
+		"DEFAULT_HOST_FILE": multiSSH3.DEFAULT_HOST_FILE,
 	}
 	_clear_expand_caches()
 	yield
 	for k, v in saved.items():
-		setattr(multiSSH3, k, v if k != "__failedHosts" else set(v))
+		if k == "__failedHosts":
+			continue
+		setattr(multiSSH3, k, v)
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
 	multiSSH3.join_threads(multiSSH3.__running_threads, timeout=2)
 	_clear_expand_caches()

@@ -92,3 +92,52 @@ def test_run_timeout(ssh_mode, local_ssh_hosts):
 	multiSSH3.run_command(host, sem, timeout=1)
 
 	assert host.returncode not in (0, None)
+
+
+def test_run_command_expands_magic_host(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "echo #HOST#")
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	popen_calls = []
+
+	def fake_popen(argv, **kwargs):
+		popen_calls.append(argv)
+		return FakeProc(stdout=b"mock-a\n")
+
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5)
+	assert host.returncode == 0
+	assert popen_calls
+	assert "echo mock-a" in popen_calls[0][-1]
+
+
+def test_run_command_extraargs_and_user(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("user@mock-b", "true", extraargs="-o Foo=bar")
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	popen_calls = []
+
+	def fake_popen(argv, **kwargs):
+		popen_calls.append(argv)
+		return FakeProc()
+
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5)
+	argv = popen_calls[0]
+	joined = " ".join(str(a) for a in argv)
+	assert "mock-b" in joined
+	assert "Foo=bar" in joined or "-o" in argv
+
+
+def test_run_command_stderr_captured(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "cmd")
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(
+		multiSSH3.subprocess,
+		"Popen",
+		lambda *a, **k: FakeProc(stdout=b"", stderr=b"boom\n", returncode=1),
+	)
+	multiSSH3.run_command(host, sem, timeout=5)
+	assert host.returncode == 1
+	assert any("boom" in line for line in host.stderr)
