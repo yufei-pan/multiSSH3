@@ -128,6 +128,12 @@ def _clear_expand_caches():
 @pytest.fixture(autouse=True)
 def restore_module_globals():
 	saved = {
+		"_emo": multiSSH3._emo,
+		"_env_files": list(multiSSH3._env_files),
+		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
+		"__keyPressesIn": [list(line) for line in multiSSH3.__keyPressesIn],
+		"DEFAULT_IPMI_DEFINITIONS": [dict(item) for item in multiSSH3.DEFAULT_IPMI_DEFINITIONS],
+		"ERRORS": list(multiSSH3.ERRORS),
 		"_no_env": multiSSH3._no_env,
 		"__global_suppress_printout": multiSSH3.__global_suppress_printout,
 		"__mainReturnCode": multiSSH3.__mainReturnCode,
@@ -145,9 +151,21 @@ def restore_module_globals():
 	_clear_expand_caches()
 	yield
 	for k, v in saved.items():
-		if k == "__failedHosts":
+		if k in (
+			"_env_files",
+			"__globalUnavailableHosts",
+			"__keyPressesIn",
+			"DEFAULT_IPMI_DEFINITIONS",
+			"ERRORS",
+			"__failedHosts",
+		):
 			continue
 		setattr(multiSSH3, k, v)
+	multiSSH3._env_files = list(saved["_env_files"])
+	multiSSH3.__globalUnavailableHosts = dict(saved["__globalUnavailableHosts"])
+	multiSSH3.__keyPressesIn = [list(line) for line in saved["__keyPressesIn"]]
+	multiSSH3.DEFAULT_IPMI_DEFINITIONS = [dict(item) for item in saved["DEFAULT_IPMI_DEFINITIONS"]]
+	multiSSH3.ERRORS = list(saved["ERRORS"])
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
 	multiSSH3.join_threads(timeout=2)
 	_clear_expand_caches()
