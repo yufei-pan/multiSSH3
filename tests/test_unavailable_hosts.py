@@ -1,5 +1,3 @@
-import os
-
 import multiSSH3
 
 
@@ -42,6 +40,7 @@ def test_process_run_marks_timeout_unavailable(tmp_path, fake_host, monkeypatch)
 	host.stderr = ["Timeout!"]
 	unavailable = {}
 	monkeypatch.setattr(multiSSH3.tempfile, "gettempdir", lambda: str(tmp_path))
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
 	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(path))
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda *args, **kwargs: [])
 
@@ -62,4 +61,4 @@ def test_process_run_marks_timeout_unavailable(tmp_path, fake_host, monkeypatch)
 
 	assert "mock-a" in unavailable
 	assert multiSSH3._read_unavailable_hosts_file(str(path)) == unavailable
-	multiSSH3.__globalUnavailableHosts.clear()
+	assert multiSSH3.__globalUnavailableHosts == unavailable
