@@ -56,6 +56,88 @@ def test_generate_display_rejects_tiny_terminal(stub_curses_harness, fake_host):
 	assert result[6] == "Terminal too small"
 
 
+def test_generate_display_single_window_uses_full_terminal(stub_curses_harness, fake_host):
+	host = _running_host(fake_host)
+	stub_curses_harness.inject_keys([12])
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=10,
+		min_line_len=2,
+		single_window=True,
+	)
+
+	assert result == (-1, 0, 10, 2, True, False, "Refresh requested")
+	assert stub_curses_harness.windows[1].getmaxyx() == (23, 81)
+
+
+def test_generate_display_finishes_after_idle_redraw(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	getch_calls = []
+
+	def finish_on_second_poll():
+		getch_calls.append(None)
+		if len(getch_calls) == 2:
+			host.returncode = 0
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", finish_on_second_poll)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=10,
+		min_line_len=2,
+	)
+
+	assert result is None
+	assert len(getch_calls) == 2
+	assert stub_curses_harness.screen_updates == 2
+	assert host.lastPrintedUpdateTime == host.lastUpdateTime
+
+
+def test_generate_display_renders_compound_ansi_output_without_escape_text(
+	stub_curses_harness, fake_host, monkeypatch
+):
+	host = _running_host(fake_host)
+	host.output = [
+		"\x1b[0;38;5;196;48;2;1;2;3;1;2;4;5;7;8;21;22;24;25;27;28;39;49m"
+		"colored-output\x1b[0m"
+	]
+	host.lineNumToPrintSet = {0}
+	host.output_buffer.write(b"buffer-tail")
+
+	def finish_without_input():
+		host.returncode = 0
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", finish_without_input)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=10,
+		min_line_len=2,
+	)
+	rendered_text = [
+		arg
+		for window in stub_curses_harness.windows
+		for method, args, kwargs in window.calls
+		for arg in args
+		if method == "addnstr" and isinstance(arg, str)
+	]
+
+	assert result is None
+	assert "colored-output" in rendered_text
+	assert "buffer-tail" in rendered_text
+	assert not any("\x1b[" in text for text in rendered_text)
+
+
 def test_generate_display_reports_no_hosts(stub_curses_harness, fake_host, monkeypatch):
 	host = _running_host(fake_host)
 	stats = {"running": 0, "failed": 0, "finished": 0, "waiting": 0}
@@ -78,6 +160,63 @@ def test_generate_display_shows_help_then_refreshes(stub_curses_harness, fake_ho
 	assert stub_curses_harness.panel_updates >= 2
 
 
+def test_generate_display_hides_open_help_then_refreshes(stub_curses_harness, fake_host):
+	host = _running_host(fake_host)
+	stub_curses_harness.inject_keys([63, 63, 12])
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=10,
+		min_line_len=2,
+	)
+
+	assert result == (-1, 0, 10, 2, False, False, "Refresh requested")
+	assert stub_curses_harness.panels[-1].calls[-2:] == ["show", "hide"]
+	assert stub_curses_harness.panels[-1].hidden is True
+
+
+@pytest.mark.parametrize(
+	"key,min_char_len,min_line_len",
+	[
+		(95, 10, 1),
+		(123, 1, 2),
+	],
+)
+def test_generate_display_does_not_decrease_minimum_geometry(
+	stub_curses_harness, fake_host, monkeypatch, key, min_char_len, min_line_len
+):
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	stub_curses_harness.inject_keys([key, 12])
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=min_char_len,
+		min_line_len=min_line_len,
+	)
+
+	assert result == (
+		-1, 0, min_char_len, min_line_len, False, False, "Refresh requested",
+	)
+
+
+def test_generate_display_escape_closes_display(stub_curses_harness, fake_host):
+	host = _running_host(fake_host)
+	stub_curses_harness.inject_keys([27])
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=10,
+		min_line_len=2,
+	)
+
+	assert result is None
+
+
 def test_generate_display_edits_input_and_redraws_host(stub_curses_harness, fake_host, monkeypatch):
 	host = _running_host(fake_host)
 	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [[]])
@@ -98,6 +237,7 @@ def test_generate_display_edits_input_and_redraws_host(stub_curses_harness, fake
 	"history,key,start_line,start_cursor,expected_line,expected_cursor",
 	[
 		([list("old\n"), []], 259, -1, 0, -2, 4),
+		([list("old\n"), list("current")], 259, -1, 0, -2, 0),
 		([list("old\n"), []], 258, -2, 0, -1, 0),
 		([list("ab")], 260, -1, 2, -1, 1),
 		([list("ab")], 261, -1, 0, -1, 1),
@@ -142,7 +282,9 @@ def test_generate_display_navigation_keys(
 	"key,start_cursor,expected_history,expected_cursor",
 	[
 		(8, 1, [list("b")], 0),
+		(8, 0, [list("ab")], 0),
 		(330, 0, [list("b")], 0),
+		(330, 2, [list("ab")], 2),
 		(10, 2, [list("ab\n"), []], 0),
 	],
 )
@@ -175,13 +317,14 @@ def test_generate_display_ctrl_d_queues_exit(stub_curses_harness, fake_host, mon
 	assert multiSSH3.__keyPressesIn == [list("exit\n"), []]
 
 
-def test_generate_display_host_offset_updates_stats(stub_curses_harness, fake_host, monkeypatch):
+@pytest.mark.parametrize("key", [60, 62])
+def test_generate_display_host_offset_updates_stats(stub_curses_harness, fake_host, monkeypatch, key):
 	hosts = [_running_host(fake_host) for _ in range(2)]
 	hosts[0].name = "mock-a"
 	hosts[1].name = "mock-b"
 	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
 	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
-	stub_curses_harness.inject_keys([62, 12])
+	stub_curses_harness.inject_keys([key, 12])
 
 	multiSSH3.__generate_display(stub_curses_harness.window, hosts, min_char_len=10, min_line_len=2)
 

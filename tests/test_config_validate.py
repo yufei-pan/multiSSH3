@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 import multiSSH3
 
 
@@ -51,3 +53,28 @@ def test_validate_expand_hostname_invalid(monkeypatch):
 	assert multiSSH3.__validate_expand_hostname("not-a-real-host-xyz") == []
 	assert "not-a-real-host-xyz" in multiSSH3.__failedHosts
 	assert multiSSH3.__mainReturnCode >= 1
+
+
+def test_write_default_config_backup_choice(tmp_path, monkeypatch):
+	path = tmp_path / "config.json"
+	path.write_text('{"old": true}')
+	args = multiSSH3.get_parser().parse_args(["mock-a", "true"])
+	monkeypatch.setattr(multiSSH3, "input_with_timeout_and_countdown", lambda timeout: "b")
+
+	multiSSH3.write_default_config(args, CONFIG_FILE=str(path), force=False)
+
+	assert (tmp_path / "config.json.bak").read_text() == '{"old": true}'
+	assert json.loads(path.read_text())["DEFAULT_HOSTS"] == "mock-a"
+
+
+def test_write_default_config_abort_choice(tmp_path, monkeypatch):
+	path = tmp_path / "config.json"
+	path.write_text("{}")
+	args = multiSSH3.get_parser().parse_args(["mock-a", "true"])
+	monkeypatch.setattr(multiSSH3, "input_with_timeout_and_countdown", lambda timeout: "n")
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.write_default_config(args, CONFIG_FILE=str(path), force=False)
+
+	assert exc_info.value.code == 0
+	assert path.read_text() == "{}"
