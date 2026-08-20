@@ -1,3 +1,5 @@
+import pytest
+
 import multiSSH3
 
 
@@ -104,21 +106,47 @@ def test_run_on_hosts_gather_mode(monkeypatch, tmp_path):
 	assert hosts[0].gatherMode is True
 
 
-def test_run_on_hosts_max_connections_variants(monkeypatch):
-	_mock_run(monkeypatch)
-	for max_conn in (None, 0, -2, 3):
-		hosts = multiSSH3.run_command_on_hosts(
-			hosts="mock-a",
-			commands="true",
-			max_connections=max_conn,
-			no_watch=True,
-			quiet=True,
-			no_history=True,
-			called=True,
-			will_update_unreachable_hosts=False,
-		)
-		assert len(hosts) == 1
-		assert hosts[0].returncode == 0
+@pytest.mark.parametrize(
+	"requested,safe_limit,expected",
+	[
+		(None, 100, 32),
+		(0, 100, 100),
+		(0, 0, 32),
+		(-2, 100, 16),
+		(3, 100, 3),
+		(200, 100, 100),
+	],
+)
+def test_normalize_max_connections(requested, safe_limit, expected, monkeypatch):
+	monkeypatch.setattr(multiSSH3.os, "cpu_count", lambda: 8)
+	monkeypatch.setattr(multiSSH3, "__max_connections_nofile_limit_supported", safe_limit)
+
+	assert multiSSH3._normalize_max_connections(requested) == expected
+
+
+def test_run_on_hosts_zero_forwards_safe_limit(monkeypatch):
+	forwarded = []
+	monkeypatch.setattr(multiSSH3, "__max_connections_nofile_limit_supported", 17)
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	monkeypatch.setattr(
+		multiSSH3,
+		"processRunOnHosts",
+		lambda *args, **kwargs: forwarded.append(kwargs["max_connections"]),
+	)
+
+	hosts = multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		commands="true",
+		max_connections=0,
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+	)
+
+	assert len(hosts) == 1
+	assert forwarded == [17]
 
 
 def test_run_on_hosts_username_prefix(monkeypatch):
@@ -175,8 +203,6 @@ def test_oneonone_count_mismatch_raises_when_called(monkeypatch):
 
 
 def test_file_sync_missing_globs_exits_when_cli(monkeypatch, tmp_path):
-	import pytest
-
 	_mock_run(monkeypatch)
 	missing = tmp_path / "does-not-exist-*.txt"
 	with pytest.raises(SystemExit) as ei:

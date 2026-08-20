@@ -3692,6 +3692,28 @@ def record_command_history(kwargs):
 			eprint(traceback.format_exc().strip())
 
 #%% ------------ Main Block ----------------
+def _normalize_max_connections(max_connections):
+	cpu_default = 4 * os.cpu_count()
+	safe_limit = __max_connections_nofile_limit_supported
+	if max_connections is None:
+		normalized = cpu_default
+	elif max_connections == 0:
+		normalized = safe_limit if safe_limit > 0 else cpu_default
+	elif max_connections < 0:
+		normalized = (-max_connections) * os.cpu_count()
+	else:
+		normalized = max_connections
+	if safe_limit > 0 and normalized > safe_limit:
+		eprint(
+			"Warning: The number of maximum connections {} is larger than estimated limit {} "
+			"from ulimit nofile limit {}, setting the maximum connections to {}.".format(
+				normalized, safe_limit, __system_nofile_limit, safe_limit
+			)
+		)
+		normalized = safe_limit
+	return normalized
+
+
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
 						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
@@ -3774,19 +3796,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			for host in readEnvFromFile()["__multiSSH3_UNAVAILABLE_HOSTS"].split(",")
 			if host
 		})
-	if not max_connections:
-		max_connections = 4 * os.cpu_count()
-	elif max_connections == 0:
-		max_connections = __max_connections_nofile_limit_supported
-	elif max_connections < 0:
-		max_connections = (-max_connections) * os.cpu_count()
-	if __max_connections_nofile_limit_supported > 0:
-		if max_connections > __max_connections_nofile_limit_supported:
-			eprint(f"Warning: The number of maximum connections {max_connections} is larger than estimated limit {__max_connections_nofile_limit_supported} from ulimit nofile limit {__system_nofile_limit}, setting the maximum connections to {__max_connections_nofile_limit_supported}.")
-			max_connections = __max_connections_nofile_limit_supported
-		if max_connections > __max_connections_nofile_limit_supported * 2:
-			# we need to throttle thread start to avoid hitting the nofile limit
-			__thread_start_delay = 0.001
+	max_connections = _normalize_max_connections(max_connections)
 	commands = format_commands(commands)
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
