@@ -20,6 +20,40 @@ class FakeProc:
 		return b"", b""
 
 
+class TimeoutProc(FakeProc):
+	def __init__(self):
+		super().__init__()
+		self.returncode = None
+		self.signals = []
+		self.terminated = False
+
+	def send_signal(self, sig):
+		self.signals.append(sig)
+
+	def terminate(self):
+		self.terminated = True
+		self.returncode = -15
+
+
+def test_run_timeout_is_124_without_live_ssh(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "sleep forever")
+	proc = TimeoutProc()
+	ticks = iter([0.0, 2.0])
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda *args, **kwargs: proc)
+	monkeypatch.setattr(multiSSH3.time, "monotonic", lambda: next(ticks, 2.0))
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	monkeypatch.setattr(multiSSH3, "__handle_writing_stream", lambda *args: 0)
+
+	multiSSH3.run_command(host, sem, timeout=1)
+
+	assert proc.signals == [multiSSH3.signal.SIGINT]
+	assert proc.terminated is True
+	assert host.returncode == 124
+	assert "Timeout!" in host.stderr
+
+
 @pytest.mark.live_ssh
 def test_run_echo_localhost(ssh_mode, local_ssh_hosts, fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
@@ -91,7 +125,8 @@ def test_run_timeout(ssh_mode, local_ssh_hosts):
 
 	multiSSH3.run_command(host, sem, timeout=1)
 
-	assert host.returncode not in (0, None)
+	assert host.returncode == 124
+	assert "Timeout!" in host.stderr
 
 
 def test_run_command_expands_magic_host(fake_host, monkeypatch):

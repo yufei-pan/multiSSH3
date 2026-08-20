@@ -48,6 +48,24 @@ def test_run_command_shell_mode(fake_host, monkeypatch):
 	assert calls[0][1] == "-c"
 
 
+def test_shell_fallback_returns_after_single_ssh_attempt(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("ignored", "echo fallback", shell=True)
+	calls = []
+	multiSSH3._binPaths.pop("sh", None)
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		return FakeProc(stdout=b"fallback\n")
+
+	_patch_popen(monkeypatch, fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5)
+
+	assert len(calls) == 1
+	assert calls[0][-3:] == ["--", "localhost", "echo fallback"]
+	assert host.returncode == 0
+
+
 def test_run_command_scp_files(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host(

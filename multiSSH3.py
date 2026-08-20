@@ -1985,6 +1985,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 					host.command = host.command.replace(_binPaths['ipmitool'],'')
 				if not host.command:
 					host.command = 'power status'
+				# Compatibility note: the unusual shell/direct IPMI argument forms may work around
+				# ipmitool behavior on deployed machines. Verify on real IPMI hardware before changing.
 				ipmi_args = ipmi_definition.get('args','')
 				if 'sh' in _binPaths:
 					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {ipmi_definition.get("username",username)} -P {ipmi_definition.get("password",passwds)} {ipmi_args} {host.command}']
@@ -2019,7 +2021,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+				return run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 		else:
 			if host.files:
 				if host.scp:
@@ -2102,9 +2104,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 				host.lastUpdateTime = time.monotonic()
 				timeoutLineAppended = False
 				sleep_interval = 1.0e-7 # 100 nanoseconds
+				timed_out = False
 				while proc.poll() is None:  # while the process is still running
 					if timeout > 0:
 						if time.monotonic() - host.lastUpdateTime > timeout:
+							timed_out = True
 							host.stderr.append('Timeout!')
 							host.output.append('Timeout!')
 							proc.send_signal(signal.SIGINT)
@@ -2157,11 +2161,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 						__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
 					# if the last line in host.stderr is Connection to * closed., we will remove it
 				host.returncode = proc.poll()
-				if host.returncode is None:
+				if timed_out:
+					host.returncode = 124
+				elif host.returncode is None:
 					# process been killed via timeout or sigkill
-					if host.stderr and host.stderr[-1].strip().startswith('Timeout!'):
-						host.returncode = 124
-					elif host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
+					if host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
 						host.returncode = 137
 					else:
 						host.returncode = -1
