@@ -4094,6 +4094,13 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		print(json.dumps(__configs_from_file, indent=4))
 
 #%% ------------ Argument Processing -----------------
+def _positive_int(value):
+	parsed = int(value)
+	if parsed < 1:
+		raise argparse.ArgumentTypeError("must be at least 1")
+	return parsed
+
+
 def get_parser():
 	parser = argparse.ArgumentParser(
 		description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
@@ -4121,7 +4128,7 @@ def get_parser():
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
 	parser.add_argument("-t","--timeout", type=int, help=f"Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})", default=DEFAULT_CLI_TIMEOUT)
 	parser.add_argument('-T','--use_script_timeout',action='store_true', help=f'Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: {DEFAULT_TIMEOUT})', default=False)
-	parser.add_argument("-r","--repeat", type=int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
+	parser.add_argument("-r","--repeat", type=_positive_int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
 	parser.add_argument("-i","--interval", type=int, help=f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})", default=DEFAULT_INTERVAL)
 	parser.add_argument('-M',"--ipmi", action='store_true', help=f"Use ipmitool to run the command. (default: {DEFAULT_IPMI})", default=DEFAULT_IPMI)
 	parser.add_argument("-mpre","--ipmi_interface_ip_prefix", type=str, help=f"The prefix of the IPMI interfaces (default: {DEFAULT_IPMI_INTERFACE_IP_PREFIX})", default=DEFAULT_IPMI_INTERFACE_IP_PREFIX)
@@ -4179,7 +4186,7 @@ def process_args(args = None):
 				globals().update(configs)
 				__configs_from_file.update(configs)
 			else:
-				eprint(f"Warning: Config file {args.config_file!r} not found, ignoring it.")
+				eprint("Warning: Config file {!r} not found, ignoring it.".format(cfpa.config_file))
 	except Exception:
 		pass
 	parser = get_parser()
@@ -4374,7 +4381,7 @@ def main(args = None):
 		__global_suppress_printout = True
 
 	for i in range(args.repeat):
-		if args.interval > 0 and i < args.repeat - 1:
+		if i > 0 and args.interval > 0:
 			eprint(f"Sleeping for {args.interval} seconds")
 			time.sleep(args.interval)
 

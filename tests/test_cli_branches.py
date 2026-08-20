@@ -40,6 +40,21 @@ def test_process_args_script_and_output_flags():
 	assert args.extraargs == "--x" or args.extraargs
 
 
+@pytest.mark.parametrize("repeat", ["0", "-1"])
+def test_process_args_rejects_nonpositive_repeat(repeat):
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.process_args(["127.0.0.1", "true", "--repeat", repeat])
+	assert exc_info.value.code == 2
+
+
+def test_process_args_warns_for_missing_explicit_config(tmp_path, capsys):
+	missing = tmp_path / "missing.json"
+	args = multiSSH3.process_args(["--config_file", str(missing), "127.0.0.1", "true"])
+
+	assert args.config_file == str(missing)
+	assert "Config file {!r} not found".format(str(missing)) in capsys.readouterr().err
+
+
 def test_process_keys_missing_file_warns(tmp_path, monkeypatch, capsys):
 	missing = tmp_path / "no-such-key"
 	args = multiSSH3.get_parser().parse_args(
