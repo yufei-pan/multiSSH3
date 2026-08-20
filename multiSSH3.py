@@ -3403,6 +3403,55 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	return rtnStr
 
 #%% ------------ Run / Process Hosts Block ----------------
+def _unavailable_hosts_file_path():
+	return os.path.join(tempfile.gettempdir(), "__{}_multiSSH3_UNAVAILABLE_HOSTS.csv".format(getpass.getuser()))
+
+
+def _read_unavailable_hosts_file(path, now=None):
+	current_time = time.monotonic() if now is None else now
+	result = {}
+	try:
+		with open(path, "r") as handle:
+			for raw_line in handle:
+				parts = raw_line.strip().split(",")
+				if len(parts) != 2 or not parts[0] or not parts[1].isdigit():
+					continue
+				expiry = int(parts[1])
+				if expiry > current_time:
+					result[parts[0]] = expiry
+	except FileNotFoundError:
+		return {}
+	except Exception as exc:
+		eprint("Warning: Unable to read unavailable hosts from {!r}: {}".format(path, exc))
+	return result
+
+
+def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), now=None):
+	current_time = time.monotonic() if now is None else now
+	available = set(available_hosts)
+	clean = {
+		host: int(expiry)
+		for host, expiry in unavailable_hosts.items()
+		if host not in available and int(expiry) > current_time
+	}
+	temporary_path = "{}.{}".format(path, uuid4().hex)
+	try:
+		with open(temporary_path, "w") as handle:
+			for host in sorted(clean):
+				handle.write("{},{}\n".format(host, clean[host]))
+			handle.flush()
+			os.fsync(handle.fileno())
+		os.replace(temporary_path, path)
+	except Exception as exc:
+		eprint("Error writing unavailable hosts to {!r}: {}".format(path, exc))
+		try:
+			if os.path.exists(temporary_path):
+				os.unlink(temporary_path)
+		except OSError:
+			pass
+	return clean
+
+
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
@@ -3454,40 +3503,15 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 						del unavailableHosts[host.name]
 					if host.name in __globalUnavailableHosts:
 						del __globalUnavailableHosts[host.name]
+			canonical_unavailable = _write_unavailable_hosts_file(
+				_unavailable_hosts_file_path(), unavailableHosts, availableHosts
+			)
+			unavailableHosts.clear()
+			unavailableHosts.update(canonical_unavailable)
+			__globalUnavailableHosts.clear()
+			__globalUnavailableHosts.update(canonical_unavailable)
 			if __DEBUG_MODE:
 				print(f'Unreachable hosts: {unavailableHosts}')
-			try:
-				# check for the old content, only update if the new content is different
-				if not os.path.exists(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')):
-					with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'w') as f:
-						f.writelines(f'{host},{expTime}' for host,expTime in unavailableHosts.items())
-				else:
-					oldDic = {}
-					try:
-						with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
-							for line in f:
-								line = line.strip()
-								if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
-									hostname = line.split(',')[0]
-									expireTime = int(line.split(',')[1])
-									if expireTime < time.monotonic() and hostname not in availableHosts:
-										oldDic[hostname] = expireTime
-					except Exception:
-						pass
-					# add new entries
-					#oldDic.update(unavailableHosts)
-					for hostname, expTime in unavailableHosts.items():
-						if hostname not in oldDic or oldDic[hostname] < expTime:
-							oldDic[hostname] = expTime
-					newFileName = os.path.join(tempfile.gettempdir(),getpass.getuser()+'__multiSSH3_UNAVAILABLE_HOSTS.csv.' + uuid4().hex)
-					with open(newFileName,'w') as f:
-						for key, value in oldDic.items():
-							f.write(f'{key},{value}\n')
-					os.replace(newFileName,os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'))
-			except Exception as e:
-				eprint(f'Error writing to temporary file: {e!r}')
-				import traceback
-				eprint(traceback.format_exc())
 		if pre_merge:
 			hosts = pre_merge_hosts(hosts)
 		if not no_output:
@@ -3738,27 +3762,18 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		record_command_history(locals())
 	if error_only:
 		__global_suppress_printout = True
-	if os.path.exists(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')):
-		if unavailable_host_expiry <= 0:
-			unavailable_host_expiry = 10
-		try:
-			readed = False
-			with open(os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv'),'r') as f:
-				for line in f:
-					line = line.strip()
-					if line and ',' in line and len(line.split(',')) >= 2 and line.split(',')[0] and line.split(',')[1].isdigit():
-						hostname = line.split(',')[0]
-						expireTime = int(line.split(',')[1])
-						if expireTime > time.monotonic():
-							__globalUnavailableHosts[hostname] = expireTime
-							readed = True
-			if readed and not __global_suppress_printout:
-				eprint(f"Read unavailable hosts from the file {os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')}")
-		except Exception as e:
-			eprint(f"Warning: Unable to read the unavailable hosts from the file {os.path.join(tempfile.gettempdir(),f'__{getpass.getuser()}_multiSSH3_UNAVAILABLE_HOSTS.csv')!r}")
-			eprint(str(e))
-	elif '__multiSSH3_UNAVAILABLE_HOSTS' in readEnvFromFile():
-		__globalUnavailableHosts.update({host: int(time.monotonic()+ unavailable_host_expiry) for host in readEnvFromFile()['__multiSSH3_UNAVAILABLE_HOSTS'].split(',') if host})
+	unavailable_path = _unavailable_hosts_file_path()
+	if os.path.exists(unavailable_path):
+		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path)
+		__globalUnavailableHosts.update(loaded_unavailable)
+		if loaded_unavailable and not __global_suppress_printout:
+			eprint("Read unavailable hosts from the file {}".format(unavailable_path))
+	elif "__multiSSH3_UNAVAILABLE_HOSTS" in readEnvFromFile():
+		__globalUnavailableHosts.update({
+			host: int(time.monotonic() + unavailable_host_expiry)
+			for host in readEnvFromFile()["__multiSSH3_UNAVAILABLE_HOSTS"].split(",")
+			if host
+		})
 	if not max_connections:
 		max_connections = 4 * os.cpu_count()
 	elif max_connections == 0:
