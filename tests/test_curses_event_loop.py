@@ -1,5 +1,3 @@
-import curses
-
 import pytest
 
 import multiSSH3
@@ -24,19 +22,17 @@ def test_stub_curses_harness_records_windows_and_keys(stub_curses_harness):
 
 
 @pytest.mark.parametrize(
-	"key,expected_index,expected_value,reason",
+	"key,expected_result",
 	[
-		(410, None, None, "Terminal resize requested"),
-		(95, 3, 1, "Decrease line length"),
-		(43, 3, 3, "Increase line length"),
-		(123, 2, 9, "Decrease character length"),
-		(125, 2, 11, "Increase character length"),
-		(124, 4, True, "Toggle single window mode"),
+		(410, (-1, 0, 10, 2, False, False, "Terminal resize requested")),
+		(95, (-1, 0, 10, 1, False, False, "Decrease line length")),
+		(43, (-1, 0, 10, 3, False, False, "Increase line length")),
+		(123, (-1, 0, 9, 2, False, False, "Decrease character length")),
+		(125, (-1, 0, 11, 2, False, False, "Increase character length")),
+		(124, (-1, 0, 10, 2, True, False, "Toggle single window mode")),
 	],
 )
-def test_generate_display_geometry_keys(
-	stub_curses_harness, fake_host, key, expected_index, expected_value, reason
-):
+def test_generate_display_geometry_keys(stub_curses_harness, fake_host, key, expected_result):
 	host = _running_host(fake_host)
 	stub_curses_harness.inject_keys([key])
 
@@ -48,9 +44,7 @@ def test_generate_display_geometry_keys(
 		single_window=False,
 	)
 
-	assert result[6] == reason
-	if expected_index is not None:
-		assert result[expected_index] == expected_value
+	assert result == expected_result
 
 
 def test_generate_display_rejects_tiny_terminal(stub_curses_harness, fake_host):
@@ -203,11 +197,17 @@ def test_generate_display_host_offset_updates_stats(stub_curses_harness, fake_ho
 
 def test_curses_print_reloads_configuration(stub_curses_harness, fake_host, monkeypatch):
 	host = _running_host(fake_host)
+	display_calls = []
 	responses = iter([
 		(-1, 0, 20, 4, True, False, "Toggle single window mode"),
 		None,
 	])
-	monkeypatch.setattr(multiSSH3, "__generate_display", lambda *args: next(responses))
+
+	def generate_display(*args):
+		display_calls.append(args)
+		return next(responses)
+
+	monkeypatch.setattr(multiSSH3, "__generate_display", generate_display)
 	monkeypatch.setattr(multiSSH3.curses, "curs_set", lambda value: None)
 	monkeypatch.setattr(multiSSH3.curses, "start_color", lambda: None)
 	monkeypatch.setattr(multiSSH3.curses, "use_default_colors", lambda: None)
@@ -222,6 +222,9 @@ def test_curses_print_reloads_configuration(stub_curses_harness, fake_host, monk
 	addstr_text = [call[1][2] for call in stub_curses_harness.window.calls if call[0] == "addstr"]
 	assert any("Toggle single window mode" in text for text in addstr_text)
 	assert any(call[0] == "refresh" for call in stub_curses_harness.window.calls)
+	assert len(display_calls) == 2
+	assert display_calls[1][:2] == (stub_curses_harness.window, [host])
+	assert display_calls[1][2:] == (-1, 0, 20, 4, True, False, "new config")
 
 
 def test_curses_print_returns_before_generation_for_tiny_screen(stub_curses_harness, monkeypatch):
