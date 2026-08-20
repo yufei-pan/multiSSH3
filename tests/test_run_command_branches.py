@@ -1,4 +1,5 @@
 import io
+import errno
 import threading
 
 import multiSSH3
@@ -149,6 +150,56 @@ def test_run_command_retry_limit_exhausted(fake_host):
 	multiSSH3.run_command(host, sem, timeout=5, retry_limit=-1)
 	assert host.returncode == 1
 	assert any("Retry limit" in line for line in host.stderr + host.output)
+
+
+def test_run_command_emfile_retries_after_releasing_semaphore(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	attempts = []
+	delays = []
+
+	def fake_popen(*args, **kwargs):
+		attempts.append(args[0])
+		if len(attempts) == 1:
+			raise OSError(errno.EMFILE, "too many open files")
+		return FakeProc()
+
+	def fake_sleep(seconds):
+		acquired = sem.acquire(blocking=False)
+		assert acquired, "EMFILE backoff ran while the semaphore was held"
+		sem.release()
+		delays.append(seconds)
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", fake_sleep)
+	monkeypatch.setattr(multiSSH3, "__handle_writing_stream", lambda *args: 0)
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
+
+	assert len(attempts) == 2
+	assert delays == [0.1]
+	assert host.returncode == 0
+
+
+def test_run_command_emfile_exhausts_retry_budget(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	attempts = []
+	delays = []
+
+	def always_emfile(*args, **kwargs):
+		attempts.append(args[0])
+		raise OSError(errno.EMFILE, "too many open files")
+
+	_patch_popen(monkeypatch, always_emfile)
+	monkeypatch.setattr(multiSSH3.time, "sleep", delays.append)
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=1)
+
+	assert len(attempts) == 2
+	assert delays == [0.1]
+	assert host.returncode == 1
+	assert any("Retry limit" in line for line in host.stderr)
 
 
 def test_run_command_magic_user_ip_uuid(fake_host, monkeypatch):

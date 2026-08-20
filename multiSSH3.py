@@ -7,6 +7,7 @@
 # ]
 # ///
 import argparse
+import errno
 import functools
 import getpass
 import glob
@@ -1857,6 +1858,9 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
 
+def _emfile_backoff_seconds(attempt):
+	return min(0.1 * (2 ** attempt), 1.0)
+
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS),ipmi_definitions_list = ...):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
@@ -2073,113 +2077,121 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 		host.output.extend(traceback.format_exc().split('\n'))
 		host.returncode = -1
 		return
-	with sem:
-		try:
-			host.output.append('Running command: '+' '.join(formatedCMD))
-			if __DEBUG_MODE:
-				host.stderr.append('Running command: '+' '.join(formatedCMD))
-			#host.stdout = []
-			proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
-			# create a thread to handle stdout
-			stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
-			stdout_thread.start()
-			# create a thread to handle stderr
-			#host.stderr = []
-			stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host,host.stderr_buffer), daemon=True)
-			stderr_thread.start()
-			# create a thread to handle stdin
-			stdin_stop_event = threading.Event()
-			stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
-			stdin_thread.start()
-			# Monitor the subprocess and terminate it after the timeout
-			host.lastUpdateTime = time.monotonic()
-			timeoutLineAppended = False
-			sleep_interval = 1.0e-7 # 100 nanoseconds 
-			while proc.poll() is None:  # while the process is still running
-				if timeout > 0:
-					if time.monotonic() - host.lastUpdateTime > timeout:
-						host.stderr.append('Timeout!')
-						host.output.append('Timeout!')
+	emfile_attempt = 0
+	while True:
+		retry_after_emfile = False
+		with sem:
+			try:
+				host.output.append('Running command: '+' '.join(formatedCMD))
+				if __DEBUG_MODE:
+					host.stderr.append('Running command: '+' '.join(formatedCMD))
+				#host.stdout = []
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
+				# create a thread to handle stdout
+				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
+				stdout_thread.start()
+				# create a thread to handle stderr
+				#host.stderr = []
+				stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host,host.stderr_buffer), daemon=True)
+				stderr_thread.start()
+				# create a thread to handle stdin
+				stdin_stop_event = threading.Event()
+				stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
+				stdin_thread.start()
+				# Monitor the subprocess and terminate it after the timeout
+				host.lastUpdateTime = time.monotonic()
+				timeoutLineAppended = False
+				sleep_interval = 1.0e-7 # 100 nanoseconds
+				while proc.poll() is None:  # while the process is still running
+					if timeout > 0:
+						if time.monotonic() - host.lastUpdateTime > timeout:
+							host.stderr.append('Timeout!')
+							host.output.append('Timeout!')
+							proc.send_signal(signal.SIGINT)
+							time.sleep(0.1)
+							proc.terminate()
+							break
+						elif time.monotonic() - host.lastUpdateTime >  max(1, timeout // 2):
+							timeoutLine = f'Timeout in [{timeout - int(time.monotonic() - host.lastUpdateTime)}] seconds!'
+							if host.output and not host.output[-1].strip().startswith(timeoutLine):
+								# remove last line if it is a countdown
+								if host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
+									host.output.pop()
+								host.output.append(timeoutLine)
+								host.lineNumToPrintSet.add(len(host.output)-1)
+								timeoutLineAppended = True
+						elif host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
+							host.output.pop()
+							host.output.append('')
+							host.lineNumToPrintSet.add(len(host.output)-1)
+							timeoutLineAppended = False
+					if _emo:
+						host.stderr.append('Ctrl C detected, Emergency Stop!')
+						host.output.append('Ctrl C detected, Emergency Stop!')
 						proc.send_signal(signal.SIGINT)
 						time.sleep(0.1)
 						proc.terminate()
 						break
-					elif time.monotonic() - host.lastUpdateTime >  max(1, timeout // 2):
-						timeoutLine = f'Timeout in [{timeout - int(time.monotonic() - host.lastUpdateTime)}] seconds!'
-						if host.output and not host.output[-1].strip().startswith(timeoutLine):
-							# remove last line if it is a countdown
-							if host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
-								host.output.pop()
-							host.output.append(timeoutLine)
-							host.lineNumToPrintSet.add(len(host.output)-1)
-							timeoutLineAppended = True
-					elif host.output and timeoutLineAppended and host.output[-1].strip().endswith('] seconds!') and host.output[-1].strip().startswith('Timeout in ['):
-						host.output.pop()
-						host.output.append('')
-						host.lineNumToPrintSet.add(len(host.output)-1)
-						timeoutLineAppended = False
-				if _emo:
-					host.stderr.append('Ctrl C detected, Emergency Stop!')
-					host.output.append('Ctrl C detected, Emergency Stop!')
-					proc.send_signal(signal.SIGINT)
-					time.sleep(0.1)
-					proc.terminate()
-					break
-				time.sleep(sleep_interval)  # avoid busy-waiting
-				if sleep_interval < 0.001:
-					sleep_interval *= 2
-				elif sleep_interval < 0.01:
-					sleep_interval *= 1.1
-			stdin_stop_event.set()
-			# Wait for output processing to complete
-			stdout_thread.join(timeout=1)
-			stderr_thread.join(timeout=1)
-			stdin_thread.join(timeout=1)
-			if not _emo:
-				stdout = None
-				stderr = None
-				try:
-					stdout, stderr = proc.communicate(timeout=1)
-				except subprocess.TimeoutExpired:
-					pass
-				if stdout:
-					host.output.append('Trying to read the rest of the stdout...')
-					__handle_reading_stream(io.BytesIO(stdout),host.stdout, host,host.stdout_buffer)
-				if stderr:
-					host.output.append('Trying to read the rest of the stderr...')
-					__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
-				# if the last line in host.stderr is Connection to * closed., we will remove it
-			host.returncode = proc.poll()
-			if host.returncode is None:
-				# process been killed via timeout or sigkill
-				if host.stderr and host.stderr[-1].strip().startswith('Timeout!'):
-					host.returncode = 124
-				elif host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
-					host.returncode = 137
-				else:
-					host.returncode = -1
-			host.output.append(f'Command finished with return code {host.returncode}')
-			if host.stderr:
-				# filter out the error messages that we want to ignore
-				host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
-		# except os error too many open files
-		except OSError as e:
-			if e.errno == 24:  # Errno 24 corresponds to "Too many open files"
+					time.sleep(sleep_interval)  # avoid busy-waiting
+					if sleep_interval < 0.001:
+						sleep_interval *= 2
+					elif sleep_interval < 0.01:
+						sleep_interval *= 1.1
+				stdin_stop_event.set()
+				# Wait for output processing to complete
+				stdout_thread.join(timeout=1)
+				stderr_thread.join(timeout=1)
+				stdin_thread.join(timeout=1)
+				if not _emo:
+					stdout = None
+					stderr = None
+					try:
+						stdout, stderr = proc.communicate(timeout=1)
+					except subprocess.TimeoutExpired:
+						pass
+					if stdout:
+						host.output.append('Trying to read the rest of the stdout...')
+						__handle_reading_stream(io.BytesIO(stdout),host.stdout, host,host.stdout_buffer)
+					if stderr:
+						host.output.append('Trying to read the rest of the stderr...')
+						__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
+					# if the last line in host.stderr is Connection to * closed., we will remove it
+				host.returncode = proc.poll()
+				if host.returncode is None:
+					# process been killed via timeout or sigkill
+					if host.stderr and host.stderr[-1].strip().startswith('Timeout!'):
+						host.returncode = 124
+					elif host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
+						host.returncode = 137
+					else:
+						host.returncode = -1
+				host.output.append(f'Command finished with return code {host.returncode}')
+				if host.stderr:
+					# filter out the error messages that we want to ignore
+					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
+			except OSError as e:
+				if e.errno != errno.EMFILE:
+					raise
+				retry_after_emfile = True
 				host.returncode = None
-				host.output.append("Warning: Too many open files. retrying...")
-				# Handle the error, e.g., clean up, retry logic, or exit
-				time.sleep(0.1)
-				run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
-			else:
-				# Re-raise the exception if it's not the specific one
-				raise
-		except Exception as e:
-			import traceback
-			host.stderr.extend(str(e).split('\n'))
-			host.output.extend(str(e).split('\n'))
-			host.stderr.extend(traceback.format_exc().split('\n'))
-			host.output.extend(traceback.format_exc().split('\n'))
-			host.returncode = -1
+			except Exception as e:
+				import traceback
+				host.stderr.extend(str(e).split('\n'))
+				host.output.extend(str(e).split('\n'))
+				host.stderr.extend(traceback.format_exc().split('\n'))
+				host.output.extend(traceback.format_exc().split('\n'))
+				host.returncode = -1
+		if not retry_after_emfile:
+			break
+		if retry_limit <= 0:
+			host.output.append("Error: Retry limit reached after too many open files!")
+			host.stderr.append("Error: Retry limit reached after too many open files!")
+			host.returncode = 1
+			return
+		host.output.append("Warning: Too many open files. retrying...")
+		time.sleep(_emfile_backoff_seconds(emfile_attempt))
+		emfile_attempt += 1
+		retry_limit -= 1
 	# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
 	if host.ipmi and host.returncode != 0:
 		host.returncode = None
