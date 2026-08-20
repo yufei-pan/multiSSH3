@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 import multiSSH3
@@ -82,8 +84,11 @@ def test_run_on_hosts_file_sync_builds_hosts(monkeypatch, tmp_path):
 		called=True,
 		will_update_unreachable_hosts=False,
 	)
-	assert len(hosts) >= 1
-	assert hosts[0].files or hosts[0].scp or hosts[0].command
+	assert len(hosts) == 1
+	assert hosts[0].files == [str(src.resolve())]
+	assert hosts[0].command == str(src.resolve().parent) + os.path.sep
+	assert hosts[0].scp is True
+	assert hosts[0].gatherMode is False
 
 
 def test_run_on_hosts_gather_mode(monkeypatch, tmp_path):

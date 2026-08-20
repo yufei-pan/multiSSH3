@@ -41,33 +41,39 @@ def test_approximate_color_24bit_fallback(curses_color_mocks):
 	"escape",
 	[
 		"",
-		"\x1b[0m",
-		"\x1b[1m",
-		"\x1b[2m",
-		"\x1b[4m",
-		"\x1b[5m",
-		"\x1b[7m",
-		"\x1b[8m",
-		"\x1b[31m",
-		"\x1b[41m",
-		"\x1b[91m",
-		"\x1b[101m",
-		"\x1b[38;5;12m",
-		"\x1b[48;5;12m",
-		"\x1b[38;2;10;20;30m",
-		"\x1b[48;2;10;20;30m",
-		"\x1b[21m",
-		"\x1b[22m",
-		"\x1b[24m",
-		"\x1b[25m",
 		"\x1b[38;5m",  # invalid short
 		"\x1b[38m",  # invalid
 	],
 )
-def test_parse_ansi_escape_matrix(curses_color_mocks, escape):
+def test_parse_ansi_malformed_escape_does_not_raise(curses_color_mocks, escape):
+	state = [-1, -1, 1]
+	multiSSH3.__parse_ansi_escape_sequence_to_curses_attr(escape, state)
+
+
+@pytest.mark.parametrize(
+	"escape,state_index,expected",
+	[
+		("\x1b[31m", 0, curses.COLOR_RED),
+		("\x1b[41m", 1, curses.COLOR_RED),
+		("\x1b[91m", 0, curses.COLOR_RED),
+		("\x1b[101m", 1, curses.COLOR_RED),
+	],
+)
+def test_parse_ansi_updates_exact_color_state(curses_color_mocks, escape, state_index, expected):
 	state = [-1, -1, 1]
 	attr = multiSSH3.__parse_ansi_escape_sequence_to_curses_attr(escape, state)
-	assert attr is not None
+
+	assert state[state_index] == expected
+	assert state[2] == attr
+
+
+def test_parse_ansi_reset_clears_styles(curses_color_mocks):
+	state = [curses.COLOR_RED, curses.COLOR_BLUE, curses.A_BOLD | curses.A_UNDERLINE]
+	attr = multiSSH3.__parse_ansi_escape_sequence_to_curses_attr("\x1b[0m", state)
+
+	assert state == [-1, -1, attr]
+	assert attr & curses.A_BOLD == 0
+	assert attr & curses.A_UNDERLINE == 0
 
 
 def test_curses_add_string_centered_and_ansi(curses_harness, curses_color_mocks):

@@ -75,17 +75,20 @@ def test_run_command_scp_files(fake_host, monkeypatch):
 		scp=True,
 	)
 	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
-	calls = []
+	scp_calls = []
 
 	def fake_popen(argv, **kwargs):
-		calls.append(argv)
+		scp_calls.append(argv)
 		return FakeProc()
 
 	_patch_popen(monkeypatch, fake_popen)
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 0
-	assert calls[0][0] == "scp"
-	assert "/tmp/a" in calls[0]
+	assert scp_calls[0] == [
+		"scp", "-rp",
+		"-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
+		"--", "/tmp/a", "mock-a:/tmp/dest",
+	]
 
 
 def test_run_command_rsync_files(fake_host, monkeypatch):
@@ -94,16 +97,20 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	# Prefer rsync path
 	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
 	multiSSH3._binPaths.pop("scp", None)
-	calls = []
+	rsync_calls = []
 
 	def fake_popen(argv, **kwargs):
-		calls.append(argv)
+		rsync_calls.append(argv)
 		return FakeProc()
 
 	_patch_popen(monkeypatch, fake_popen)
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 0
-	assert calls[0][0] == "rsync"
+	assert rsync_calls[0] == [
+		"rsync", "-ahlX", "--partial", "--inplace", "--info=name",
+		"--rsh", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		"--", "/tmp/a", "mock-a:/tmp/dest",
+	]
 
 
 def test_run_command_gather_mode_scp(fake_host, monkeypatch):
@@ -116,17 +123,19 @@ def test_run_command_gather_mode_scp(fake_host, monkeypatch):
 		gatherMode=True,
 	)
 	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
-	calls = []
+	gather_calls = []
 
 	def fake_popen(argv, **kwargs):
-		calls.append(argv)
+		gather_calls.append(argv)
 		return FakeProc()
 
 	_patch_popen(monkeypatch, fake_popen)
 	multiSSH3.run_command(host, sem, timeout=5)
-	joined = " ".join(calls[0])
-	assert "mock-a:/tmp/remote" in joined
-	assert "/tmp/local" in joined
+	assert gather_calls[0] == [
+		"scp", "-rp",
+		"-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
+		"--", "mock-a:/tmp/remote", "/tmp/local",
+	]
 
 
 def test_run_command_ipmitool_local(fake_host, monkeypatch):

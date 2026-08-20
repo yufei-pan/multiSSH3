@@ -35,9 +35,16 @@ def test_process_args_script_and_output_flags():
 	args = multiSSH3.process_args(
 		["127.0.0.1", "true", "--script", "-P", "-j", "-R", "-Q", "-uk", "-ea=--x"]
 	)
-	# --script expands several quiet/script-friendly flags
-	assert args.greppable is True or args.json is True or args.no_watch is True
-	assert args.extraargs == "--x" or args.extraargs
+	assert args.no_watch is True
+	assert args.skip_unreachable is True
+	assert args.no_env is True
+	assert args.no_history is True
+	assert args.greppable is True
+	assert args.error_only is True
+	assert args.json is True
+	assert args.no_output is True
+	assert args.use_key is True
+	assert args.extraargs == "--x"
 
 
 @pytest.mark.parametrize("repeat", ["0", "-1"])
