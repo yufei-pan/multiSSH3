@@ -221,12 +221,47 @@ def fake_host(monkeypatch):
 
 
 class StubWindow:
-	def __init__(self):
+	def __init__(self, yx=(24, 80), keys=None):
 		self.calls = []
-		self._yx = (24, 80)
+		self._yx = yx
+		self.keys = list(keys or [])
 
 	def getmaxyx(self):
 		return self._yx
+
+	def getch(self):
+		self.calls.append(("getch", (), {}))
+		return self.keys.pop(0) if self.keys else -1
+
+	def set_size(self, rows, columns):
+		self._yx = (rows, columns)
+
+	def clear(self):
+		self.calls.append(("clear", (), {}))
+
+	def nodelay(self, value):
+		self.calls.append(("nodelay", (value,), {}))
+
+	def idlok(self, value):
+		self.calls.append(("idlok", (value,), {}))
+
+	def scrollok(self, value):
+		self.calls.append(("scrollok", (value,), {}))
+
+	def leaveok(self, value):
+		self.calls.append(("leaveok", (value,), {}))
+
+	def box(self):
+		self.calls.append(("box", (), {}))
+
+	def vline(self, *args):
+		self.calls.append(("vline", args, {}))
+
+	def noutrefresh(self):
+		self.calls.append(("noutrefresh", (), {}))
+
+	def touchwin(self):
+		self.calls.append(("touchwin", (), {}))
 
 	def addstr(self, *args, **kwargs):
 		self.calls.append(("addstr", args, kwargs))
@@ -247,6 +282,52 @@ class StubWindow:
 		self.calls.append(("refresh", args, kwargs))
 
 
+class StubPanel:
+	def __init__(self, window):
+		self.window = window
+		self.hidden = False
+		self.calls = []
+
+	def hide(self):
+		self.hidden = True
+		self.calls.append("hide")
+
+	def show(self):
+		self.hidden = False
+		self.calls.append("show")
+
+
+class StubPanelModule:
+	def __init__(self, harness):
+		self.harness = harness
+
+	def new_panel(self, window):
+		panel = StubPanel(window)
+		self.harness.panels.append(panel)
+		return panel
+
+	def update_panels(self):
+		self.harness.panel_updates += 1
+
+
+class StubCursesHarness:
+	def __init__(self):
+		self.window = StubWindow()
+		self.windows = []
+		self.panels = []
+		self.panel_updates = 0
+		self.screen_updates = 0
+
+	def inject_keys(self, seq):
+		self.window.keys.extend(seq)
+
+	def newwin(self, rows, columns, y, x):
+		window = StubWindow((rows, columns))
+		window.calls.append(("origin", (y, x), {}))
+		self.windows.append(window)
+		return window
+
+
 class CursesHarness:
 	def __init__(self, mode):
 		self.mode = mode
@@ -261,3 +342,35 @@ class CursesHarness:
 def curses_harness():
 	mode = "live" if tty_or_curses_ok() else "stub"
 	return CursesHarness(mode)
+
+
+@pytest.fixture
+def stub_curses_harness(monkeypatch):
+	import curses
+
+	harness = StubCursesHarness()
+	panel_module = StubPanelModule(harness)
+	monkeypatch.setattr(curses, "newwin", harness.newwin)
+	monkeypatch.setattr(curses, "panel", panel_module)
+	monkeypatch.setattr(curses, "doupdate", lambda: setattr(harness, "screen_updates", harness.screen_updates + 1))
+	monkeypatch.setattr(curses, "ACS_VLINE", ord("|"), raising=False)
+	monkeypatch.setattr(curses, "KEY_RESIZE", 410, raising=False)
+	monkeypatch.setattr(curses, "KEY_REFRESH", 12, raising=False)
+	monkeypatch.setattr(curses, "KEY_F5", 269, raising=False)
+	monkeypatch.setattr(curses, "KEY_EXIT", 361, raising=False)
+	monkeypatch.setattr(curses, "KEY_HELP", 353, raising=False)
+	monkeypatch.setattr(curses, "KEY_F1", 265, raising=False)
+	monkeypatch.setattr(curses, "COLORS", 256, raising=False)
+	monkeypatch.setattr(curses, "COLOR_PAIRS", 256, raising=False)
+	monkeypatch.setattr(curses, "can_change_color", lambda: False)
+	monkeypatch.setattr(curses, "init_pair", lambda *args: None)
+	monkeypatch.setattr(curses, "color_pair", lambda pair: pair << 8)
+	monkeypatch.setattr(curses, "A_BOLD", 1 << 16, raising=False)
+	monkeypatch.setattr(curses, "A_DIM", 1 << 17, raising=False)
+	monkeypatch.setattr(curses, "A_UNDERLINE", 1 << 18, raising=False)
+	monkeypatch.setattr(curses, "A_BLINK", 1 << 19, raising=False)
+	monkeypatch.setattr(curses, "A_REVERSE", 1 << 20, raising=False)
+	monkeypatch.setattr(curses, "A_INVIS", 1 << 21, raising=False)
+	monkeypatch.setattr(multiSSH3, "__curses_global_color_pairs", {})
+	monkeypatch.setattr(multiSSH3, "__curses_current_color_pair_index", 1)
+	return harness
