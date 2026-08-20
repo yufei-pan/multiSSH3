@@ -2,6 +2,8 @@ import io
 import errno
 import threading
 
+import pytest
+
 import multiSSH3
 
 
@@ -52,7 +54,7 @@ def test_shell_fallback_returns_after_single_ssh_attempt(fake_host, monkeypatch)
 	sem = threading.Semaphore(1)
 	host = fake_host("ignored", "echo fallback", shell=True)
 	calls = []
-	multiSSH3._binPaths.pop("sh", None)
+	monkeypatch.delitem(multiSSH3._binPaths, "sh", raising=False)
 
 	def fake_popen(argv, **kwargs):
 		calls.append(argv)
@@ -96,7 +98,7 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	host = fake_host("mock-a", "/tmp/dest", files=["/tmp/a"], scp=False)
 	# Prefer rsync path
 	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
-	multiSSH3._binPaths.pop("scp", None)
+	monkeypatch.delitem(multiSSH3._binPaths, "scp", raising=False)
 	rsync_calls = []
 
 	def fake_popen(argv, **kwargs):
@@ -229,6 +231,31 @@ def test_run_command_emfile_exhausts_retry_budget(fake_host, monkeypatch):
 	assert any("Retry limit" in line for line in host.stderr)
 
 
+def test_run_command_post_launch_emfile_does_not_launch_command_again(
+	fake_host, monkeypatch
+):
+	class PostLaunchEmfileProc(FakeProc):
+		def poll(self):
+			raise OSError(errno.EMFILE, "post-launch too many open files")
+
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "non-idempotent-command")
+	launches = []
+
+	def fake_popen(argv, **kwargs):
+		launches.append(argv)
+		return PostLaunchEmfileProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	monkeypatch.setattr(multiSSH3, "__handle_writing_stream", lambda *args: 0)
+
+	with pytest.raises(OSError, match="post-launch too many open files"):
+		multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
+
+	assert len(launches) == 1
+
+
 def test_run_command_magic_user_ip_uuid(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("alice@mock-a", "echo #USER# #IP# #UUID#")
@@ -280,8 +307,8 @@ def test_run_command_extraargs_list(fake_host, monkeypatch):
 def test_run_command_missing_file_tools(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "/dest", files=["/tmp/a"], scp=True)
-	multiSSH3._binPaths.pop("scp", None)
-	multiSSH3._binPaths.pop("rsync", None)
+	monkeypatch.delitem(multiSSH3._binPaths, "scp", raising=False)
+	monkeypatch.delitem(multiSSH3._binPaths, "rsync", raising=False)
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 1

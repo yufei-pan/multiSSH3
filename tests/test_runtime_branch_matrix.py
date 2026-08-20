@@ -65,7 +65,7 @@ def test_run_command_missing_local_ipmitool_falls_back_to_ssh(fake_host, monkeyp
 	host = fake_host("mock-a", "power status", ipmi=True)
 	calls = []
 	definition = multiSSH3.get_default_ipmi_definition()
-	multiSSH3._binPaths.pop("ipmitool", None)
+	monkeypatch.delitem(multiSSH3._binPaths, "ipmitool", raising=False)
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
 	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or ImmediateProc())
 
@@ -175,16 +175,17 @@ def test_process_run_premerges_and_prints(fake_host, monkeypatch):
 	assert events == ["merge", "print"]
 
 
-def test_generate_output_includes_connection_refused_and_buffer(fake_host):
+def test_generate_output_plain_formats_connection_refused(fake_host, monkeypatch):
 	host = fake_host("mock-a", "true")
 	host.returncode = 255
 	host.stderr = ["ssh: connect to host mock-a port 22: Connection refused"]
-	host.output_buffer.write(b"partial-output")
+	monkeypatch.setattr(multiSSH3, "get_terminal_color_capability", lambda: "None")
+	monkeypatch.setattr(multiSSH3, "get_terminal_size", lambda: (120, 30))
 
-	text = multiSSH3.generate_output([host], greppable=True, quiet=False)
+	text = multiSSH3.generate_output([host], greppable=False, quiet=False)
 
-	assert "mock-a" in text
-	assert "Connection refused" in text or "partial-output" in text
+	assert " SSH not reachable!" in text
+	assert host.stderr == ["SSH not reachable!"]
 
 
 def test_generate_output_greppable_marks_empty_host_and_user_input(fake_host):

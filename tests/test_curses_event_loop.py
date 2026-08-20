@@ -108,7 +108,6 @@ def test_generate_display_renders_compound_ansi_output_without_escape_text(
 		"colored-output\x1b[0m"
 	]
 	host.lineNumToPrintSet = {0}
-	host.output_buffer.write(b"buffer-tail")
 
 	def finish_without_input():
 		host.returncode = 0
@@ -134,8 +133,39 @@ def test_generate_display_renders_compound_ansi_output_without_escape_text(
 
 	assert result is None
 	assert "colored-output" in rendered_text
-	assert "buffer-tail" in rendered_text
 	assert not any("\x1b[" in text for text in rendered_text)
+
+
+def test_generate_display_renders_partial_output_buffer_once(
+	stub_curses_harness, fake_host, monkeypatch
+):
+	host = _running_host(fake_host)
+	host.output_buffer.write(b"buffer-tail")
+
+	def finish_without_input():
+		host.returncode = 0
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", finish_without_input)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window,
+		[host],
+		min_char_len=10,
+		min_line_len=2,
+	)
+	rendered_text = [
+		arg
+		for window in stub_curses_harness.windows
+		for method, args, kwargs in window.calls
+		for arg in args
+		if method == "addnstr" and isinstance(arg, str)
+	]
+
+	assert result is None
+	assert [text for text in rendered_text if text == "buffer-tail"] == ["buffer-tail"]
 
 
 def test_generate_display_reports_no_hosts(stub_curses_harness, fake_host, monkeypatch):

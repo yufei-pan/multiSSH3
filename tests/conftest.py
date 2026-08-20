@@ -147,6 +147,7 @@ def restore_module_globals():
 		"__returnZero": multiSSH3.__returnZero,
 		"DEFAULT_DIFF_DISPLAY_THRESHOLD": multiSSH3.DEFAULT_DIFF_DISPLAY_THRESHOLD,
 		"DEFAULT_HOST_FILE": multiSSH3.DEFAULT_HOST_FILE,
+		"_binPaths": dict(multiSSH3._binPaths),
 	}
 	_clear_expand_caches()
 	yield
@@ -158,6 +159,7 @@ def restore_module_globals():
 			"DEFAULT_IPMI_DEFINITIONS",
 			"ERRORS",
 			"__failedHosts",
+			"_binPaths",
 		):
 			continue
 		setattr(multiSSH3, k, v)
@@ -167,6 +169,7 @@ def restore_module_globals():
 	multiSSH3.DEFAULT_IPMI_DEFINITIONS = [dict(item) for item in saved["DEFAULT_IPMI_DEFINITIONS"]]
 	multiSSH3.ERRORS = list(saved["ERRORS"])
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
+	multiSSH3._binPaths = dict(saved["_binPaths"])
 	multiSSH3.join_threads(timeout=2)
 	_clear_expand_caches()
 

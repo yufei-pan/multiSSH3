@@ -2082,6 +2082,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 	emfile_attempt = 0
 	while True:
 		retry_after_emfile = False
+		proc = None
 		with sem:
 			try:
 				host.output.append('Running command: '+' '.join(formatedCMD))
@@ -2174,7 +2175,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 					# filter out the error messages that we want to ignore
 					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
 			except OSError as e:
-				if e.errno != errno.EMFILE:
+				if e.errno != errno.EMFILE or proc is not None:
 					raise
 				retry_after_emfile = True
 				host.returncode = None
@@ -3494,7 +3495,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		if will_update_unreachable_hosts:
 			availableHosts = set()
 			for host in hosts:
-				if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.stderr[-1].strip().startswith('Timeout!') and host.returncode == 124)):
+				if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.returncode == 124 and any(line.strip().startswith('Timeout!') for line in host.stderr))):
 					unavailableHosts[host.name] =  int(time.monotonic() + unavailable_host_expiry)
 					__globalUnavailableHosts[host.name] =  int(time.monotonic() + unavailable_host_expiry)
 				else:
@@ -3503,8 +3504,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 						del unavailableHosts[host.name]
 					if host.name in __globalUnavailableHosts:
 						del __globalUnavailableHosts[host.name]
+			unavailable_to_persist = dict(__globalUnavailableHosts)
+			unavailable_to_persist.update(unavailableHosts)
 			canonical_unavailable = _write_unavailable_hosts_file(
-				_unavailable_hosts_file_path(), unavailableHosts, availableHosts
+				_unavailable_hosts_file_path(), unavailable_to_persist, availableHosts
 			)
 			unavailableHosts.clear()
 			unavailableHosts.update(canonical_unavailable)
@@ -4218,6 +4221,10 @@ def process_args(args = None):
 		args.config_file = cfpa.config_file
 	except Exception:
 		pass
+	try:
+		args.repeat = _positive_int(args.repeat)
+	except (TypeError, ValueError, argparse.ArgumentTypeError) as exc:
+		parser.error("argument -r/--repeat: {}".format(exc))
 	if args.script:
 		args.no_watch = True
 		args.skip_unreachable = True

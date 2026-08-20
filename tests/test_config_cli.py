@@ -19,6 +19,15 @@ def test_load_config_file_roundtrip(tmp_path):
 	assert loaded == data
 
 
+def test_cli_rejects_nonpositive_repeat_from_numeric_config_default(tmp_path):
+	cfg = tmp_path / "multiSSH3.config.json"
+	cfg.write_text(json.dumps({"DEFAULT_REPEAT": 0}))
+
+	result = run_cli(["--config_file", str(cfg), "127.0.0.1", "true"])
+
+	assert result.returncode == 2
+
+
 def test_parser_hosts_and_command():
 	parser = multiSSH3.get_parser()
 	args = parser.parse_args(["127.0.0.1", "echo", "ok"])
