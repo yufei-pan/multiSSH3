@@ -36,7 +36,7 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.24'
+version = '6.25'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-08-11'
@@ -1861,6 +1861,56 @@ def __handle_writing_stream(stream,stop_event,host):
 def _emfile_backoff_seconds(attempt):
 	return min(0.1 * (2 ** attempt), 1.0)
 
+def _ipmi_failure_should_wait(host):
+	'''Return True when the next IPMI password should wait out retry_lockout_time.
+
+	The wait protects a controller that actually rejected a login. Timeouts, routing
+	failures, and a socket that never opened did not reach a BMC, so they skip it.
+	An unrecognized BMC error still waits.
+	'''
+	chunks = []
+	for attr in ('stdout', 'stderr', 'output'):
+		value = getattr(host, attr, None) or []
+		chunks.extend(str(line) for line in value)
+	text = '\n'.join(chunks).lower()
+	auth_markers = (
+		'insufficient resources',
+		'rakp',
+		'unauthorized',
+		'authentication failed',
+		'invalid password',
+		'invalid user',
+		'bad password',
+		'account locked',
+		'user locked',
+		'session limit',
+		'privilege level',
+	)
+	if any(marker in text for marker in auth_markers):
+		return True
+	no_contact_markers = (
+		'could not open socket',
+		'no route to host',
+		'network is unreachable',
+		'connection timed out',
+		'connection refused',
+		'host is down',
+		'destination host unreachable',
+		'name or service not known',
+		'could not resolve',
+		'permission denied',
+		'unable to establish lan session',
+		'unable to establish ipmi v1.5',
+		'timeout!',
+	)
+	if any(marker in text for marker in no_contact_markers):
+		return False
+	if getattr(host, 'returncode', None) == 124:
+		return False
+	if 'unable to establish ipmi v2' in text or 'rmcp+' in text:
+		return True
+	return True
+
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS),ipmi_definitions_list = ...):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
@@ -2199,6 +2249,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 		retry_limit -= 1
 	# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
 	if host.ipmi and host.returncode != 0:
+		should_wait = _ipmi_failure_should_wait(host)
 		host.returncode = None
 		host.output.append('IPMI connection failed! Trying next ipmi definition...')
 		if __DEBUG_MODE:
@@ -2209,11 +2260,13 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 		if ipmi_definition.get('retry_lockout_time'):
 			try:
 				sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
-				if sleep_seconds >= 0:
+				if sleep_seconds >= 0 and should_wait:
 					host.output.append(f'Sleeping for {sleep_seconds} seconds...')
 					if __DEBUG_MODE:
 						host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
 					time.sleep(sleep_seconds)
+				elif sleep_seconds >= 0:
+					host.output.append('Skipping IPMI lockout wait; the controller was not reached.')
 			except Exception as e:
 				host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
 				if __DEBUG_MODE:
