@@ -62,3 +62,39 @@ def test_join_threads_resolves_global_at_call_time():
 	assert joined == [True]
 	assert t not in multiSSH3.__running_threads or not t.is_alive()
 	multiSSH3.__running_threads = original
+
+
+def _fake_nofile_limits(monkeypatch, soft, hard, max_soft):
+	limits = {"value": (soft, hard)}
+	calls = []
+
+	def setrlimit(kind, value):
+		calls.append(value)
+		if value[0] > max_soft:
+			raise ValueError("current limit exceeds maximum limit")
+		limits["value"] = value
+
+	monkeypatch.setattr(multiSSH3.resource, "getrlimit", lambda kind: limits["value"])
+	monkeypatch.setattr(multiSSH3.resource, "setrlimit", setrlimit)
+	return calls
+
+
+def test_raise_nofile_soft_limit_with_unlimited_hard_limit(monkeypatch):
+	infinity = multiSSH3.resource.RLIM_INFINITY
+	calls = _fake_nofile_limits(monkeypatch, 256, infinity, max_soft=10240)
+
+	assert multiSSH3._raise_nofile_soft_limit() == 10240
+	assert calls == [(65536, infinity), (10240, infinity)]
+
+
+def test_raise_nofile_soft_limit_keeps_soft_limit_when_raise_fails(monkeypatch):
+	_fake_nofile_limits(monkeypatch, 256, multiSSH3.resource.RLIM_INFINITY, max_soft=0)
+
+	assert multiSSH3._raise_nofile_soft_limit() == 256
+
+
+def test_raise_nofile_soft_limit_raises_to_finite_hard_limit(monkeypatch):
+	calls = _fake_nofile_limits(monkeypatch, 1024, 524288, max_soft=524288)
+
+	assert multiSSH3._raise_nofile_soft_limit() == 524288
+	assert calls == [(524288, 524288)]

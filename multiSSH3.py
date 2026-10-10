@@ -19,6 +19,7 @@ import math
 import os
 import queue
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -36,10 +37,10 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.25'
+version = '6.26'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-08-11'
+COMMIT_DATE = '2026-10-10'
 # TODO: Add terminal TUI
 
 CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
@@ -221,6 +222,9 @@ def _exit_with_code(code, message=None):
 		eprint('Exiting: '+ message)
 	if __returnZero:
 		code = 0
+	elif isinstance(code, int) and code > 255:
+		# exit status is truncated to 8 bits, 256 would read as success
+		code = 255
 	sys.exit(code)
 
 
@@ -261,9 +265,12 @@ def signal_handler(sig, frame):
 		_emo = True
 	else:
 		eprint('Ctrl C caught again, exiting immediately!')
-		# wait for 0.1 seconds to allow the threads to exit
-		time.sleep(0.1)
-		os.system(f'pkill -ef {os.path.basename(__file__)}')
+		# only kill the subprocesses this process started
+		for proc in list(__running_procs):
+			try:
+				proc.kill()
+			except Exception:
+				pass
 		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
 
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
@@ -430,6 +437,7 @@ __thread_start_delay = 0
 _encoding = DEFAULT_ENCODING
 __returnZero = DEFAULT_RETURN_ZERO
 __running_threads = set()
+__running_procs = set()
 __control_master_string = '''Host *
   ControlMaster auto
   ControlPath /run/user/%i/ssh_sockets_%C
@@ -448,12 +456,40 @@ try:
 	__resource_lib_available = True
 except ImportError:
 	pass
+def _raise_nofile_soft_limit():
+	'''
+	Raise the RLIMIT_NOFILE soft limit as far as the system allows.
+
+	An unlimited hard limit (common on macOS) cannot be used as a soft limit, so finite
+	caps are tried instead. If nothing can be raised, the current soft limit is kept.
+
+	Returns:
+		int: The soft limit in effect afterwards
+	'''
+	soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+	if soft_limit == resource.RLIM_INFINITY:
+		return soft_limit
+	if hard_limit == resource.RLIM_INFINITY:
+		candidates = [65536, 10240]
+	else:
+		candidates = [hard_limit]
+	for candidate in candidates:
+		if candidate <= soft_limit:
+			break
+		try:
+			resource.setrlimit(resource.RLIMIT_NOFILE, (candidate, hard_limit))
+			break
+		except (ValueError, OSError):
+			continue
+	return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+
 if __resource_lib_available:
-	# Get the current limits
-	_, __system_nofile_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
-	# Set the soft limit to the hard limit
-	resource.setrlimit(resource.RLIMIT_NOFILE, (__system_nofile_limit, __system_nofile_limit))
-	__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
+	try:
+		__system_nofile_limit = _raise_nofile_soft_limit()
+		if __system_nofile_limit != resource.RLIM_INFINITY:
+			__max_connections_nofile_limit_supported = int((__system_nofile_limit - 10) / 3)
+	except Exception:
+		pass
 _binPaths = {}
 _binCalled = set(['sshpass', 'ssh', 'scp', 'ipmitool','rsync','sh','ssh-copy-id','redfishtool'])
 def check_path(program_name):
@@ -1709,7 +1745,7 @@ def __expand_hostnames(hosts) -> dict:
 		# seperated by .
 		# If so, we expand the IP address range
 		iplist = []
-		if re.match(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])}|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}(\.(((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])}|x|\*|\?))?\]))$', host):
+		if re.match(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}\.((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))$', host):
 			hostSetToAdd = sorted(__expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
 			iplist = hostSetToAdd
 		else:
@@ -1861,17 +1897,29 @@ def __handle_writing_stream(stream,stop_event,host):
 def _emfile_backoff_seconds(attempt):
 	return min(0.1 * (2 ** attempt), 1.0)
 
-def _ipmi_failure_should_wait(host):
+def _record_host_exception(host, exc):
+	'''Record an exception raised while running the host's command as a failure. Call from an except block.'''
+	import traceback
+	host.stderr.extend(str(exc).split('\n'))
+	host.output.extend(str(exc).split('\n'))
+	host.stderr.extend(traceback.format_exc().split('\n'))
+	host.output.extend(traceback.format_exc().split('\n'))
+	host.returncode = -1
+
+def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 	'''Return True when the next IPMI password should wait out retry_lockout_time.
 
 	The wait protects a controller that actually rejected a login. Timeouts, routing
 	failures, and a socket that never opened did not reach a BMC, so they skip it.
 	An unrecognized BMC error still waits.
+
+	line_starts holds where the failed attempt's lines begin in host.output, host.stdout
+	and host.stderr, so messages left over from earlier attempts are not considered.
 	'''
 	chunks = []
-	for attr in ('stdout', 'stderr', 'output'):
+	for attr, start in zip(('output', 'stdout', 'stderr'), line_starts):
 		value = getattr(host, attr, None) or []
-		chunks.extend(str(line) for line in value)
+		chunks.extend(str(line) for line in value[start:])
 	text = '\n'.join(chunks).lower()
 	auth_markers = (
 		'insufficient resources',
@@ -1911,7 +1959,7 @@ def _ipmi_failure_should_wait(host):
 		return True
 	return True
 
-def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS),ipmi_definitions_list = ...):
+def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
 	'''
 	Run the command on the host. Will format the commands accordingly. Main execution function.
 
@@ -1931,6 +1979,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 	global DEFAULT_USERNAME
 	global DEFAULT_PASSWORD
 	global SSH_STRICT_HOST_KEY_CHECKING
+	if retry_limit is ...:
+		# resolved at call time, the CLI and config files can add ipmi definitions after import
+		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
 	if retry_limit < 0:
 		host.output.append('Error: Retry limit reached!')
 		host.stderr.append('Error: Retry limit reached!')
@@ -1940,6 +1991,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 	username = None
 	sshLocalExtraArgs = []
 	ip_prefix = None
+	useScp = False
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
@@ -2039,7 +2091,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 				# ipmitool behavior on deployed machines. Verify on real IPMI hardware before changing.
 				ipmi_args = ipmi_definition.get('args','')
 				if 'sh' in _binPaths:
-					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {host.address} -U {ipmi_definition.get("username",username)} -P {ipmi_definition.get("password",passwds)} {ipmi_args} {host.command}']
+					# quote the credentials so the shell does not split or expand them, ipmi_args and the command stay raw on purpose
+					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {shlex.quote(str(host.address))} -U {shlex.quote(str(ipmi_definition.get("username",username)))} -P {shlex.quote(str(ipmi_definition.get("password",passwds)))} {ipmi_args} {host.command}']
 				else:
 					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}',f'-P {ipmi_definition.get("password",passwds)}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
 			elif ipmi_definition.get('ipmi_method') == 'redfish':
@@ -2051,7 +2104,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 					host.command = 'Systems'
 				ipmi_args = ipmi_definition.get('args','')
 				if 'sh' in _binPaths:
-					formatedCMD = [_binPaths['sh'],'-c',f'redfishtool -S Always -a -r {host.address} -u {ipmi_definition.get("username",username)} -p {ipmi_definition.get("password",passwds)} {ipmi_args} {host.command}']
+					formatedCMD = [_binPaths['sh'],'-c',f'redfishtool -S Always -a -r {shlex.quote(str(host.address))} -u {shlex.quote(str(ipmi_definition.get("username",username)))} -p {shlex.quote(str(ipmi_definition.get("password",passwds)))} {ipmi_args} {host.command}']
 				else:
 					formatedCMD = [_binPaths['redfishtool'],'-S', 'Always','-a','-r',host.address,'-u',ipmi_definition.get("username",username),'-p',ipmi_definition.get("password",passwds)] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
 			else:
@@ -2129,6 +2182,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 		host.output.extend(traceback.format_exc().split('\n'))
 		host.returncode = -1
 		return
+	# where this attempt's lines start, earlier ipmi attempts must not affect the lockout decision
+	attempt_line_starts = (len(host.output), len(host.stdout), len(host.stderr))
 	emfile_attempt = 0
 	while True:
 		retry_after_emfile = False
@@ -2140,6 +2195,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 					host.stderr.append('Running command: '+' '.join(formatedCMD))
 				#host.stdout = []
 				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
+				__running_procs.add(proc)
 				# create a thread to handle stdout
 				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
 				stdout_thread.start()
@@ -2225,17 +2281,15 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 					# filter out the error messages that we want to ignore
 					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
 			except OSError as e:
-				if e.errno != errno.EMFILE or proc is not None:
-					raise
-				retry_after_emfile = True
-				host.returncode = None
+				if e.errno == errno.EMFILE and proc is None:
+					retry_after_emfile = True
+					host.returncode = None
+				else:
+					_record_host_exception(host, e)
 			except Exception as e:
-				import traceback
-				host.stderr.extend(str(e).split('\n'))
-				host.output.extend(str(e).split('\n'))
-				host.stderr.extend(traceback.format_exc().split('\n'))
-				host.output.extend(traceback.format_exc().split('\n'))
-				host.returncode = -1
+				_record_host_exception(host, e)
+			finally:
+				__running_procs.discard(proc)
 		if not retry_after_emfile:
 			break
 		if retry_limit <= 0:
@@ -2249,7 +2303,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 		retry_limit -= 1
 	# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
 	if host.ipmi and host.returncode != 0:
-		should_wait = _ipmi_failure_should_wait(host)
+		should_wait = _ipmi_failure_should_wait(host, attempt_line_starts)
 		host.returncode = None
 		host.output.append('IPMI connection failed! Trying next ipmi definition...')
 		if __DEBUG_MODE:
@@ -2271,7 +2325,13 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 				host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
 				if __DEBUG_MODE:
 					host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
-				time.sleep(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
+				# fall back to the default lockout time, which is -1 (disabled) unless configured
+				try:
+					fallback_seconds = float(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
+				except (TypeError, ValueError):
+					fallback_seconds = -1
+				if fallback_seconds > 0 and should_wait:
+					time.sleep(fallback_seconds)
 		if ipmi_definition.get('ipmi_method') == 'ipmitool':
 			if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
 				ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
@@ -2293,6 +2353,21 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = 7 + len(DEFAUL
 		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
 
 #%% ------------ Start Threading Block ----------------
+def _run_command_thread(host, sem, timeout, passwds):
+	'''
+	Thread entry point for run_command. Guarantees the host ends with a return code,
+	callers wait for every host's returncode to be set and would otherwise wait forever.
+	'''
+	try:
+		run_command(host, sem, timeout, passwds)
+	except Exception as e:
+		_record_host_exception(host, e)
+	finally:
+		if host.returncode is None:
+			host.output.append('Error: Command thread exited without a return code!')
+			host.stderr.append('Error: Command thread exited without a return code!')
+			host.returncode = -1
+
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
@@ -2310,7 +2385,7 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cp
 	if len(hosts) == 0:
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
-	threads = [threading.Thread(target=run_command, args=(host, sem,timeout,password), daemon=True) for host in hosts]
+	threads = [threading.Thread(target=_run_command_thread, args=(host, sem,timeout,password), daemon=True) for host in hosts]
 	for thread, host in zip(threads, hosts):
 		thread.start()
 		host.thread = thread
@@ -2763,7 +2838,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		_curses_add_string_to_window(window=help_window,y=9,line='← or →  : Move cursor', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=10,line='PgUp/Dn : Scroll history by 5', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=11,line='Home/End: Jump cursor', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
-		_curses_add_string_to_window(window=help_window,y=12,line='Esc     : Clear line', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=12,line='Esc     : Clear / hide view', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		help_panel = curses.panel.new_panel(help_window)
 		help_panel.hide()
 		curses.panel.update_panels()
@@ -2835,9 +2910,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == curses.KEY_REFRESH or key == curses.KEY_F5 or key == 18: # 18 is the key code for ctrl + R
 					# if the key is refresh, we will refresh the screen
 					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Refresh requested')
-				elif key == curses.KEY_EXIT or key == 27: # 27 is the key code for ESC
-					# if the key is exit, we will exit the program
-					return 
+				elif key == curses.KEY_EXIT or (key == 27 and lineToDisplay == -1 and not __keyPressesIn[-1]): # 27 is the key code for ESC
+					# exit the display on KEY_EXIT, or on ESC when the input line is empty. ESC with input clears the line below
+					return
 				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
 					# if the key is help, we will display the help message
 					if not help_shown:
@@ -3461,22 +3536,64 @@ def _unavailable_hosts_file_path():
 	return os.path.join(tempfile.gettempdir(), "__{}_multiSSH3_UNAVAILABLE_HOSTS.csv".format(getpass.getuser()))
 
 
-def _read_unavailable_hosts_file(path, now=None):
+def _get_boot_id():
+	'''
+	Get an identifier unique to the current boot
+
+	Expiry times in the unavailable hosts file come from time.monotonic(), which restarts
+	at every boot, so they only mean something within the boot that wrote them.
+
+	Returns:
+		str: The boot id, or None if the platform does not provide one
+	'''
+	try:
+		with open('/proc/sys/kernel/random/boot_id', 'r') as f:
+			return f.read().strip() or None
+	except Exception:
+		return None
+
+
+def _read_unavailable_hosts_file(path, now=None, max_ttl=None):
+	'''
+	Read the unavailable hosts file, discarding it if it was written during a previous boot.
+
+	A file whose '#boot_id' header does not match the current boot is from a previous boot.
+	Without a boot id to compare, an entry with more than max_ttl seconds left can only come
+	from a monotonic clock that has since restarted, so the file is treated as stale.
+	'''
 	current_time = time.monotonic() if now is None else now
 	result = {}
+	file_boot_id = None
+	exceeds_ttl = False
 	try:
 		with open(path, "r") as handle:
 			for raw_line in handle:
 				parts = raw_line.strip().split(",")
+				if len(parts) == 2 and parts[0] == "#boot_id":
+					file_boot_id = parts[1]
+					continue
 				if len(parts) != 2 or not parts[0] or not parts[1].isdigit():
 					continue
 				expiry = int(parts[1])
+				if max_ttl and max_ttl > 0 and expiry - current_time > max_ttl:
+					exceeds_ttl = True
 				if expiry > current_time:
 					result[parts[0]] = expiry
 	except FileNotFoundError:
 		return {}
 	except Exception as exc:
 		eprint("Warning: Unable to read unavailable hosts from {!r}: {}".format(path, exc))
+	current_boot_id = _get_boot_id()
+	if current_boot_id and file_boot_id:
+		stale = file_boot_id != current_boot_id
+	else:
+		stale = exceeds_ttl
+	if stale:
+		try:
+			os.unlink(path)
+		except OSError:
+			pass
+		return {}
 	return result
 
 
@@ -3488,9 +3605,12 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 		for host, expiry in unavailable_hosts.items()
 		if host not in available and int(expiry) > current_time
 	}
+	boot_id = _get_boot_id()
 	temporary_path = "{}.{}".format(path, uuid4().hex)
 	try:
 		with open(temporary_path, "w") as handle:
+			if boot_id:
+				handle.write("#boot_id,{}\n".format(boot_id))
 			for host in sorted(clean):
 				handle.write("{},{}\n".format(host, clean[host]))
 			handle.flush()
@@ -3569,7 +3689,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			if __DEBUG_MODE:
 				print(f'Unreachable hosts: {unavailableHosts}')
 		if pre_merge:
-			hosts = pre_merge_hosts(hosts)
+			# merge copies, the caller's hosts must keep one entry per real host for failure counts
+			hosts = pre_merge_hosts([host.copy() for host in hosts])
 		if not no_output:
 			print_output(hosts,json,greppable=greppable)
 	else:
@@ -3591,13 +3712,70 @@ def formHostStr(host) -> str:
 	if not host or len(host) == 0:
 		return 'EMPTY_HOSTS'
 	if isinstance(host, str):
-		host = set(host.replace(',',' ').replace('\n',' ').replace('\r',' ').replace('\t',' ').replace(';', ' ').replace('|', ' ').replace('/', ' ').replace('&',' ').split())
+		host = set(_split_host_str(host))
 	else:
 		host = set(host)
 	if 'local_shell' in host:
 		host.remove('local_shell')
 		host.add('localhost')
 	return ','.join(compact_hostnames(host))
+
+def _split_host_str(text):
+	'''Split a hosts string on the separators accepted between hosts.'''
+	return text.replace(',',' ').replace('\n',' ').replace('\r',' ').replace('\t',' ').replace(';', ' ').replace('|', ' ').replace('/', ' ').replace('&',' ').split()
+
+def _natural_sort_key(text):
+	'''Sort key that compares the numbers inside a string numerically (node2 before node10).'''
+	return tuple((0, int(part), '') if part.isdigit() else (1, 0, part) for part in re.split(r'(\d+)', text) if part)
+
+def _host_tokens_in_order(hosts):
+	'''
+	Split the hosts argument into host tokens, keeping the order they were given in.
+
+	Args:
+		hosts: A hosts string, or an iterable of host strings. Sets have no order and are sorted.
+
+	Returns:
+		list: The host tokens, with local_shell mapped to localhost like formHostStr
+	'''
+	if isinstance(hosts, str):
+		items = [hosts]
+	elif isinstance(hosts, (set, frozenset)):
+		items = sorted(hosts)
+	else:
+		items = list(hosts)
+	tokens = []
+	for item in items:
+		for token in _split_host_str(str(item)):
+			tokens.append('localhost' if token == 'local_shell' else token)
+	return tokens
+
+def _order_target_hosts(host_tokens, target_host_dic, username=None):
+	'''
+	Order the expanded target hosts by the order their tokens were given in.
+
+	Hosts expanded from one token (a range or an env variable) are in natural sort order.
+	Hosts in target_host_dic that no token produced are appended in natural sort order.
+
+	Args:
+		host_tokens (list): The host tokens from _host_tokens_in_order
+		target_host_dic (dict): The expanded target hosts
+		username (str, optional): Username prefixed to tokens without one, like run_command_on_hosts does
+
+	Returns:
+		list: The keys of target_host_dic in order
+	'''
+	ordered = []
+	seen = set()
+	for token in host_tokens:
+		if username and '@' not in token:
+			token = f'{username.strip()}@{token}'
+		for host in sorted(expand_hostnames([token]), key=_natural_sort_key):
+			if host in target_host_dic and host not in seen:
+				seen.add(host)
+				ordered.append(host)
+	ordered.extend(sorted((host for host in target_host_dic if host not in seen), key=_natural_sort_key))
+	return ordered
 
 @cache_decorator
 def __formCommandArgStr(shortend = False, **kwargs) -> str:
@@ -3734,7 +3912,8 @@ def record_command_history(kwargs):
 		historyKwargs['tabSeperated'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
 		strCommand = getStrCommand(**historyKwargs)
-		with open(history_file, 'a') as f:
+		# history can hold -p passwords, create it readable by the owner only
+		with os.fdopen(os.open(history_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a') as f:
 			# it follows <timestamp>\t<strCommand>\n
 			f.write(f'{int(time.time())}\t{strCommand}\n')
 			f.flush()
@@ -3842,7 +4021,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		__global_suppress_printout = True
 	unavailable_path = _unavailable_hosts_file_path()
 	if os.path.exists(unavailable_path):
-		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path)
+		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path, max_ttl=unavailable_host_expiry)
 		__globalUnavailableHosts.update(loaded_unavailable)
 		if loaded_unavailable and not __global_suppress_printout:
 			eprint("Read unavailable hosts from the file {}".format(unavailable_path))
@@ -3882,6 +4061,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
+	# one on one mode pairs commands with hosts in the order the hosts were given
+	hostTokens = _host_tokens_in_order(hosts) if oneonone else []
 	if isinstance(hosts, list):
 		hosts = frozenset(hosts)
 	elif isinstance(hosts, dict):
@@ -3921,14 +4102,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			for host in targetHostDic:
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
-				command = f"{_binPaths['ssh-copy-id']} "
+				# host already carries user@ when username is set, see hostStr above
+				command = f"{shlex.quote(_binPaths['ssh-copy-id'])} "
 				if identity_file:
-					command = f"{command}-i {identity_file} "
-				if username:
-					command =  f"{command} {username}@"
-				command = f"{command}{host}"
+					command = f"{command}-i {shlex.quote(os.path.expanduser(identity_file))} "
+				command = f"{command}{shlex.quote(host)}"
 				if password and 'sshpass' in _binPaths:
-					command = f"{_binPaths['sshpass']} -p {password} {command}"
+					command = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(password)} {command}"
 					hosts.append(Host(host, command,identity_file=identity_file,shell=True,ip = targetHostDic[host]))
 				else:
 					eprint(f"> {command}")
@@ -3972,19 +4152,20 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint(f"Files: {file!r}")
 	if oneonone:
 		hosts = []
-		if len(commands) != len(set(targetHostDic) - set(skipHostSet)):
+		# skipped hosts get no command, unreachable hosts keep their command slot and are skipped below
+		orderedHosts = [host for host in _order_target_hosts(hostTokens, targetHostDic, username)
+						if host not in skipHostSet and targetHostDic[host] not in skipHostSet]
+		if len(commands) != len(orderedHosts):
 			eprint("Error: the number of commands must be the same as the number of hosts")
 			eprint(f"Number of commands: {len(commands)}")
-			eprint(f"Number of hosts: {len(set(targetHostDic) - set(skipHostSet))}")
+			eprint(f"Number of hosts: {len(orderedHosts)}")
 			_abort(255, "Number of commands and hosts do not match", called=called)
 		if not __global_suppress_printout:
 			eprint('-'*80)
 			eprint("Running in one on one mode")
-		for host, command in zip(targetHostDic, commands):
+		for host, command in zip(orderedHosts, commands):
 			if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 				eprint(f"Skipping unavailable host: {host}")
-				continue
-			if host in skipHostSet or targetHostDic[host] in skipHostSet:
 				continue
 			if file_sync:
 				hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host]))

@@ -60,17 +60,28 @@ def test_signal_handler_first_interrupt_sets_emergency_stop(monkeypatch, capsys)
 	assert "Ctrl C caught" in capsys.readouterr().err
 
 
-def test_signal_handler_second_interrupt_exits(monkeypatch):
+def test_signal_handler_second_interrupt_kills_only_own_children(monkeypatch):
+	class Proc:
+		killed = False
+		def kill(self):
+			self.killed = True
+
+	class DeadProc:
+		def kill(self):
+			raise ProcessLookupError()
+
 	commands = []
+	child, dead_child = Proc(), DeadProc()
 	monkeypatch.setattr(multiSSH3, "_emo", True)
-	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	monkeypatch.setattr(multiSSH3, "__running_procs", {child, dead_child})
 	monkeypatch.setattr(multiSSH3.os, "system", lambda command: commands.append(command))
 
 	with pytest.raises(SystemExit) as exc_info:
 		multiSSH3.signal_handler(None, None)
 
 	assert exc_info.value.code == 1
-	assert commands and commands[0].startswith("pkill -ef")
+	assert child.killed
+	assert commands == []
 
 
 def test_input_with_timeout_returns_inline_input(monkeypatch):
@@ -130,3 +141,47 @@ def test_process_config_file_generates_and_returns_when_commands_remain(monkeypa
 
 	assert result is args
 	assert calls == [(None, True)]
+
+
+def test_exit_with_code_caps_status_at_255(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "__returnZero", False)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3._exit_with_code(256)
+
+	assert exc_info.value.code == 255
+
+
+def test_main_counts_each_failed_host_when_outputs_merge(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
+	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
+
+	def fail_same_way(host, sem, timeout=60, passwds=None, **kwargs):
+		host.stderr.append("same error")
+		host.returncode = 1
+
+	monkeypatch.setattr(multiSSH3, "run_command", fail_same_way)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["mock-[1-3]", "true", "--no_watch", "--no_history"])
+
+	assert exc_info.value.code == 3
+	assert multiSSH3.__failedHosts == {"mock-1", "mock-2", "mock-3"}
+	assert "Failed hosts (Return Code not 0) count: 3" in capsys.readouterr().err
+
+
+def test_record_command_history_creates_owner_only_file(tmp_path):
+	import os
+	import stat
+	path = tmp_path / "history"
+	multiSSH3.record_command_history({
+		"hosts": "127.0.0.1",
+		"commands": ["true"],
+		"password": "secret",
+		"history_file": str(path),
+	})
+
+	assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+	assert "secret" in path.read_text()

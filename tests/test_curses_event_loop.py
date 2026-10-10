@@ -436,3 +436,17 @@ def test_curses_print_renders_error_traceback(stub_curses_harness, fake_host, mo
 	assert any("Error: boom" in item for item in text)
 	assert "line-one" in text
 	assert "line-two" in text
+
+
+def test_generate_display_escape_with_input_clears_line(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [[]])
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	stub_curses_harness.inject_keys([ord("x"), 27, 12])
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+
+	assert multiSSH3.__keyPressesIn == [[]]
+	assert result is not None
+	assert result[1] == 0

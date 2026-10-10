@@ -250,10 +250,11 @@ def test_run_command_post_launch_emfile_does_not_launch_command_again(
 	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
 	monkeypatch.setattr(multiSSH3, "__handle_writing_stream", lambda *args: 0)
 
-	with pytest.raises(OSError, match="post-launch too many open files"):
-		multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
 
 	assert len(launches) == 1
+	assert host.returncode == -1
+	assert "post-launch too many open files" in host.stderr[0]
 
 
 def test_run_command_magic_user_ip_uuid(fake_host, monkeypatch):
@@ -312,3 +313,126 @@ def test_run_command_missing_file_tools(fake_host, monkeypatch):
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 1
+
+
+def test_run_command_records_non_emfile_oserror(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+
+	def fake_popen(argv, **kwargs):
+		raise FileNotFoundError(errno.ENOENT, "No such file or directory", "/missing/ssh")
+
+	_patch_popen(monkeypatch, fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5)
+
+	assert host.returncode == -1
+	assert "No such file or directory" in host.stderr[0]
+	assert sem.acquire(blocking=False)
+
+
+def test_run_command_thread_records_exception_from_run_command(fake_host, monkeypatch):
+	host = fake_host("mock-a", "true")
+
+	def boom(*args, **kwargs):
+		raise RuntimeError("boom")
+
+	monkeypatch.setattr(multiSSH3, "run_command", boom)
+	multiSSH3._run_command_thread(host, threading.Semaphore(1), 5, None)
+
+	assert host.returncode == -1
+	assert host.stderr[0] == "boom"
+
+
+def test_run_command_thread_sets_returncode_left_unset(fake_host, monkeypatch):
+	host = fake_host("mock-a", "true")
+	monkeypatch.setattr(multiSSH3, "run_command", lambda *args, **kwargs: None)
+
+	multiSSH3._run_command_thread(host, threading.Semaphore(1), 5, None)
+
+	assert host.returncode == -1
+	assert host.stderr == ["Error: Command thread exited without a return code!"]
+
+
+def _ipmi_failure(**overrides):
+	definition = multiSSH3.get_default_ipmi_definition()
+	definition.update(overrides)
+	return definition
+
+
+def _non_negative_sleep(sleeps):
+	def sleep(seconds):
+		if seconds < 0:
+			raise ValueError("sleep length must be non-negative")
+		sleeps.append(seconds)
+	return sleep
+
+
+def test_ipmi_invalid_retry_lockout_time_finishes_host(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("127.0.0.1", "power status", ipmi=True)
+	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
+	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
+	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_RETRY_LOCKOUT_TIME", -1)
+	sleeps = []
+	monkeypatch.setattr(multiSSH3.time, "sleep", _non_negative_sleep(sleeps))
+	monkeypatch.setattr(multiSSH3, "__handle_writing_stream", lambda *args: 0)
+	_patch_popen(monkeypatch, lambda argv, **kwargs: FakeProc(stderr=b"RAKP 2 HMAC is invalid\n", returncode=1))
+
+	multiSSH3.run_command(host, sem, timeout=5, ipmi_definitions_list=[_ipmi_failure(retry_lockout_time="30s")])
+
+	assert host.returncode == 1
+	assert sleeps == []
+
+
+def test_ipmitool_shell_command_quotes_credentials(fake_host, monkeypatch):
+	import shlex
+	sem = threading.Semaphore(1)
+	host = fake_host("127.0.0.1", "power status", ipmi=True)
+	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
+	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
+	calls = []
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		return FakeProc(stdout=b"Chassis Power is on\n")
+
+	_patch_popen(monkeypatch, fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5, ipmi_definitions_list=[
+		_ipmi_failure(username="ad min", password="p$ss;touch x"),
+	])
+
+	assert shlex.split(calls[0][2]) == [
+		"ipmitool", "-H", "127.0.0.1", "-U", "ad min", "-P", "p$ss;touch x", "power", "status",
+	]
+
+
+def test_run_command_default_retry_limit_counts_current_ipmi_definitions(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("127.0.0.1", "power status", ipmi=True)
+	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
+	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
+	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [_ipmi_failure() for _ in range(5)])
+	launches = []
+
+	def fake_popen(argv, **kwargs):
+		launches.append(argv)
+		return FakeProc(stderr=b"Error: Unable to establish IPMI v2 / RMCP+ session\n", returncode=1)
+
+	_patch_popen(monkeypatch, fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5)
+
+	# each ipmitool definition is retried once through ssh_ipmitool
+	assert len(launches) == 10
+	assert host.stderr == ["Error: Exhausted all matching ipmi definitions!"]
+
+
+def test_run_command_ipmi_with_files_succeeds(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("127.0.0.1", "power status", ipmi=True, files=["a.txt"])
+	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
+	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
+	_patch_popen(monkeypatch, lambda argv, **kwargs: FakeProc(stdout=b"Chassis Power is on\n"))
+
+	multiSSH3.run_command(host, sem, timeout=5, ipmi_definitions_list=[_ipmi_failure()])
+
+	assert host.returncode == 0

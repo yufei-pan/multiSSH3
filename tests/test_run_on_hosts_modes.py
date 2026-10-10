@@ -223,3 +223,96 @@ def test_file_sync_missing_globs_exits_when_cli(monkeypatch, tmp_path):
 			will_update_unreachable_hosts=False,
 		)
 	assert ei.value.code == 66
+
+
+def _oneonone(monkeypatch, tmp_path, hosts, commands, **kwargs):
+	_mock_run(monkeypatch)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	return multiSSH3.run_command_on_hosts(
+		hosts=hosts,
+		commands=commands,
+		oneonone=True,
+		no_start=True,
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+		**kwargs,
+	)
+
+
+def test_oneonone_pairs_commands_in_given_host_order(monkeypatch, tmp_path):
+	hosts = _oneonone(monkeypatch, tmp_path, "mock-z,mock-a[9-10],mock-m", ["cz", "ca9", "ca10", "cm"])
+
+	assert [(h.name, h.command) for h in hosts] == [
+		("mock-z", "cz"), ("mock-a9", "ca9"), ("mock-a10", "ca10"), ("mock-m", "cm"),
+	]
+
+
+def test_oneonone_keeps_list_order_and_username(monkeypatch, tmp_path):
+	hosts = _oneonone(monkeypatch, tmp_path, ["mock-b", "root@mock-a"], ["cb", "ca"], username="bob")
+
+	assert [(h.name, h.command) for h in hosts] == [("bob@mock-b", "cb"), ("root@mock-a", "ca")]
+
+
+def test_oneonone_skip_hosts_are_left_out_before_pairing(monkeypatch, tmp_path):
+	hosts = _oneonone(monkeypatch, tmp_path, "mock-a,mock-b,mock-c", ["cb", "cc"], skip_hosts="mock-a")
+
+	assert [(h.name, h.command) for h in hosts] == [("mock-b", "cb"), ("mock-c", "cc")]
+
+
+def test_oneonone_unreachable_host_keeps_its_command_slot(monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {"mock-a": int(multiSSH3.time.monotonic() + 100)})
+
+	hosts = _oneonone(monkeypatch, tmp_path, "mock-a,mock-b", ["ca", "cb"], skip_unreachable=True)
+
+	assert [(h.name, h.command) for h in hosts] == [("mock-b", "cb")]
+
+
+def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_path):
+	_mock_run(monkeypatch)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
+	monkeypatch.delitem(multiSSH3._binPaths, "sshpass", raising=False)
+	commands = []
+	monkeypatch.setattr(multiSSH3.os, "system", commands.append)
+
+	with pytest.raises(multiSSH3.MultiSSHError):
+		multiSSH3.run_command_on_hosts(
+			hosts="mock-a",
+			copy_id=True,
+			username="bob",
+			identity_file="~/my key",
+			no_watch=True,
+			quiet=True,
+			no_history=True,
+			called=True,
+			will_update_unreachable_hosts=False,
+		)
+
+	assert commands == ["ssh-copy-id -i '{}' bob@mock-a".format(os.path.expanduser("~/my key"))]
+
+
+def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
+	_mock_run(monkeypatch)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
+	monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
+	started = []
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: started.extend(kwargs["hosts"]))
+
+	with pytest.raises(multiSSH3.MultiSSHError):
+		multiSSH3.run_command_on_hosts(
+			hosts="mock-a",
+			copy_id=True,
+			username="bob",
+			password="p@ss word;",
+			no_watch=True,
+			quiet=True,
+			no_history=True,
+			called=True,
+			will_update_unreachable_hosts=False,
+		)
+
+	assert [h.command for h in started] == ["sshpass -p 'p@ss word;' ssh-copy-id bob@mock-a"]

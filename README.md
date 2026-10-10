@@ -320,8 +320,9 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 > ← or →  : Move cursor        
 > PgUp/Dn : Scroll history by 5
 > Home/End: Jump cursor        
-> Esc     : Clear line         
+> Esc     : Clear / hide view  
 > ```
+> `Esc` clears the input line. On an empty input line it hides the live view; the commands keep running and their output is printed when they finish.
 > You can also toggle this help in curses by pressing `?` or `F1`.
 
 ### Command String Replacement
@@ -336,8 +337,6 @@ mssh will replace some magic strings in the command string with host specific va
 | `#USERNAME#`    | Replaced with the username           |
 | `#ID#`          | Replaced with the ID of the host obj |
 | `#I# `          | Replaced with the index of the host  |
-| `#PASSWD#`      | Replaced with the password           |
-| `#PASSWORD#`    | Replaced with the password           |
 | `#UUID#`        | Replaced with the UUID of the host   |
 | `#RESOLVEDNAME#`| Replaced with the resolved name      |
 | `#IP#`          | Replaced with the resolved IP        |
@@ -355,6 +354,7 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 
 ### `-p, --password PASSWORD` | _`DEFAULT_PASSWORD`_
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
+- Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed. mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
@@ -375,6 +375,8 @@ mssh -ea="--delete" -f ./data/ allServers /tmp/data/
 
 ### `-11, --oneonone` | _`DEFAULT_ONE_ON_ONE`_
 - Run commands in one-on-one mode, where each command corresponds to each host, front to back.
+- Hosts are taken in the order they are given. A range or an environment variable expands in ascending order in its place, e.g. `b,a[1-2]` pairs the commands with `b`, `a1`, `a2`.
+- Hosts skipped with `-X, --skip_hosts` are left out before pairing, so give one command per remaining host. An unreachable host keeps its command, which is skipped.
 - If command list length is not equal to expanded host list length, an error will be raised.
 
 ### `-f, --file FILE` | None

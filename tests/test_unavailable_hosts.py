@@ -24,8 +24,9 @@ def test_read_unavailable_hosts_io_failure_returns_empty_and_warns(
 	)
 
 
-def test_write_unavailable_hosts_is_canonical_and_removes_available(tmp_path):
+def test_write_unavailable_hosts_is_canonical_and_removes_available(tmp_path, monkeypatch):
 	path = tmp_path / "unavailable.csv"
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: None)
 	result = multiSSH3._write_unavailable_hosts_file(
 		str(path),
 		{"z-host": 180, "a-host": 170, "expired": 90},
@@ -115,7 +116,8 @@ def test_run_on_hosts_without_skipping_preserves_unrelated_unavailable_records(
 ):
 	path = tmp_path / "unavailable.csv"
 	expiry = int(multiSSH3.time.monotonic() + 1000)
-	path.write_text("available-now,{}\nstill-down,{}\n".format(expiry, expiry))
+	path.write_text("#boot_id,boot-a\navailable-now,{}\nstill-down,{}\n".format(expiry, expiry))
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
 	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(path))
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
@@ -142,3 +144,41 @@ def test_run_on_hosts_without_skipping_preserves_unrelated_unavailable_records(
 	assert len(hosts) == 1
 	assert multiSSH3._read_unavailable_hosts_file(str(path)) == {"still-down": expiry}
 	assert multiSSH3.__globalUnavailableHosts == {"still-down": expiry}
+
+
+def test_read_unavailable_hosts_removes_file_from_previous_boot(tmp_path, monkeypatch):
+	path = tmp_path / "unavailable.csv"
+	path.write_text("#boot_id,old-boot\nhost-a,150\n")
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "new-boot")
+
+	assert multiSSH3._read_unavailable_hosts_file(str(path), now=100, max_ttl=600) == {}
+	assert not path.exists()
+
+
+def test_read_unavailable_hosts_trusts_matching_boot_id_over_ttl(tmp_path, monkeypatch):
+	path = tmp_path / "unavailable.csv"
+	path.write_text("#boot_id,boot-a\nhost-a,100000\n")
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
+
+	assert multiSSH3._read_unavailable_hosts_file(str(path), now=100, max_ttl=600) == {"host-a": 100000}
+
+
+def test_read_unavailable_hosts_without_boot_id_drops_file_beyond_ttl(tmp_path, monkeypatch):
+	path = tmp_path / "unavailable.csv"
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: None)
+	path.write_text("host-a,150\n")
+	assert multiSSH3._read_unavailable_hosts_file(str(path), now=100, max_ttl=600) == {"host-a": 150}
+
+	path.write_text("host-a,150\nhost-b,100000\n")
+	assert multiSSH3._read_unavailable_hosts_file(str(path), now=100, max_ttl=600) == {}
+	assert not path.exists()
+
+
+def test_write_unavailable_hosts_records_boot_id(tmp_path, monkeypatch):
+	path = tmp_path / "unavailable.csv"
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
+
+	multiSSH3._write_unavailable_hosts_file(str(path), {"a": 200}, now=100)
+
+	assert path.read_text() == "#boot_id,boot-a\na,200\n"
+	assert multiSSH3._read_unavailable_hosts_file(str(path), now=100, max_ttl=600) == {"a": 200}

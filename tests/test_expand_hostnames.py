@@ -88,3 +88,13 @@ def test_digit_to_letter_combo(no_hostname_validation):
 	assert multiSSH3.__expand_hostname("combo[5-a]", validate=False) == {
 		"combo8", "combo6", "combo9", "comboa", "combo5", "combo7"
 	}
+
+
+def test_bracketed_first_and_last_octet_ranges_use_ipv4_expansion(monkeypatch):
+	def no_validation(hostname):
+		raise AssertionError("IPv4 ranges should not go through hostname validation")
+
+	monkeypatch.setattr(multiSSH3, "__validate_expand_hostname", no_validation)
+
+	assert list(multiSSH3.expand_hostnames(["10.0.0.[1-3]"])) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+	assert list(multiSSH3.expand_hostnames(["[10-11].0.0.1"])) == ["10.0.0.1", "11.0.0.1"]
