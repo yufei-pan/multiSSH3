@@ -332,3 +332,13 @@ def test_each_name_is_looked_up_once_when_listed_for_several_users(monkeypatch, 
 	multiSSH3.expand_hostnames(["alice@zz[1-20].invalid", "bob@zz[1-20].invalid", "carol@zz[1-20].invalid"])
 
 	assert sorted(lookups) == sorted("zz{}.invalid".format(i) for i in range(1, 21))
+
+
+def test_getip_looks_a_host_up_once_however_it_is_written(monkeypatch, hermetic_resolution):
+	lookups = []
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: lookups.append(hostname) or "10.2.3.4")
+
+	results = {multiSSH3.getIP("bob@n1"), multiSSH3.getIP("n1"), multiSSH3.getIP("n1", local=False), multiSSH3.getIP(" n1 ")}
+
+	assert results == {"10.2.3.4"}
+	assert lookups == ["n1"]

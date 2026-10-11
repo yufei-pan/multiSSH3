@@ -34,8 +34,12 @@ def test_replace_magic_strings_inserts_backslashes_literally():
 	assert multiSSH3.replace_magic_strings("echo #user#", ["#USER#"], "a\\1b") == "echo a\\1b"
 
 
-def test_host_with_ip_none_still_looks_the_name_up(monkeypatch):
-	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: "10.1.2.3" if hostname == "node1" else None)
+def test_host_with_ip_none_still_looks_the_name_up(monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "DEFAULT_HOST_FILE", str(tmp_path / "no-hosts"))
+	monkeypatch.setattr(multiSSH3, "_etc_hosts", {})
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: "10.1.2.3" if hostname == "node1" else None)
+	multiSSH3.getIP.cache_clear()
 
 	assert multiSSH3.Host("node1", "true", ip=None).ip == "10.1.2.3"
 	assert multiSSH3.Host("bob@node1", "true", ip=None).ip == "10.1.2.3"
+	multiSSH3.getIP.cache_clear()

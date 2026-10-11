@@ -302,21 +302,26 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
 		time.sleep(1)
 
-@cache_decorator
 def getIP(hostname: str,local=False):
 	'''
 	Get the IP address of the hostname
 
 	Args:
-		hostname (str): The hostname
+		hostname (str): The hostname, user@ is ignored
+		local (bool): Only check IP addresses and the hosts file, no DNS
 
 	Returns:
 		str: The IP address of the hostname
 	'''
-	global _etc_hosts
-	global DEFAULT_HOST_FILE
+	# one cache entry per host, however callers write it (user@, spaces, local as keyword or not)
 	if '@' in hostname:
 		_, hostname = hostname.rsplit('@',1)
+	return _getIP(hostname.strip(), bool(local))
+
+@cache_decorator
+def _getIP(hostname, local):
+	global _etc_hosts
+	global DEFAULT_HOST_FILE
 	# First we check if the hostname is an IP address
 	try:
 		ipaddress.ip_address(hostname)
@@ -352,6 +357,9 @@ def getIP(hostname: str,local=False):
 
 # hostname -> IP address (or None) of every DNS lookup made, so lookups are done once
 _dns_cache = {}
+
+getIP.cache_clear = _getIP.cache_clear
+getIP.cache_info = _getIP.cache_info
 
 def _resolve_dns(hostname):
 	'''Look hostname up in DNS (IPv4 or IPv6, preferring IPv4), returning its IP address or None.'''
@@ -690,8 +698,7 @@ class Host:
 		self.i = i if i != -1 else _get_i()
 		self.uuid = uuid if uuid is not ... else uuid4()
 		self.identity_file = identity_file
-		# the same cache key as host expansion, so names it already looked up are not looked up again
-		self.ip = ip if ip else getIP(name.rsplit('@',1)[-1].strip(),local=False)
+		self.ip = ip if ip else getIP(name)
 		self.current_color_pair = [-1, -1, 1]
 		self.output_buffer = io.BytesIO()
 		self.stdout_buffer = io.BytesIO()
