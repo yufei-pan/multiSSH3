@@ -832,7 +832,7 @@ def readEnvFromFile():
 					ref_key = match.strip('${}')
 					ref_value = environemnt.get(ref_key) if ref_key != key else None
 					if not ref_value and not _no_env:
-						ref_value = os.environ.get(ref_key)
+						ref_value = _consult_env(ref_key)
 					if ref_value:
 						environemnt[key] = value.replace(match, ref_value)
 						found = True
@@ -1528,7 +1528,7 @@ def _local_hostname_source(hostname):
 	'''
 	if getIP(hostname,local=True):
 		return 'ip'
-	if not _no_env and hostname in os.environ:
+	if not _no_env and _consult_env(hostname) is not None:
 		return 'env'
 	if hostname in readEnvFromFile():
 		return 'env_file'
@@ -1807,6 +1807,15 @@ def expand_hostnames(hosts):
 		hosts = frozenset(hosts)
 	return __expand_hostnames(hosts)
 
+# environment variables host expansion looked up since the last refresh, with the value seen (None: unset)
+_consulted_env = {}
+
+def _consult_env(name):
+	'''os.environ.get(name), remembering the value so the caches refresh when it changes.'''
+	value = os.environ.get(name)
+	_consulted_env.setdefault(name, value)
+	return value
+
 __expansion_env_state = None
 def _refresh_expansion_caches():
 	'''
@@ -1823,10 +1832,12 @@ def _refresh_expansion_caches():
 			env_file_signatures.append((env_file, st.st_mode, st.st_uid, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
 		except OSError:
 			env_file_signatures.append((env_file, None))
-	state = (_no_env, tuple(env_file_signatures), frozenset(_explicit_env_files),
-		None if _no_env else frozenset(os.environ.items()))
-	if state != __expansion_env_state:
+	state = (_no_env, tuple(env_file_signatures), frozenset(_explicit_env_files))
+	# only the variables expansion looked up matter, not e.g. TERM set by the curses fallback
+	env_changed = any(os.environ.get(name) != value for name, value in _consulted_env.items())
+	if state != __expansion_env_state or env_changed:
 		__expansion_env_state = state
+		_consulted_env.clear()
 		for cached_function in (readEnvFromFile, __validate_expand_hostname, __expand_hostname, __expand_hostnames):
 			cached_function.cache_clear()
 

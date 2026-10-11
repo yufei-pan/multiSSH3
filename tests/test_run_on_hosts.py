@@ -134,3 +134,29 @@ def test_env_file_fixed_between_library_calls_is_seen(monkeypatch, tmp_path):
 
 	assert first == []
 	assert _run_alias(no_env=True) == ["127.0.0.4"]
+
+
+def test_unrelated_env_change_keeps_the_expansion_caches(monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.2")
+	_run_alias(no_env=False)
+	cached = multiSSH3.__validate_expand_hostname.cache_info().currsize
+	monkeypatch.setenv("TERM", "xterm-256color")  # what mssh's own curses fallback does
+
+	multiSSH3._refresh_expansion_caches()
+
+	assert cached > 0
+	assert multiSSH3.__validate_expand_hostname.cache_info().currsize == cached
+
+
+def test_env_alias_set_after_a_failed_lookup_is_seen(monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	monkeypatch.delenv("MSSH_TEST_ENV_HOSTS", raising=False)
+	first = _run_alias(no_env=False)
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.6")
+
+	assert first == []
+	assert _run_alias(no_env=False) == ["127.0.0.6"]
