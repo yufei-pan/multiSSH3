@@ -1,0 +1,1334 @@
+{
+ "interface_ip_prefix": {
+  "address": "192.168.1.7",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "192.168.1.7",
+    "echo 10.0.0.7 192.168.1.7"
+   ]
+  ],
+  "command": "echo 10.0.0.7 192.168.1.7",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- 192.168.1.7 echo 10.0.0.7 192.168.1.7",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "192.168.1.7",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmi_unsupported_method": {
+  "address": "node1",
+  "argvs": [],
+  "command": "power status",
+  "name": "node1",
+  "output": [
+   "IPMI method bogus not supported!"
+  ],
+  "resolvedName": "node1",
+  "returncode": 1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "IPMI method bogus not supported!"
+  ],
+  "stdout": []
+ },
+ "ipmitool_auth_failure_waits_then_ssh_ipmitool": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H node1 -U admin -P admin  power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "ipmitool power status"
+   ]
+  ],
+  "command": "ipmitool power status",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P admin  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Sleeping for 5 seconds...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 ipmitool power status",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [
+   5
+  ],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmitool_bad_lockout_time_falls_back": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H node1 -U admin -P admin  power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "ipmitool power status"
+   ]
+  ],
+  "command": "ipmitool power status",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P admin  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Error: Failed to sleep for soon seconds! invalid literal for int() with base 10: 'soon'",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 ipmitool power status",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmitool_direct": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ipmitool",
+    "-H node1",
+    "-U admin",
+    "-P admin",
+    "-I lanplus ",
+    "-L ADMINISTRATOR",
+    "power status"
+   ]
+  ],
+  "command": "power status",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ipmitool -H node1 -U admin -P admin -I lanplus  -L ADMINISTRATOR power status",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmitool_interface_prefix": {
+  "address": "10.99.0.7",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H 10.99.0.7 -U admin -P admin  power status"
+   ]
+  ],
+  "command": "power status",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H 10.99.0.7 -U admin -P admin  power status",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "10.99.0.7",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmitool_missing_locally_uses_ssh_ipmitool": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sshpass",
+    "-p",
+    "pw",
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "bob@node1",
+    "ipmitool power on"
+   ]
+  ],
+  "command": "ipmitool power on",
+  "name": "bob@node1",
+  "output": [
+   "Ipmitool not found on the local machine! Trying ipmitool on the remote machine...",
+   "Warning:-u SSH_USERNAME bob is provided in the host name! Using the username from the ipmi definition if provided: bob",
+   "Warning: -p SSH_PASSWORD pw is provided! Using the password from the ipmi definition if provided: pw",
+   "Running command: /bin/sshpass -p pw /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bob@node1 ipmitool power on",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "bob@node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmitool_unreachable_skips_wait": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H node1 -U admin -P admin  power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "ipmitool power status"
+   ]
+  ],
+  "command": "ipmitool power status",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P admin  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "no route to host",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Skipping IPMI lockout wait; the controller was not reached.",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 ipmitool power status",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ipmitool_via_sh": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H node1 -U admin -P 'p w' -I lanplus chassis status"
+   ]
+  ],
+  "command": "chassis status",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P 'p w' -I lanplus chassis status",
+   "System Power : on",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "System Power : on"
+  ]
+ },
+ "local_shell": {
+  "address": "localhost",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "echo localhost"
+   ]
+  ],
+  "command": "echo localhost",
+  "name": "localhost",
+  "output": [
+   "Running command in shell mode, ignoring the hosts...",
+   "Running command: /bin/sh -c echo localhost",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "localhost",
+  "returncode": 0,
+  "scp": false,
+  "shell": true,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "local_shell_without_sh_uses_ssh": {
+  "address": "localhost",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "localhost",
+    "echo hi"
+   ]
+  ],
+  "command": "echo hi",
+  "name": "localhost",
+  "output": [
+   "shell not found on the local machine! Using ssh localhost instead...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- localhost echo hi",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "localhost",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "no_copy_tool": {
+  "address": "node1",
+  "argvs": [],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "rsync not found on the local machine! Please install rsync or scp to use file sync mode."
+  ],
+  "resolvedName": "node1",
+  "returncode": 1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "rsync not found on the local machine! Please install rsync or scp to use file sync mode."
+  ],
+  "stdout": []
+ },
+ "no_copy_tool_scp_requested": {
+  "address": "node1",
+  "argvs": [],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "scp not found on the local machine! Please install scp or rsync to use file sync mode."
+  ],
+  "resolvedName": "node1",
+  "returncode": 1,
+  "scp": true,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "scp not found on the local machine! Please install scp or rsync to use file sync mode."
+  ],
+  "stdout": []
+ },
+ "other_os_error": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ]
+  ],
+  "command": "true",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "[Errno 2] No such file or directory",
+   "Traceback (most recent call last):",
+   "  File \"/mnt/klein/work/cas/multiSSH3/multiSSH3.py\", line 2199, in run_command",
+   "    proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)",
+   "  File \"/mnt/klein/work/cas/multiSSH3/tests/test_run_command_characterization.py\", line 178, in popen",
+   "    raise result",
+   "FileNotFoundError: [Errno 2] No such file or directory",
+   ""
+  ],
+  "resolvedName": "node1",
+  "returncode": -1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "[Errno 2] No such file or directory",
+   "Traceback (most recent call last):",
+   "  File \"/mnt/klein/work/cas/multiSSH3/multiSSH3.py\", line 2199, in run_command",
+   "    proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)",
+   "  File \"/mnt/klein/work/cas/multiSSH3/tests/test_run_command_characterization.py\", line 178, in popen",
+   "    raise result",
+   "FileNotFoundError: [Errno 2] No such file or directory",
+   ""
+  ],
+  "stdout": []
+ },
+ "redfish_direct": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/redfishtool",
+    "-S",
+    "Always",
+    "-a",
+    "-r",
+    "node1",
+    "-u",
+    "admin",
+    "-p",
+    "admin",
+    "-T 30",
+    "Systems"
+   ]
+  ],
+  "command": "Systems",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/redfishtool -S Always -a -r node1 -u admin -p admin -T 30 Systems",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "redfish_via_sh": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "redfishtool -S Always -a -r node1 -u admin -p admin  Systems"
+   ]
+  ],
+  "command": "Systems",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sh -c redfishtool -S Always -a -r node1 -u admin -p admin  Systems",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "retry_limit_already_exhausted": {
+  "address": null,
+  "argvs": [],
+  "command": "true",
+  "name": "node1",
+  "output": [
+   "Error: Retry limit reached!"
+  ],
+  "resolvedName": null,
+  "returncode": 1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "Error: Retry limit reached!"
+  ],
+  "stdout": []
+ },
+ "rsync_failure_falls_back_to_scp": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ],
+   [
+    "/bin/scp",
+    "-rp",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "rsync: connection unexpectedly closed",
+   "Command finished with return code 12",
+   "Rsync connection failed! Trying SCP connection...",
+   "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": true,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "rsync_failure_falls_back_to_scp_debug": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ],
+   [
+    "/bin/scp",
+    "-rp",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "rsync: connection unexpectedly closed",
+   "Command finished with return code 12",
+   "Rsync connection failed! Trying SCP connection...",
+   "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": true,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "Resolved name: node1",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "rsync: connection unexpectedly closed",
+   "Rsync connection failed! Trying SCP connection...",
+   "Resolved name: node1",
+   "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/"
+  ],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "rsync_gather": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1:/remote/a",
+    "/local/"
+   ]
+  ],
+  "command": "/local/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1:/remote/a /local/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "rsync_missing_uses_scp": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/scp",
+    "-rp",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "rsync not found on the local machine! Trying to use scp...",
+   "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "rsync_push": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--delete",
+    "--",
+    "/src/a",
+    "/src/b",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null --delete -- /src/a /src/b node1:/dest/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "scp_requested": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sshpass",
+    "-p",
+    "pw",
+    "/bin/scp",
+    "-rp",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sshpass -p pw /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": true,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "scp_requested_but_missing_uses_rsync": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "scp not found on the local machine! Trying to use rsync...",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": true,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_current_user_and_list_extraargs": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "-o",
+    "5",
+    "--",
+    "node1",
+    "whoami tester"
+   ]
+  ],
+  "command": "whoami tester",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o 5 -- node1 whoami tester",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_failure_exit_code_and_ignored_stderr": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "false"
+   ]
+  ],
+  "command": "false",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 false",
+   "Warning: Permanently added 'node1'",
+   "real error",
+   "Command finished with return code 3"
+  ],
+  "resolvedName": "node1",
+  "returncode": 3,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "real error"
+  ],
+  "stdout": []
+ },
+ "ssh_ipmitool_definition_overrides_user_and_password": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sshpass",
+    "-p",
+    "bmcpw",
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "bmcuser@node1",
+    "ipmitool power status"
+   ]
+  ],
+  "command": "ipmitool power status",
+  "name": "alice@node1",
+  "output": [
+   "Warning:-u SSH_USERNAME alice is provided in the host name! Using the username from the ipmi definition if provided: bmcuser",
+   "Warning: -p SSH_PASSWORD pw is provided! Using the password from the ipmi definition if provided: bmcpw",
+   "Running command: /bin/sshpass -p bmcpw /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bmcuser@node1 ipmitool power status",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "bmcuser@node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_magic_strings_key_extraargs": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "-i",
+    "~/.ssh/id_x",
+    "-p",
+    "2222",
+    "--",
+    "alice@node1",
+    "echo node1 alice 7 uuid-7 10.0.0.7 alice@node1"
+   ]
+  ],
+  "command": "echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
+  "name": "alice@node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_x -p 2222 -- alice@node1 echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "alice@node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_password_with_sshpass": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/sshpass",
+    "-p",
+    "pw",
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "uptime"
+   ]
+  ],
+  "command": "uptime",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/sshpass -p pw /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_password_without_sshpass": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "uptime"
+   ]
+  ],
+  "command": "uptime",
+  "name": "node1",
+  "output": [
+   "Warning: sshpass is not available. Please install sshpass to use password authentication.",
+   "Please provide password via live input or use ssh key authentication.",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_password_without_sshpass_debug": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "uptime"
+   ]
+  ],
+  "command": "uptime",
+  "name": "node1",
+  "output": [
+   "Warning: sshpass is not available. Please install sshpass to use password authentication.",
+   "Please provide password via live input or use ssh key authentication.",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "Resolved name: node1",
+   "Warning: sshpass is not available. Please install sshpass to use password authentication.",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime"
+  ],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "ssh_strict_host_key_checking": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "--",
+    "node1",
+    "true"
+   ]
+  ],
+  "command": "true",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -- node1 true",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "too_many_open_files_exhausts_retries": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ]
+  ],
+  "command": "true",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "Warning: Too many open files. retrying...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "Warning: Too many open files. retrying...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "Error: Retry limit reached after too many open files!"
+  ],
+  "resolvedName": "node1",
+  "returncode": 1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [
+   0.1,
+   0.2
+  ],
+  "stderr": [
+   "Error: Retry limit reached after too many open files!"
+  ],
+  "stdout": []
+ },
+ "too_many_open_files_then_success": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "node1",
+    "true"
+   ]
+  ],
+  "command": "true",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "Warning: Too many open files. retrying...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "Warning: Too many open files. retrying...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
+   "ok",
+   "Command finished with return code 0"
+  ],
+  "resolvedName": "node1",
+  "returncode": 0,
+  "scp": false,
+  "shell": false,
+  "sleeps": [
+   0.1,
+   0.2
+  ],
+  "stderr": [],
+  "stdout": [
+   "ok"
+  ]
+ },
+ "too_many_open_files_with_rsync_fallback": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ],
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial",
+    "--inplace",
+    "--info=name",
+    "--rsh",
+    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ],
+   [
+    "/bin/scp",
+    "-rp",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Warning: Too many open files. retrying...",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "rsync failed",
+   "Command finished with return code 5",
+   "Rsync connection failed! Trying SCP connection...",
+   "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Error: Retry limit reached after too many open files!"
+  ],
+  "resolvedName": "node1",
+  "returncode": 1,
+  "scp": true,
+  "shell": false,
+  "sleeps": [
+   0.1
+  ],
+  "stderr": [
+   "Error: Retry limit reached after too many open files!"
+  ],
+  "stdout": []
+ },
+ "two_definitions_all_failing_exhaust": {
+  "address": "nodeA1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H nodeA1 -U u1 -P p1  power status"
+   ],
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H nodeA1 -U u2 -P p2  power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "nodeA1",
+    "ipmitool power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "nodeA1",
+    "ipmitool power status"
+   ]
+  ],
+  "command": "ipmitool power status",
+  "name": "nodeA1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P p1  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P p2  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Error: Exhausted all matching ipmi definitions!"
+  ],
+  "resolvedName": "nodeA1",
+  "returncode": 1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "Error: Exhausted all matching ipmi definitions!"
+  ],
+  "stdout": []
+ },
+ "two_definitions_all_failing_exhaust_debug": {
+  "address": "nodeA1",
+  "argvs": [
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H nodeA1 -U u1 -P p1  power status"
+   ],
+   [
+    "/bin/sh",
+    "-c",
+    "ipmitool -H nodeA1 -U u2 -P p2  power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "nodeA1",
+    "ipmitool power status"
+   ],
+   [
+    "/bin/ssh",
+    "-o StrictHostKeyChecking=no",
+    "-o UserKnownHostsFile=/dev/null",
+    "--",
+    "nodeA1",
+    "ipmitool power status"
+   ]
+  ],
+  "command": "ipmitool power status",
+  "name": "nodeA1",
+  "output": [
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P p1  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P p2  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "Command finished with return code 1",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Error: Exhausted all matching ipmi definitions!"
+  ],
+  "resolvedName": "nodeA1",
+  "returncode": 1,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "Resolved name: nodeA1",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P p1  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Resolved name: nodeA1",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P p2  power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Resolved name: nodeA1",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Resolved name: nodeA1",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Error: Unable to establish IPMI v2 / RMCP+ session",
+   "unauthorized name",
+   "IPMI connection failed! Trying next ipmi definition...",
+   "Error: Exhausted all matching ipmi definitions!"
+  ],
+  "stdout": []
+ }
+}
