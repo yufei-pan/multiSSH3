@@ -280,3 +280,41 @@ def test_run_on_hosts_without_cache_location_runs(monkeypatch):
 		quiet=True, no_history=True, called=True, will_update_unreachable_hosts=False)
 
 	assert [host.name for host in hosts] == ["127.0.0.1"]
+
+
+@posix_only
+def test_runtime_dir_others_can_write_to_is_not_used(cache_dirs, monkeypatch):
+	runtime_dir, temp_dir = cache_dirs
+	runtime_dir.chmod(0o777)
+	monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+
+	path = multiSSH3._unavailable_hosts_file_path()
+
+	assert os.path.dirname(path) == str(temp_dir / "multiSSH3-{}".format(os.getuid()))
+
+
+@posix_only
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to chown")
+def test_runtime_dir_of_another_user_is_not_used(cache_dirs, monkeypatch):
+	# e.g. root running with a user's environment (sudo -E): that user owns XDG_RUNTIME_DIR
+	runtime_dir, temp_dir = cache_dirs
+	os.chown(runtime_dir, 23456, -1)
+	monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+
+	path = multiSSH3._unavailable_hosts_file_path()
+
+	assert os.path.dirname(path) == str(temp_dir / "multiSSH3-{}".format(os.getuid()))
+
+
+@posix_only
+def test_own_cache_dir_readable_by_others_is_tightened(cache_dirs, monkeypatch):
+	_, temp_dir = cache_dirs
+	monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+	cache_dir = temp_dir / "multiSSH3-{}".format(os.getuid())
+	cache_dir.mkdir()
+	cache_dir.chmod(0o755)
+
+	path = multiSSH3._unavailable_hosts_file_path()
+
+	assert os.path.dirname(path) == str(cache_dir)
+	assert stat.S_IMODE(os.stat(cache_dir).st_mode) == 0o700

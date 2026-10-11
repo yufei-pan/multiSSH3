@@ -3601,7 +3601,29 @@ def _private_dir(path):
 		return False
 	if not hasattr(os, 'getuid'):
 		return True
-	return st.st_uid == os.getuid() and not st.st_mode & 0o077
+	if st.st_uid != os.getuid():
+		return False
+	if st.st_mode & 0o022:
+		# others could already have put files in it
+		return False
+	if st.st_mode & 0o077:
+		# ours but readable by others (an older tool or the user made it), tighten it
+		try:
+			os.chmod(path, 0o700)
+			st = os.lstat(path)
+		except OSError:
+			return False
+	return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+def _owned_and_not_writable_by_others(path):
+	'''Whether path exists, is owned by us and only we can write to it.'''
+	if not hasattr(os, 'getuid'):
+		return True
+	try:
+		st = os.stat(path)
+	except OSError:
+		return False
+	return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
 def _unavailable_hosts_file_path():
 	'''
@@ -3613,8 +3635,10 @@ def _unavailable_hosts_file_path():
 	'''
 	user_id = os.getuid() if hasattr(os, 'getuid') else getpass.getuser()
 	candidates = []
-	if os.environ.get('XDG_RUNTIME_DIR'):
-		candidates.append(os.path.join(os.environ['XDG_RUNTIME_DIR'], 'multiSSH3'))
+	runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
+	# with another user's environment (sudo -E, su) the runtime dir is theirs, they could swap our subdirectory
+	if runtime_dir and _owned_and_not_writable_by_others(runtime_dir):
+		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for cache_dir in candidates:
 		if _private_dir(cache_dir):
