@@ -47,3 +47,17 @@ def test_distinct_loopback_list(local_ssh_hosts, ssh_mode):
 		pytest.skip("live SSH not available")
 	assert len(set(local_ssh_hosts)) >= 2
 	assert all(host.startswith("127.") for host in local_ssh_hosts)
+
+
+def test_no_env_change_between_library_calls_is_honoured(monkeypatch, tmp_path):
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.2")
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	common = dict(hosts="MSSH_TEST_ENV_HOSTS", commands=["true"], no_start=True, no_watch=True, quiet=True,
+		no_history=True, called=True, will_update_unreachable_hosts=False)
+
+	with_env = multiSSH3.run_command_on_hosts(no_env=False, **common)
+	without_env = multiSSH3.run_command_on_hosts(no_env=True, **common)
+
+	assert [host.name for host in with_env] == ["127.0.0.2"]
+	assert without_env == []

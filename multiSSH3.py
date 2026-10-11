@@ -1558,6 +1558,21 @@ def expand_hostnames(hosts):
 		hosts = frozenset(hosts)
 	return __expand_hostnames(hosts)
 
+__expansion_env_state = None
+def _refresh_expansion_caches():
+	'''
+	Drop cached host expansions when the env settings they were computed with changed.
+
+	Expanding a host name consults os.environ (unless _no_env) and the env files, and the
+	results are cached by host string only.
+	'''
+	global __expansion_env_state
+	state = (_no_env, tuple(_env_files or ()))
+	if state != __expansion_env_state:
+		__expansion_env_state = state
+		for cached_function in (readEnvFromFile, __validate_expand_hostname, __expand_hostname, __expand_hostnames):
+			cached_function.cache_clear()
+
 
 #%% ------------ Run Command Block ----------------
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
@@ -3755,6 +3770,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __keyPressesIn
 	_emo = False
 	_no_env = no_env
+	_refresh_expansion_caches()
 	if not no_history:
 		_ = history_file
 		record_command_history(locals())
@@ -4326,6 +4342,7 @@ def process_control_master_config(args):
 
 def set_global_with_args(args):
 	global _emo
+	global _no_env
 	global _env_files
 	global __DEBUG_MODE
 	global _encoding
@@ -4338,6 +4355,9 @@ def set_global_with_args(args):
 		_env_files = [args.env_file]
 	else:
 		_env_files = DEFAULT_ENV_FILES + args.env_files if args.env_files else DEFAULT_ENV_FILES
+	# set before main() echoes the command, which already expands the hosts
+	_no_env = args.no_env
+	_refresh_expansion_caches()
 	__DEBUG_MODE = args.debug
 	_encoding = args.encoding
 	if args.return_zero:

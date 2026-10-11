@@ -185,3 +185,21 @@ def test_record_command_history_creates_owner_only_file(tmp_path):
 
 	assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 	assert "secret" in path.read_text()
+
+
+def _names_only_resolve_ips(hostname, local=False):
+	# keep host validation hermetic: IP literals resolve, names do not
+	return hostname if hostname[:1].isdigit() else None
+
+
+def test_main_no_env_ignores_environment_host_aliases(monkeypatch, tmp_path):
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.2")
+	monkeypatch.setattr(multiSSH3, "getIP", _names_only_resolve_ips)
+	ran = []
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: ran.extend(h.name for h in kwargs["hosts"]))
+
+	# main() echoes the command (expanding hosts) before it runs it
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["--no_env", "-q", "--no_history", "-ef", str(tmp_path / "none.env"), "MSSH_TEST_ENV_HOSTS", "true"])
+
+	assert ran == []
