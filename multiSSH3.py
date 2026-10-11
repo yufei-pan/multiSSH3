@@ -1752,9 +1752,18 @@ def _run_in_threads(function, items, max_workers=32):
 				function(item)
 			except Exception:
 				pass
-	threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(max_workers, len(items)))]
-	for thread in threads:
-		thread.start()
+	threads = []
+	for _ in range(min(max_workers, len(items))):
+		thread = threading.Thread(target=worker, daemon=True)
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads allowed (pids limit, ulimit -u): the running ones take the rest
+			break
+		threads.append(thread)
+	if not threads:
+		# one at a time, as before the parallel lookups
+		worker()
 	for thread in threads:
 		# in slices, so the Ctrl-C handler gets to run
 		while thread.is_alive():

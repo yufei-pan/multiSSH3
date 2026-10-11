@@ -380,3 +380,18 @@ def test_getip_cache_clear_retries_a_failed_dns_lookup(monkeypatch, hermetic_res
 	multiSSH3.getIP.cache_clear()
 
 	assert multiSSH3.getIP("flaky-node") == "10.4.4.4"
+
+
+def test_lookups_still_run_when_no_thread_can_be_started(monkeypatch):
+	import threading
+
+	class NoThreads(threading.Thread):
+		def start(self):
+			raise RuntimeError("can't start new thread")  # e.g. a low pids limit
+
+	done = []
+	monkeypatch.setattr(multiSSH3.threading, "Thread", NoThreads)
+
+	multiSSH3._run_in_threads(done.append, ["a", "b", "c"])
+
+	assert sorted(done) == ["a", "b", "c"]
