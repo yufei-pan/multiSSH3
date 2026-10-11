@@ -20,6 +20,7 @@ import shlex
 import shutil
 import signal
 import socket
+import stat
 import string
 import subprocess
 import sys
@@ -357,18 +358,79 @@ def _get_i():
 	return next(_i_counter)
 
 #%% ------------ Load Defaults ( Config ) File ----------------
-def load_config_file(config_file):
+try:
+	import grp
+	import pwd
+except ImportError:
+	grp = pwd = None
+
+def _is_private_group(uid, gid):
+	'''Whether gid is the user private group of uid: its primary group, named after it, with no other members.'''
+	try:
+		owner = pwd.getpwuid(uid)
+		group = grp.getgrgid(gid)
+	except KeyError:
+		return False
+	return gid == owner.pw_gid and group.gr_name == owner.pw_name and set(group.gr_mem) <= {owner.pw_name}
+
+def _untrusted_file_reason(path):
+	'''
+	Check a config / env file found on the default search paths before loading it.
+
+	Like ssh, the file must be owned by you or root and not writable by anyone else. Group
+	write is allowed when the group is the owner's private group, as user private group
+	systems (Debian, Ubuntu, RHEL) create files group-writable by default.
+
+	Returns:
+		tuple: (reason, fixable_with_chmod), or None when the file can be loaded
+	'''
+	if pwd is None or not hasattr(os, 'getuid'):
+		return None
+	try:
+		st = os.stat(path)
+	except OSError:
+		return None
+	if st.st_uid not in (os.getuid(), 0):
+		return 'it is owned by uid {}, not by you or root'.format(st.st_uid), False
+	if st.st_mode & stat.S_IWOTH:
+		return 'every user can write to it', True
+	if st.st_mode & stat.S_IWGRP and not _is_private_group(st.st_uid, st.st_gid):
+		try:
+			group = grp.getgrgid(st.st_gid).gr_name
+		except KeyError:
+			group = st.st_gid
+		return 'group {} can write to it'.format(group), True
+	return None
+
+def _skip_untrusted_file(path, explicit_flag):
+	'''Warn and return True when path fails _untrusted_file_reason.'''
+	untrusted = _untrusted_file_reason(path)
+	if not untrusted:
+		return False
+	reason, fixable = untrusted
+	if fixable:
+		fix = 'fix with: chmod g-w,o-w {}, or pass it with {}'.format(shlex.quote(path), explicit_flag)
+	else:
+		fix = 'pass it with {} to use it anyway'.format(explicit_flag)
+	eprint('Warning: Ignoring {!r} because {}; {}'.format(path, reason, fix))
+	return True
+
+def load_config_file(config_file, check_trust=True):
 	global __working_config_file
 	'''
 	Load the config file to global variables
 
 	Args:
 		config_file (str): The config file
+		check_trust (bool): Skip the file unless _untrusted_file_reason accepts it. False for
+			files the user named explicitly.
 
 	Returns:
 		dict: The config
 	'''
 	if not os.path.exists(config_file):
+		return {}
+	if check_trust and _skip_untrusted_file(config_file, '--config_file'):
 		return {}
 	try:
 		with open(config_file,'r') as f:
@@ -417,6 +479,8 @@ __failedHosts = set()
 __wildCharacters = ['*','?','x']
 _no_env = DEFAULT_NO_ENV
 _env_files = DEFAULT_ENV_FILES
+# env files named on the command line, loaded without the ownership / permission check
+_explicit_env_files = set()
 __globalUnavailableHosts = dict()
 __keyPressesIn = [[]]
 _emo = False
@@ -630,6 +694,8 @@ def readEnvFromFile():
 	for envf in envfs:
 		envf = os.path.expanduser(os.path.expandvars(envf))
 		if os.path.exists(envf):
+			if envf not in _explicit_env_files and _skip_untrusted_file(envf, '--env_file'):
+				continue
 			with open(envf,'r') as f:
 				lines = f.readlines()
 			for line in lines:
@@ -4221,7 +4287,7 @@ def process_args(args = None):
 		cfpa, args = cfp.parse_known_args(args)
 		if cfpa.config_file:
 			if os.path.exists(cfpa.config_file):
-				configs = load_config_file(os.path.expanduser(cfpa.config_file))
+				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
 				apply_config_key_compat(configs)
 				globals().update(configs)
 				__configs_from_file.update(configs)
@@ -4380,6 +4446,7 @@ def set_global_with_args(args):
 	global _emo
 	global _no_env
 	global _env_files
+	global _explicit_env_files
 	global __DEBUG_MODE
 	global _encoding
 	global __returnZero
@@ -4391,6 +4458,10 @@ def set_global_with_args(args):
 		_env_files = [args.env_file]
 	else:
 		_env_files = DEFAULT_ENV_FILES + args.env_files if args.env_files else DEFAULT_ENV_FILES
+	_explicit_env_files = {
+		os.path.expanduser(os.path.expandvars(path))
+		for path in ([args.env_file] if args.env_file else []) + list(args.env_files or [])
+	}
 	# set before main() echoes the command, which already expands the hosts
 	_no_env = args.no_env
 	_refresh_expansion_caches()

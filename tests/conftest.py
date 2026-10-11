@@ -130,6 +130,7 @@ def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,
 		"_env_files": list(multiSSH3._env_files),
+		"_explicit_env_files": set(multiSSH3._explicit_env_files),
 		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
 		"__keyPressesIn": [list(line) for line in multiSSH3.__keyPressesIn],
 		"DEFAULT_IPMI_DEFINITIONS": [dict(item) for item in multiSSH3.DEFAULT_IPMI_DEFINITIONS],
@@ -154,6 +155,7 @@ def restore_module_globals():
 	for k, v in saved.items():
 		if k in (
 			"_env_files",
+			"_explicit_env_files",
 			"__globalUnavailableHosts",
 			"__keyPressesIn",
 			"DEFAULT_IPMI_DEFINITIONS",
@@ -164,6 +166,7 @@ def restore_module_globals():
 			continue
 		setattr(multiSSH3, k, v)
 	multiSSH3._env_files = list(saved["_env_files"])
+	multiSSH3._explicit_env_files = set(saved["_explicit_env_files"])
 	multiSSH3.__globalUnavailableHosts = dict(saved["__globalUnavailableHosts"])
 	multiSSH3.__keyPressesIn = [list(line) for line in saved["__keyPressesIn"]]
 	multiSSH3.DEFAULT_IPMI_DEFINITIONS = [dict(item) for item in saved["DEFAULT_IPMI_DEFINITIONS"]]
