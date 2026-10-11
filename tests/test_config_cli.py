@@ -93,3 +93,28 @@ def test_store_config_file_keeps_system_wide_location_readable(monkeypatch, tmp_
 	monkeypatch.setattr(multiSSH3, "CONFIG_FILE_CHAIN", ["~/.multiSSH3.config.json", str(system_config)])
 
 	assert _store_config(monkeypatch, system_config) == 0o644
+
+
+def test_store_config_file_still_writes_when_permissions_cannot_change(monkeypatch, tmp_path):
+	shared = tmp_path / "team.json"
+	shared.write_text('{"DEFAULT_TIMEOUT": 5}')
+
+	def not_our_file(fd, mode):
+		raise PermissionError(1, "Operation not permitted")
+
+	monkeypatch.setattr(multiSSH3.os, "fchmod", not_our_file)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	multiSSH3.write_default_config(args, str(shared), force=True)
+
+	assert json.loads(shared.read_text())["DEFAULT_PASSWORD"] == "secret"  # not left truncated
+
+
+def test_store_config_file_keeps_locked_down_system_config_locked(monkeypatch, tmp_path, umask_002):
+	system_config = tmp_path / "etc" / "multiSSH3.config.json"
+	system_config.parent.mkdir()
+	system_config.write_text("{}")
+	system_config.chmod(0o600)
+	monkeypatch.setattr(multiSSH3, "CONFIG_FILE_CHAIN", [str(system_config)])
+
+	assert _store_config(monkeypatch, system_config) == 0o600

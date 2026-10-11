@@ -4433,11 +4433,23 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	try:
 		# configs can hold passwords: owner only, except the system-wide locations every user reads
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
-		fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-		if hasattr(os, 'fchmod'):
-			# O_CREAT's mode only applies to new files and is reduced by the umask
-			os.fchmod(fd, mode)
+		try:
+			fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+			# O_CREAT's mode is reduced by the umask, set it exactly
+			new_mode = mode
+		except FileExistsError:
+			fd = os.open(CONFIG_FILE, os.O_WRONLY)
+			# only tighten an existing file, an admin may have locked it down further
+			new_mode = stat.S_IMODE(os.fstat(fd).st_mode) & mode
 		with os.fdopen(fd, 'w') as f:
+			if hasattr(os, 'fchmod'):
+				try:
+					os.fchmod(fd, new_mode)
+				except OSError:
+					# not our file: write it with its current permissions, as before
+					pass
+			# truncate only now, a failure above must not leave the file empty
+			f.truncate()
 			json.dump(__configs_from_file,f,indent=4)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 	except Exception as e:
