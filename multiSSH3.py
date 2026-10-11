@@ -251,6 +251,9 @@ def signal_handler(sig, frame):
 		None
 	'''
 	global _emo
+	if not _commands_started:
+		# still resolving hosts: nothing runs yet, so stop before anything does
+		_exit_with_code(1, 'Ctrl C caught before any command started, nothing was run')
 	if not _emo:
 		eprint('Ctrl C caught, exiting...')
 		_emo = True
@@ -581,6 +584,8 @@ _explicit_env_files = set()
 __globalUnavailableHosts = dict()
 __keyPressesIn = [[]]
 _emo = False
+# set once the first command starts: before that, Ctrl-C has nothing to stop and exits
+_commands_started = False
 __curses_global_color_pairs = {(-1,-1):1}
 __curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
 __curses_color_table = {}
@@ -3869,6 +3874,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
+	global _commands_started
+	_commands_started = True
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
 	if use_tui and threads:
 		try:
@@ -4277,7 +4284,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
 	global __keyPressesIn
-	_emo = False
+	if called:
+		# a library call starts fresh; on the CLI a Ctrl-C (e.g. in an earlier --repeat run) stands
+		_emo = False
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
@@ -4359,6 +4368,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if __DEBUG_MODE:
 		eprint(f"Target hosts: {targetHostDic!r}")
 	skipHostsDic = expand_hostnames(skipHostStr.split(','))
+	if _emo:
+		_abort(1, 'Ctrl C caught, not starting the command', called=called)
 	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
@@ -4483,6 +4494,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 			return hosts
 		for command in commands:
+			if _emo:
+				# Ctrl-C during an earlier command: run no more
+				break
 			hosts = []
 			for host in targetHostDic:
 				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
@@ -4959,6 +4973,9 @@ def main(args = None):
 		record_command_history(vars(args))
 	runArgs = dict(vars(args), no_history=True)
 	for i in range(args.repeat):
+		if _emo:
+			# Ctrl-C during an earlier run: no more repeats
+			break
 		if i > 0 and args.interval > 0:
 			eprint(f"Sleeping for {args.interval} seconds")
 			time.sleep(args.interval)

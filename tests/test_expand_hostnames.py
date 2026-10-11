@@ -293,6 +293,7 @@ def test_second_ctrl_c_exits_without_waiting_for_lookups(tmp_path):
 		"sys.path.insert(0, {!r})\n"
 		"import multiSSH3\n"
 		"signal.signal(signal.SIGINT, multiSSH3.signal_handler)\n"
+		"multiSSH3._commands_started = True\n"  # e.g. a later --repeat run: the first Ctrl-C only sets the stop flag
 		"multiSSH3._resolve_dns = lambda hostname: time.sleep(5)\n"
 		"multiSSH3._ssh_config_target = lambda hostname: None\n"
 		"print('resolving', flush=True)\n"

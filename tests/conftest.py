@@ -138,6 +138,7 @@ def _clear_expand_caches():
 def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,
+		"_commands_started": multiSSH3._commands_started,
 		"_env_files": list(multiSSH3._env_files),
 		"_explicit_env_files": set(multiSSH3._explicit_env_files),
 		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
