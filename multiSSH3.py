@@ -3455,6 +3455,27 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 
 
 #%% ------------ Stringfy Block ----------------
+def _shell_quote(text):
+	'''
+	Quote text so a shell reads it back unchanged.
+
+	Text with newlines or other control characters uses bash / zsh $'...' quoting,
+	keeping it on one line (one history entry per line).
+	'''
+	text = str(text)
+	if not any(ord(char) < 32 or ord(char) == 127 for char in text):
+		return shlex.quote(text)
+	escapes = {'\\': '\\\\', "'": "\\'", '\n': '\\n', '\t': '\\t', '\r': '\\r'}
+	quoted = []
+	for char in text:
+		if char in escapes:
+			quoted.append(escapes[char])
+		elif ord(char) < 32 or ord(char) == 127:
+			quoted.append('\\x{:02x}'.format(ord(char)))
+		else:
+			quoted.append(char)
+	return "$'" + ''.join(quoted) + "'"
+
 def formHostStr(host) -> str:
 	"""
 	Forms a comma-separated string of hosts.
@@ -3573,9 +3594,9 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	if interval and interval != DEFAULT_INTERVAL:
 		argsList.append(f'--interval={interval}' if not shortend else f'-i={interval}')
 	if password and password != DEFAULT_PASSWORD:
-		argsList.append(f'--password="{password}"' if not shortend else f'-p="{password}"')
+		argsList.append(f'--password={_shell_quote(password)}' if not shortend else f'-p={_shell_quote(password)}')
 	if identity_file and identity_file != DEFAULT_IDENTITY_FILE:
-		argsList.append(f'--key="{identity_file}"' if not shortend else f'-k="{identity_file}"')
+		argsList.append(f'--key={_shell_quote(identity_file)}' if not shortend else f'-k={_shell_quote(identity_file)}')
 	if copy_id:
 		argsList.append('--copy_id' if not shortend else '-ci')
 	if no_watch:
@@ -3585,19 +3606,19 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS:
 		argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
 	if file:
-		argsList.extend([f'--file="{file}"' for file in file] if not shortend else [f'-f="{file}"' for file in file])
+		argsList.extend([f'--file={_shell_quote(file)}' for file in file] if not shortend else [f'-f={_shell_quote(file)}' for file in file])
 	if ipmi:
 		argsList.append('--ipmi')
 	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX:
-		argsList.append(f'--interface_ip_prefix="{interface_ip_prefix}"' if not shortend else f'-pre="{interface_ip_prefix}"')
+		argsList.append(f'--interface_ip_prefix={_shell_quote(interface_ip_prefix)}' if not shortend else f'-pre={_shell_quote(interface_ip_prefix)}')
 	if scp:
 		argsList.append('--scp')
 	if gather_mode:
 		argsList.append('--gather_mode' if not shortend else '-gm')
 	if username and username != DEFAULT_USERNAME:
-		argsList.append(f'--username="{username}"' if not shortend else f'-u="{username}"')
+		argsList.append(f'--username={_shell_quote(username)}' if not shortend else f'-u={_shell_quote(username)}')
 	if extraargs and extraargs != DEFAULT_EXTRA_ARGS:
-		argsList.append(f'--extraargs="{extraargs}"' if not shortend else f'-ea="{extraargs}"')
+		argsList.append(f'--extraargs={_shell_quote(extraargs)}' if not shortend else f'-ea={_shell_quote(extraargs)}')
 	if skip_unreachable:
 		argsList.append('--skip_unreachable' if not shortend else '-su')
 	else:
@@ -3607,19 +3628,19 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	if no_env:
 		argsList.append('--no_env')
 	if env_file:
-		argsList.append(f'--env_file="{env_file}"' if not shortend else f'-ef="{env_file}"')
+		argsList.append(f'--env_file={_shell_quote(env_file)}' if not shortend else f'-ef={_shell_quote(env_file)}')
 	if env_files:
-		argsList.extend([f'--env_files="{ef}"' for ef in env_files] if not shortend else [f'-efs="{ef}"' for ef in env_files])
+		argsList.extend([f'--env_files={_shell_quote(ef)}' for ef in env_files] if not shortend else [f'-efs={_shell_quote(ef)}' for ef in env_files])
 	if no_history:
 		argsList.append('--no_history' if not shortend else '-nh')
 	if history_file and history_file != DEFAULT_HISTORY_FILE:
-		argsList.append(f'--history_file="{history_file}"' if not shortend else f'-hf="{history_file}"')
+		argsList.append(f'--history_file={_shell_quote(history_file)}' if not shortend else f'-hf={_shell_quote(history_file)}')
 	if greppable:
 		argsList.append('--greppable' if not shortend else '-g')
 	if error_only:
 		argsList.append('--error_only' if not shortend else '-eo')
 	if skip_hosts and skip_hosts != DEFAULT_SKIP_HOSTS:
-		argsList.append(f'--skip_hosts="{skip_hosts}"' if not shortend else f'-sh="{skip_hosts}"')
+		argsList.append(f'--skip_hosts={_shell_quote(skip_hosts)}' if not shortend else f'-sh={_shell_quote(skip_hosts)}')
 	if file_sync:
 		argsList.append('--file_sync' if not shortend else '-fs')
 	return ' '.join(argsList)
@@ -3640,10 +3661,10 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 	if commandArgKwargs.get('file'):
 		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
-	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in format_commands(commands)]
-	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
+	commandStr = ' '.join(_shell_quote(command) for command in format_commands(commands))
+	hostStr = _shell_quote(hostStr)
 	filePath = os.path.abspath(__file__)
-	programName = filePath if filePath else 'mssh'
+	programName = _shell_quote(filePath) if filePath else 'mssh'
 	if tabSeperated:
 		return f'{programName}\t{argsStr}\t{hostStr}\t{commandStr}'
 	else:
