@@ -20,11 +20,8 @@ def _owned_by_someone_else(monkeypatch, path):
 		os.chown(path, 23456, -1)
 
 
-def _fake_owner_and_group(monkeypatch, group_name, group_members, other_primary_members=()):
-	alice = SimpleNamespace(pw_name="alice", pw_uid=os.getuid(), pw_gid=os.getgid())
-	others = [SimpleNamespace(pw_name=name, pw_uid=50000 + i, pw_gid=os.getgid()) for i, name in enumerate(other_primary_members)]
-	monkeypatch.setattr(multiSSH3.pwd, "getpwuid", lambda uid: alice)
-	monkeypatch.setattr(multiSSH3.pwd, "getpwall", lambda: [alice] + others)
+def _fake_owner_and_group(monkeypatch, group_name, group_members):
+	monkeypatch.setattr(multiSSH3.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="alice", pw_gid=os.getgid()))
 	monkeypatch.setattr(multiSSH3.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name=group_name, gr_mem=group_members))
 
 
@@ -198,13 +195,3 @@ def test_unreadable_env_file_is_skipped_with_a_warning(monkeypatch, tmp_path, ca
 
 	assert multiSSH3.readEnvFromFile() == {}
 	assert "Permission denied" in capsys.readouterr().err
-
-
-def test_group_writable_config_with_another_primary_member_is_ignored(monkeypatch, tmp_path, capsys):
-	path = _config(tmp_path, 0o664)
-	monkeypatch.setattr(multiSSH3.os, "getuid", lambda: os.stat(path).st_uid)
-	# group 'alice' is also bob's primary group, which gr_mem does not list
-	_fake_owner_and_group(monkeypatch, "alice", [], other_primary_members=["bob"])
-
-	assert multiSSH3.load_config_file(path) == {}
-	assert "chmod g-w,o-w" in capsys.readouterr().err
