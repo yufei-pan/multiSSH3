@@ -316,3 +316,23 @@ def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 		)
 
 	assert [h.command for h in started] == ["sshpass -p 'p@ss word;' ssh-copy-id bob@mock-a"]
+
+
+def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
+	_mock_run(monkeypatch)
+	first = str(tmp_path / "missing-a-*.txt")
+	second = str(tmp_path / "missing-b-*.txt")
+	with pytest.raises(multiSSH3.MultiSSHError) as ei:
+		multiSSH3.run_command_on_hosts(
+			hosts="mock-a",
+			commands=str(tmp_path / "dest"),
+			file=[first, second],
+			no_watch=True,
+			quiet=True,
+			no_history=True,
+			called=True,
+			will_update_unreachable_hosts=False,
+		)
+	assert ei.value.code == 66
+	assert first in str(ei.value)
+	assert second in str(ei.value)

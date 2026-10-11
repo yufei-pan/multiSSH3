@@ -98,3 +98,22 @@ def test_raise_nofile_soft_limit_raises_to_finite_hard_limit(monkeypatch):
 
 	assert multiSSH3._raise_nofile_soft_limit() == 524288
 	assert calls == [(524288, 524288)]
+
+
+def test_import_and_max_connections_survive_unknown_cpu_count(tmp_path):
+	import subprocess
+	import sys
+	from pathlib import Path
+
+	package_root = Path(multiSSH3.__file__).resolve().parent
+	code = (
+		"import os, sys\n"
+		"os.cpu_count = lambda: None\n"
+		"sys.path.insert(0, {!r})\n"
+		"import multiSSH3\n"
+		"print(multiSSH3._normalize_max_connections(None), multiSSH3._normalize_max_connections(-2))\n"
+	).format(str(package_root))
+	result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
+
+	assert result.returncode == 0, result.stderr
+	assert result.stdout.split() == ["4", "2"]

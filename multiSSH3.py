@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.6"
-# dependencies = [
-#     "argparse",
-#     "ipaddress",
-# ]
+# dependencies = []
 # ///
 import argparse
 import errno
@@ -108,7 +105,10 @@ DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
 					 ]
 DEFAULT_NO_HISTORY = False
 DEFAULT_HISTORY_FILE = '~/.mssh_history'
-DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+def _cpu_count():
+	# os.cpu_count() returns None when the count cannot be determined
+	return os.cpu_count() or 1
+DEFAULT_MAX_CONNECTIONS = 4 * _cpu_count()
 DEFAULT_JSON_MODE = False
 DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
@@ -156,43 +156,35 @@ __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
 #%% ------------ Pre Helper Functions ----------------
-try:
-	# Check if functiools.cache is available
-	# cache_decorator = functools.cache
-	def cache_decorator(user_function):
-		def _make_hashable(item):
-			if isinstance(item, typing.Mapping):
-				# Sort items so that {'a':1, 'b':2} and {'b':2, 'a':1} hash the same
-				return tuple(
-					( _make_hashable(k), _make_hashable(v) )
-					for k, v in sorted(item.items(), key=lambda item: item[0])
-				)
-			if isinstance(item, (list, set, tuple)):
-				return tuple(_make_hashable(e) for e in item)
-			# Fallback: assume item is already hashable
-			return item
-		def decorating_function(user_function):
-			# Create the real cached function
-			cached_func = functools.lru_cache(maxsize=None)(user_function)
-			@functools.wraps(user_function)
-			def wrapper(*args, **kwargs):
-				# Convert all args/kwargs to hashable equivalents
-				hashable_args = tuple(_make_hashable(a) for a in args)
-				hashable_kwargs = {
-					k: _make_hashable(v) for k, v in kwargs.items()
-				}
-				# Call the lru-cached version
-				return cached_func(*hashable_args, **hashable_kwargs)
-			# Expose cache statistics and clear method
-			wrapper.cache_info = cached_func.cache_info
-			wrapper.cache_clear = cached_func.cache_clear
-			return wrapper
-		return decorating_function(user_function)
-except Exception:
-	# If lrucache is not available, use a dummy decorator
-	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
-	def cache_decorator(func):
-		return func
+def cache_decorator(user_function):
+	def _make_hashable(item):
+		if isinstance(item, typing.Mapping):
+			# Sort items so that {'a':1, 'b':2} and {'b':2, 'a':1} hash the same
+			return tuple(
+				( _make_hashable(k), _make_hashable(v) )
+				for k, v in sorted(item.items(), key=lambda item: item[0])
+			)
+		if isinstance(item, (list, set, tuple)):
+			return tuple(_make_hashable(e) for e in item)
+		# Fallback: assume item is already hashable
+		return item
+	def decorating_function(user_function):
+		# Create the real cached function
+		cached_func = functools.lru_cache(maxsize=None)(user_function)
+		@functools.wraps(user_function)
+		def wrapper(*args, **kwargs):
+			# Convert all args/kwargs to hashable equivalents
+			hashable_args = tuple(_make_hashable(a) for a in args)
+			hashable_kwargs = {
+				k: _make_hashable(v) for k, v in kwargs.items()
+			}
+			# Call the lru-cached version
+			return cached_func(*hashable_args, **hashable_kwargs)
+		# Expose cache statistics and clear method
+		wrapper.cache_info = cached_func.cache_info
+		wrapper.cache_clear = cached_func.cache_clear
+		return wrapper
+	return decorating_function(user_function)
 
 def eprint(*args, **kwargs):
 	global ERRORS
@@ -2368,7 +2360,7 @@ def _run_command_thread(host, sem, timeout, passwds):
 			host.stderr.append('Error: Command thread exited without a return code!')
 			host.returncode = -1
 
-def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
+def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_count()):
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
 
@@ -2609,7 +2601,7 @@ def __parse_ansi_escape_sequence_to_curses_attr(escape_code,color_pair_list = No
 		color_pair_list[2] = 1
 	return color_pair_list[2]
 
-def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0,leave_space_for_cursor = False):
+def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = None,fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0,leave_space_for_cursor = False):
 	"""
 	Add a string to a curses window with / without ANSI color escape sequences translated to curses color pairs.
 
@@ -2632,6 +2624,8 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 	Returns:
 		None
 	"""
+	if color_pair_list is None:
+		color_pair_list = [-1,-1,1]
 	maxY, maxX = window.getmaxyx()
 	if leave_space_for_cursor:
 		maxX -= 1
@@ -3416,7 +3410,7 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 				remaining_hostnames.add(this_hostname)
 	return merge_groups, remaining_hostnames
 
-def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]], errors_only = None):
+def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = None, errors_only = None):
 	'''
 	Format Host results for display / return.
 
@@ -3435,6 +3429,8 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 	'''
 	if errors_only is None:
 		errors_only = quiet
+	if keyPressesIn is None:
+		keyPressesIn = [[]]
 	color_cap = get_terminal_color_capability()
 	if errors_only:
 		# remove hosts with returncode 0
@@ -3928,14 +3924,14 @@ def record_command_history(kwargs):
 
 #%% ------------ Main Block ----------------
 def _normalize_max_connections(max_connections):
-	cpu_default = 4 * os.cpu_count()
+	cpu_default = 4 * _cpu_count()
 	safe_limit = __max_connections_nofile_limit_supported
 	if max_connections is None:
 		normalized = cpu_default
 	elif max_connections == 0:
 		normalized = safe_limit if safe_limit > 0 else cpu_default
 	elif max_connections < 0:
-		normalized = (-max_connections) * os.cpu_count()
+		normalized = (-max_connections) * _cpu_count()
 	else:
 		normalized = max_connections
 	if safe_limit > 0 and normalized > safe_limit:
@@ -4133,13 +4129,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		# try to resolve files first (like * etc)
 		if not gather_mode:
 			pathSet = set()
-			for file in file:
+			for pattern in file:
 				try:
-					pathSet.update(glob.glob(file,include_hidden=True,recursive=True))
+					pathSet.update(glob.glob(pattern,include_hidden=True,recursive=True))
 				except Exception:
-					pathSet.update(glob.glob(file,recursive=True))
+					pathSet.update(glob.glob(pattern,recursive=True))
 			if not pathSet:
-				_abort(66, f'No source files at {file!r} are found after resolving globs!', called=called)
+				_abort(66, f'No source files at {sorted(file)!r} are found after resolving globs!', called=called)
 		else:
 			pathSet = set(file)
 		if file_sync:
@@ -4289,7 +4285,7 @@ def generate_default_config(args):
 		'DEFAULT_ENV_FILES': DEFAULT_ENV_FILES + args.env_files,
 		'DEFAULT_NO_HISTORY': args.no_history,
 		'DEFAULT_HISTORY_FILE': args.history_file,
-		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * os.cpu_count() else None,
+		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * _cpu_count() else None,
 		'DEFAULT_JSON_MODE': args.json,
 		'DEFAULT_PRINT_SUCCESS_HOSTS': args.success_hosts,
 		'DEFAULT_GREPPABLE_MODE': args.greppable,
