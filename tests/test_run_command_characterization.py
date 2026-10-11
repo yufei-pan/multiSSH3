@@ -185,9 +185,14 @@ def run_scenario(monkeypatch, scenario):
 
 	multiSSH3.run_command(host, threading.Semaphore(1), 30, scenario.get("passwds"), **kwargs)
 
-	return {"argvs": argvs, "returncode": host.returncode, "output": host.output, "stdout": host.stdout,
-		"stderr": host.stderr, "sleeps": sleeps, "command": host.command, "address": getattr(host, "address", None),
+	return {"argvs": argvs, "returncode": host.returncode, "output": _without_traceback_frames(host.output),
+		"stdout": host.stdout, "stderr": _without_traceback_frames(host.stderr), "sleeps": sleeps, "command": host.command, "address": getattr(host, "address", None),
 		"resolvedName": host.resolvedName, "name": host.name, "scp": host.scp, "shell": host.shell}
+
+
+def _without_traceback_frames(lines):
+	# recorded tracebacks name source lines and functions, which any edit moves; keep the rest
+	return [line for line in lines if not line.startswith("  ")]
 
 
 def _golden():

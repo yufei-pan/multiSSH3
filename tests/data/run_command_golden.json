@@ -396,10 +396,6 @@
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
    "[Errno 2] No such file or directory",
    "Traceback (most recent call last):",
-   "  File \"/mnt/klein/work/cas/multiSSH3/multiSSH3.py\", line 2199, in run_command",
-   "    proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)",
-   "  File \"/mnt/klein/work/cas/multiSSH3/tests/test_run_command_characterization.py\", line 178, in popen",
-   "    raise result",
    "FileNotFoundError: [Errno 2] No such file or directory",
    ""
   ],
@@ -411,10 +407,6 @@
   "stderr": [
    "[Errno 2] No such file or directory",
    "Traceback (most recent call last):",
-   "  File \"/mnt/klein/work/cas/multiSSH3/multiSSH3.py\", line 2199, in run_command",
-   "    proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)",
-   "  File \"/mnt/klein/work/cas/multiSSH3/tests/test_run_command_characterization.py\", line 178, in popen",
-   "    raise result",
    "FileNotFoundError: [Errno 2] No such file or directory",
    ""
   ],
