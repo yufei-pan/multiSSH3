@@ -802,220 +802,6 @@ def format_commands(commands):
 			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures. Error: {e}")
 	return commands
 
-class OrderedMultiSet(deque):
-	"""
-	A deque extension with O(1) average lookup time.
-	Maintains all deque functionality while tracking item counts.
-	"""
-	def __init__(self, iterable=None, maxlen=None):
-		"""Initialize with optional iterable and maxlen."""
-		super().__init__(maxlen=maxlen)
-		self._counter = Counter()
-		if iterable is not None:
-			self.extend(iterable)
-	def append(self, item):
-		"""Add item to the right end. O(1)."""
-		if len(self) == self.maxlen:
-			self._counter -= Counter([self[0]])
-			# self._counter[self[0]] -= 1
-			# self._counter += Counter()
-		super().append(item) 
-		self._counter[item] += 1
-	def appendleft(self, item):
-		"""Add item to the left end. O(1)."""
-		if len(self) == self.maxlen:
-			self._counter -= Counter([self[-1]])
-		super().appendleft(item)
-		self._counter[item] += 1
-	def pop(self):
-		"""Remove and return item from right end. O(1)."""
-		try:
-			item = super().pop()
-			self._counter -= Counter([item])
-			return item
-		except IndexError:
-			return None
-	def popleft(self):
-		"""Remove and return item from left end. O(1)."""
-		try:
-			item = super().popleft()
-			self._counter -= Counter([item])
-			return item
-		except IndexError:
-			return None
-	def put(self, item):
-		"""Alias for append, but return removed item - add to right end (FIFO put)."""
-		removed = None
-		if len(self) == self.maxlen:
-			removed = self[0]  # Item that will be removed
-			self._counter -= Counter([removed])
-		super().append(item) 
-		self._counter[item] += 1
-		return removed
-	def put_left(self, item):
-		"""Alias for appendleft, but return removed item - add to left end (LIFO put)."""
-		removed = None
-		if len(self) == self.maxlen:
-			removed = self[-1]  # Item that will be removed
-			self._counter -= Counter([removed])
-		super().appendleft(item)
-		self._counter[item] += 1
-		return removed
-	def get(self):
-		"""Alias for popleft - remove from left end (FIFO get)."""
-		return self.popleft()
-	def remove(self, value):
-		"""Remove first occurrence of value. O(n)."""
-		if value not in self._counter:
-			return None
-		super().remove(value)
-		self._counter -= Counter([value])
-	def clear(self):
-		"""Remove all items. O(1)."""
-		super().clear()
-		self._counter.clear()
-	def extend(self, iterable):
-		"""Extend deque by appending elements from iterable. O(k)."""
-		# if maxlen is set, and the new length exceeds maxlen, we clear then efficiently extend
-		try:
-			if not self.maxlen or len(self) + len(iterable) <= self.maxlen:
-				super().extend(iterable)
-				self._counter.update(iterable)
-			elif len(iterable) >= self.maxlen:
-				self.clear()
-				if isinstance(iterable, (list, tuple)):
-					iterable = iterable[-self.maxlen:]
-				else:
-					iterable = itertools.islice(iterable, len(iterable) - self.maxlen, None)
-				super().extend(iterable)
-				self._counter.update(iterable)
-			else:
-				num_to_keep = self.maxlen - len(iterable)
-				self.truncateright(num_to_keep)
-				super().extend(iterable)
-				self._counter.update(iterable)
-		except TypeError:
-			return self.extend(list(iterable))
-	def extendleft(self, iterable):
-		"""Extend left side by appending elements from iterable. O(k)."""
-		# if maxlen is set, and the new length exceeds maxlen, we clear then efficiently extendleft
-		try:
-			if not self.maxlen or len(self) + len(iterable) <= self.maxlen:
-				super().extendleft(iterable)
-				self._counter.update(iterable)
-			elif len(iterable) >= self.maxlen:
-				self.clear()
-				if isinstance(iterable, (list, tuple)):
-					iterable = iterable[:self.maxlen]
-				else:
-					iterable = itertools.islice(iterable, 0, self.maxlen)
-				super().extendleft(iterable)
-				self._counter.update(iterable)
-			else:
-				num_to_keep = self.maxlen - len(iterable)
-				self.truncate(num_to_keep)
-				super().extendleft(iterable)
-				self._counter.update(iterable)
-		except TypeError:
-			return self.extendleft(list(iterable))
-	def update(self, iterable):
-		"""Extend deque by appending elements from iterable. Alias for extend. O(k)."""
-		return self.extend(iterable)
-	def updateleft(self, iterable):
-		"""Extend left side by appending elements from iterable. Alias for extendleft. O(k)."""
-		return self.extendleft(iterable)
-	def truncate(self, n):
-		"""Truncate to keep left n items. O(n)."""
-		kept = list(itertools.islice(self, n))
-		dropped = Counter(itertools.islice(self, n, None))
-		super().clear()
-		super().extend(kept)
-		self._counter -= dropped
-	def truncateright(self, n):
-		"""Truncate to keep right n items. O(n)."""
-		kept = list(itertools.islice(self, len(self) - n, None))
-		dropped = Counter(itertools.islice(self, 0, len(self) - n))
-		super().clear()
-		super().extend(kept)
-		self._counter -= dropped
-	def rotate(self, n=1):
-		"""Rotate deque n steps to the right. O(k) where k = min(n, len)."""
-		super().rotate(n)
-	def __contains__(self, item):
-		"""Check if item exists in deque. O(1) average."""
-		# return item in self._counter
-		return super().__contains__(item)
-	def count(self, item):
-		"""Return number of occurrences of item. O(1)."""
-		return self._counter[item]
-	def __setitem__(self, index, value):
-		"""Set item at index. O(1) for access, O(1) for counter update."""
-		old_value = self[index]
-		super().__setitem__(index, value)
-		self._counter -= Counter([old_value])
-		self._counter[value] += 1
-		return old_value
-	def __delitem__(self, index):
-		"""Delete item at index. O(n) for deletion, O(1) for counter update."""
-		value = self[index]
-		super().__delitem__(index)
-		self._counter -= Counter([value])
-		return value
-	def insert(self, index, value):
-		"""Insert value at index. O(n) for insertion, O(1) for counter update."""
-		super().insert(index, value)
-		self._counter[value] += 1
-	def reverse(self):
-		"""Reverse deque in place. O(n)."""
-		super().reverse()
-	def copy(self):
-		"""Create a shallow copy. O(n)."""
-		new_deque = OrderedMultiSet(maxlen=self.maxlen)
-		new_deque.extend(self)
-		return new_deque
-	def __copy__(self):
-		"""Support for copy.copy()."""
-		return self.copy()
-	def __repr__(self):
-		"""String representation."""
-		if self.maxlen is not None:
-			return f"OrderedMultiSet({list(self)}, maxlen={self.maxlen})"
-		return f"OrderedMultiSet({list(self)})"
-	def peek(self):
-		"""Return leftmost item without removing it."""
-		try:
-			return self[0]
-		except IndexError:
-			return None
-	def peek_right(self):
-		"""Return rightmost item without removing it."""
-		try:
-			return self[-1]
-		except IndexError:
-			return None
-	def __iadd__(self, value):
-		return self.extend(value)
-	def __add__(self, value):
-		new_deque = self.copy()
-		new_deque.extend(value)
-		return new_deque
-	def __mul__(self, value):
-		new_deque = OrderedMultiSet(maxlen=self.maxlen)
-		for _ in range(value):
-			new_deque.extend(self)
-		return new_deque
-	def __imul__(self, value):
-		if value <= 0:
-			self.clear()
-			return self
-		for _ in range(value - 1):
-			self.extend(self)
-		return self
-	def __eq__(self, value):
-		if isinstance(value, OrderedMultiSet):
-			return self._counter == value._counter
-		return super().__eq__(value)
-
 def get_terminal_size():
 	'''
 	Get the terminal size
@@ -3131,7 +2917,6 @@ def can_merge(line_bag1, line_bag2, threshold):
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
-	#indexes = {hostname: 0 for hostname in merging_hostnames}
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
@@ -3143,17 +2928,6 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
 		tracking_iter = itertools.islice(outputs_by_hostname[hostname], tracking_index)
 		return [deque(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_iter]
-	# futuresChainMap = ChainMap()
-	# class futureDict(UserDict):
-	# 	def __missing__(self, key):
-	# 		value = get_multiset_index_for_hostname(key)
-	# 		self[key] = value
-	# 		# futuresChainMap.maps.append(value[0]._counter)
-	# 		return value
-	# 	# def initializeHostnames(self, hostnames):
-	# 	# 	entries = {hostname: get_multiset_index_for_hostname(hostname) for hostname in hostnames}
-	# 	# 	self.update(entries)
-	# 	# 	futuresChainMap.maps.extend(entry[0]._counter for entry in entries.values())
 	def advance(dict,key):
 		try:
 			value = dict[key]
@@ -3165,9 +2939,6 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				pass
 		except KeyError:
 			pass
-	# futures = futureDict()
-	# for hostname in merging_hostnames:
-	# 	futures[hostname]  # ensure it's initialized
 	futures = {hostname: get_multiset_index_for_hostname(hostname) for hostname in merging_hostnames}
 	currentLines = defaultdict(set)
 	color_cap = get_terminal_color_capability()
@@ -3183,40 +2954,19 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
 		defer = False
-		# sorted_working_hostnames = sorted(working_index_keys, key=lambda hn: indexes[hn])
 		golden_hostname = min(working_index_keys, key=indexes.get)
 		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
-		# for hostname, index in sorted_working_indexes[1:]:
-		# 	if lineToAdd == outputs_by_hostname[hostname][index]:
-		# 		buddy.add(hostname)
-		# 	else:
-		# 		futureLines,tracking_index = futures[hostname]
-		# 		if lineToAdd in futureLines:
-		# 			for hn in buddy:
-		# 				working_indexes.pop(hn,None)
-		# 			defer = True
-		# 			break
 		buddy = currentLines[lineToAdd].copy()
 		if len(buddy) < len(working_index_keys):
 			# we need to check the futures then
-			# thisCounter = None
-			# if golden_hostname in futures:
-			# 	thisCounter = futures[golden_hostname][0]._counter
-			# 	futuresChainMap.maps.remove(thisCounter)
-			# for hostname in working_index_keys - buddy - set(futures.keys()):
-			# 	futures[hostname] # ensure it's initialized
-			# futures.initializeHostnames(working_index_keys - buddy - futures.keys())
 			if any(lineToAdd in futures[hostname][0] for hostname in working_index_keys - buddy):
 				defer = True
 				working_index_keys -= buddy
-			# if thisCounter is not None:
-			# 	futuresChainMap.maps.append(thisCounter)
 		if not defer:
 			if buddy != previousBuddies:
 				hostnameStr = ','.join(compact_hostnames(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
-				# hostnameLines = [line.ljust(line_length) for line in hostnameLines]
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
 					hostnameLines[0] = f"{color}■{hostnameLines[0]}"
@@ -3231,17 +2981,11 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				del currentLines[lineToAdd]
 			indexes.update(buddy)
 			for hostname in buddy:
-				# currentLines[lineToAdd].remove(hostname)
-				# if not currentLines[lineToAdd]:
-				# 	del currentLines[lineToAdd]
-				# indexes[hostname] += 1
 				try:
 					currentLines[outputs_by_hostname[hostname][indexes[hostname]]].add(hostname)
 				except IndexError:
 					indexes.pop(hostname, None)
 					futures.pop(hostname, None)
-					# if future:
-					# 	futuresChainMap.maps.remove(future[0]._counter)
 					continue
 				#advance futures
 				advance(futures, hostname)

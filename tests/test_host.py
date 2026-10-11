@@ -26,11 +26,3 @@ def test_replace_magic_strings_host():
 	s = multiSSH3.replace_magic_strings("run on #HOST#", ["#HOST#", "#HOSTNAME#"], "node1")
 	assert s == "run on node1"
 
-
-def test_ordered_multiset_count_and_contains():
-	# OrderedMultiSet is a deque+Counter helper used in mergeOutput streaming;
-	# line bags passed to can_merge are plain set objects (see get_host_raw_output).
-	a = multiSSH3.OrderedMultiSet(["x", "y", "y"])
-	assert a.count("y") == 2
-	assert "x" in a
-	assert list(a) == ["x", "y", "y"]
