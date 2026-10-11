@@ -2027,6 +2027,9 @@ def _build_command(host, passwds, ipmi_definitions_list):
 	sshLocalExtraArgs = []
 	ip_prefix = None
 	useScp = False
+	def attempt(action, argv=None):
+		# carries the state as it is when the attempt is returned
+		return _CommandAttempt(action, argv, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
@@ -2043,7 +2046,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				host.output.append('Error: Exhausted all matching ipmi definitions!')
 				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
 				host.returncode = 1
-				return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+				return attempt('stop')
 			ipmi_definition = dict(ChainMap(ipmi_definitions_list.pop(0),get_default_ipmi_definition()))
 			if ipmi_definition.get('ipmi_method') == 'ssh_ipmitool':
 				if not host.command:
@@ -2117,7 +2120,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 					ipmi_definition['password'] = passwds
 					ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
 					ipmi_definitions_list.insert(0,ipmi_definition)
-					return _CommandAttempt('rebuild', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+					return attempt('rebuild')
 				if host.command.startswith('ipmitool '):
 					host.command = host.command.replace('ipmitool ','')
 				elif host.command.startswith(_binPaths['ipmitool']):
@@ -2148,7 +2151,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				host.output.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.stderr.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.returncode = 1
-				return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+				return attempt('stop')
 		elif host.shell:
 			if 'sh' in _binPaths:
 				host.output.append('Running command in shell mode, ignoring the hosts...')
@@ -2161,7 +2164,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				return _CommandAttempt('rebuild', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+				return attempt('rebuild')
 		else:
 			if host.files:
 				if host.scp:
@@ -2176,7 +2179,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 						host.output.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.stderr.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.returncode = 1
-						return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+						return attempt('stop')
 				elif 'rsync' in _binPaths:
 					useScp = False
 				elif 'scp' in _binPaths:
@@ -2188,7 +2191,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 					host.output.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
-					return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+					return attempt('stop')
 				if host.gatherMode:
 					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
 				else:
@@ -2218,8 +2221,8 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		host.stderr.extend(traceback.format_exc().split('\n'))
 		host.output.extend(traceback.format_exc().split('\n'))
 		host.returncode = -1
-		return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
-	return _CommandAttempt('run', formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+		return attempt('stop')
+	return attempt('run', formatedCMD)
 
 def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 	'''
