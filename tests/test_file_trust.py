@@ -32,15 +32,20 @@ def _config(tmp_path, mode=0o644):
 	return str(path)
 
 
-def test_world_writable_config_in_cwd_cannot_replace_ssh(tmp_path):
-	config = Path(_config(tmp_path, 0o666))
+@pytest.mark.parametrize("mode", [0o644, 0o666], ids=["owned_by_you", "world_writable"])
+def test_config_in_current_directory_is_not_loaded(tmp_path, mode):
+	# files from a git clone or an unpacked archive belong to you, so ownership proves nothing
+	config = Path(_config(tmp_path, mode))
 	config.write_text('{"_sshPath": "/bin/echo"}')
-	code = "import sys; sys.path.insert(0, {!r}); import multiSSH3; print(multiSSH3._binPaths.get('ssh'))".format(str(PACKAGE_ROOT))
+	(tmp_path / "hosts.env").write_text("MSSH_TRUST_ALIAS=127.0.0.5\n")
+	code = ("import sys; sys.path.insert(0, {!r}); import multiSSH3; "
+		"print(multiSSH3._binPaths.get('ssh')); print('MSSH_TRUST_ALIAS' in multiSSH3.readEnvFromFile())").format(str(PACKAGE_ROOT))
 
 	result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
 
-	assert result.stdout.strip() != "/bin/echo"
-	assert "chmod g-w,o-w" in result.stderr
+	ssh_path, alias_loaded = result.stdout.split()
+	assert ssh_path != "/bin/echo"
+	assert alias_loaded == "False"
 
 
 def test_config_owned_by_someone_else_is_ignored(monkeypatch, tmp_path, capsys):

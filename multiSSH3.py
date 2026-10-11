@@ -41,8 +41,9 @@ __version__ = version
 COMMIT_DATE = '2026-10-10'
 # TODO: Add terminal TUI
 
-CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
-					 '~/multiSSH3.config.json',
+# no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
+# use --config_file to load one
+CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 					 '~/.multiSSH3.config.json',
 					 '~/.config/multiSSH3/multiSSH3.config.json',
 					 '/etc/multiSSH3.d/multiSSH3.config.json',
@@ -100,10 +101,7 @@ DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
 					 '~/.zshrc',
 					 '~/host.env',
 					 '~/hosts.env',
-					 '.env',
-					 'host.env',
-					 'hosts.env',
-					 ]
+					 ]  # no current-directory files (could redirect host aliases), use --env_files
 DEFAULT_NO_HISTORY = False
 DEFAULT_HISTORY_FILE = '~/.mssh_history'
 def _cpu_count():
@@ -555,7 +553,8 @@ def apply_config_key_compat(configs):
 
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
-__working_config_file = './multiSSH3.config.json'
+# where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
+__working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
 apply_config_key_compat(__configs_from_file)
