@@ -206,13 +206,13 @@ def test_names_already_looked_up_start_no_more_thread_pools(monkeypatch, hermeti
 	import socket
 
 	pools = []
+	run_in_threads = multiSSH3._run_in_threads
 
-	class CountingPool(multiSSH3.ThreadPoolExecutor):
-		def __init__(self, *args, **kwargs):
-			pools.append(1)
-			super().__init__(*args, **kwargs)
+	def counting_run_in_threads(*args, **kwargs):
+		pools.append(1)
+		return run_in_threads(*args, **kwargs)
 
-	monkeypatch.setattr(multiSSH3, "ThreadPoolExecutor", CountingPool)
+	monkeypatch.setattr(multiSSH3, "_run_in_threads", counting_run_in_threads)
 	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo",
 		lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))])
 	names = ["dnsnode{}".format(i) for i in range(40)]
@@ -263,16 +263,72 @@ def test_ssh_config_probe_runs_once_per_prefetch(monkeypatch, hermetic_resolutio
 	assert len(probes) == 1
 
 
-def test_first_ctrl_c_stops_the_dns_prefetch(monkeypatch, hermetic_resolution):
+
+def test_first_ctrl_c_does_not_slow_host_expansion(monkeypatch, hermetic_resolution):
 	import threading
 	import time
 
-	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: time.sleep(0.3))
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: time.sleep(0.2))
 	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
 	monkeypatch.setattr(multiSSH3, "_emo", False)
-	threading.Timer(0.2, setattr, args=(multiSSH3, "_emo", True)).start()  # Ctrl-C
+	threading.Timer(0.1, setattr, args=(multiSSH3, "_emo", True)).start()  # Ctrl-C while resolving
 	started = time.monotonic()
 
-	multiSSH3._prefetch_ips(["slow{}".format(i) for i in range(320)])
+	multiSSH3.expand_hostnames(["slowhost[1-64]"])
 
-	assert time.monotonic() - started < 1.5  # every lookup: 320 x 0.3 s / 32 workers = 3 s
+	# in parallel: 2 rounds of 0.2 s; redoing cancelled lookups one by one took (64 - 32) x 0.2 s
+	assert time.monotonic() - started < 3
+
+
+def test_second_ctrl_c_exits_without_waiting_for_lookups(tmp_path):
+	import signal
+	import subprocess
+	import sys
+	import time
+	from pathlib import Path
+
+	script = tmp_path / "resolve.py"
+	script.write_text(
+		"import signal, sys, time\n"
+		"sys.path.insert(0, {!r})\n"
+		"import multiSSH3\n"
+		"signal.signal(signal.SIGINT, multiSSH3.signal_handler)\n"
+		"multiSSH3._resolve_dns = lambda hostname: time.sleep(5)\n"
+		"multiSSH3._ssh_config_target = lambda hostname: None\n"
+		"print('resolving', flush=True)\n"
+		"multiSSH3._prefetch_ips(['slow%d' % i for i in range(64)])\n"
+		"time.sleep(30)\n".format(str(Path(multiSSH3.__file__).resolve().parent)))
+	proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmp_path)
+	assert proc.stdout.readline().strip() == b"resolving"
+	time.sleep(0.3)
+	proc.send_signal(signal.SIGINT)
+	time.sleep(0.3)
+	started = time.monotonic()
+	proc.send_signal(signal.SIGINT)  # "exiting immediately"
+	try:
+		proc.wait(timeout=10)
+	finally:
+		proc.kill()
+
+	assert time.monotonic() - started < 2  # not the 5 s lookups still running
+	assert proc.returncode == 1
+
+
+def test_each_name_is_looked_up_once_when_listed_for_several_users(monkeypatch, hermetic_resolution):
+	import threading
+	import time
+
+	lookups = []
+	lock = threading.Lock()
+
+	def slow_dns(hostname):
+		time.sleep(0.05)
+		with lock:
+			lookups.append(hostname)
+
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", slow_dns)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+
+	multiSSH3.expand_hostnames(["alice@zz[1-20].invalid", "bob@zz[1-20].invalid", "carol@zz[1-20].invalid"])
+
+	assert sorted(lookups) == sorted("zz{}.invalid".format(i) for i in range(1, 21))

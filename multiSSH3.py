@@ -31,7 +31,6 @@ import time
 import typing
 from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap, namedtuple
-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 from itertools import count, product
 from pprint import pformat
 
@@ -1691,22 +1690,41 @@ def _prefetch_ips(hostnames):
 		if hostname in _dns_cache or _local_hostname_source(hostname):
 			continue
 		need_dns.append(hostname)
+	# the same name listed for several users is looked up once
+	need_dns = list(dict.fromkeys(need_dns))
 	if len(need_dns) > 1:
 		if 'ssh' in _binPaths:
 			# names DNS does not know are compared with this probe, run it once instead of in every worker
 			_ssh_config_values(_SSH_CONFIG_PROBE_NAME)
-		pool = ThreadPoolExecutor(max_workers=min(32, len(need_dns)))
-		futures = [pool.submit(getIP, hostname, local=False) for hostname in need_dns]
-		try:
-			# wait in slices so Ctrl-C (or the exit on a second one) stops the lookups
-			pending = futures
-			while pending and not _emo:
-				_, pending = futures_wait(pending, timeout=0.1)
-		finally:
-			for future in futures:
-				future.cancel()
-			# after Ctrl-C do not wait for the lookups still running
-			pool.shutdown(wait=not _emo)
+		_run_in_threads(lambda hostname: getIP(hostname,local=False), need_dns)
+
+def _run_in_threads(function, items, max_workers=32):
+	'''
+	Call function(item) for every item in up to max_workers threads, and wait for them.
+
+	The threads are daemon threads: unlike a ThreadPoolExecutor's workers they are not waited
+	for at exit, so the second Ctrl-C ("exiting immediately") does not wait for slow lookups.
+	'''
+	work = queue.Queue()
+	for item in items:
+		work.put(item)
+	def worker():
+		while True:
+			try:
+				item = work.get_nowait()
+			except queue.Empty:
+				return
+			try:
+				function(item)
+			except Exception:
+				pass
+	threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(max_workers, len(items)))]
+	for thread in threads:
+		thread.start()
+	for thread in threads:
+		# in slices, so the Ctrl-C handler gets to run
+		while thread.is_alive():
+			thread.join(0.1)
 
 @cache_decorator
 def __expand_hostnames(hosts) -> dict:
