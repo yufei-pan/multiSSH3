@@ -363,3 +363,20 @@ def test_catch_all_hostname_template_accepts_names_whose_target_resolves(monkeyp
 	result = multiSSH3.expand_hostnames(["node1", "nodee1-typo"])
 
 	assert result == {"node1": "10.9.9.1"}
+
+
+def test_getip_cache_clear_retries_a_failed_dns_lookup(monkeypatch, hermetic_resolution):
+	import socket
+
+	def dns_down(host, *args, **kwargs):
+		raise socket.gaierror("temporary failure")
+
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo", dns_down)
+	assert multiSSH3.getIP("flaky-node") is None
+	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo",
+		lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.4.4.4", 0))])
+
+	multiSSH3.getIP.cache_clear()
+
+	assert multiSSH3.getIP("flaky-node") == "10.4.4.4"

@@ -359,7 +359,15 @@ def _getIP(hostname, local):
 # hostname -> IP address (or None) of every DNS lookup made, so lookups are done once
 _dns_cache = {}
 
-getIP.cache_clear = _getIP.cache_clear
+def _clear_ip_caches():
+	'''getIP.cache_clear(): forget every lookup result getIP depends on, failures included.'''
+	_getIP.cache_clear()
+	_dns_cache.clear()
+	for cached_function in (_ssh_config_values, _ssh_config_target):
+		# tests (or embedders) may have replaced them with plain functions
+		getattr(cached_function, 'cache_clear', lambda: None)()
+
+getIP.cache_clear = _clear_ip_caches
 getIP.cache_info = _getIP.cache_info
 
 def _resolve_dns(hostname):
