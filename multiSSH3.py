@@ -1518,6 +1518,9 @@ def compact_hostnames(Hostnames,verify = True):
 	return sorted(compact_hosts)
 
 #%% ------------ Expanding Hostnames ----------------
+# invalid host names reported during the current run_command_on_hosts call
+_reported_invalid_hosts = set()
+
 def _local_hostname_source(hostname):
 	'''
 	How hostname resolves without DNS, in the order host validation tries.
@@ -1564,9 +1567,12 @@ def __validate_expand_hostname(hostname):
 	else:
 		global __mainReturnCode
 		global __failedHosts
-		# validated again after the caches refresh: report and count each bad name once
-		if hostname not in __failedHosts:
+		# validated again after the caches refresh: report once per run_command_on_hosts call
+		if hostname not in _reported_invalid_hosts:
 			eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
+			_reported_invalid_hosts.add(hostname)
+		# and count once towards the exit code
+		if hostname not in __failedHosts:
 			__mainReturnCode += 1
 			__failedHosts.add(hostname)
 		return []
@@ -4258,6 +4264,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __keyPressesIn
 	_emo = False
 	_no_env = no_env
+	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
 	if not no_history:
 		_ = history_file

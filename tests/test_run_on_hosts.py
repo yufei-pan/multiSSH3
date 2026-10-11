@@ -160,3 +160,17 @@ def test_env_alias_set_after_a_failed_lookup_is_seen(monkeypatch, tmp_path):
 
 	assert first == []
 	assert _run_alias(no_env=False) == ["127.0.0.6"]
+
+
+def test_invalid_host_is_reported_again_by_a_later_call(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: None)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	common = dict(hosts="nodx1-typo", commands=["true"], no_start=True, no_watch=True, quiet=True,
+		no_history=True, called=True, will_update_unreachable_hosts=False)
+	multiSSH3.run_command_on_hosts(no_env=False, **common)
+	assert "'nodx1-typo' is not a valid hostname" in capsys.readouterr().err
+
+	multiSSH3.run_command_on_hosts(no_env=True, **common)  # different settings: validated again
+
+	assert "'nodx1-typo' is not a valid hostname" in capsys.readouterr().err
