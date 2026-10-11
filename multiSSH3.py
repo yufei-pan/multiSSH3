@@ -31,6 +31,7 @@ import time
 import typing
 from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap
+from concurrent.futures import ThreadPoolExecutor
 from itertools import count, product
 from pprint import pformat
 
@@ -341,6 +342,10 @@ def getIP(hostname: str,local=False):
 	if local:
 		return None
 	# Then we check the DNS
+	return _resolve_dns(hostname)
+
+def _resolve_dns(hostname):
+	'''Look hostname up in DNS, returning its IP address or None.'''
 	try:
 		return socket.gethostbyname(hostname)
 	except Exception:
@@ -1573,6 +1578,27 @@ def __expand_hostname(text, validate=True):# -> set:
 				expandinghosts.append(hostname.replace(match.group(0), part, 1))
 	return expandedhosts
 
+# four dot separated octet fields, each a number, a wildcard (x * ?) or a range of them, optionally in []
+_IPV4_RANGE_RE = re.compile(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}\.((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))$')
+
+def _prefetch_ips(hostnames):
+	'''
+	Resolve the hostnames that need DNS in parallel, filling the getIP cache.
+
+	Host validation looks names up one at a time, a big range of names that are not in
+	/etc/hosts would otherwise wait for every DNS round trip (or resolver timeout) in turn.
+	'''
+	need_dns = []
+	for hostname in hostnames:
+		hostname = hostname.strip().strip('$')
+		# the same order as __validate_expand_hostname: /etc/hosts and env aliases need no DNS
+		if getIP(hostname,local=True) or (not _no_env and hostname in os.environ) or hostname in readEnvFromFile():
+			continue
+		need_dns.append(hostname)
+	if len(need_dns) > 1:
+		with ThreadPoolExecutor(max_workers=min(32, len(need_dns))) as pool:
+			list(pool.map(lambda hostname: getIP(hostname,local=False), need_dns))
+
 @cache_decorator
 def __expand_hostnames(hosts) -> dict:
 	'''
@@ -1587,6 +1613,14 @@ def __expand_hostnames(hosts) -> dict:
 	expandedhosts = {}
 	if isinstance(hosts, str):
 		hosts = [hosts]
+	names_to_resolve = []
+	for host in hosts:
+		host = host.strip()
+		if '@' in host:
+			host = host.split('@',1)[1].strip()
+		if host and not _IPV4_RANGE_RE.match(host):
+			names_to_resolve.extend(__expand_hostname(host, validate=False))
+	_prefetch_ips(names_to_resolve)
 	for host in hosts:
 		host = host.strip()
 		if not host:
@@ -1603,7 +1637,7 @@ def __expand_hostnames(hosts) -> dict:
 		# seperated by .
 		# If so, we expand the IP address range
 		iplist = []
-		if re.match(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}\.((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))$', host):
+		if _IPV4_RANGE_RE.match(host):
 			hostSetToAdd = sorted(__expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
 			iplist = hostSetToAdd
 		else:

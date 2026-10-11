@@ -1,3 +1,5 @@
+import pytest
+
 import multiSSH3
 
 
@@ -98,3 +100,41 @@ def test_bracketed_first_and_last_octet_ranges_use_ipv4_expansion(monkeypatch):
 
 	assert list(multiSSH3.expand_hostnames(["10.0.0.[1-3]"])) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
 	assert list(multiSSH3.expand_hostnames(["[10-11].0.0.1"])) == ["10.0.0.1", "11.0.0.1"]
+
+
+@pytest.fixture
+def hermetic_resolution(monkeypatch, tmp_path):
+	# no /etc/hosts, env or env file aliases: every name goes to (fake) DNS
+	monkeypatch.setattr(multiSSH3, "DEFAULT_HOST_FILE", str(tmp_path / "no-hosts"))
+	monkeypatch.setattr(multiSSH3, "_etc_hosts", {})
+	monkeypatch.setattr(multiSSH3, "_no_env", True)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "no-env")])
+	multiSSH3.readEnvFromFile.cache_clear()
+	multiSSH3.getIP.cache_clear()
+	yield
+	multiSSH3.getIP.cache_clear()
+	multiSSH3.readEnvFromFile.cache_clear()
+
+
+def test_expanding_a_range_resolves_names_in_parallel(monkeypatch, hermetic_resolution):
+	import threading
+	import time
+
+	lookups = []
+	lock = threading.Lock()
+
+	def slow_dns(hostname):
+		time.sleep(0.2)
+		with lock:
+			lookups.append(hostname)
+		return "10.0.0." + hostname[len("node"):]
+
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", slow_dns)
+	started = time.monotonic()
+
+	result = multiSSH3.expand_hostnames(["node[1-20]"])
+
+	elapsed = time.monotonic() - started
+	assert result == {"node{}".format(i): "10.0.0.{}".format(i) for i in range(1, 21)}
+	assert sorted(lookups) == sorted("node{}".format(i) for i in range(1, 21))  # each name once
+	assert elapsed < 2  # one after another takes 20 x 0.2 s = 4 s
