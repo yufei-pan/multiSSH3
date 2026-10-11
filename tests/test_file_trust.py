@@ -122,3 +122,26 @@ def test_env_file_trust_check_uses_the_opened_file(monkeypatch, tmp_path):
 	_path_looks_safe_when_checked(monkeypatch, path)
 
 	assert "MSSH_TRUST_ALIAS" not in multiSSH3.readEnvFromFile()
+
+
+@pytest.mark.parametrize("kind", ["config", "env"])
+def test_planted_fifo_does_not_hang_loading(monkeypatch, tmp_path, kind):
+	import threading
+
+	fifo = str(tmp_path / ("multiSSH3.config.json" if kind == "config" else "hosts.env"))
+	os.mkfifo(fifo, 0o600)  # owner-only, so only the file type gives it away
+	if kind == "env":
+		monkeypatch.setattr(multiSSH3, "_env_files", [fifo])
+		multiSSH3.readEnvFromFile.cache_clear()
+	load = (lambda: multiSSH3.load_config_file(fifo)) if kind == "config" else multiSSH3.readEnvFromFile
+	result = []
+	loader = threading.Thread(target=lambda: result.append(load()), daemon=True)
+	loader.start()
+	loader.join(timeout=5)
+	if loader.is_alive():
+		# unblock the reader stuck in open() so it does not outlive the test
+		os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+		loader.join(timeout=5)
+		pytest.fail("opening a planted FIFO blocked")
+
+	assert result == [{}]

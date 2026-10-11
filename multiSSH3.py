@@ -387,6 +387,9 @@ def _untrusted_file_reason(st):
 	Returns:
 		tuple: (reason, fixable_with_chmod), or None when the file can be loaded
 	'''
+	if not stat.S_ISREG(st.st_mode):
+		# a FIFO or device could block or never end
+		return 'it is not a regular file', False
 	if pwd is None or not hasattr(os, 'getuid'):
 		return None
 	if st.st_uid not in (os.getuid(), 0):
@@ -407,7 +410,8 @@ def _open_trusted_file(path, explicit_flag):
 
 	The check runs on the opened file, so the file cannot be swapped between check and read.
 	'''
-	f = open(path, 'r')
+	# O_NONBLOCK so opening a planted FIFO does not wait for a writer, it is rejected below
+	f = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0)), 'r')
 	untrusted = _untrusted_file_reason(os.fstat(f.fileno()))
 	if not untrusted:
 		return f
