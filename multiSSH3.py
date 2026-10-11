@@ -4661,7 +4661,10 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	try:
 		# configs can hold passwords: owner only, except the system-wide locations every user reads
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
-		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link
+		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
+		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
+		if os.path.islink(CONFIG_FILE) and hasattr(os, 'getuid') and os.lstat(CONFIG_FILE).st_uid not in (os.getuid(), 0):
+			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
 		target = os.path.realpath(CONFIG_FILE)
 		try:
 			st = os.stat(target)

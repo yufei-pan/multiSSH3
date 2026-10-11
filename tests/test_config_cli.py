@@ -215,3 +215,19 @@ def test_someone_elses_writable_config_is_written_in_place_only_when_private(mon
 		assert shared.read_text() == '{"DEFAULT_TIMEOUT": 5}'
 		assert '"DEFAULT_PASSWORD": "secret"' in capsys.readouterr().out
 	assert stat.S_IMODE(shared.stat().st_mode) == mode
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to chown a symlink")
+def test_store_does_not_write_through_someone_elses_symlink(monkeypatch, tmp_path, capsys):
+	victim = tmp_path / "victim"
+	victim.write_text("precious")
+	planted = tmp_path / "x.json"  # e.g. /tmp/x.json planted by another user
+	planted.symlink_to(victim)
+	os.lchown(planted, 23456, -1)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+
+	multiSSH3.write_default_config(args, str(planted), force=True)
+
+	assert victim.read_text() == "precious"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["victim", "x.json"]  # no temporary file next to the victim
