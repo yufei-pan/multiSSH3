@@ -4543,10 +4543,12 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			f.truncate()
 			json.dump(__configs_from_file,f,indent=4)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
+		return True
 	except Exception as e:
 		eprint(f"Error: Unable to write to the config file: {e!r}")
 		eprint('Printing the config file to stdout:')
 		print(json.dumps(__configs_from_file, indent=4))
+		return False
 
 #%% ------------ Argument Processing -----------------
 def _positive_int(value):
@@ -4723,9 +4725,10 @@ def process_config_file(args):
 				configFileToWriteTo = args.store_config_file
 		else:
 			configFileToWriteTo = None
-		write_default_config(args,configFileToWriteTo,force=args.generate_config_file)
+		written = write_default_config(args,configFileToWriteTo,force=args.generate_config_file)
 		if not args.commands and not args.file:
-			if configFileToWriteTo:
+			# a failed write already printed the new config, the file holds the old one (or nothing)
+			if configFileToWriteTo and written:
 				with open(configFileToWriteTo,'r') as f:
 					eprint(f"Config file {configFileToWriteTo} content: \n{f.read()}")
 			_exit_with_code(0)

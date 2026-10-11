@@ -121,3 +121,15 @@ def test_store_config_file_keeps_locked_down_system_config_locked(monkeypatch, t
 	monkeypatch.setattr(multiSSH3, "CONFIG_FILE_CHAIN", [str(system_config)])
 
 	assert _store_config(monkeypatch, system_config) == 0o600
+
+
+def test_failed_store_does_not_show_old_content_or_crash(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["--store_config_file", str(tmp_path / "missing-dir" / "cfg.json")])
+
+	with pytest.raises(SystemExit):
+		multiSSH3.process_config_file(args)
+
+	err = capsys.readouterr().err
+	assert "Unable to write" in err
+	assert "content:" not in err
