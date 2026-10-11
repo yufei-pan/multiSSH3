@@ -111,6 +111,7 @@ def run_cli(args, timeout=30, check=False):
 
 
 def _clear_expand_caches():
+	getattr(multiSSH3, "_dns_cache", {}).clear()
 	for name in (
 		"__validate_expand_hostname",
 		"__expandIPv4Address",

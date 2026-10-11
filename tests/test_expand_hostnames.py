@@ -200,3 +200,25 @@ def test_catch_all_ssh_config_block_does_not_validate_typos(monkeypatch, tmp_pat
 	result = multiSSH3.expand_hostnames(["gpu-alias", "jump-a", "nodee1-typo"])
 
 	assert result == {"gpu-alias": "127.0.0.7", "jump-a": None}
+
+
+def test_names_already_looked_up_start_no_more_thread_pools(monkeypatch, hermetic_resolution):
+	import socket
+
+	pools = []
+
+	class CountingPool(multiSSH3.ThreadPoolExecutor):
+		def __init__(self, *args, **kwargs):
+			pools.append(1)
+			super().__init__(*args, **kwargs)
+
+	monkeypatch.setattr(multiSSH3, "ThreadPoolExecutor", CountingPool)
+	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo",
+		lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))])
+	names = ["dnsnode{}".format(i) for i in range(40)]
+	multiSSH3.expand_hostnames(names)
+
+	for i in range(20):  # output merging compacts many slightly different host sets
+		multiSSH3.compact_hostnames(names + ["extra{}".format(i)])
+
+	assert len(pools) == 1

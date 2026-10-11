@@ -351,15 +351,21 @@ def getIP(hostname: str,local=False):
 			ip = getIP(target,local=True) or _resolve_dns(target)
 	return ip
 
+# hostname -> IP address (or None) of every DNS lookup made, so lookups are done once
+_dns_cache = {}
+
 def _resolve_dns(hostname):
 	'''Look hostname up in DNS (IPv4 or IPv6, preferring IPv4), returning its IP address or None.'''
+	if hostname in _dns_cache:
+		return _dns_cache[hostname]
 	try:
 		infos = socket.getaddrinfo(hostname, None, 0, socket.SOCK_STREAM)
 	except Exception:
-		return None
+		infos = []
 	addresses = [info[4][0] for info in infos if info[0] == socket.AF_INET]
 	addresses += [info[4][0] for info in infos if info[0] == socket.AF_INET6]
-	return addresses[0] if addresses else None
+	_dns_cache[hostname] = addresses[0] if addresses else None
+	return _dns_cache[hostname]
 
 # a name no ssh config can mean on purpose, to tell what catch-all blocks (Host *) do
 _SSH_CONFIG_PROBE_NAME = 'multissh3-unknown-host.invalid'
@@ -1657,7 +1663,7 @@ def _prefetch_ips(hostnames):
 	for hostname in hostnames:
 		hostname = hostname.strip().strip('$')
 		# the same order as __validate_expand_hostname: /etc/hosts and env aliases need no DNS
-		if getIP(hostname,local=True) or (not _no_env and hostname in os.environ) or hostname in readEnvFromFile():
+		if hostname in _dns_cache or getIP(hostname,local=True) or (not _no_env and hostname in os.environ) or hostname in readEnvFromFile():
 			continue
 		need_dns.append(hostname)
 	if len(need_dns) > 1:
