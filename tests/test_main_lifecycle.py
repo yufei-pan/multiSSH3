@@ -259,3 +259,21 @@ def test_history_records_the_cli_options_not_the_default_env_files(monkeypatch, 
 	# replaying -efs=... would mark every default env file explicit, skipping the ownership check
 	assert "-efs=" not in line
 	assert "-r=2" in line
+
+
+def test_main_repeat_counts_hosts_failing_in_different_runs(fake_host, monkeypatch, capsys):
+	failing = iter(["hostA", "hostB"])
+
+	def fake_run(**kwargs):
+		host = fake_host(next(failing), "check")
+		host.returncode = 1
+		return [host]
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["127.0.0.1", "check", "--repeat", "2", "--no_history"])
+
+	assert exc_info.value.code == 2
+	assert "failed_hosts: hostA,hostB" in capsys.readouterr().err

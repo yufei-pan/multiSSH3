@@ -4842,7 +4842,7 @@ def main(args = None):
 
 	# failures in every repeat count towards the exit code, not only the last run. Only names are kept
 	# between runs, a long --repeat loop must not hold every run's output
-	failedHostCount = 0
+	failedHostNames = set()
 	succeededHosts = set()
 	for i in range(args.repeat):
 		if i > 0 and args.interval > 0:
@@ -4851,16 +4851,14 @@ def main(args = None):
 
 		if not __global_suppress_printout: 
 			eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
-		runFailures = 0
 		for host in run_command_on_hosts(**vars(args),called=False):
 			if host.returncode and host.returncode != 0:
-				runFailures += 1
-				__failedHosts.add(host.name)
+				failedHostNames.add(host.name)
 			else:
 				succeededHosts.add(host.name)
-		# the worst run, a host failing in every run counts once
-		failedHostCount = max(failedHostCount, runFailures)
-	__mainReturnCode += failedHostCount
+	# each failing host counts once, however many runs or commands it failed
+	__mainReturnCode += len(failedHostNames)
+	__failedHosts |= failedHostNames
 	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
 	if __mainReturnCode > 0:
