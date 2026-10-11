@@ -443,7 +443,13 @@ def _is_private_group(uid, gid):
 		group = grp.getgrgid(gid)
 	except KeyError:
 		return False
-	return gid == owner.pw_gid and group.gr_name == owner.pw_name and set(group.gr_mem) <= {owner.pw_name}
+	if gid != owner.pw_gid or group.gr_name != owner.pw_name or not set(group.gr_mem) <= {owner.pw_name}:
+		return False
+	# gr_mem lists only supplementary members, not other accounts with this as their primary group
+	try:
+		return all(user.pw_uid == uid for user in pwd.getpwall() if user.pw_gid == gid)
+	except Exception:
+		return False
 
 def _untrusted_file_reason(st):
 	'''
