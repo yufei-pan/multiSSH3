@@ -361,20 +361,13 @@ def _resolve_dns(hostname):
 	addresses += [info[4][0] for info in infos if info[0] == socket.AF_INET6]
 	return addresses[0] if addresses else None
 
-@cache_decorator
-def _ssh_config_target(hostname):
-	'''
-	The host ssh really connects to for hostname, when the ssh config maps it.
+# a name no ssh config can mean on purpose, to tell what catch-all blocks (Host *) do
+_SSH_CONFIG_PROBE_NAME = 'multissh3-unknown-host.invalid'
 
-	Returns:
-		str: The HostName ssh would use, when the config gives hostname another HostName or a
-			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
-			None for names the config does not know, so typos are still caught.
-	'''
-	if 'ssh' not in _binPaths or not hostname or hostname.startswith('-'):
-		return None
+@cache_decorator
+def _ssh_config_values(hostname):
+	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None.'''
 	try:
-		# ssh -G prints the resolved config without connecting (OpenSSH 6.8+)
 		result = subprocess.run([_binPaths['ssh'], '-G', '--', hostname], stdout=subprocess.PIPE,
 						  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
 	except Exception:
@@ -385,14 +378,39 @@ def _ssh_config_target(hostname):
 	for line in result.stdout.splitlines():
 		key, _, value = line.partition(' ')
 		config[key.lower()] = value.strip()
-	target = config.get('hostname')
-	if not target:
+	return config
+
+@cache_decorator
+def _ssh_config_target(hostname):
+	'''
+	The host ssh really connects to for hostname, when the ssh config maps it.
+
+	Returns:
+		str: The HostName ssh would use, when the config gives hostname another HostName or a
+			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
+			None for names the config does not single out, so typos are still caught.
+	'''
+	if 'ssh' not in _binPaths or not hostname or hostname.startswith('-'):
 		return None
+	config = _ssh_config_values(hostname)
+	if not config or not config.get('hostname'):
+		return None
+	target = config['hostname']
+	proxies = [config.get(key, 'none').lower() for key in ('proxyjump', 'proxycommand')]
 	# for a name it does not know, ssh -G prints the name back (lowercased) as the hostname
-	has_proxy = any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
-	if target.lower() != hostname.lower() or has_proxy:
-		return target
-	return None
+	if target.lower() == hostname.lower() and all(proxy == 'none' for proxy in proxies):
+		return None
+	# a catch-all block (Host * with HostName %h.example or a ProxyJump) applies to every name,
+	# typos included: only accept names the config treats differently from a made-up one
+	probe = _ssh_config_values(_SSH_CONFIG_PROBE_NAME)
+	if probe:
+		def as_for_this_name(value):
+			return value.lower().replace(_SSH_CONFIG_PROBE_NAME, hostname.lower())
+		probe_target = as_for_this_name(probe.get('hostname', ''))
+		probe_proxies = [as_for_this_name(probe.get(key, 'none')) for key in ('proxyjump', 'proxycommand')]
+		if probe_target == target.lower() and probe_proxies == proxies:
+			return None
+	return target
 
 
 _i_counter = count()

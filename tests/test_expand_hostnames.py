@@ -180,3 +180,23 @@ def test_ssh_config_aliases_are_valid_hosts(monkeypatch, tmp_path, hermetic_reso
 
 	# the alias gets its HostName's address, the jump host is only reachable through ssh, the typo is rejected
 	assert result == {"gpu-alias": "127.0.0.7", "jump-only": None}
+
+
+@pytest.mark.parametrize("catch_all", ["  HostName %h.corp.example", "  ProxyJump bastion"], ids=["hostname_template", "global_proxyjump"])
+def test_catch_all_ssh_config_block_does_not_validate_typos(monkeypatch, tmp_path, hermetic_resolution, catch_all):
+	import shutil
+
+	real_ssh = shutil.which("ssh")
+	if not real_ssh:
+		pytest.skip("ssh not installed")
+	config = tmp_path / "ssh_config"
+	config.write_text("Host gpu-alias\n  HostName 127.0.0.7\nHost jump-*\n  ProxyJump bastion2\nHost *\n" + catch_all + "\n")
+	wrapper = tmp_path / "ssh"
+	wrapper.write_text('#!/bin/sh\nexec {} -F {} "$@"\n'.format(real_ssh, config))
+	wrapper.chmod(0o755)
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", str(wrapper))
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+
+	result = multiSSH3.expand_hostnames(["gpu-alias", "jump-a", "nodee1-typo"])
+
+	assert result == {"gpu-alias": "127.0.0.7", "jump-a": None}
