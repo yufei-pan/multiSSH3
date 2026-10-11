@@ -268,3 +268,37 @@ def test_hosts_started_without_process_run_get_no_stdin_pipe(fake_host):
 
 	assert host.returncode == 0
 	assert time.monotonic() - started < 3
+
+
+def test_stdin_pipe_is_closed_when_the_tui_ends_during_startup(fake_host, monkeypatch):
+	import time
+
+	class RunsUntilStdinCloses(FakeProc):
+		def __init__(self):
+			super().__init__()
+			self.pipe = self.stdin  # run_command drops proc.stdin once it is closed
+			self.deadline = time.monotonic() + 2
+
+		def poll(self):
+			if self.stdin.closed or time.monotonic() > self.deadline:
+				return 0
+			return None
+
+	procs = []
+
+	def popen(cmd, **kwargs):
+		host.interactive_stdin = False  # the TUI ends right as this command starts
+		procs.append(RunsUntilStdinCloses())
+		return procs[-1]
+
+	host = fake_host("mock-a", "cat")
+	host.interactive_stdin = True
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", popen)
+
+	started = time.monotonic()
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=0)
+
+	assert procs[0].pipe.closed  # end of input, not a pipe left open forever
+	assert time.monotonic() - started < 1.5  # ended by the close, not the safety deadline

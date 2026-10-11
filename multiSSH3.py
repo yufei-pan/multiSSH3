@@ -2252,7 +2252,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 					host.stderr.append('Running command: '+' '.join(formatedCMD))
 				#host.stdout = []
 				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
-				stdin = subprocess.PIPE if host.interactive_stdin else subprocess.DEVNULL
+				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
+				interactive_stdin = host.interactive_stdin
+				stdin = subprocess.PIPE if interactive_stdin else subprocess.DEVNULL
 				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
 				__running_procs.add(proc)
 				# create a thread to handle stdout
@@ -2265,7 +2267,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				# create a thread to handle stdin
 				stdin_stop_event = threading.Event()
 				stdin_thread = None
-				if host.interactive_stdin:
+				if interactive_stdin:
 					stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
 					stdin_thread.start()
 				# Monitor the subprocess and terminate it after the timeout
