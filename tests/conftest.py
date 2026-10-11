@@ -111,8 +111,12 @@ def run_cli(args, timeout=30, check=False):
 
 
 def _clear_expand_caches():
+	# every memoized resolution / env result, so tests cannot see each other's lookups
 	getattr(multiSSH3, "_dns_cache", {}).clear()
+	multiSSH3.__expansion_env_state = None
 	for name in (
+		"getIP",
+		"readEnvFromFile",
 		"__validate_expand_hostname",
 		"__expandIPv4Address",
 		"__expand_hostname",
