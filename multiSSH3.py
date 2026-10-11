@@ -1518,6 +1518,22 @@ def compact_hostnames(Hostnames,verify = True):
 	return sorted(compact_hosts)
 
 #%% ------------ Expanding Hostnames ----------------
+def _local_hostname_source(hostname):
+	'''
+	How hostname resolves without DNS, in the order host validation tries.
+
+	Returns:
+		str: 'ip' (an IP address or in the hosts file), 'env' (an environment variable alias,
+			unless _no_env), 'env_file' (an alias from the env files), or None when DNS is needed
+	'''
+	if getIP(hostname,local=True):
+		return 'ip'
+	if not _no_env and hostname in os.environ:
+		return 'env'
+	if hostname in readEnvFromFile():
+		return 'env_file'
+	return None
+
 @cache_decorator
 def __validate_expand_hostname(hostname):
 	'''
@@ -1529,15 +1545,15 @@ def __validate_expand_hostname(hostname):
 	Returns:
 		list: A list of valid hostnames
 	'''
-	global _no_env
 	# we will try to get the valid host name from the environment
 	hostname = hostname.strip().strip('$')
-	if getIP(hostname,local=True):
+	source = _local_hostname_source(hostname)
+	if source == 'ip':
 		return [hostname]
-	elif not _no_env and hostname in os.environ:
+	elif source == 'env':
 		# we will expand these hostnames again
 		return expand_hostnames(os.environ[hostname].split(','))
-	elif hostname in readEnvFromFile():
+	elif source == 'env_file':
 		# we will expand these hostnames again
 		return expand_hostnames(readEnvFromFile()[hostname].split(','))
 	elif getIP(hostname,local=False):
@@ -1678,8 +1694,7 @@ def _prefetch_ips(hostnames):
 	need_dns = []
 	for hostname in hostnames:
 		hostname = hostname.strip().strip('$')
-		# the same order as __validate_expand_hostname: /etc/hosts and env aliases need no DNS
-		if hostname in _dns_cache or getIP(hostname,local=True) or (not _no_env and hostname in os.environ) or hostname in readEnvFromFile():
+		if hostname in _dns_cache or _local_hostname_source(hostname):
 			continue
 		need_dns.append(hostname)
 	if len(need_dns) > 1:
@@ -1728,7 +1743,9 @@ def __expand_hostnames(hosts) -> dict:
 			hostSetToAdd = sorted(__expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
 			iplist = hostSetToAdd
 		else:
-			hostSetToAdd = sorted(__expand_hostname(host))
+			# validate the names expanded (and cached) for the prefetch instead of expanding again
+			hostSetToAdd = sorted(set(itertools.chain.from_iterable(
+				__validate_expand_hostname(name) for name in __expand_hostname(host, validate=False))))
 			for host in hostSetToAdd:
 				iplist.append(getIP(host,local=False))
 		if username:
