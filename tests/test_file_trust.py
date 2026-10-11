@@ -222,3 +222,12 @@ def test_opening_a_directory_does_not_leak_its_descriptor(tmp_path):
 		multiSSH3._open_trusted_file(str(tmp_path), "--config_file")
 
 	assert len(os.listdir("/proc/self/fd")) == open_fds
+
+
+def test_env_file_with_non_utf8_bytes_still_loads(monkeypatch, tmp_path):
+	env_file = tmp_path / "hosts.env"
+	env_file.write_bytes(b"# caf\xe9 (latin-1)\nMSSH_TRUST_ALIAS=127.0.0.5\n")
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(env_file)])
+	multiSSH3.readEnvFromFile.cache_clear()
+
+	assert multiSSH3.readEnvFromFile()["MSSH_TRUST_ALIAS"] == "127.0.0.5"

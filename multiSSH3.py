@@ -495,7 +495,7 @@ def _untrusted_file_reason(st):
 		return 'group {} can write to it'.format(group), True
 	return None
 
-def _open_trusted_file(path, explicit_flag):
+def _open_trusted_file(path, explicit_flag, errors=None):
 	'''
 	Open path for reading if it passes _untrusted_file_reason, else warn and return None.
 
@@ -504,7 +504,7 @@ def _open_trusted_file(path, explicit_flag):
 	# O_NONBLOCK so opening a planted FIFO does not wait for a writer, it is rejected below
 	fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
 	try:
-		f = os.fdopen(fd, 'r')
+		f = os.fdopen(fd, 'r', errors=errors)
 	except Exception:
 		# e.g. a directory: os.open works, fdopen does not
 		os.close(fd)
@@ -811,7 +811,8 @@ def readEnvFromFile():
 		if os.path.exists(envf):
 			try:
 				# --env_files adds to the env file chain, --env_file would replace it
-				f = open(envf,'r') if os.path.abspath(envf) in _explicit_env_files else _open_trusted_file(envf, '--env_files')
+				# shell rc files may hold other encodings: replace what does not decode, keep the rest
+				f = open(envf,'r',errors='replace') if os.path.abspath(envf) in _explicit_env_files else _open_trusted_file(envf, '--env_files', errors='replace')
 			except OSError as e:
 				eprint(f"Warning: Cannot read env file {envf!r}: {e}")
 				continue
