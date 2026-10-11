@@ -31,7 +31,7 @@ import time
 import typing
 from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap, namedtuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 from itertools import count, product
 from pprint import pformat
 
@@ -1698,8 +1698,21 @@ def _prefetch_ips(hostnames):
 			continue
 		need_dns.append(hostname)
 	if len(need_dns) > 1:
-		with ThreadPoolExecutor(max_workers=min(32, len(need_dns))) as pool:
-			list(pool.map(lambda hostname: getIP(hostname,local=False), need_dns))
+		if 'ssh' in _binPaths:
+			# names DNS does not know are compared with this probe, run it once instead of in every worker
+			_ssh_config_values(_SSH_CONFIG_PROBE_NAME)
+		pool = ThreadPoolExecutor(max_workers=min(32, len(need_dns)))
+		futures = [pool.submit(getIP, hostname, local=False) for hostname in need_dns]
+		try:
+			# wait in slices so Ctrl-C (or the exit on a second one) stops the lookups
+			pending = futures
+			while pending and not _emo:
+				_, pending = futures_wait(pending, timeout=0.1)
+		finally:
+			for future in futures:
+				future.cancel()
+			# after Ctrl-C do not wait for the lookups still running
+			pool.shutdown(wait=not _emo)
 
 @cache_decorator
 def __expand_hostnames(hosts) -> dict:

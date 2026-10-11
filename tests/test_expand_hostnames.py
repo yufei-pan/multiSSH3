@@ -236,3 +236,43 @@ def test_invalid_host_counts_once_when_caches_refresh(monkeypatch, hermetic_reso
 	multiSSH3.expand_hostnames(["mssh-typo-host"])
 
 	assert multiSSH3.__mainReturnCode == before + 1
+
+
+def test_ssh_config_probe_runs_once_per_prefetch(monkeypatch, hermetic_resolution):
+	import subprocess
+	import threading
+	import time
+
+	probes = []
+	lock = threading.Lock()
+
+	def fake_ssh_g(argv, **kwargs):
+		name = argv[-1]
+		if name == multiSSH3._SSH_CONFIG_PROBE_NAME:
+			with lock:
+				probes.append(name)
+		time.sleep(0.05)
+		# a catch-all ProxyJump: every name needs the comparison with the probe
+		return subprocess.CompletedProcess(argv, 0, stdout="hostname {}\nproxyjump bastion\n".format(name.lower()))
+
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "/bin/ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "run", fake_ssh_g)
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+
+	assert multiSSH3.expand_hostnames(["nx[1-40]"]) == {}  # all rejected: the catch-all says nothing
+	assert len(probes) == 1
+
+
+def test_first_ctrl_c_stops_the_dns_prefetch(monkeypatch, hermetic_resolution):
+	import threading
+	import time
+
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: time.sleep(0.3))
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_emo", False)
+	threading.Timer(0.2, setattr, args=(multiSSH3, "_emo", True)).start()  # Ctrl-C
+	started = time.monotonic()
+
+	multiSSH3._prefetch_ips(["slow{}".format(i) for i in range(320)])
+
+	assert time.monotonic() - started < 1.5  # every lookup: 320 x 0.3 s / 32 workers = 3 s
