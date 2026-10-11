@@ -76,3 +76,20 @@ def test_skipped_unreachable_host_message_goes_to_stderr(monkeypatch, tmp_path, 
 	captured = capsys.readouterr()
 	assert "Skipping unavailable host" not in captured.out  # stdout carries the -j JSON
 	assert "Skipping unavailable host: 127.0.0.9" in captured.err
+
+
+@pytest.fixture
+def ssh_config_only_hosts(monkeypatch):
+	# jump-* are reachable only through the ssh config: valid, but with no IP
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: hostname if hostname.startswith("jump-") else None)
+	multiSSH3.getIP.cache_clear()
+	yield
+	multiSSH3.getIP.cache_clear()
+
+
+def test_skip_hosts_works_for_hosts_without_ip(ssh_config_only_hosts):
+	hosts = multiSSH3.run_command_on_hosts(hosts="jump-a,jump-b", commands=["true"], skip_hosts="jump-a",
+		no_start=True, no_watch=True, quiet=True, no_history=True, called=True, will_update_unreachable_hosts=False)
+
+	assert [host.name for host in hosts] == ["jump-b"]

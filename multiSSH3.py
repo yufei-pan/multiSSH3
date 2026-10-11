@@ -4181,7 +4181,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if __DEBUG_MODE:
 		eprint(f"Target hosts: {targetHostDic!r}")
 	skipHostsDic = expand_hostnames(skipHostStr.split(','))
-	skipHostSet = set(skipHostsDic).union(skipHostsDic.values())
+	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
+	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
 		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
 	if copy_id:
