@@ -3354,8 +3354,46 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	return rtnStr
 
 #%% ------------ Run / Process Hosts Block ----------------
+def _private_dir(path):
+	'''
+	Create path (mode 0700) if missing and return True if it is a directory only we control.
+
+	A directory in a shared place like /tmp could have been created by someone else first,
+	so it must not be a symlink, must be owned by us and must not be accessible to others.
+	'''
+	try:
+		os.mkdir(path, 0o700)
+	except FileExistsError:
+		pass
+	except OSError:
+		return False
+	try:
+		st = os.lstat(path)
+	except OSError:
+		return False
+	if not stat.S_ISDIR(st.st_mode):
+		return False
+	if not hasattr(os, 'getuid'):
+		return True
+	return st.st_uid == os.getuid() and not st.st_mode & 0o077
+
 def _unavailable_hosts_file_path():
-	return os.path.join(tempfile.gettempdir(), "__{}_multiSSH3_UNAVAILABLE_HOSTS.csv".format(getpass.getuser()))
+	'''
+	Where unavailable hosts are cached between runs, or None to run without the cache.
+
+	The per-user runtime dir ($XDG_RUNTIME_DIR) is private and cleared at reboot. Without
+	it (cron, su, non systemd), a private directory in the temp dir is used. The home
+	directory is avoided so mssh keeps working when it is full or read-only.
+	'''
+	user_id = os.getuid() if hasattr(os, 'getuid') else getpass.getuser()
+	candidates = []
+	if os.environ.get('XDG_RUNTIME_DIR'):
+		candidates.append(os.path.join(os.environ['XDG_RUNTIME_DIR'], 'multiSSH3'))
+	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
+	for cache_dir in candidates:
+		if _private_dir(cache_dir):
+			return os.path.join(cache_dir, 'unavailable_hosts.csv')
+	return None
 
 
 def _get_boot_id():
@@ -3427,6 +3465,9 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 		for host, expiry in unavailable_hosts.items()
 		if host not in available and int(expiry) > current_time
 	}
+	if not path:
+		# no private place for the cache, keep the state in memory only
+		return clean
 	boot_id = _get_boot_id()
 	temporary_path = "{}.{}".format(path, uuid4().hex)
 	try:
@@ -3439,7 +3480,9 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 			os.fsync(handle.fileno())
 		os.replace(temporary_path, path)
 	except Exception as exc:
-		eprint("Error writing unavailable hosts to {!r}: {}".format(path, exc))
+		# the cache is optional, a full or read-only disk must not warn on every run
+		if __DEBUG_MODE:
+			eprint("Error writing unavailable hosts to {!r}: {}".format(path, exc))
 		try:
 			if os.path.exists(temporary_path):
 				os.unlink(temporary_path)
@@ -3864,7 +3907,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if error_only:
 		__global_suppress_printout = True
 	unavailable_path = _unavailable_hosts_file_path()
-	if os.path.exists(unavailable_path):
+	if unavailable_path and os.path.exists(unavailable_path):
 		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path, max_ttl=unavailable_host_expiry)
 		__globalUnavailableHosts.update(loaded_unavailable)
 		if loaded_unavailable and not __global_suppress_printout:
