@@ -146,7 +146,7 @@ Defaults are read from the following chain map stored as json files, top ones ov
 | `/etc/multiSSH3.d/multiSSH3.config.json`   |
 | `/etc/multiSSH3.config.json`               |
 
-> The current directory is not searched: a cloned repo or an unpacked archive could otherwise change any setting, including which `ssh` runs. Use `--config_file` to load a config file from there.
+> The current directory is not searched: a cloned repo or an unpacked archive could otherwise change any setting, including which `ssh` runs. Use `--config_file` to load a config file from there; mssh prints a note when `./multiSSH3.config.json` exists (read automatically up to 6.26).
 >
 > Config and env files found on these default paths are only loaded when they are owned by you or root and nobody else can write to them (group write is fine when the group is your own private group). Others are skipped with a warning that shows the `chmod` fix. Files you name with `--config_file`, `--env_file` or `--env_files` are always loaded.
 >
@@ -266,7 +266,7 @@ When hostname need to be resolved, mssh will check in the following order:
 
 Later files take precedence over earlier files.
 
-> The current directory is not searched, as files there could redirect host aliases. Use `--env_files hosts.env` to add one.
+> The current directory is not searched, as files there could redirect host aliases. Use `--env_files hosts.env` to add one. mssh points this out when a host name it cannot find is defined in `./.env`, `./host.env` or `./hosts.env` (read automatically up to 6.26).
 
 ### Example Env Hostname File
 

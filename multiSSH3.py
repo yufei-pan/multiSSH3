@@ -1543,6 +1543,23 @@ def compact_hostnames(Hostnames,verify = True):
 # invalid host names reported during the current run_command_on_hosts call
 _reported_invalid_hosts = set()
 
+# env files mssh read from the current directory before 6.27, for a hint when a name is missing
+_FORMER_CURRENT_DIR_ENV_FILES = ('.env', 'host.env', 'hosts.env')
+
+def _current_dir_env_file_defining(hostname):
+	'''The current-directory env file (no longer read by default) that defines hostname, or None.'''
+	pattern = re.compile(r'(?:^|[\s;])(?:export\s+)?' + re.escape(hostname) + r'\s*=', re.MULTILINE)
+	for env_file in _FORMER_CURRENT_DIR_ENV_FILES:
+		if not os.path.isfile(env_file) or os.path.abspath(env_file) in _explicit_env_files:
+			continue
+		try:
+			with open(env_file, 'r', errors='replace') as f:
+				if pattern.search(f.read()):
+					return env_file
+		except OSError:
+			continue
+	return None
+
 def _local_hostname_source(hostname):
 	'''
 	How hostname resolves without DNS, in the order host validation tries.
@@ -1592,6 +1609,9 @@ def __validate_expand_hostname(hostname):
 		# validated again after the caches refresh: report once per run_command_on_hosts call
 		if hostname not in _reported_invalid_hosts:
 			eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
+			defined_in = _current_dir_env_file_defining(hostname)
+			if defined_in:
+				eprint(f"Note: {hostname!r} is defined in ./{defined_in}, which is no longer read automatically; use --env_files {defined_in}")
 			_reported_invalid_hosts.add(hostname)
 		# and count once towards the exit code
 		if hostname not in __failedHosts:
@@ -5021,6 +5041,9 @@ def main(args = None):
 	if not __global_suppress_printout:
 		cmdStr = getStrCommand(**vars(args))
 		eprint('> ' + cmdStr)
+		# read from the current directory before 6.27
+		if os.path.isfile('multiSSH3.config.json') and not (args.config_file and os.path.abspath(os.path.expanduser(args.config_file)) == os.path.abspath('multiSSH3.config.json')):
+			eprint("Note: ./multiSSH3.config.json is no longer read automatically; use --config_file multiSSH3.config.json")
 	if args.error_only:
 		__global_suppress_printout = True
 

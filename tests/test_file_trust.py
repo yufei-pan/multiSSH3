@@ -231,3 +231,28 @@ def test_env_file_with_non_utf8_bytes_still_loads(monkeypatch, tmp_path):
 	multiSSH3.readEnvFromFile.cache_clear()
 
 	assert multiSSH3.readEnvFromFile()["MSSH_TRUST_ALIAS"] == "127.0.0.5"
+
+
+def test_unknown_host_defined_in_a_current_directory_env_file_gets_a_hint(monkeypatch, tmp_path, capsys):
+	(tmp_path / "hosts.env").write_text("export MSSH_GROUP=node1,node2\n")
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: None)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+
+	assert multiSSH3.expand_hostnames(["MSSH_GROUP"]) == {}
+
+	err = capsys.readouterr().err
+	assert "'MSSH_GROUP' is not a valid hostname" in err
+	assert "./hosts.env" in err and "--env_files hosts.env" in err
+
+
+def test_current_directory_config_file_gets_a_hint(monkeypatch, tmp_path, capsys):
+	(tmp_path / "multiSSH3.config.json").write_text("{}")
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", lambda **kwargs: [])
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["127.0.0.1", "true", "--no_history"])
+
+	assert "--config_file multiSSH3.config.json" in capsys.readouterr().err
