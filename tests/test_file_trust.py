@@ -166,3 +166,32 @@ def test_explicit_env_file_matches_however_it_is_spelled(monkeypatch, tmp_path, 
 
 	assert multiSSH3.readEnvFromFile()["MSSH_TRUST_ALIAS"] == "127.0.0.5"
 	assert "Ignoring 'hosts.env'" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["default_chain", "explicit"])
+def test_env_directory_is_skipped_quietly(monkeypatch, tmp_path, capsys, explicit):
+	venv = tmp_path / ".env"  # a virtualenv, not an env file
+	venv.mkdir()
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(venv)])
+	monkeypatch.setattr(multiSSH3, "_explicit_env_files", {str(venv)} if explicit else set())
+	multiSSH3.readEnvFromFile.cache_clear()
+
+	assert multiSSH3.readEnvFromFile() == {}
+	assert "Ignoring" not in capsys.readouterr().err
+
+
+def test_unreadable_env_file_is_skipped_with_a_warning(monkeypatch, tmp_path, capsys):
+	unreadable = _env_file(tmp_path, 0o600)
+	real_open = os.open
+
+	def os_open(path, *args, **kwargs):
+		if str(path) == unreadable:
+			raise PermissionError(13, "Permission denied", path)
+		return real_open(path, *args, **kwargs)
+
+	monkeypatch.setattr(multiSSH3.os, "open", os_open)
+	monkeypatch.setattr(multiSSH3, "_env_files", [unreadable])
+	multiSSH3.readEnvFromFile.cache_clear()
+
+	assert multiSSH3.readEnvFromFile() == {}
+	assert "Permission denied" in capsys.readouterr().err

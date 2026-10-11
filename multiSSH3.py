@@ -778,9 +778,16 @@ def readEnvFromFile():
 	scrubCounter = 0
 	for envf in envfs:
 		envf = os.path.expanduser(os.path.expandvars(envf))
+		if os.path.isdir(envf):
+			# e.g. a virtualenv named .env
+			continue
 		if os.path.exists(envf):
-			# --env_files adds to the env file chain, --env_file would replace it
-			f = open(envf,'r') if os.path.abspath(envf) in _explicit_env_files else _open_trusted_file(envf, '--env_files')
+			try:
+				# --env_files adds to the env file chain, --env_file would replace it
+				f = open(envf,'r') if os.path.abspath(envf) in _explicit_env_files else _open_trusted_file(envf, '--env_files')
+			except OSError as e:
+				eprint(f"Warning: Cannot read env file {envf!r}: {e}")
+				continue
 			if f is None:
 				continue
 			with f:
