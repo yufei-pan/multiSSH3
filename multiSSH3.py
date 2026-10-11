@@ -3967,7 +3967,8 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	no_history = kwargs.get('no_history', DEFAULT_NO_HISTORY)
 	history_file = kwargs.get('history_file', DEFAULT_HISTORY_FILE)
 	env_file = kwargs.get('env_file', '')
-	env_files = kwargs.get('env_files', DEFAULT_ENV_FILES)
+	# only env files given explicitly: listing the defaults would make a replayed line trust them all
+	env_files = kwargs.get('env_files', ())
 	repeat = kwargs.get('repeat', DEFAULT_REPEAT)
 	interval = kwargs.get('interval', DEFAULT_INTERVAL)
 	argsList = []
@@ -4071,6 +4072,8 @@ def record_command_history(kwargs):
 	global __DEBUG_MODE
 	try:
 		historyKwargs = dict(kwargs)
+		# run_command_on_hosts passes its locals(): options it does not name (repeat, env_files, ...) sit in its **kwargs
+		historyKwargs.update(historyKwargs.pop('kwargs', None) or {})
 		historyKwargs['shortend'] = True
 		historyKwargs['tabSeperated'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))

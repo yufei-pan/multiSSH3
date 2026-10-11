@@ -246,3 +246,16 @@ def test_main_repeat_counts_failing_hosts_once_and_releases_old_runs(fake_host, 
 
 	assert exc_info.value.code == 2  # two hosts failed, not 2 x 3 runs
 	assert "count: 2" in capsys.readouterr().err
+
+
+def test_history_records_the_cli_options_not_the_default_env_files(monkeypatch, tmp_path):
+	history = tmp_path / "history"
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: None)
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["127.0.0.1", "true", "--repeat", "2", "-hf", str(history)])
+
+	line = history.read_text().splitlines()[0]
+	# replaying -efs=... would mark every default env file explicit, skipping the ownership check
+	assert "-efs=" not in line
+	assert "-r=2" in line
