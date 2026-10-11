@@ -147,6 +147,10 @@ Defaults are read from the following chain map stored as json files, top ones ov
 | `/etc/multiSSH3.d/multiSSH3.config.json`   |
 | `/etc/multiSSH3.config.json`               |
 
+> Config and env files found on these default paths are only loaded when they are owned by you or root and nobody else can write to them (group write is fine when the group is your own private group). Others are skipped with a warning that shows the `chmod` fix. Files you name with `--config_file`, `--env_file` or `--env_files` are always loaded.
+>
+> `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above stay `0644` so every user can read them.
+
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
 ```bash
@@ -234,7 +238,8 @@ When hostname need to be resolved, mssh will check in the following order:
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
-- Lookup using `socket.gethostbyname()` to query dns server. ( Slow! )
+- Lookup using `socket.getaddrinfo()` to query dns server ( IPv4 preferred, IPv6 accepted ). Names are looked up in parallel.
+- If the ssh config (`ssh -G`) maps the name to another `HostName` or through a `ProxyJump` / `ProxyCommand`, it is valid ( `#IP#` uses the `HostName`'s address when it resolves ).
 
 > TLDR:
 >
@@ -537,7 +542,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Note: Timedout Hosts are considered unreachable.
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
-- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in a temperary file called __{username}_multiSSH3_UNAVAILABLE_HOSTS.csv in the system temp folder.
+- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in `$XDG_RUNTIME_DIR/multiSSH3/`, or else in a private `multiSSH3-<uid>` folder in the system temp folder ( cleared at reboot ). If neither can be used, they are only kept for the current run.
 - To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
 
 ### `-a, -nsu, --no_skip_unreachable` | not _`DEFAULT_SKIP_UNREACHABLE`_
