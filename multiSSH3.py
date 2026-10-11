@@ -4079,6 +4079,15 @@ def generate_default_config(args):
 		'FORCE_TRUECOLOR': args.force_truecolor,
 	}
 
+def _is_system_config_path(path):
+	'''Whether path is one of the absolute (system-wide) locations in CONFIG_FILE_CHAIN.'''
+	target = os.path.abspath(os.path.expanduser(path))
+	return any(
+		os.path.abspath(entry) == target
+		for entry in CONFIG_FILE_CHAIN
+		if os.path.isabs(entry)
+	)
+
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
 	default_config = generate_default_config(args)
@@ -4110,7 +4119,13 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		if not inStr or not inStr.lower().strip().startswith('y'):
 			_exit_with_code(0, "Aborted by user, no config file written")
 	try:
-		with open(CONFIG_FILE,'w') as f:
+		# configs can hold passwords: owner only, except the system-wide locations every user reads
+		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
+		fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+		if hasattr(os, 'fchmod'):
+			# O_CREAT's mode only applies to new files and is reduced by the umask
+			os.fchmod(fd, mode)
+		with os.fdopen(fd, 'w') as f:
 			json.dump(__configs_from_file,f,indent=4)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 	except Exception as e:

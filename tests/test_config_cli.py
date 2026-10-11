@@ -1,5 +1,9 @@
 import json
+import os
+import stat
 from pathlib import Path
+
+import pytest
 
 import multiSSH3
 from conftest import run_cli
@@ -56,3 +60,36 @@ def test_apply_config_key_compat_prefers_correct_key():
 	cfg = {"DEAFULT_IPMI_ARGS": "old", "DEFAULT_IPMI_ARGS": "new"}
 	multiSSH3.apply_config_key_compat(cfg)
 	assert cfg["DEFAULT_IPMI_ARGS"] == "new"
+
+
+@pytest.fixture
+def umask_002():
+	# user-private-group accounts get umask 002, so plain open() makes 0664 files
+	old = os.umask(0o002)
+	yield
+	os.umask(old)
+
+
+def _store_config(monkeypatch, path):
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	multiSSH3.write_default_config(args, str(path), force=True)
+	assert json.loads(path.read_text())["DEFAULT_PASSWORD"] == "secret"
+	return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_store_config_file_is_owner_only(monkeypatch, tmp_path, umask_002):
+	assert _store_config(monkeypatch, tmp_path / "new.json") == 0o600
+
+	existing = tmp_path / "existing.json"
+	existing.write_text("{}")
+	existing.chmod(0o664)
+	assert _store_config(monkeypatch, existing) == 0o600
+
+
+def test_store_config_file_keeps_system_wide_location_readable(monkeypatch, tmp_path, umask_002):
+	system_config = tmp_path / "etc" / "multiSSH3.config.json"
+	system_config.parent.mkdir()
+	monkeypatch.setattr(multiSSH3, "CONFIG_FILE_CHAIN", ["~/.multiSSH3.config.json", str(system_config)])
+
+	assert _store_config(monkeypatch, system_config) == 0o644
