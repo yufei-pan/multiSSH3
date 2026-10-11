@@ -160,3 +160,58 @@ def test_backup_of_world_readable_config_is_made_private(monkeypatch, tmp_path, 
 	old.chmod(0o644)  # as 6.26 wrote it
 
 	assert _store_with_backup(monkeypatch, old) == (0o600, 0o600)
+
+
+def test_failed_overwrite_keeps_the_old_config(monkeypatch, tmp_path):
+	import errno
+
+	config = tmp_path / "multiSSH3.config.json"
+	config.write_text('{"DEFAULT_PASSWORD": "old"}')
+
+	def disk_full(*args, **kwargs):
+		raise OSError(errno.ENOSPC, "No space left on device")
+
+	monkeypatch.setattr(multiSSH3.json, "dump", disk_full)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "new"])
+	multiSSH3.write_default_config(args, str(config), force=True)
+
+	assert config.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert [p.name for p in tmp_path.iterdir()] == ["multiSSH3.config.json"]  # no temporary file left
+
+
+def test_storing_through_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path):
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text("{}")
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+
+	_store_config(monkeypatch, link)
+
+	assert link.is_symlink()
+	assert json.loads(real.read_text())["DEFAULT_PASSWORD"] == "secret"
+
+
+@pytest.mark.parametrize("mode,written", [(0o666, False), (0o600, True)], ids=["too_open", "already_private"])
+def test_someone_elses_writable_config_is_written_in_place_only_when_private(monkeypatch, tmp_path, capsys, mode, written):
+	shared = tmp_path / "team.json"
+	shared.write_text('{"DEFAULT_TIMEOUT": 5}')
+	shared.chmod(mode)
+	monkeypatch.setattr(multiSSH3.os, "getuid", lambda: 12345)  # the file belongs to someone else
+
+	def not_our_file(fd, new_mode):
+		raise PermissionError(1, "Operation not permitted")
+
+	monkeypatch.setattr(multiSSH3.os, "fchmod", not_our_file)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	multiSSH3.write_default_config(args, str(shared), force=True)
+
+	if written:
+		assert json.loads(shared.read_text())["DEFAULT_PASSWORD"] == "secret"
+	else:
+		assert shared.read_text() == '{"DEFAULT_TIMEOUT": 5}'
+		assert '"DEFAULT_PASSWORD": "secret"' in capsys.readouterr().out
+	assert stat.S_IMODE(shared.stat().st_mode) == mode

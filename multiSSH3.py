@@ -4661,25 +4661,57 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	try:
 		# configs can hold passwords: owner only, except the system-wide locations every user reads
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
+		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link
+		target = os.path.realpath(CONFIG_FILE)
 		try:
-			fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-			# O_CREAT's mode is reduced by the umask, set it exactly; replacing a backed up file keeps its tighter mode
-			new_mode = mode if previous_mode is None else previous_mode & mode
-		except FileExistsError:
-			fd = os.open(CONFIG_FILE, os.O_WRONLY)
-			# only tighten an existing file, an admin may have locked it down further
-			new_mode = stat.S_IMODE(os.fstat(fd).st_mode) & mode
-		with os.fdopen(fd, 'w') as f:
-			if hasattr(os, 'fchmod'):
+			st = os.stat(target)
+		except FileNotFoundError:
+			st = None
+		if st is None or not hasattr(os, 'getuid') or st.st_uid == os.getuid():
+			# new or ours: write a temporary file and rename it over, a failure never empties the old config
+			if st is not None:
+				# only tighten an existing file, an admin may have locked it down further
+				new_mode = stat.S_IMODE(st.st_mode) & mode
+			else:
+				# a file replacing a backed up one keeps its tighter mode
+				new_mode = mode if previous_mode is None else previous_mode & mode
+			temporary = '{}.{}.tmp'.format(target, uuid4().hex)
+			fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, new_mode)
+			try:
+				with os.fdopen(fd, 'w') as f:
+					if hasattr(os, 'fchmod'):
+						# O_CREAT's mode is reduced by the umask, set it exactly
+						os.fchmod(f.fileno(), new_mode)
+					if st is not None and hasattr(os, 'chown'):
+						try:
+							os.chown(temporary, -1, st.st_gid)
+						except OSError:
+							pass
+					json.dump(__configs_from_file,f,indent=4)
+					f.flush()
+					os.fsync(f.fileno())
+				os.replace(temporary, target)
+			except BaseException:
 				try:
-					os.fchmod(fd, new_mode)
+					os.unlink(temporary)
 				except OSError:
-					# not our file: only write the passwords if it is already no more open than new_mode
-					if stat.S_IMODE(os.fstat(fd).st_mode) & ~new_mode:
-						raise PermissionError('cannot restrict the permissions of {!r} to {:o}, not writing passwords to it'.format(CONFIG_FILE, new_mode))
-			# truncate only now, a failure above must not leave the file empty
-			f.truncate()
-			json.dump(__configs_from_file,f,indent=4)
+					pass
+				raise
+		else:
+			# someone else's file we can write to: renaming over it would take it over, write it in place
+			new_mode = stat.S_IMODE(st.st_mode) & mode
+			fd = os.open(target, os.O_WRONLY)
+			with os.fdopen(fd, 'w') as f:
+				if hasattr(os, 'fchmod'):
+					try:
+						os.fchmod(fd, new_mode)
+					except OSError:
+						pass
+				# only write the passwords if it is no more open than new_mode
+				if stat.S_IMODE(os.fstat(fd).st_mode) & ~new_mode:
+					raise PermissionError('cannot restrict the permissions of {!r} to {:o}, not writing passwords to it'.format(CONFIG_FILE, new_mode))
+				f.truncate()
+				json.dump(__configs_from_file,f,indent=4)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 		return True
 	except Exception as e:
