@@ -1746,13 +1746,21 @@ def expand_hostnames(hosts):
 __expansion_env_state = None
 def _refresh_expansion_caches():
 	'''
-	Drop cached host expansions when the env settings they were computed with changed.
+	Drop cached host expansions when anything they were computed from changed.
 
-	Expanding a host name consults os.environ (unless _no_env) and the env files, and the
-	results are cached by host string only.
+	Expanding a host name consults os.environ (unless _no_env) and the env files (subject to
+	the ownership / permission check), and the results are cached by host string only.
 	'''
 	global __expansion_env_state
-	state = (_no_env, tuple(_env_files or ()))
+	env_file_signatures = []
+	for env_file in (_env_files if _env_files else DEFAULT_ENV_FILES):
+		try:
+			st = os.stat(os.path.expanduser(os.path.expandvars(env_file)))
+			env_file_signatures.append((env_file, st.st_mode, st.st_uid, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+		except OSError:
+			env_file_signatures.append((env_file, None))
+	state = (_no_env, tuple(env_file_signatures), frozenset(_explicit_env_files),
+		None if _no_env else frozenset(os.environ.items()))
 	if state != __expansion_env_state:
 		__expansion_env_state = state
 		for cached_function in (readEnvFromFile, __validate_expand_hostname, __expand_hostname, __expand_hostnames):

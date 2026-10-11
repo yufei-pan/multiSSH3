@@ -104,3 +104,33 @@ def test_hosts_without_ip_are_not_looked_up_again(ssh_config_only_hosts, monkeyp
 
 	assert sorted(host.name for host in hosts) == ["bob@jump-a", "bob@jump-b"]
 	assert sorted(lookups) == ["jump-a", "jump-b"]  # once each, in the parallel prefetch
+
+
+def _run_alias(**kwargs):
+	return [host.name for host in multiSSH3.run_command_on_hosts(hosts="MSSH_TEST_ENV_HOSTS", commands=["true"],
+		no_start=True, no_watch=True, quiet=True, no_history=True, called=True, will_update_unreachable_hosts=False, **kwargs)]
+
+
+def test_env_alias_change_between_library_calls_is_seen(monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.2")
+	first = _run_alias(no_env=False)
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.3")
+
+	assert first == ["127.0.0.2"]
+	assert _run_alias(no_env=False) == ["127.0.0.3"]
+
+
+def test_env_file_fixed_between_library_calls_is_seen(monkeypatch, tmp_path):
+	env_file = tmp_path / "hosts.env"
+	env_file.write_text("MSSH_TEST_ENV_HOSTS=127.0.0.4\n")
+	env_file.chmod(0o666)  # skipped by the ownership / permission check
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(env_file)])
+	monkeypatch.delenv("MSSH_TEST_ENV_HOSTS", raising=False)
+	first = _run_alias(no_env=True)
+	env_file.chmod(0o644)
+
+	assert first == []
+	assert _run_alias(no_env=True) == ["127.0.0.4"]
