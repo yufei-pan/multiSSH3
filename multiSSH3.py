@@ -4914,6 +4914,10 @@ def main(args = None):
 	# between runs, a long --repeat loop must not hold every run's output
 	failedHostNames = set()
 	succeededHosts = set()
+	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
+	if not args.no_history:
+		record_command_history(vars(args))
+	runArgs = dict(vars(args), no_history=True)
 	for i in range(args.repeat):
 		if i > 0 and args.interval > 0:
 			eprint(f"Sleeping for {args.interval} seconds")
@@ -4921,7 +4925,7 @@ def main(args = None):
 
 		if not __global_suppress_printout: 
 			eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
-		for host in run_command_on_hosts(**vars(args),called=False):
+		for host in run_command_on_hosts(**runArgs,called=False):
 			if host.returncode and host.returncode != 0:
 				failedHostNames.add(host.name)
 			else:

@@ -277,3 +277,16 @@ def test_main_repeat_counts_hosts_failing_in_different_runs(fake_host, monkeypat
 
 	assert exc_info.value.code == 2
 	assert "failed_hosts: hostA,hostB" in capsys.readouterr().err
+
+
+def test_repeated_command_is_recorded_in_history_once(monkeypatch, tmp_path):
+	history = tmp_path / "history"
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: None)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["127.0.0.1", "true", "--repeat", "3", "-hf", str(history)])
+
+	lines = history.read_text().splitlines()
+	assert len(lines) == 1  # replaying it repeats 3 times, not 3 x 3
+	assert "-r=3" in lines[0]
