@@ -133,3 +133,30 @@ def test_failed_store_does_not_show_old_content_or_crash(monkeypatch, tmp_path, 
 	err = capsys.readouterr().err
 	assert "Unable to write" in err
 	assert "content:" not in err
+
+
+def _store_with_backup(monkeypatch, path):
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	monkeypatch.setattr(multiSSH3, "input_with_timeout_and_countdown", lambda *args, **kwargs: None)  # default: back up
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	multiSSH3.write_default_config(args, str(path), force=False)
+	backup = Path(str(path) + ".bak")
+	return stat.S_IMODE(path.stat().st_mode), stat.S_IMODE(backup.stat().st_mode)
+
+
+def test_backed_up_locked_down_system_config_stays_locked(monkeypatch, tmp_path, umask_002):
+	system_config = tmp_path / "etc" / "multiSSH3.config.json"
+	system_config.parent.mkdir()
+	system_config.write_text('{"DEFAULT_PASSWORD": "old"}')
+	system_config.chmod(0o600)
+	monkeypatch.setattr(multiSSH3, "CONFIG_FILE_CHAIN", [str(system_config)])
+
+	assert _store_with_backup(monkeypatch, system_config) == (0o600, 0o600)
+
+
+def test_backup_of_world_readable_config_is_made_private(monkeypatch, tmp_path, umask_002):
+	old = tmp_path / "multiSSH3.config.json"
+	old.write_text('{"DEFAULT_PASSWORD": "old"}')
+	old.chmod(0o644)  # as 6.26 wrote it
+
+	assert _store_with_backup(monkeypatch, old) == (0o600, 0o600)

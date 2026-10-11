@@ -4559,9 +4559,20 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			backup = False
 		else:
 			_exit_with_code(0, "Aborted by user, no config file written")
+	# neither the new file nor the backup may end up more open than the old file was
+	try:
+		previous_mode = stat.S_IMODE(os.stat(CONFIG_FILE).st_mode)
+	except OSError:
+		previous_mode = None
 	try:
 		if backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
+			# the backup holds the old passwords: owner only
+			if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
+				try:
+					os.chmod(CONFIG_FILE+'.bak', previous_mode & 0o600)
+				except OSError:
+					pass
 	except Exception as e:
 		eprint(f"Error: Unable to backup the config file: {e!r}")
 		eprint(f"Do you want to continue writing the new config file to {CONFIG_FILE!r}? (y/n)")
@@ -4573,8 +4584,8 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
 		try:
 			fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-			# O_CREAT's mode is reduced by the umask, set it exactly
-			new_mode = mode
+			# O_CREAT's mode is reduced by the umask, set it exactly; replacing a backed up file keeps its tighter mode
+			new_mode = mode if previous_mode is None else previous_mode & mode
 		except FileExistsError:
 			fd = os.open(CONFIG_FILE, os.O_WRONLY)
 			# only tighten an existing file, an admin may have locked it down further
