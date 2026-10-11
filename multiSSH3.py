@@ -30,7 +30,7 @@ import threading
 import time
 import typing
 from uuid import uuid4
-from collections import Counter, defaultdict, deque, ChainMap
+from collections import Counter, defaultdict, deque, ChainMap, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from itertools import count, product
 from pprint import pformat
@@ -1957,34 +1957,31 @@ def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 		return True
 	return True
 
-def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
+_CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
+_CommandAttempt.__doc__ = '''
+What _build_command decided for one attempt.
+
+action is 'run' (run argv), 'rebuild' (build again right away, e.g. ipmitool is missing so the
+next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fields carry the
+attempt's state into the retry decisions and the next attempt.
+'''
+
+def _build_command(host, passwds, ipmi_definitions_list):
 	'''
-	Run the command on the host. Will format the commands accordingly. Main execution function.
+	Build the command line for one attempt to run host.command, without running it.
+
+	Picks the IPMI definition (popped from ipmi_definitions_list), fills in the magic strings and
+	formats the ipmitool / redfish / shell / scp / rsync / ssh command. Warnings and errors are
+	recorded on the host.
 
 	Args:
 		host (Host): The host object
-		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
-		timeout (int, optional): The timeout for the command. Defaults to 60.
-		passwds (str, optional): The password for the host. Defaults to None.
+		passwds (str): The password for the host
+		ipmi_definitions_list (list): The IPMI definitions left to try, ... for the matching defaults
 
 	Returns:
-		None
+		_CommandAttempt: What to do next
 	'''
-	global _emo
-	global __ERROR_MESSAGES_TO_IGNORE_REGEX
-	global _binPaths
-	global __DEBUG_MODE
-	global DEFAULT_USERNAME
-	global DEFAULT_PASSWORD
-	global SSH_STRICT_HOST_KEY_CHECKING
-	if retry_limit is ...:
-		# resolved at call time, the CLI and config files can add ipmi definitions after import
-		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
-	if retry_limit < 0:
-		host.output.append('Error: Retry limit reached!')
-		host.stderr.append('Error: Retry limit reached!')
-		host.returncode = 1
-		return
 	ipmi_definition =  {}
 	username = None
 	sshLocalExtraArgs = []
@@ -2006,7 +2003,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				host.output.append('Error: Exhausted all matching ipmi definitions!')
 				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
 				host.returncode = 1
-				return
+				return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 			ipmi_definition = dict(ChainMap(ipmi_definitions_list.pop(0),get_default_ipmi_definition()))
 			if ipmi_definition.get('ipmi_method') == 'ssh_ipmitool':
 				if not host.command:
@@ -2080,7 +2077,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 					ipmi_definition['password'] = passwds
 					ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
 					ipmi_definitions_list.insert(0,ipmi_definition)
-					return run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+					return _CommandAttempt('rebuild', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 				if host.command.startswith('ipmitool '):
 					host.command = host.command.replace('ipmitool ','')
 				elif host.command.startswith(_binPaths['ipmitool']):
@@ -2111,7 +2108,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				host.output.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.stderr.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.returncode = 1
-				return
+				return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 		elif host.shell:
 			if 'sh' in _binPaths:
 				host.output.append('Running command in shell mode, ignoring the hosts...')
@@ -2124,7 +2121,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				return run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+				return _CommandAttempt('rebuild', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 		else:
 			if host.files:
 				if host.scp:
@@ -2139,7 +2136,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 						host.output.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.stderr.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.returncode = 1
-						return
+						return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 				elif 'rsync' in _binPaths:
 					useScp = False
 				elif 'scp' in _binPaths:
@@ -2151,7 +2148,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 					host.output.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
-					return
+					return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 				if host.gatherMode:
 					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
 				else:
@@ -2181,7 +2178,24 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		host.stderr.extend(traceback.format_exc().split('\n'))
 		host.output.extend(traceback.format_exc().split('\n'))
 		host.returncode = -1
-		return
+		return _CommandAttempt('stop', None, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+	return _CommandAttempt('run', formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
+
+def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
+	'''
+	Run one built command, retrying (within retry_limit) while too many files are open.
+
+	Args:
+		host (Host): The host object
+		formatedCMD (list): The command line from _build_command
+		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
+		timeout (int): Seconds without output before the command is stopped, 0 for no limit
+		retry_limit (int): Retries left
+
+	Returns:
+		tuple: (stop, retry_limit, attempt_line_starts). stop is True when the retries ran out
+			and run_command must not try anything else.
+	'''
 	# where this attempt's lines start, earlier ipmi attempts must not affect the lockout decision
 	attempt_line_starts = (len(host.output), len(host.stdout), len(host.stderr))
 	emfile_attempt = 0
@@ -2301,61 +2315,101 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			host.output.append("Error: Retry limit reached after too many open files!")
 			host.stderr.append("Error: Retry limit reached after too many open files!")
 			host.returncode = 1
-			return
+			return True, retry_limit, attempt_line_starts
 		host.output.append("Warning: Too many open files. retrying...")
 		time.sleep(_emfile_backoff_seconds(emfile_attempt))
 		emfile_attempt += 1
 		retry_limit -= 1
-	# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
-	if host.ipmi and host.returncode != 0:
-		should_wait = _ipmi_failure_should_wait(host, attempt_line_starts)
-		host.returncode = None
-		host.output.append('IPMI connection failed! Trying next ipmi definition...')
-		if __DEBUG_MODE:
-			host.stderr.append('IPMI connection failed! Trying next ipmi definition...')
-		else:
-			host.stdout = []
-			host.stderr = []
-		if ipmi_definition.get('retry_lockout_time'):
-			try:
-				sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
-				if sleep_seconds >= 0 and should_wait:
-					host.output.append(f'Sleeping for {sleep_seconds} seconds...')
-					if __DEBUG_MODE:
-						host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
-					time.sleep(sleep_seconds)
-				elif sleep_seconds >= 0:
-					host.output.append('Skipping IPMI lockout wait; the controller was not reached.')
-			except Exception as e:
-				host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
-				if __DEBUG_MODE:
-					host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
-				# fall back to the default lockout time, which is -1 (disabled) unless configured
+	return False, retry_limit, attempt_line_starts
+
+def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
+	'''
+	Run the command on the host. Main execution function.
+
+	Builds the command (_build_command), runs it (_execute_command) and retries on failure: the
+	next IPMI definition, or scp after rsync failed. Every retry uses up one of retry_limit.
+
+	Args:
+		host (Host): The host object
+		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
+		timeout (int, optional): The timeout for the command. Defaults to 60.
+		passwds (str, optional): The password for the host. Defaults to None.
+
+	Returns:
+		None
+	'''
+	if retry_limit is ...:
+		# resolved at call time, the CLI and config files can add ipmi definitions after import
+		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
+	while True:
+		if retry_limit < 0:
+			host.output.append('Error: Retry limit reached!')
+			host.stderr.append('Error: Retry limit reached!')
+			host.returncode = 1
+			return
+		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list)
+		if action == 'stop':
+			return
+		if action == 'rebuild':
+			retry_limit -= 1
+			continue
+		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
+		if stop:
+			return
+		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
+		if host.ipmi and host.returncode != 0:
+			should_wait = _ipmi_failure_should_wait(host, attempt_line_starts)
+			host.returncode = None
+			host.output.append('IPMI connection failed! Trying next ipmi definition...')
+			if __DEBUG_MODE:
+				host.stderr.append('IPMI connection failed! Trying next ipmi definition...')
+			else:
+				host.stdout = []
+				host.stderr = []
+			if ipmi_definition.get('retry_lockout_time'):
 				try:
-					fallback_seconds = float(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
-				except (TypeError, ValueError):
-					fallback_seconds = -1
-				if fallback_seconds > 0 and should_wait:
-					time.sleep(fallback_seconds)
-		if ipmi_definition.get('ipmi_method') == 'ipmitool':
-			if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
-				ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
-			ipmi_definition['username'] = username
-			ipmi_definition['password'] = passwds
-			ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
-			ipmi_definitions_list.append(ipmi_definition)
-		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
-	# If transfering files, we will try again using scp if rsync connection is not successful
-	elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
-		host.returncode = None
-		host.output.append('Rsync connection failed! Trying SCP connection...')
-		if __DEBUG_MODE:
-			host.stderr.append('Rsync connection failed! Trying SCP connection...')
-		else:
-			host.stdout = []
-			host.stderr = []
-		host.scp = True
-		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+					sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
+					if sleep_seconds >= 0 and should_wait:
+						host.output.append(f'Sleeping for {sleep_seconds} seconds...')
+						if __DEBUG_MODE:
+							host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
+						time.sleep(sleep_seconds)
+					elif sleep_seconds >= 0:
+						host.output.append('Skipping IPMI lockout wait; the controller was not reached.')
+				except Exception as e:
+					host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+					if __DEBUG_MODE:
+						host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+					# fall back to the default lockout time, which is -1 (disabled) unless configured
+					try:
+						fallback_seconds = float(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
+					except (TypeError, ValueError):
+						fallback_seconds = -1
+					if fallback_seconds > 0 and should_wait:
+						time.sleep(fallback_seconds)
+			if ipmi_definition.get('ipmi_method') == 'ipmitool':
+				if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
+					ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
+				ipmi_definition['username'] = username
+				ipmi_definition['password'] = passwds
+				ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
+				ipmi_definitions_list.append(ipmi_definition)
+			retry_limit -= 1
+			continue
+		# If transfering files, we will try again using scp if rsync connection is not successful
+		elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
+			host.returncode = None
+			host.output.append('Rsync connection failed! Trying SCP connection...')
+			if __DEBUG_MODE:
+				host.stderr.append('Rsync connection failed! Trying SCP connection...')
+			else:
+				host.stdout = []
+				host.stderr = []
+			host.scp = True
+			retry_limit -= 1
+			continue
+		return
+
 
 #%% ------------ Start Threading Block ----------------
 def _run_command_thread(host, sem, timeout, passwds):
