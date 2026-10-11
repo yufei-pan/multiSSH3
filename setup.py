@@ -20,9 +20,6 @@ setup(
             'multiSSH3=multiSSH3:main',
         ],
     },
-    install_requires=[
-        'ipaddress',
-    ],
     classifiers=[
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
