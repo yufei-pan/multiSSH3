@@ -75,3 +75,25 @@ def test_generate_default_config_keys():
 	assert cfg["AUTHOR"] == multiSSH3.AUTHOR
 	assert "DEFAULT_IPMI_ARGS" in cfg
 	assert "DEAFULT_IPMI_ARGS" not in cfg
+
+
+def test_echoed_command_round_trips_through_bash(monkeypatch, tmp_path):
+	import shutil
+	import subprocess
+
+	import pytest
+
+	if not shutil.which("bash"):
+		pytest.skip("bash not installed")
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	(tmp_path / "node1").write_text("")  # an unquoted node[1-3] would glob to this file
+	commands = ["echo $HOSTNAME `id` it's \\$x !", "line1\nline2\tend"]
+
+	line = multiSSH3.getStrCommand(hosts="node1,node2,node3", commands=commands, password="p$w'd")
+	parsed = subprocess.run(["bash", "-c", "printf '%s\\0' " + line], capture_output=True, text=True,
+		cwd=tmp_path, check=True).stdout.split("\0")[:-1]
+	args = multiSSH3.process_args(parsed[1:])
+
+	assert args.hosts == "node[1-3]"
+	assert args.commands == commands
+	assert args.password == "p$w'd"

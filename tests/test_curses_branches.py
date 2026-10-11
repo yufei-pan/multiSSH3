@@ -136,3 +136,16 @@ def test_get_hosts_to_display_offset_and_rearrange(fake_host):
 		hosts, 2, hosts_to_display=first, indexOffset=0
 	)
 	assert isinstance(rearranged2, set)
+
+
+def test_curses_add_string_default_color_does_not_leak_between_calls(curses_harness, curses_color_mocks):
+	win = curses_harness.window
+	# the first line leaves red switched on at its end
+	multiSSH3._curses_add_string_to_window(window=win, line="\x1b[31mred", y=0, x=0, fill_char="")
+	win.calls.clear()
+
+	multiSSH3._curses_add_string_to_window(window=win, line="plain", y=1, x=0, fill_char="")
+
+	plain_writes = [c for c in win.calls if c[0] == "addnstr" and c[1][2] == "plain"]
+	assert plain_writes
+	assert plain_writes[0][1][4] == 1  # default color pair, not red

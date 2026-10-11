@@ -1,3 +1,4 @@
+import os
 import io
 import threading
 
@@ -176,3 +177,157 @@ def test_run_command_stderr_captured(fake_host, monkeypatch):
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 1
 	assert any("boom" in line for line in host.stderr)
+
+
+def _process(hosts, **overrides):
+	kwargs = dict(timeout=5, password=None, max_connections=2, hosts=hosts, return_unfinished=False, no_watch=True,
+		json=False, no_output=True, greppable=False, unavailableHosts={}, will_update_unreachable_hosts=False,
+		pre_merge=False)
+	kwargs.update(overrides)
+	multiSSH3.processRunOnHosts(**kwargs)
+
+
+def test_command_reading_stdin_gets_eof_without_tui(fake_host):
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "cat", shell=True)
+	started = time.monotonic()
+
+	_process([host], no_watch=True)
+
+	assert host.returncode == 0  # not 124: nobody can type, so stdin must not stay open
+	assert time.monotonic() - started < 3
+
+
+def test_tui_keeps_stdin_open_for_key_presses(fake_host, monkeypatch):
+	import curses
+
+	seen = []
+
+	def fake_start(hosts, **kwargs):
+		for host in hosts:
+			seen.append(host.interactive_stdin)
+			host.returncode = 0
+		return []
+
+	host = fake_host("mock-a", "cat")
+	monkeypatch.setattr(multiSSH3, "__curses_available", True)
+	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", fake_start)
+	monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)
+
+	_process([host], no_watch=False)
+
+	assert seen == [True]
+
+
+def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
+	host = fake_host("v6-host", "true", interface_ip_prefix="10.0.0.", ip="2001:db8::5")
+	commands = []
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda cmd, **kwargs: commands.append(cmd) or FakeProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert commands[0][-2] == "v6-host"  # [ssh, ..., '--', target, command]: not rewritten to 10.0.0.x
+	assert any("ip_prefix" in line for line in host.output)
+
+
+def test_stdin_closes_when_the_tui_exits_early(fake_host, monkeypatch):
+	import curses
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "sleep 0.3; cat", shell=True)
+	monkeypatch.setattr(multiSSH3, "__curses_available", True)
+	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)  # e.g. the user pressed ESC
+	started = time.monotonic()
+
+	_process([host], no_watch=False)
+
+	assert host.returncode == 0  # cat got end of input once nobody could type any more
+	assert time.monotonic() - started < 3
+
+
+def test_hosts_started_without_process_run_get_no_stdin_pipe(fake_host):
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "cat", shell=True)
+	started = time.monotonic()
+
+	threads = multiSSH3.start_run_on_hosts([host], timeout=5)
+	multiSSH3.join_threads(threads, timeout=10)
+
+	assert host.returncode == 0
+	assert time.monotonic() - started < 3
+
+
+def test_stdin_pipe_is_closed_when_the_tui_ends_during_startup(fake_host, monkeypatch):
+	import time
+
+	class RunsUntilStdinCloses(FakeProc):
+		def __init__(self):
+			super().__init__()
+			self.pipe = self.stdin  # run_command drops proc.stdin once it is closed
+			self.deadline = time.monotonic() + 2
+
+		def poll(self):
+			if self.stdin.closed or time.monotonic() > self.deadline:
+				return 0
+			return None
+
+	procs = []
+
+	def popen(cmd, **kwargs):
+		host.interactive_stdin = False  # the TUI ends right as this command starts
+		procs.append(RunsUntilStdinCloses())
+		return procs[-1]
+
+	host = fake_host("mock-a", "cat")
+	host.interactive_stdin = True
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", popen)
+
+	started = time.monotonic()
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=0)
+
+	assert procs[0].pipe.closed  # end of input, not a pipe left open forever
+	assert time.monotonic() - started < 1.5  # ended by the close, not the safety deadline
+
+
+def test_ip_magic_string_without_an_ip_uses_the_ssh_address(fake_host, monkeypatch):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: None)  # reachable only through the ssh config
+	host = multiSSH3.Host("jump-only", "ping -c1 #IP#", ip=None)
+	commands = []
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda cmd, **kwargs: commands.append(cmd) or FakeProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert commands[0][-1] == "ping -c1 jump-only"
+
+
+def test_typed_lines_are_sent_before_stdin_closes_when_the_tui_quits(fake_host, monkeypatch):
+	class RecordingPipe(io.BytesIO):
+		def close(self):
+			self.sent = self.getvalue()
+			super().close()
+
+	pipe = RecordingPipe()
+	host = fake_host("mock-a", "read answer")
+	host.interactive_stdin = False  # the TUI quit right after the user typed
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list("yes\n"), []])
+
+	multiSSH3.__handle_writing_stream(pipe, threading.Event(), host)
+
+	assert pipe.closed
+	assert pipe.sent == b"yes\n"

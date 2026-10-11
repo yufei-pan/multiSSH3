@@ -140,12 +140,17 @@ to print the help message with current default values.
 Defaults are read from the following chain map stored as json files, top ones overwrite the bottom ones.:
 | `CONFIG_FILE_CHAIN`                        |
 | ------------------------------------------ |
-| `./multiSSH3.config.json`                  |
 | `~/multiSSH3.config.json`                  |
 | `~/.multiSSH3.config.json`                 |
 | `~/.config/multiSSH3/multiSSH3.config.json`|
 | `/etc/multiSSH3.d/multiSSH3.config.json`   |
 | `/etc/multiSSH3.config.json`               |
+
+> The current directory is not searched: a cloned repo or an unpacked archive could otherwise change any setting, including which `ssh` runs. Use `--config_file` to load a config file from there.
+>
+> Config and env files found on these default paths are only loaded when they are owned by you or root and nobody else can write to them (group write is fine when the group is your own private group). Others are skipped with a warning that shows the `chmod` fix. Files you name with `--config_file`, `--env_file` or `--env_files` are always loaded.
+>
+> `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above are written `0644` so every user can read them. An existing file's permissions are only ever tightened, and a file whose permissions cannot be restricted is left untouched (the config is printed instead).
 
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
@@ -160,7 +165,7 @@ mssh --store_config_file [STORE_CONFIG_FILE_PATH]
 >
 >`--generate_config_file` will output to stdout if `--config_file` is not specified. 
 
-> Use `--store_config_file` without a path will store to `multiSSH3.config.json` in the current working directory.
+> Without a path, `--store_config_file` writes to the config file mssh loaded, or to `~/.multiSSH3.config.json` if none was loaded.
 
 You can modify the json file or use command line arguments to update values and store them as defaults.
 ```bash
@@ -172,7 +177,7 @@ will store
 "DEFAULT_CLI_TIMEOUT": "180"
 ...
 ```
-into `./multiSSH3.config.json`
+into `~/.multiSSH3.config.json` (or the config file mssh loaded)
 
 
 > If you want to store password, it will be a plain text password in this config file. This will be better to supply it everytime as a CLI argument but you should really consider setting up public-key authentication.
@@ -234,7 +239,8 @@ When hostname need to be resolved, mssh will check in the following order:
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
-- Lookup using `socket.gethostbyname()` to query dns server. ( Slow! )
+- Lookup using `socket.getaddrinfo()` to query dns server ( IPv4 preferred, IPv6 accepted ). Names are looked up in parallel.
+- If the ssh config (`ssh -G`) maps the name to another `HostName` or through a `ProxyJump` / `ProxyCommand`, it is valid ( `#IP#` uses the `HostName`'s address when it resolves ). A catch-all block such as `Host *` only counts when it gives the name a `HostName` that resolves (e.g. `HostName %h.corp.example`), so typos are still rejected.
 
 > TLDR:
 >
@@ -257,11 +263,10 @@ When hostname need to be resolved, mssh will check in the following order:
 | `~/.zshrc` |
 | `~/host.env` |
 | `~/hosts.env` |
-| `.env` |
-| `host.env` |
-| `hosts.env` |
 
 Later files take precedence over earlier files.
+
+> The current directory is not searched, as files there could redirect host aliases. Use `--env_files hosts.env` to add one.
 
 ### Example Env Hostname File
 
@@ -537,7 +542,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Note: Timedout Hosts are considered unreachable.
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
-- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in a temperary file called __{username}_multiSSH3_UNAVAILABLE_HOSTS.csv in the system temp folder.
+- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in `$XDG_RUNTIME_DIR/multiSSH3/`, or else in a private `multiSSH3-<uid>` folder in the system temp folder ( cleared at reboot ). If neither can be used, they are only kept for the current run.
 - To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
 
 ### `-a, -nsu, --no_skip_unreachable` | not _`DEFAULT_SKIP_UNREACHABLE`_
@@ -569,7 +574,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `--store_config_file [STORE_CONFIG_FILE]` | None
 - Store the current command line options to a config file.
 - Equivalent to `--generate_config_file --config_file [STORE_CONFIG_FILE]`
-- Outputs to `multiSSH3.config.json` in the current working directory if no path is specified.
+- Without a path, writes to the config file mssh loaded, or to `~/.multiSSH3.config.json` if none was loaded.
 
 ### `--debug` | False
 - Enable debug mode.
@@ -693,7 +698,7 @@ options:
   -ef, --env_file ENV_FILE
                         Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)
   -efs, --env_files ENV_FILES
-                        The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: ['/etc/profile.d/hosts.sh', '~/.bashrc', '~/.zshrc', '~/host.env', '~/hosts.env', '.env', 'host.env', 'hosts.env'])
+                        The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: ['/etc/profile.d/hosts.sh', '~/.bashrc', '~/.zshrc', '~/host.env', '~/hosts.env'])
   -m, --max_connections MAX_CONNECTIONS
                         Max number of connections to use (default: 4 * cpu_count)
   -j, --json            Output in json format. (default: False)
@@ -884,9 +889,6 @@ DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
 					 '~/.zshrc',
 					 '~/host.env',
 					 '~/hosts.env',
-					 '.env',
-					 'host.env',
-					 'hosts.env',
 					 ]
 DEFAULT_NO_HISTORY = False
 DEFAULT_HISTORY_FILE = '~/.mssh_history'

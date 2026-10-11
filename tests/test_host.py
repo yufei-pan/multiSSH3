@@ -27,10 +27,19 @@ def test_replace_magic_strings_host():
 	assert s == "run on node1"
 
 
-def test_ordered_multiset_count_and_contains():
-	# OrderedMultiSet is a deque+Counter helper used in mergeOutput streaming;
-	# line bags passed to can_merge are plain set objects (see get_host_raw_output).
-	a = multiSSH3.OrderedMultiSet(["x", "y", "y"])
-	assert a.count("y") == 2
-	assert "x" in a
-	assert list(a) == ["x", "y", "y"]
+
+def test_replace_magic_strings_inserts_backslashes_literally():
+	# re.sub would read these as an escape (\a) and a group reference (\1)
+	assert multiSSH3.replace_magic_strings("whoami #USER#", ["#USER#"], "CORP\\alice") == "whoami CORP\\alice"
+	assert multiSSH3.replace_magic_strings("echo #user#", ["#USER#"], "a\\1b") == "echo a\\1b"
+
+
+def test_host_with_ip_none_still_looks_the_name_up(monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "DEFAULT_HOST_FILE", str(tmp_path / "no-hosts"))
+	monkeypatch.setattr(multiSSH3, "_etc_hosts", {})
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: "10.1.2.3" if hostname == "node1" else None)
+	multiSSH3.getIP.cache_clear()
+
+	assert multiSSH3.Host("node1", "true", ip=None).ip == "10.1.2.3"
+	assert multiSSH3.Host("bob@node1", "true", ip=None).ip == "10.1.2.3"
+	multiSSH3.getIP.cache_clear()

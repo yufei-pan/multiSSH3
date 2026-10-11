@@ -20,6 +20,7 @@ import shlex
 import shutil
 import signal
 import socket
+import stat
 import string
 import subprocess
 import sys
@@ -29,19 +30,20 @@ import threading
 import time
 import typing
 from uuid import uuid4
-from collections import Counter, defaultdict, deque, ChainMap
+from collections import Counter, defaultdict, deque, ChainMap, namedtuple
 from itertools import count, product
 from pprint import pformat
 
 
-version = '6.26'
+version = '6.27'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-10-10'
 # TODO: Add terminal TUI
 
-CONFIG_FILE_CHAIN = ['./multiSSH3.config.json',
-					 '~/multiSSH3.config.json',
+# no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
+# use --config_file to load one
+CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 					 '~/.multiSSH3.config.json',
 					 '~/.config/multiSSH3/multiSSH3.config.json',
 					 '/etc/multiSSH3.d/multiSSH3.config.json',
@@ -99,13 +101,13 @@ DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
 					 '~/.zshrc',
 					 '~/host.env',
 					 '~/hosts.env',
-					 '.env',
-					 'host.env',
-					 'hosts.env',
-					 ]
+					 ]  # no current-directory files (could redirect host aliases), use --env_files
 DEFAULT_NO_HISTORY = False
 DEFAULT_HISTORY_FILE = '~/.mssh_history'
-DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+def _cpu_count():
+	# os.cpu_count() returns None when the count cannot be determined
+	return os.cpu_count() or 1
+DEFAULT_MAX_CONNECTIONS = 4 * _cpu_count()
 DEFAULT_JSON_MODE = False
 DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
@@ -153,43 +155,35 @@ __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
 #%% ------------ Pre Helper Functions ----------------
-try:
-	# Check if functiools.cache is available
-	# cache_decorator = functools.cache
-	def cache_decorator(user_function):
-		def _make_hashable(item):
-			if isinstance(item, typing.Mapping):
-				# Sort items so that {'a':1, 'b':2} and {'b':2, 'a':1} hash the same
-				return tuple(
-					( _make_hashable(k), _make_hashable(v) )
-					for k, v in sorted(item.items(), key=lambda item: item[0])
-				)
-			if isinstance(item, (list, set, tuple)):
-				return tuple(_make_hashable(e) for e in item)
-			# Fallback: assume item is already hashable
-			return item
-		def decorating_function(user_function):
-			# Create the real cached function
-			cached_func = functools.lru_cache(maxsize=None)(user_function)
-			@functools.wraps(user_function)
-			def wrapper(*args, **kwargs):
-				# Convert all args/kwargs to hashable equivalents
-				hashable_args = tuple(_make_hashable(a) for a in args)
-				hashable_kwargs = {
-					k: _make_hashable(v) for k, v in kwargs.items()
-				}
-				# Call the lru-cached version
-				return cached_func(*hashable_args, **hashable_kwargs)
-			# Expose cache statistics and clear method
-			wrapper.cache_info = cached_func.cache_info
-			wrapper.cache_clear = cached_func.cache_clear
-			return wrapper
-		return decorating_function(user_function)
-except Exception:
-	# If lrucache is not available, use a dummy decorator
-	print('Warning: functools.lru_cache is not available, multiSSH3 will run slower without cache.',file=sys.stderr)
-	def cache_decorator(func):
-		return func
+def cache_decorator(user_function):
+	def _make_hashable(item):
+		if isinstance(item, typing.Mapping):
+			# Sort items so that {'a':1, 'b':2} and {'b':2, 'a':1} hash the same
+			return tuple(
+				( _make_hashable(k), _make_hashable(v) )
+				for k, v in sorted(item.items(), key=lambda item: item[0])
+			)
+		if isinstance(item, (list, set, tuple)):
+			return tuple(_make_hashable(e) for e in item)
+		# Fallback: assume item is already hashable
+		return item
+	def decorating_function(user_function):
+		# Create the real cached function
+		cached_func = functools.lru_cache(maxsize=None)(user_function)
+		@functools.wraps(user_function)
+		def wrapper(*args, **kwargs):
+			# Convert all args/kwargs to hashable equivalents
+			hashable_args = tuple(_make_hashable(a) for a in args)
+			hashable_kwargs = {
+				k: _make_hashable(v) for k, v in kwargs.items()
+			}
+			# Call the lru-cached version
+			return cached_func(*hashable_args, **hashable_kwargs)
+		# Expose cache statistics and clear method
+		wrapper.cache_info = cached_func.cache_info
+		wrapper.cache_clear = cached_func.cache_clear
+		return wrapper
+	return decorating_function(user_function)
 
 def eprint(*args, **kwargs):
 	global ERRORS
@@ -257,6 +251,9 @@ def signal_handler(sig, frame):
 		None
 	'''
 	global _emo
+	if not _commands_started:
+		# still resolving hosts: nothing runs yet, so stop before anything does
+		_exit_with_code(1, 'Ctrl C caught before any command started, nothing was run')
 	if not _emo:
 		eprint('Ctrl C caught, exiting...')
 		_emo = True
@@ -306,21 +303,26 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
 		time.sleep(1)
 
-@cache_decorator
 def getIP(hostname: str,local=False):
 	'''
 	Get the IP address of the hostname
 
 	Args:
-		hostname (str): The hostname
+		hostname (str): The hostname, user@ is ignored
+		local (bool): Only check IP addresses and the hosts file, no DNS
 
 	Returns:
 		str: The IP address of the hostname
 	'''
-	global _etc_hosts
-	global DEFAULT_HOST_FILE
+	# one cache entry per host, however callers write it (user@, spaces, local as keyword or not)
 	if '@' in hostname:
 		_, hostname = hostname.rsplit('@',1)
+	return _getIP(hostname.strip(), bool(local))
+
+@cache_decorator
+def _getIP(hostname, local):
+	global _etc_hosts
+	global DEFAULT_HOST_FILE
 	# First we check if the hostname is an IP address
 	try:
 		ipaddress.ip_address(hostname)
@@ -345,10 +347,95 @@ def getIP(hostname: str,local=False):
 	if local:
 		return None
 	# Then we check the DNS
+	ip = _resolve_dns(hostname)
+	if ip is None:
+		# an ~/.ssh/config alias: use the address of its HostName
+		target = _ssh_config_target(hostname)
+		if target and target.lower() != hostname.lower():
+			# local lookup only, a HostName that is itself an alias must not recurse
+			ip = getIP(target,local=True) or _resolve_dns(target)
+	return ip
+
+# hostname -> IP address (or None) of every DNS lookup made, so lookups are done once
+_dns_cache = {}
+
+def _clear_ip_caches():
+	'''getIP.cache_clear(): forget every lookup result getIP depends on, failures included.'''
+	_getIP.cache_clear()
+	_dns_cache.clear()
+	for cached_function in (_ssh_config_values, _ssh_config_target):
+		# tests (or embedders) may have replaced them with plain functions
+		getattr(cached_function, 'cache_clear', lambda: None)()
+
+getIP.cache_clear = _clear_ip_caches
+getIP.cache_info = _getIP.cache_info
+
+def _resolve_dns(hostname):
+	'''Look hostname up in DNS (IPv4 or IPv6, preferring IPv4), returning its IP address or None.'''
+	if hostname in _dns_cache:
+		return _dns_cache[hostname]
 	try:
-		return socket.gethostbyname(hostname)
+		infos = socket.getaddrinfo(hostname, None, 0, socket.SOCK_STREAM)
+	except Exception:
+		infos = []
+	addresses = [info[4][0] for info in infos if info[0] == socket.AF_INET]
+	addresses += [info[4][0] for info in infos if info[0] == socket.AF_INET6]
+	_dns_cache[hostname] = addresses[0] if addresses else None
+	return _dns_cache[hostname]
+
+# a name no ssh config can mean on purpose, to tell what catch-all blocks (Host *) do
+_SSH_CONFIG_PROBE_NAME = 'multissh3-unknown-host.invalid'
+
+@cache_decorator
+def _ssh_config_values(hostname):
+	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None.'''
+	try:
+		result = subprocess.run([_binPaths['ssh'], '-G', '--', hostname], stdout=subprocess.PIPE,
+						  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
 	except Exception:
 		return None
+	if result.returncode != 0:
+		return None
+	config = {}
+	for line in result.stdout.splitlines():
+		key, _, value = line.partition(' ')
+		config[key.lower()] = value.strip()
+	return config
+
+@cache_decorator
+def _ssh_config_target(hostname):
+	'''
+	The host ssh really connects to for hostname, when the ssh config maps it.
+
+	Returns:
+		str: The HostName ssh would use, when the config gives hostname another HostName or a
+			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
+			None for names the config does not single out, so typos are still caught.
+	'''
+	if 'ssh' not in _binPaths or not hostname or hostname.startswith('-'):
+		return None
+	config = _ssh_config_values(hostname)
+	if not config or not config.get('hostname'):
+		return None
+	target = config['hostname']
+	proxies = [config.get(key, 'none').lower() for key in ('proxyjump', 'proxycommand')]
+	# for a name it does not know, ssh -G prints the name back (lowercased) as the hostname
+	if target.lower() == hostname.lower() and all(proxy == 'none' for proxy in proxies):
+		return None
+	# a catch-all block (Host * with HostName %h.example or a ProxyJump) applies to every name,
+	# typos included: only accept names the config treats differently from a made-up one
+	probe = _ssh_config_values(_SSH_CONFIG_PROBE_NAME)
+	if probe:
+		def as_for_this_name(value):
+			return value.lower().replace(_SSH_CONFIG_PROBE_NAME, hostname.lower())
+		probe_target = as_for_this_name(probe.get('hostname', ''))
+		probe_proxies = [as_for_this_name(probe.get(key, 'none')) for key in ('proxyjump', 'proxycommand')]
+		if probe_target == target.lower() and probe_proxies == proxies:
+			# a HostName template (Host * / HostName %h.example) is only real for names whose target resolves
+			if target.lower() != hostname.lower() and (getIP(target,local=True) or _resolve_dns(target)):
+				return target
+			return None
+	return target
 
 
 _i_counter = count()
@@ -362,21 +449,98 @@ def _get_i():
 	return next(_i_counter)
 
 #%% ------------ Load Defaults ( Config ) File ----------------
-def load_config_file(config_file):
+try:
+	import grp
+	import pwd
+except ImportError:
+	grp = pwd = None
+
+def _is_private_group(uid, gid):
+	'''Whether gid is the user private group of uid: its primary group, named after it, with no other members.'''
+	try:
+		owner = pwd.getpwuid(uid)
+		group = grp.getgrgid(gid)
+	except KeyError:
+		return False
+	return gid == owner.pw_gid and group.gr_name == owner.pw_name and set(group.gr_mem) <= {owner.pw_name}
+
+def _untrusted_file_reason(st):
+	'''
+	Check a config / env file found on the default search paths before loading it.
+
+	Like ssh, the file must be owned by you or root and not writable by anyone else. Group
+	write is allowed when the group is the owner's private group, as user private group
+	systems (Debian, Ubuntu, RHEL) create files group-writable by default.
+
+	Args:
+		st (os.stat_result): fstat() of the opened file
+
+	Returns:
+		tuple: (reason, fixable_with_chmod), or None when the file can be loaded
+	'''
+	if not stat.S_ISREG(st.st_mode):
+		# a FIFO or device could block or never end
+		return 'it is not a regular file', False
+	if pwd is None or not hasattr(os, 'getuid'):
+		return None
+	if st.st_uid not in (os.getuid(), 0):
+		return 'it is owned by uid {}, not by you or root'.format(st.st_uid), False
+	if st.st_mode & stat.S_IWOTH:
+		return 'every user can write to it', True
+	if st.st_mode & stat.S_IWGRP and not _is_private_group(st.st_uid, st.st_gid):
+		try:
+			group = grp.getgrgid(st.st_gid).gr_name
+		except KeyError:
+			group = st.st_gid
+		return 'group {} can write to it'.format(group), True
+	return None
+
+def _open_trusted_file(path, explicit_flag, errors=None):
+	'''
+	Open path for reading if it passes _untrusted_file_reason, else warn and return None.
+
+	The check runs on the opened file, so the file cannot be swapped between check and read.
+	'''
+	# O_NONBLOCK so opening a planted FIFO does not wait for a writer, it is rejected below
+	fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
+	try:
+		f = os.fdopen(fd, 'r', errors=errors)
+	except Exception:
+		# e.g. a directory: os.open works, fdopen does not
+		os.close(fd)
+		raise
+	untrusted = _untrusted_file_reason(os.fstat(f.fileno()))
+	if not untrusted:
+		return f
+	f.close()
+	reason, fixable = untrusted
+	if fixable:
+		fix = 'fix with: chmod g-w,o-w {}, or pass it with {}'.format(shlex.quote(path), explicit_flag)
+	else:
+		fix = 'pass it with {} to use it anyway'.format(explicit_flag)
+	eprint('Warning: Ignoring {!r} because {}; {}'.format(path, reason, fix))
+	return None
+
+def load_config_file(config_file, check_trust=True):
 	global __working_config_file
 	'''
 	Load the config file to global variables
 
 	Args:
 		config_file (str): The config file
+		check_trust (bool): Skip the file unless _untrusted_file_reason accepts it. False for
+			files the user named explicitly.
 
 	Returns:
 		dict: The config
 	'''
-	if not os.path.exists(config_file):
+	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
 	try:
-		with open(config_file,'r') as f:
+		f = _open_trusted_file(config_file, '--config_file') if check_trust else open(config_file,'r')
+		if f is None:
+			return {}
+		with f:
 			config = json.load(f)
 		__working_config_file = config_file
 	except Exception as e:
@@ -400,7 +564,8 @@ def apply_config_key_compat(configs):
 
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
-__working_config_file = './multiSSH3.config.json'
+# where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
+__working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
 apply_config_key_compat(__configs_from_file)
@@ -422,9 +587,13 @@ __failedHosts = set()
 __wildCharacters = ['*','?','x']
 _no_env = DEFAULT_NO_ENV
 _env_files = DEFAULT_ENV_FILES
+# env files named on the command line, loaded without the ownership / permission check
+_explicit_env_files = set()
 __globalUnavailableHosts = dict()
 __keyPressesIn = [[]]
 _emo = False
+# set once the first command starts: before that, Ctrl-C has nothing to stop and exits
+_commands_started = False
 __curses_global_color_pairs = {(-1,-1):1}
 __curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
 __curses_color_table = {}
@@ -556,6 +725,7 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -594,6 +764,7 @@ class Host:
 		newHost.lastUpdateTime = self.lastUpdateTime
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
+		newHost.interactive_stdin = self.interactive_stdin
 		return newHost
 
 #%% ------------ Exportable Help Functions ----------------
@@ -634,8 +805,20 @@ def readEnvFromFile():
 	scrubCounter = 0
 	for envf in envfs:
 		envf = os.path.expanduser(os.path.expandvars(envf))
+		if os.path.isdir(envf):
+			# e.g. a virtualenv named .env
+			continue
 		if os.path.exists(envf):
-			with open(envf,'r') as f:
+			try:
+				# --env_files adds to the env file chain, --env_file would replace it
+				# shell rc files may hold other encodings: replace what does not decode, keep the rest
+				f = open(envf,'r',errors='replace') if os.path.abspath(envf) in _explicit_env_files else _open_trusted_file(envf, '--env_files', errors='replace')
+			except OSError as e:
+				eprint(f"Warning: Cannot read env file {envf!r}: {e}")
+				continue
+			if f is None:
+				continue
+			with f:
 				lines = f.readlines()
 			for line in lines:
 				line = line.strip()
@@ -671,7 +854,7 @@ def readEnvFromFile():
 					ref_key = match.strip('${}')
 					ref_value = environemnt.get(ref_key) if ref_key != key else None
 					if not ref_value and not _no_env:
-						ref_value = os.environ.get(ref_key)
+						ref_value = _consult_env(ref_key)
 					if ref_value:
 						environemnt[key] = value.replace(match, ref_value)
 						found = True
@@ -704,7 +887,8 @@ def replace_magic_strings(string,keys,value,case_sensitive=False):
 		if case_sensitive:
 			string = string.replace(key,value)
 		else:
-			string = re.sub(re.escape(key),value,string,flags=re.IGNORECASE)
+			# a function replacement is inserted as is, a string one would expand backslashes
+			string = re.sub(re.escape(key),lambda _match: value,string,flags=re.IGNORECASE)
 	return string
 
 def pretty_format_table(data, delimiter = '\t',header = None):
@@ -806,220 +990,6 @@ def format_commands(commands):
 		except Exception as e:
 			eprint(f"Warning: commands should ideally be a list of strings. Now mssh had failed to convert {commands!r} to a list of strings. Continuing anyway but expect failures. Error: {e}")
 	return commands
-
-class OrderedMultiSet(deque):
-	"""
-	A deque extension with O(1) average lookup time.
-	Maintains all deque functionality while tracking item counts.
-	"""
-	def __init__(self, iterable=None, maxlen=None):
-		"""Initialize with optional iterable and maxlen."""
-		super().__init__(maxlen=maxlen)
-		self._counter = Counter()
-		if iterable is not None:
-			self.extend(iterable)
-	def append(self, item):
-		"""Add item to the right end. O(1)."""
-		if len(self) == self.maxlen:
-			self._counter -= Counter([self[0]])
-			# self._counter[self[0]] -= 1
-			# self._counter += Counter()
-		super().append(item) 
-		self._counter[item] += 1
-	def appendleft(self, item):
-		"""Add item to the left end. O(1)."""
-		if len(self) == self.maxlen:
-			self._counter -= Counter([self[-1]])
-		super().appendleft(item)
-		self._counter[item] += 1
-	def pop(self):
-		"""Remove and return item from right end. O(1)."""
-		try:
-			item = super().pop()
-			self._counter -= Counter([item])
-			return item
-		except IndexError:
-			return None
-	def popleft(self):
-		"""Remove and return item from left end. O(1)."""
-		try:
-			item = super().popleft()
-			self._counter -= Counter([item])
-			return item
-		except IndexError:
-			return None
-	def put(self, item):
-		"""Alias for append, but return removed item - add to right end (FIFO put)."""
-		removed = None
-		if len(self) == self.maxlen:
-			removed = self[0]  # Item that will be removed
-			self._counter -= Counter([removed])
-		super().append(item) 
-		self._counter[item] += 1
-		return removed
-	def put_left(self, item):
-		"""Alias for appendleft, but return removed item - add to left end (LIFO put)."""
-		removed = None
-		if len(self) == self.maxlen:
-			removed = self[-1]  # Item that will be removed
-			self._counter -= Counter([removed])
-		super().appendleft(item)
-		self._counter[item] += 1
-		return removed
-	def get(self):
-		"""Alias for popleft - remove from left end (FIFO get)."""
-		return self.popleft()
-	def remove(self, value):
-		"""Remove first occurrence of value. O(n)."""
-		if value not in self._counter:
-			return None
-		super().remove(value)
-		self._counter -= Counter([value])
-	def clear(self):
-		"""Remove all items. O(1)."""
-		super().clear()
-		self._counter.clear()
-	def extend(self, iterable):
-		"""Extend deque by appending elements from iterable. O(k)."""
-		# if maxlen is set, and the new length exceeds maxlen, we clear then efficiently extend
-		try:
-			if not self.maxlen or len(self) + len(iterable) <= self.maxlen:
-				super().extend(iterable)
-				self._counter.update(iterable)
-			elif len(iterable) >= self.maxlen:
-				self.clear()
-				if isinstance(iterable, (list, tuple)):
-					iterable = iterable[-self.maxlen:]
-				else:
-					iterable = itertools.islice(iterable, len(iterable) - self.maxlen, None)
-				super().extend(iterable)
-				self._counter.update(iterable)
-			else:
-				num_to_keep = self.maxlen - len(iterable)
-				self.truncateright(num_to_keep)
-				super().extend(iterable)
-				self._counter.update(iterable)
-		except TypeError:
-			return self.extend(list(iterable))
-	def extendleft(self, iterable):
-		"""Extend left side by appending elements from iterable. O(k)."""
-		# if maxlen is set, and the new length exceeds maxlen, we clear then efficiently extendleft
-		try:
-			if not self.maxlen or len(self) + len(iterable) <= self.maxlen:
-				super().extendleft(iterable)
-				self._counter.update(iterable)
-			elif len(iterable) >= self.maxlen:
-				self.clear()
-				if isinstance(iterable, (list, tuple)):
-					iterable = iterable[:self.maxlen]
-				else:
-					iterable = itertools.islice(iterable, 0, self.maxlen)
-				super().extendleft(iterable)
-				self._counter.update(iterable)
-			else:
-				num_to_keep = self.maxlen - len(iterable)
-				self.truncate(num_to_keep)
-				super().extendleft(iterable)
-				self._counter.update(iterable)
-		except TypeError:
-			return self.extendleft(list(iterable))
-	def update(self, iterable):
-		"""Extend deque by appending elements from iterable. Alias for extend. O(k)."""
-		return self.extend(iterable)
-	def updateleft(self, iterable):
-		"""Extend left side by appending elements from iterable. Alias for extendleft. O(k)."""
-		return self.extendleft(iterable)
-	def truncate(self, n):
-		"""Truncate to keep left n items. O(n)."""
-		kept = list(itertools.islice(self, n))
-		dropped = Counter(itertools.islice(self, n, None))
-		super().clear()
-		super().extend(kept)
-		self._counter -= dropped
-	def truncateright(self, n):
-		"""Truncate to keep right n items. O(n)."""
-		kept = list(itertools.islice(self, len(self) - n, None))
-		dropped = Counter(itertools.islice(self, 0, len(self) - n))
-		super().clear()
-		super().extend(kept)
-		self._counter -= dropped
-	def rotate(self, n=1):
-		"""Rotate deque n steps to the right. O(k) where k = min(n, len)."""
-		super().rotate(n)
-	def __contains__(self, item):
-		"""Check if item exists in deque. O(1) average."""
-		# return item in self._counter
-		return super().__contains__(item)
-	def count(self, item):
-		"""Return number of occurrences of item. O(1)."""
-		return self._counter[item]
-	def __setitem__(self, index, value):
-		"""Set item at index. O(1) for access, O(1) for counter update."""
-		old_value = self[index]
-		super().__setitem__(index, value)
-		self._counter -= Counter([old_value])
-		self._counter[value] += 1
-		return old_value
-	def __delitem__(self, index):
-		"""Delete item at index. O(n) for deletion, O(1) for counter update."""
-		value = self[index]
-		super().__delitem__(index)
-		self._counter -= Counter([value])
-		return value
-	def insert(self, index, value):
-		"""Insert value at index. O(n) for insertion, O(1) for counter update."""
-		super().insert(index, value)
-		self._counter[value] += 1
-	def reverse(self):
-		"""Reverse deque in place. O(n)."""
-		super().reverse()
-	def copy(self):
-		"""Create a shallow copy. O(n)."""
-		new_deque = OrderedMultiSet(maxlen=self.maxlen)
-		new_deque.extend(self)
-		return new_deque
-	def __copy__(self):
-		"""Support for copy.copy()."""
-		return self.copy()
-	def __repr__(self):
-		"""String representation."""
-		if self.maxlen is not None:
-			return f"OrderedMultiSet({list(self)}, maxlen={self.maxlen})"
-		return f"OrderedMultiSet({list(self)})"
-	def peek(self):
-		"""Return leftmost item without removing it."""
-		try:
-			return self[0]
-		except IndexError:
-			return None
-	def peek_right(self):
-		"""Return rightmost item without removing it."""
-		try:
-			return self[-1]
-		except IndexError:
-			return None
-	def __iadd__(self, value):
-		return self.extend(value)
-	def __add__(self, value):
-		new_deque = self.copy()
-		new_deque.extend(value)
-		return new_deque
-	def __mul__(self, value):
-		new_deque = OrderedMultiSet(maxlen=self.maxlen)
-		for _ in range(value):
-			new_deque.extend(self)
-		return new_deque
-	def __imul__(self, value):
-		if value <= 0:
-			self.clear()
-			return self
-		for _ in range(value - 1):
-			self.extend(self)
-		return self
-	def __eq__(self, value):
-		if isinstance(value, OrderedMultiSet):
-			return self._counter == value._counter
-		return super().__eq__(value)
 
 def get_terminal_size():
 	'''
@@ -1570,6 +1540,25 @@ def compact_hostnames(Hostnames,verify = True):
 	return sorted(compact_hosts)
 
 #%% ------------ Expanding Hostnames ----------------
+# invalid host names reported during the current run_command_on_hosts call
+_reported_invalid_hosts = set()
+
+def _local_hostname_source(hostname):
+	'''
+	How hostname resolves without DNS, in the order host validation tries.
+
+	Returns:
+		str: 'ip' (an IP address or in the hosts file), 'env' (an environment variable alias,
+			unless _no_env), 'env_file' (an alias from the env files), or None when DNS is needed
+	'''
+	if getIP(hostname,local=True):
+		return 'ip'
+	if not _no_env and _consult_env(hostname) is not None:
+		return 'env'
+	if hostname in readEnvFromFile():
+		return 'env_file'
+	return None
+
 @cache_decorator
 def __validate_expand_hostname(hostname):
 	'''
@@ -1581,25 +1570,33 @@ def __validate_expand_hostname(hostname):
 	Returns:
 		list: A list of valid hostnames
 	'''
-	global _no_env
 	# we will try to get the valid host name from the environment
 	hostname = hostname.strip().strip('$')
-	if getIP(hostname,local=True):
+	source = _local_hostname_source(hostname)
+	if source == 'ip':
 		return [hostname]
-	elif not _no_env and hostname in os.environ:
+	elif source == 'env':
 		# we will expand these hostnames again
 		return expand_hostnames(os.environ[hostname].split(','))
-	elif hostname in readEnvFromFile():
+	elif source == 'env_file':
 		# we will expand these hostnames again
 		return expand_hostnames(readEnvFromFile()[hostname].split(','))
 	elif getIP(hostname,local=False):
 		return [hostname]
+	elif _ssh_config_target(hostname):
+		# ssh reaches it through the ssh config, e.g. a host behind a ProxyJump
+		return [hostname]
 	else:
-		eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
 		global __mainReturnCode
-		__mainReturnCode += 1
 		global __failedHosts
-		__failedHosts.add(hostname)
+		# validated again after the caches refresh: report once per run_command_on_hosts call
+		if hostname not in _reported_invalid_hosts:
+			eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
+			_reported_invalid_hosts.add(hostname)
+		# and count once towards the exit code
+		if hostname not in __failedHosts:
+			__mainReturnCode += 1
+			__failedHosts.add(hostname)
 		return []
 
 @cache_decorator
@@ -1712,6 +1709,67 @@ def __expand_hostname(text, validate=True):# -> set:
 				expandinghosts.append(hostname.replace(match.group(0), part, 1))
 	return expandedhosts
 
+# four dot separated octet fields, each a number, a wildcard (x * ?) or a range of them, optionally in []
+_IPV4_RANGE_RE = re.compile(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}\.((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))$')
+
+def _prefetch_ips(hostnames):
+	'''
+	Resolve the hostnames that need DNS in parallel, filling the getIP cache.
+
+	Host validation looks names up one at a time, a big range of names that are not in
+	/etc/hosts would otherwise wait for every DNS round trip (or resolver timeout) in turn.
+	'''
+	need_dns = []
+	for hostname in hostnames:
+		hostname = hostname.strip().strip('$')
+		if hostname in _dns_cache or _local_hostname_source(hostname):
+			continue
+		need_dns.append(hostname)
+	# the same name listed for several users is looked up once
+	need_dns = list(dict.fromkeys(need_dns))
+	if len(need_dns) > 1:
+		if 'ssh' in _binPaths:
+			# names DNS does not know are compared with this probe, run it once instead of in every worker
+			_ssh_config_values(_SSH_CONFIG_PROBE_NAME)
+		_run_in_threads(lambda hostname: getIP(hostname,local=False), need_dns)
+
+def _run_in_threads(function, items, max_workers=32):
+	'''
+	Call function(item) for every item in up to max_workers threads, and wait for them.
+
+	The threads are daemon threads: unlike a ThreadPoolExecutor's workers they are not waited
+	for at exit, so the second Ctrl-C ("exiting immediately") does not wait for slow lookups.
+	'''
+	work = queue.Queue()
+	for item in items:
+		work.put(item)
+	def worker():
+		while True:
+			try:
+				item = work.get_nowait()
+			except queue.Empty:
+				return
+			try:
+				function(item)
+			except Exception:
+				pass
+	threads = []
+	for _ in range(min(max_workers, len(items))):
+		thread = threading.Thread(target=worker, daemon=True)
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads allowed (pids limit, ulimit -u): the running ones take the rest
+			break
+		threads.append(thread)
+	if not threads:
+		# one at a time, as before the parallel lookups
+		worker()
+	for thread in threads:
+		# in slices, so the Ctrl-C handler gets to run
+		while thread.is_alive():
+			thread.join(0.1)
+
 @cache_decorator
 def __expand_hostnames(hosts) -> dict:
 	'''
@@ -1726,6 +1784,14 @@ def __expand_hostnames(hosts) -> dict:
 	expandedhosts = {}
 	if isinstance(hosts, str):
 		hosts = [hosts]
+	names_to_resolve = []
+	for host in hosts:
+		host = host.strip()
+		if '@' in host:
+			host = host.split('@',1)[1].strip()
+		if host and not _IPV4_RANGE_RE.match(host):
+			names_to_resolve.extend(__expand_hostname(host, validate=False))
+	_prefetch_ips(names_to_resolve)
 	for host in hosts:
 		host = host.strip()
 		if not host:
@@ -1742,11 +1808,13 @@ def __expand_hostnames(hosts) -> dict:
 		# seperated by .
 		# If so, we expand the IP address range
 		iplist = []
-		if re.match(r'^((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))(\.((((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?)|(\[((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?)(-((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|x|\*|\?))?\]))){2}\.((((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?)|(\[((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?)(-((25[0-4]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])|x|\*|\?))?\]))$', host):
+		if _IPV4_RANGE_RE.match(host):
 			hostSetToAdd = sorted(__expandIPv4Address(frozenset([host])),key=ipaddress.IPv4Address)
 			iplist = hostSetToAdd
 		else:
-			hostSetToAdd = sorted(__expand_hostname(host))
+			# validate the names expanded (and cached) for the prefetch instead of expanding again
+			hostSetToAdd = sorted(set(itertools.chain.from_iterable(
+				__validate_expand_hostname(name) for name in __expand_hostname(host, validate=False))))
 			for host in hostSetToAdd:
 				iplist.append(getIP(host,local=False))
 		if username:
@@ -1776,16 +1844,60 @@ def expand_hostnames(hosts):
 		hosts = frozenset(hosts)
 	return __expand_hostnames(hosts)
 
+# environment variables host expansion looked up since the last refresh, with the value seen (None: unset)
+_consulted_env = {}
+
+def _consult_env(name):
+	'''os.environ.get(name), remembering the value so the caches refresh when it changes.'''
+	value = os.environ.get(name)
+	_consulted_env.setdefault(name, value)
+	return value
+
+__expansion_env_state = None
+def _refresh_expansion_caches():
+	'''
+	Drop cached host expansions when anything they were computed from changed.
+
+	Expanding a host name consults os.environ (unless _no_env) and the env files (subject to
+	the ownership / permission check), and the results are cached by host string only.
+	'''
+	global __expansion_env_state
+	env_file_signatures = []
+	for env_file in (_env_files if _env_files else DEFAULT_ENV_FILES):
+		try:
+			st = os.stat(os.path.expanduser(os.path.expandvars(env_file)))
+			env_file_signatures.append((env_file, st.st_mode, st.st_uid, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+		except OSError:
+			env_file_signatures.append((env_file, None))
+	state = (_no_env, tuple(env_file_signatures), frozenset(_explicit_env_files))
+	# only the variables expansion looked up matter, not e.g. TERM set by the curses fallback
+	env_changed = any(os.environ.get(name) != value for name, value in _consulted_env.items())
+	if state != __expansion_env_state or env_changed:
+		__expansion_env_state = state
+		_consulted_env.clear()
+		for cached_function in (readEnvFromFile, __validate_expand_hostname, __expand_hostname, __expand_hostnames):
+			cached_function.cache_clear()
+
 
 #%% ------------ Run Command Block ----------------
+# bytes the reader treats specially, and the unicode line breaks str.splitlines() also splits on
+_READER_SPECIAL_BYTES = re.compile(rb'([\n\r\x08])')
+_UNICODE_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
+
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
 	Read the stream and append the lines to the target list
 
+	Output is read in chunks. \n, \r and backspace bytes, and runs of other bytes that may hold a
+	unicode line break, go through add_byte, which processes one byte at a time (\r returns to
+	the line start, backspace deletes, unicode line breaks split lines that grow past each 100
+	bytes). Other runs are appended at once, which gives the same result.
+
 	Args:
-		stream (io.BytesIO): The stream to be read
+		stream (io.BufferedReader): The stream to be read
 		target (list): The list to append the lines to
 		host (Host): The host object
+		buffer (io.BytesIO): The current partial line of this stream
 
 	Returns:
 		None
@@ -1800,51 +1912,86 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		buffer.truncate(0)
 		host.output_buffer.seek(0)
 		host.output_buffer.truncate(0)
-	try:
-		for char in iter(lambda:stream.read(1), b''):
-			host.lastUpdateTime = time.monotonic()
-			if char == b'\n':
-				add_line(buffer,target, host)
-				continue
-			elif char == b'\r':
+	def add_byte(char):
+		if char == b'\n':
+			add_line(buffer,target, host)
+			return
+		elif char == b'\r':
+			buffer.seek(0)
+			host.output_buffer.seek(0)
+		elif char == b'\x08':
+			# backspace
+			if buffer.tell() > 0:
+				buffer.seek(buffer.tell() - 1)
+				buffer.truncate()
+			if host.output_buffer.tell() > 0:
+				host.output_buffer.seek(host.output_buffer.tell() - 1)
+				host.output_buffer.truncate()
+		else:
+			# normal character
+			buffer.write(char)
+			host.output_buffer.write(char)
+		# every 100 bytes, split the line on unicode line breaks
+		if buffer.tell() % 100 == 0 and buffer.tell() > 0:
+			decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
+			lines = decodedLine.splitlines()
+			if len(lines) > 1:
+				# if there are multiple lines, we add them to the target
+				for line in lines[:-1]:
+					# for all lines except the last one, we add them to the target
+					target.append(line)
+					host.output.append(line)
+					host.lineNumToPrintSet.add(len(host.output)-1)
+				# we keep the last line in the buffer
 				buffer.seek(0)
+				buffer.truncate(0)
+				buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
 				host.output_buffer.seek(0)
-			elif char == b'\x08':
-				# backspace
-				if buffer.tell() > 0:
-					buffer.seek(buffer.tell() - 1)
-					buffer.truncate()
-				if host.output_buffer.tell() > 0:
-					host.output_buffer.seek(host.output_buffer.tell() - 1)
-					host.output_buffer.truncate()
+				host.output_buffer.truncate(0)
+				host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
+	def add_run(run, clean):
+		'''
+		Add bytes that hold no \n, \r or backspace.
+
+		clean: the buffer is known to hold no unicode line break. Returns the same for after.
+		'''
+		position = buffer.tell()
+		end = buffer.seek(0, io.SEEK_END)
+		buffer.seek(position)
+		# appending (not overwriting after a \r) with no line break around: no 100 byte split can happen
+		if position == end:
+			if clean:
+				# a line break started in the buffer ends within its last 3 bytes
+				buffer.seek(max(0, end - 3))
+				text = (buffer.read() + run).decode(_encoding,errors='backslashreplace')
 			else:
-				# normal character
-				buffer.write(char)
-				host.output_buffer.write(char)
-			# if the length of the buffer is greater than 100, we try to decode the buffer to find if there are any unicode line change chars
-			if buffer.tell() % 100 == 0 and buffer.tell() > 0:
-				try:
-					# try to decode the buffer to find if there are any unicode line change chars
-					decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
-					lines = decodedLine.splitlines()
-					if len(lines) > 1:
-						# if there are multiple lines, we add them to the target
-						for line in lines[:-1]:
-							# for all lines except the last one, we add them to the target
-							target.append(line)
-							host.output.append(line)
-							host.lineNumToPrintSet.add(len(host.output)-1)
-						# we keep the last line in the buffer
-						buffer.seek(0)
-						buffer.truncate(0)
-						buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-						host.output_buffer.seek(0)
-						host.output_buffer.truncate(0)
-						host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-					
-				except UnicodeDecodeError:
-					# if there is a unicode decode error, we just skip this character
-					continue
+				text = (buffer.getvalue() + run).decode(_encoding,errors='backslashreplace')
+			if not _UNICODE_LINE_BREAK.search(text):
+				buffer.write(run)
+				host.output_buffer.write(run)
+				return True
+		for i in range(len(run)):
+			add_byte(run[i:i + 1])
+		return False
+	read = stream.read1 if hasattr(stream, 'read1') else stream.read
+	clean = False
+	try:
+		while True:
+			# read1 returns whatever arrived (up to the size) instead of waiting to fill it
+			chunk = read(65536)
+			if not chunk:
+				break
+			host.lastUpdateTime = time.monotonic()
+			# split keeps the special bytes at the odd indexes
+			for index, part in enumerate(_READER_SPECIAL_BYTES.split(chunk)):
+				if index % 2 == 0:
+					if part:
+						clean = add_run(part, clean)
+				elif part == b'\n':
+					add_line(buffer,target, host)
+					clean = True
+				else:
+					add_byte(part)
 	except ValueError:
 		pass
 	if buffer.tell() > 0:
@@ -1869,7 +2016,7 @@ def __handle_writing_stream(stream,stop_event,host):
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
 	sentInputPos = 0
-	while not stop_event.is_set():
+	while not stop_event.is_set() and host.interactive_stdin:
 		if sentInputPos < len(__keyPressesIn) - 1 :
 			stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
 			stream.flush()
@@ -1881,6 +2028,19 @@ def __handle_writing_stream(stream,stop_event,host):
 			host.lastUpdateTime = time.monotonic()
 		else:
 			time.sleep(0.01) # sleep for 10ms
+	if not stop_event.is_set():
+		# the TUI ended while the command runs: send the lines already typed, then end of input
+		try:
+			while sentInputPos < len(__keyPressesIn) - 1:
+				stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+				sentInputPos += 1
+			stream.flush()
+		except Exception:
+			pass
+		try:
+			stream.close()
+		except Exception:
+			pass
 	if sentInputPos < len(__keyPressesIn) - 1 :
 		eprint(f"Warning: {len(__keyPressesIn)-sentInputPos} lines of key presses are not sent before the process is terminated!")
 	# # send the last line
@@ -1956,39 +2116,39 @@ def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 		return True
 	return True
 
-def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
+_CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
+_CommandAttempt.__doc__ = '''
+What _build_command decided for one attempt.
+
+action is 'run' (run argv), 'rebuild' (build again right away, e.g. ipmitool is missing so the
+next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fields carry the
+attempt's state into the retry decisions and the next attempt.
+'''
+
+def _build_command(host, passwds, ipmi_definitions_list):
 	'''
-	Run the command on the host. Will format the commands accordingly. Main execution function.
+	Build the command line for one attempt to run host.command, without running it.
+
+	Picks the IPMI definition (popped from ipmi_definitions_list), fills in the magic strings and
+	formats the ipmitool / redfish / shell / scp / rsync / ssh command. Warnings and errors are
+	recorded on the host.
 
 	Args:
 		host (Host): The host object
-		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
-		timeout (int, optional): The timeout for the command. Defaults to 60.
-		passwds (str, optional): The password for the host. Defaults to None.
+		passwds (str): The password for the host
+		ipmi_definitions_list (list): The IPMI definitions left to try, ... for the matching defaults
 
 	Returns:
-		None
+		_CommandAttempt: What to do next
 	'''
-	global _emo
-	global __ERROR_MESSAGES_TO_IGNORE_REGEX
-	global _binPaths
-	global __DEBUG_MODE
-	global DEFAULT_USERNAME
-	global DEFAULT_PASSWORD
-	global SSH_STRICT_HOST_KEY_CHECKING
-	if retry_limit is ...:
-		# resolved at call time, the CLI and config files can add ipmi definitions after import
-		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
-	if retry_limit < 0:
-		host.output.append('Error: Retry limit reached!')
-		host.stderr.append('Error: Retry limit reached!')
-		host.returncode = 1
-		return
 	ipmi_definition =  {}
 	username = None
 	sshLocalExtraArgs = []
 	ip_prefix = None
 	useScp = False
+	def attempt(action, argv=None):
+		# carries the state as it is when the attempt is returned
+		return _CommandAttempt(action, argv, ipmi_definition, username, passwds, useScp, ipmi_definitions_list)
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
@@ -2005,7 +2165,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				host.output.append('Error: Exhausted all matching ipmi definitions!')
 				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
 				host.returncode = 1
-				return
+				return attempt('stop')
 			ipmi_definition = dict(ChainMap(ipmi_definitions_list.pop(0),get_default_ipmi_definition()))
 			if ipmi_definition.get('ipmi_method') == 'ssh_ipmitool':
 				if not host.command:
@@ -2037,7 +2197,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		host.command = replace_magic_strings(host.command,['#ID#'],str(id(host)),case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#I#'],str(host.i),case_sensitive=False)
 		host.command = replace_magic_strings(host.command,['#UUID#'],str(host.uuid),case_sensitive=False)
-		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip),case_sensitive=False)
+		# hosts reachable only through the ssh config have no local IP: use the address ssh connects to
+		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip) if host.ip else host.address,case_sensitive=False)
 		formatedCMD = []
 		if host.extraargs and isinstance(host.extraargs, str):
 			extraargs = host.extraargs.split()
@@ -2049,6 +2210,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			ip_prefix = host.interface_ip_prefix
 		if ip_prefix:
 			try:
+				if ':' in str(host.ip):
+					raise ValueError('interface_ip_prefix only applies to IPv4 addresses')
 				hostOctets = host.ip.split('.')
 				prefixOctets = ip_prefix.split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
@@ -2077,7 +2240,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 					ipmi_definition['password'] = passwds
 					ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
 					ipmi_definitions_list.insert(0,ipmi_definition)
-					return run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+					return attempt('rebuild')
 				if host.command.startswith('ipmitool '):
 					host.command = host.command.replace('ipmitool ','')
 				elif host.command.startswith(_binPaths['ipmitool']):
@@ -2108,7 +2271,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				host.output.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.stderr.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.returncode = 1
-				return
+				return attempt('stop')
 		elif host.shell:
 			if 'sh' in _binPaths:
 				host.output.append('Running command in shell mode, ignoring the hosts...')
@@ -2121,7 +2284,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
-				return run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+				return attempt('rebuild')
 		else:
 			if host.files:
 				if host.scp:
@@ -2136,7 +2299,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 						host.output.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.stderr.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.returncode = 1
-						return
+						return attempt('stop')
 				elif 'rsync' in _binPaths:
 					useScp = False
 				elif 'scp' in _binPaths:
@@ -2148,7 +2311,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 					host.output.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
-					return
+					return attempt('stop')
 				if host.gatherMode:
 					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
 				else:
@@ -2178,7 +2341,24 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		host.stderr.extend(traceback.format_exc().split('\n'))
 		host.output.extend(traceback.format_exc().split('\n'))
 		host.returncode = -1
-		return
+		return attempt('stop')
+	return attempt('run', formatedCMD)
+
+def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
+	'''
+	Run one built command, retrying (within retry_limit) while too many files are open.
+
+	Args:
+		host (Host): The host object
+		formatedCMD (list): The command line from _build_command
+		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
+		timeout (int): Seconds without output before the command is stopped, 0 for no limit
+		retry_limit (int): Retries left
+
+	Returns:
+		tuple: (stop, retry_limit, attempt_line_starts). stop is True when the retries ran out
+			and run_command must not try anything else.
+	'''
 	# where this attempt's lines start, earlier ipmi attempts must not affect the lockout decision
 	attempt_line_starts = (len(host.output), len(host.stdout), len(host.stderr))
 	emfile_attempt = 0
@@ -2191,7 +2371,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				if __DEBUG_MODE:
 					host.stderr.append('Running command: '+' '.join(formatedCMD))
 				#host.stdout = []
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
+				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
+				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
+				interactive_stdin = host.interactive_stdin
+				stdin = subprocess.PIPE if interactive_stdin else subprocess.DEVNULL
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
 				__running_procs.add(proc)
 				# create a thread to handle stdout
 				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
@@ -2202,8 +2386,10 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				stderr_thread.start()
 				# create a thread to handle stdin
 				stdin_stop_event = threading.Event()
-				stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
-				stdin_thread.start()
+				stdin_thread = None
+				if interactive_stdin:
+					stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
+					stdin_thread.start()
 				# Monitor the subprocess and terminate it after the timeout
 				host.lastUpdateTime = time.monotonic()
 				timeoutLineAppended = False
@@ -2249,7 +2435,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				# Wait for output processing to complete
 				stdout_thread.join(timeout=1)
 				stderr_thread.join(timeout=1)
-				stdin_thread.join(timeout=1)
+				if stdin_thread:
+					stdin_thread.join(timeout=1)
+				if proc.stdin is not None and proc.stdin.closed:
+					# communicate() would flush the closed pipe and raise
+					proc.stdin = None
 				if not _emo:
 					stdout = None
 					stderr = None
@@ -2293,61 +2483,101 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			host.output.append("Error: Retry limit reached after too many open files!")
 			host.stderr.append("Error: Retry limit reached after too many open files!")
 			host.returncode = 1
-			return
+			return True, retry_limit, attempt_line_starts
 		host.output.append("Warning: Too many open files. retrying...")
 		time.sleep(_emfile_backoff_seconds(emfile_attempt))
 		emfile_attempt += 1
 		retry_limit -= 1
-	# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
-	if host.ipmi and host.returncode != 0:
-		should_wait = _ipmi_failure_should_wait(host, attempt_line_starts)
-		host.returncode = None
-		host.output.append('IPMI connection failed! Trying next ipmi definition...')
-		if __DEBUG_MODE:
-			host.stderr.append('IPMI connection failed! Trying next ipmi definition...')
-		else:
-			host.stdout = []
-			host.stderr = []
-		if ipmi_definition.get('retry_lockout_time'):
-			try:
-				sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
-				if sleep_seconds >= 0 and should_wait:
-					host.output.append(f'Sleeping for {sleep_seconds} seconds...')
-					if __DEBUG_MODE:
-						host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
-					time.sleep(sleep_seconds)
-				elif sleep_seconds >= 0:
-					host.output.append('Skipping IPMI lockout wait; the controller was not reached.')
-			except Exception as e:
-				host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
-				if __DEBUG_MODE:
-					host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
-				# fall back to the default lockout time, which is -1 (disabled) unless configured
+	return False, retry_limit, attempt_line_starts
+
+def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
+	'''
+	Run the command on the host. Main execution function.
+
+	Builds the command (_build_command), runs it (_execute_command) and retries on failure: the
+	next IPMI definition, or scp after rsync failed. Every retry uses up one of retry_limit.
+
+	Args:
+		host (Host): The host object
+		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
+		timeout (int, optional): The timeout for the command. Defaults to 60.
+		passwds (str, optional): The password for the host. Defaults to None.
+
+	Returns:
+		None
+	'''
+	if retry_limit is ...:
+		# resolved at call time, the CLI and config files can add ipmi definitions after import
+		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
+	while True:
+		if retry_limit < 0:
+			host.output.append('Error: Retry limit reached!')
+			host.stderr.append('Error: Retry limit reached!')
+			host.returncode = 1
+			return
+		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list)
+		if action == 'stop':
+			return
+		if action == 'rebuild':
+			retry_limit -= 1
+			continue
+		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
+		if stop:
+			return
+		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
+		if host.ipmi and host.returncode != 0:
+			should_wait = _ipmi_failure_should_wait(host, attempt_line_starts)
+			host.returncode = None
+			host.output.append('IPMI connection failed! Trying next ipmi definition...')
+			if __DEBUG_MODE:
+				host.stderr.append('IPMI connection failed! Trying next ipmi definition...')
+			else:
+				host.stdout = []
+				host.stderr = []
+			if ipmi_definition.get('retry_lockout_time'):
 				try:
-					fallback_seconds = float(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
-				except (TypeError, ValueError):
-					fallback_seconds = -1
-				if fallback_seconds > 0 and should_wait:
-					time.sleep(fallback_seconds)
-		if ipmi_definition.get('ipmi_method') == 'ipmitool':
-			if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
-				ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
-			ipmi_definition['username'] = username
-			ipmi_definition['password'] = passwds
-			ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
-			ipmi_definitions_list.append(ipmi_definition)
-		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
-	# If transfering files, we will try again using scp if rsync connection is not successful
-	elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
-		host.returncode = None
-		host.output.append('Rsync connection failed! Trying SCP connection...')
-		if __DEBUG_MODE:
-			host.stderr.append('Rsync connection failed! Trying SCP connection...')
-		else:
-			host.stdout = []
-			host.stderr = []
-		host.scp = True
-		run_command(host,sem,timeout,passwds,retry_limit=retry_limit - 1,ipmi_definitions_list=ipmi_definitions_list)
+					sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
+					if sleep_seconds >= 0 and should_wait:
+						host.output.append(f'Sleeping for {sleep_seconds} seconds...')
+						if __DEBUG_MODE:
+							host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
+						time.sleep(sleep_seconds)
+					elif sleep_seconds >= 0:
+						host.output.append('Skipping IPMI lockout wait; the controller was not reached.')
+				except Exception as e:
+					host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+					if __DEBUG_MODE:
+						host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+					# fall back to the default lockout time, which is -1 (disabled) unless configured
+					try:
+						fallback_seconds = float(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
+					except (TypeError, ValueError):
+						fallback_seconds = -1
+					if fallback_seconds > 0 and should_wait:
+						time.sleep(fallback_seconds)
+			if ipmi_definition.get('ipmi_method') == 'ipmitool':
+				if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
+					ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
+				ipmi_definition['username'] = username
+				ipmi_definition['password'] = passwds
+				ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
+				ipmi_definitions_list.append(ipmi_definition)
+			retry_limit -= 1
+			continue
+		# If transfering files, we will try again using scp if rsync connection is not successful
+		elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
+			host.returncode = None
+			host.output.append('Rsync connection failed! Trying SCP connection...')
+			if __DEBUG_MODE:
+				host.stderr.append('Rsync connection failed! Trying SCP connection...')
+			else:
+				host.stdout = []
+				host.stderr = []
+			host.scp = True
+			retry_limit -= 1
+			continue
+		return
+
 
 #%% ------------ Start Threading Block ----------------
 def _run_command_thread(host, sem, timeout, passwds):
@@ -2365,7 +2595,7 @@ def _run_command_thread(host, sem, timeout, passwds):
 			host.stderr.append('Error: Command thread exited without a return code!')
 			host.returncode = -1
 
-def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * os.cpu_count()):
+def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_count()):
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
 
@@ -2606,7 +2836,7 @@ def __parse_ansi_escape_sequence_to_curses_attr(escape_code,color_pair_list = No
 		color_pair_list[2] = 1
 	return color_pair_list[2]
 
-def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = [-1,-1,1],fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0,leave_space_for_cursor = False):
+def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char_to_write = -1, color_pair_list = None,fill_char=' ',parse_ansi_colors = True,centered = False,lead_str = '', trail_str = '',box_ansi_color = None, keep_top_n_lines = 0,leave_space_for_cursor = False):
 	"""
 	Add a string to a curses window with / without ANSI color escape sequences translated to curses color pairs.
 
@@ -2629,6 +2859,8 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 	Returns:
 		None
 	"""
+	if color_pair_list is None:
+		color_pair_list = [-1,-1,1]
 	maxY, maxX = window.getmaxyx()
 	if leave_space_for_cursor:
 		maxX -= 1
@@ -3134,7 +3366,6 @@ def can_merge(line_bag1, line_bag2, threshold):
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
-	#indexes = {hostname: 0 for hostname in merging_hostnames}
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
@@ -3146,17 +3377,6 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
 		tracking_iter = itertools.islice(outputs_by_hostname[hostname], tracking_index)
 		return [deque(outputs_by_hostname[hostname][index:tracking_index],maxlen=diff_display_item_count),tracking_iter]
-	# futuresChainMap = ChainMap()
-	# class futureDict(UserDict):
-	# 	def __missing__(self, key):
-	# 		value = get_multiset_index_for_hostname(key)
-	# 		self[key] = value
-	# 		# futuresChainMap.maps.append(value[0]._counter)
-	# 		return value
-	# 	# def initializeHostnames(self, hostnames):
-	# 	# 	entries = {hostname: get_multiset_index_for_hostname(hostname) for hostname in hostnames}
-	# 	# 	self.update(entries)
-	# 	# 	futuresChainMap.maps.extend(entry[0]._counter for entry in entries.values())
 	def advance(dict,key):
 		try:
 			value = dict[key]
@@ -3168,9 +3388,6 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				pass
 		except KeyError:
 			pass
-	# futures = futureDict()
-	# for hostname in merging_hostnames:
-	# 	futures[hostname]  # ensure it's initialized
 	futures = {hostname: get_multiset_index_for_hostname(hostname) for hostname in merging_hostnames}
 	currentLines = defaultdict(set)
 	color_cap = get_terminal_color_capability()
@@ -3186,40 +3403,19 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
 		defer = False
-		# sorted_working_hostnames = sorted(working_index_keys, key=lambda hn: indexes[hn])
 		golden_hostname = min(working_index_keys, key=indexes.get)
 		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
-		# for hostname, index in sorted_working_indexes[1:]:
-		# 	if lineToAdd == outputs_by_hostname[hostname][index]:
-		# 		buddy.add(hostname)
-		# 	else:
-		# 		futureLines,tracking_index = futures[hostname]
-		# 		if lineToAdd in futureLines:
-		# 			for hn in buddy:
-		# 				working_indexes.pop(hn,None)
-		# 			defer = True
-		# 			break
 		buddy = currentLines[lineToAdd].copy()
 		if len(buddy) < len(working_index_keys):
 			# we need to check the futures then
-			# thisCounter = None
-			# if golden_hostname in futures:
-			# 	thisCounter = futures[golden_hostname][0]._counter
-			# 	futuresChainMap.maps.remove(thisCounter)
-			# for hostname in working_index_keys - buddy - set(futures.keys()):
-			# 	futures[hostname] # ensure it's initialized
-			# futures.initializeHostnames(working_index_keys - buddy - futures.keys())
 			if any(lineToAdd in futures[hostname][0] for hostname in working_index_keys - buddy):
 				defer = True
 				working_index_keys -= buddy
-			# if thisCounter is not None:
-			# 	futuresChainMap.maps.append(thisCounter)
 		if not defer:
 			if buddy != previousBuddies:
 				hostnameStr = ','.join(compact_hostnames(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
-				# hostnameLines = [line.ljust(line_length) for line in hostnameLines]
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
 					hostnameLines[0] = f"{color}■{hostnameLines[0]}"
@@ -3234,17 +3430,11 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				del currentLines[lineToAdd]
 			indexes.update(buddy)
 			for hostname in buddy:
-				# currentLines[lineToAdd].remove(hostname)
-				# if not currentLines[lineToAdd]:
-				# 	del currentLines[lineToAdd]
-				# indexes[hostname] += 1
 				try:
 					currentLines[outputs_by_hostname[hostname][indexes[hostname]]].add(hostname)
 				except IndexError:
 					indexes.pop(hostname, None)
 					futures.pop(hostname, None)
-					# if future:
-					# 	futuresChainMap.maps.remove(future[0]._counter)
 					continue
 				#advance futures
 				advance(futures, hostname)
@@ -3413,7 +3603,7 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 				remaining_hostnames.add(this_hostname)
 	return merge_groups, remaining_hostnames
 
-def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = [[]], errors_only = None):
+def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = None, errors_only = None):
 	'''
 	Format Host results for display / return.
 
@@ -3432,6 +3622,8 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 	'''
 	if errors_only is None:
 		errors_only = quiet
+	if keyPressesIn is None:
+		keyPressesIn = [[]]
 	color_cap = get_terminal_color_capability()
 	if errors_only:
 		# remove hosts with returncode 0
@@ -3529,8 +3721,77 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	return rtnStr
 
 #%% ------------ Run / Process Hosts Block ----------------
-def _unavailable_hosts_file_path():
-	return os.path.join(tempfile.gettempdir(), "__{}_multiSSH3_UNAVAILABLE_HOSTS.csv".format(getpass.getuser()))
+def _private_dir(path, create=True):
+	'''
+	Return True if path is a directory only we control, creating it (mode 0700) if create.
+
+	A directory in a shared place like /tmp could have been created by someone else first,
+	so it must not be a symlink, must be owned by us and must not be accessible to others.
+	Without create, nothing is changed on disk.
+	'''
+	if create:
+		try:
+			os.mkdir(path, 0o700)
+		except FileExistsError:
+			pass
+		except OSError:
+			return False
+	try:
+		st = os.lstat(path)
+	except OSError:
+		return False
+	if not stat.S_ISDIR(st.st_mode):
+		return False
+	if not hasattr(os, 'getuid'):
+		return True
+	if st.st_uid != os.getuid():
+		return False
+	if st.st_mode & 0o022:
+		# others could already have put files in it
+		return False
+	if st.st_mode & 0o077:
+		if not create:
+			return False
+		# ours but readable by others (an older tool or the user made it), tighten it
+		try:
+			os.chmod(path, 0o700)
+			st = os.lstat(path)
+		except OSError:
+			return False
+	return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+def _owned_and_not_writable_by_others(path):
+	'''Whether path exists, is owned by us and only we can write to it.'''
+	if not hasattr(os, 'getuid'):
+		return True
+	try:
+		st = os.stat(path)
+	except OSError:
+		return False
+	return st.st_uid == os.getuid() and not st.st_mode & 0o022
+
+def _unavailable_hosts_file_path(create=True):
+	'''
+	Where unavailable hosts are cached between runs, or None to run without the cache.
+
+	create: set up the private cache directory (for writing). Without it only an existing one
+	is used, so reading the cache changes nothing on disk.
+
+	The per-user runtime dir ($XDG_RUNTIME_DIR) is private and cleared at reboot. Without
+	it (cron, su, non systemd), a private directory in the temp dir is used. The home
+	directory is avoided so mssh keeps working when it is full or read-only.
+	'''
+	user_id = os.getuid() if hasattr(os, 'getuid') else getpass.getuser()
+	candidates = []
+	runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
+	# with another user's environment (sudo -E, su) the runtime dir is theirs, they could swap our subdirectory
+	if runtime_dir and _owned_and_not_writable_by_others(runtime_dir):
+		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
+	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
+	for cache_dir in candidates:
+		if _private_dir(cache_dir, create):
+			return os.path.join(cache_dir, 'unavailable_hosts.csv')
+	return None
 
 
 def _get_boot_id():
@@ -3602,6 +3863,9 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 		for host, expiry in unavailable_hosts.items()
 		if host not in available and int(expiry) > current_time
 	}
+	if not path:
+		# no private place for the cache, keep the state in memory only
+		return clean
 	boot_id = _get_boot_id()
 	temporary_path = "{}.{}".format(path, uuid4().hex)
 	try:
@@ -3614,7 +3878,9 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 			os.fsync(handle.fileno())
 		os.replace(temporary_path, path)
 	except Exception as exc:
-		eprint("Error writing unavailable hosts to {!r}: {}".format(path, exc))
+		# the cache is optional, a full or read-only disk must not warn on every run
+		if __DEBUG_MODE:
+			eprint("Error writing unavailable hosts to {!r}: {}".format(path, exc))
 		try:
 			if os.path.exists(temporary_path):
 				os.unlink(temporary_path)
@@ -3630,29 +3896,39 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
+	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
+	for host in hosts:
+		host.interactive_stdin = use_tui
+	global _commands_started
+	_commands_started = True
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
-	if __curses_available and not no_watch and threads and not return_unfinished  and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
-		total_sleeped = 0
-		while any([host.returncode is None for host in hosts]):
-			time.sleep(sleep_interval)  # avoid busy-waiting
-			total_sleeped += sleep_interval
-			if sleep_interval < 0.001:
-				sleep_interval *= 2
-			elif sleep_interval < 0.01:
-				sleep_interval *= 1.1
-			if total_sleeped > 0.1:
-				break
-		if any([host.returncode is None for host in hosts]):
-			try:
-				curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
-			except Exception:
+	if use_tui and threads:
+		try:
+			total_sleeped = 0
+			while any([host.returncode is None for host in hosts]):
+				time.sleep(sleep_interval)  # avoid busy-waiting
+				total_sleeped += sleep_interval
+				if sleep_interval < 0.001:
+					sleep_interval *= 2
+				elif sleep_interval < 0.01:
+					sleep_interval *= 1.1
+				if total_sleeped > 0.1:
+					break
+			if any([host.returncode is None for host in hosts]):
 				try:
-					os.environ['TERM'] = 'xterm-256color'
 					curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
-				except Exception as e:
-					eprint(f"Curses print error: {e}")
-					import traceback
-					print(traceback.format_exc())
+				except Exception:
+					try:
+						os.environ['TERM'] = 'xterm-256color'
+						curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
+					except Exception as e:
+						eprint(f"Curses print error: {e}")
+						import traceback
+						print(traceback.format_exc())
+		finally:
+			# the TUI is gone (finished, ESC, or failed): commands still running get end of input
+			for host in hosts:
+				host.interactive_stdin = False
 	if not return_unfinished:
 		# wait until all hosts have a return code
 		while any([host.returncode is None for host in hosts]):
@@ -3696,6 +3972,27 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 
 
 #%% ------------ Stringfy Block ----------------
+def _shell_quote(text):
+	'''
+	Quote text so a shell reads it back unchanged.
+
+	Text with newlines or other control characters uses bash / zsh $'...' quoting,
+	keeping it on one line (one history entry per line).
+	'''
+	text = str(text)
+	if not any(ord(char) < 32 or ord(char) == 127 for char in text):
+		return shlex.quote(text)
+	escapes = {'\\': '\\\\', "'": "\\'", '\n': '\\n', '\t': '\\t', '\r': '\\r'}
+	quoted = []
+	for char in text:
+		if char in escapes:
+			quoted.append(escapes[char])
+		elif ord(char) < 32 or ord(char) == 127:
+			quoted.append('\\x{:02x}'.format(ord(char)))
+		else:
+			quoted.append(char)
+	return "$'" + ''.join(quoted) + "'"
+
 def formHostStr(host) -> str:
 	"""
 	Forms a comma-separated string of hosts.
@@ -3801,7 +4098,8 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	no_history = kwargs.get('no_history', DEFAULT_NO_HISTORY)
 	history_file = kwargs.get('history_file', DEFAULT_HISTORY_FILE)
 	env_file = kwargs.get('env_file', '')
-	env_files = kwargs.get('env_files', DEFAULT_ENV_FILES)
+	# only env files given explicitly: listing the defaults would make a replayed line trust them all
+	env_files = kwargs.get('env_files', ())
 	repeat = kwargs.get('repeat', DEFAULT_REPEAT)
 	interval = kwargs.get('interval', DEFAULT_INTERVAL)
 	argsList = []
@@ -3814,9 +4112,9 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	if interval and interval != DEFAULT_INTERVAL:
 		argsList.append(f'--interval={interval}' if not shortend else f'-i={interval}')
 	if password and password != DEFAULT_PASSWORD:
-		argsList.append(f'--password="{password}"' if not shortend else f'-p="{password}"')
+		argsList.append(f'--password={_shell_quote(password)}' if not shortend else f'-p={_shell_quote(password)}')
 	if identity_file and identity_file != DEFAULT_IDENTITY_FILE:
-		argsList.append(f'--key="{identity_file}"' if not shortend else f'-k="{identity_file}"')
+		argsList.append(f'--key={_shell_quote(identity_file)}' if not shortend else f'-k={_shell_quote(identity_file)}')
 	if copy_id:
 		argsList.append('--copy_id' if not shortend else '-ci')
 	if no_watch:
@@ -3826,19 +4124,19 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS:
 		argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
 	if file:
-		argsList.extend([f'--file="{file}"' for file in file] if not shortend else [f'-f="{file}"' for file in file])
+		argsList.extend([f'--file={_shell_quote(file)}' for file in file] if not shortend else [f'-f={_shell_quote(file)}' for file in file])
 	if ipmi:
 		argsList.append('--ipmi')
 	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX:
-		argsList.append(f'--interface_ip_prefix="{interface_ip_prefix}"' if not shortend else f'-pre="{interface_ip_prefix}"')
+		argsList.append(f'--interface_ip_prefix={_shell_quote(interface_ip_prefix)}' if not shortend else f'-pre={_shell_quote(interface_ip_prefix)}')
 	if scp:
 		argsList.append('--scp')
 	if gather_mode:
 		argsList.append('--gather_mode' if not shortend else '-gm')
 	if username and username != DEFAULT_USERNAME:
-		argsList.append(f'--username="{username}"' if not shortend else f'-u="{username}"')
+		argsList.append(f'--username={_shell_quote(username)}' if not shortend else f'-u={_shell_quote(username)}')
 	if extraargs and extraargs != DEFAULT_EXTRA_ARGS:
-		argsList.append(f'--extraargs="{extraargs}"' if not shortend else f'-ea="{extraargs}"')
+		argsList.append(f'--extraargs={_shell_quote(extraargs)}' if not shortend else f'-ea={_shell_quote(extraargs)}')
 	if skip_unreachable:
 		argsList.append('--skip_unreachable' if not shortend else '-su')
 	else:
@@ -3848,19 +4146,19 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	if no_env:
 		argsList.append('--no_env')
 	if env_file:
-		argsList.append(f'--env_file="{env_file}"' if not shortend else f'-ef="{env_file}"')
+		argsList.append(f'--env_file={_shell_quote(env_file)}' if not shortend else f'-ef={_shell_quote(env_file)}')
 	if env_files:
-		argsList.extend([f'--env_files="{ef}"' for ef in env_files] if not shortend else [f'-efs="{ef}"' for ef in env_files])
+		argsList.extend([f'--env_files={_shell_quote(ef)}' for ef in env_files] if not shortend else [f'-efs={_shell_quote(ef)}' for ef in env_files])
 	if no_history:
 		argsList.append('--no_history' if not shortend else '-nh')
 	if history_file and history_file != DEFAULT_HISTORY_FILE:
-		argsList.append(f'--history_file="{history_file}"' if not shortend else f'-hf="{history_file}"')
+		argsList.append(f'--history_file={_shell_quote(history_file)}' if not shortend else f'-hf={_shell_quote(history_file)}')
 	if greppable:
 		argsList.append('--greppable' if not shortend else '-g')
 	if error_only:
 		argsList.append('--error_only' if not shortend else '-eo')
 	if skip_hosts and skip_hosts != DEFAULT_SKIP_HOSTS:
-		argsList.append(f'--skip_hosts="{skip_hosts}"' if not shortend else f'-sh="{skip_hosts}"')
+		argsList.append(f'--skip_hosts={_shell_quote(skip_hosts)}' if not shortend else f'-sh={_shell_quote(skip_hosts)}')
 	if file_sync:
 		argsList.append('--file_sync' if not shortend else '-fs')
 	return ' '.join(argsList)
@@ -3881,10 +4179,10 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 	if commandArgKwargs.get('file'):
 		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
-	commands = [command.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') for command in format_commands(commands)]
-	commandStr = '"' + '" "'.join(commands) + '"' if commands else ''
+	commandStr = ' '.join(_shell_quote(command) for command in format_commands(commands))
+	hostStr = _shell_quote(hostStr)
 	filePath = os.path.abspath(__file__)
-	programName = filePath if filePath else 'mssh'
+	programName = _shell_quote(filePath) if filePath else 'mssh'
 	if tabSeperated:
 		return f'{programName}\t{argsStr}\t{hostStr}\t{commandStr}'
 	else:
@@ -3905,6 +4203,8 @@ def record_command_history(kwargs):
 	global __DEBUG_MODE
 	try:
 		historyKwargs = dict(kwargs)
+		# run_command_on_hosts passes its locals(): options it does not name (repeat, env_files, ...) sit in its **kwargs
+		historyKwargs.update(historyKwargs.pop('kwargs', None) or {})
 		historyKwargs['shortend'] = True
 		historyKwargs['tabSeperated'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
@@ -3925,14 +4225,14 @@ def record_command_history(kwargs):
 
 #%% ------------ Main Block ----------------
 def _normalize_max_connections(max_connections):
-	cpu_default = 4 * os.cpu_count()
+	cpu_default = 4 * _cpu_count()
 	safe_limit = __max_connections_nofile_limit_supported
 	if max_connections is None:
 		normalized = cpu_default
 	elif max_connections == 0:
 		normalized = safe_limit if safe_limit > 0 else cpu_default
 	elif max_connections < 0:
-		normalized = (-max_connections) * os.cpu_count()
+		normalized = (-max_connections) * _cpu_count()
 	else:
 		normalized = max_connections
 	if safe_limit > 0 and normalized > safe_limit:
@@ -4009,15 +4309,19 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
 	global __keyPressesIn
-	_emo = False
+	if called:
+		# a library call starts fresh; on the CLI a Ctrl-C (e.g. in an earlier --repeat run) stands
+		_emo = False
 	_no_env = no_env
+	_reported_invalid_hosts.clear()
+	_refresh_expansion_caches()
 	if not no_history:
 		_ = history_file
 		record_command_history(locals())
 	if error_only:
 		__global_suppress_printout = True
-	unavailable_path = _unavailable_hosts_file_path()
-	if os.path.exists(unavailable_path):
+	unavailable_path = _unavailable_hosts_file_path(create=False)
+	if unavailable_path and os.path.exists(unavailable_path):
 		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path, max_ttl=unavailable_host_expiry)
 		__globalUnavailableHosts.update(loaded_unavailable)
 		if loaded_unavailable and not __global_suppress_printout:
@@ -4089,7 +4393,10 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if __DEBUG_MODE:
 		eprint(f"Target hosts: {targetHostDic!r}")
 	skipHostsDic = expand_hostnames(skipHostStr.split(','))
-	skipHostSet = set(skipHostsDic).union(skipHostsDic.values())
+	if _emo:
+		_abort(1, 'Ctrl C caught, not starting the command', called=called)
+	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
+	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
 		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
 	if copy_id:
@@ -4130,13 +4437,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		# try to resolve files first (like * etc)
 		if not gather_mode:
 			pathSet = set()
-			for file in file:
+			for pattern in file:
 				try:
-					pathSet.update(glob.glob(file,include_hidden=True,recursive=True))
+					pathSet.update(glob.glob(pattern,include_hidden=True,recursive=True))
 				except Exception:
-					pathSet.update(glob.glob(file,recursive=True))
+					pathSet.update(glob.glob(pattern,recursive=True))
 			if not pathSet:
-				_abort(66, f'No source files at {file!r} are found after resolving globs!', called=called)
+				_abort(66, f'No source files at {sorted(file)!r} are found after resolving globs!', called=called)
 		else:
 			pathSet = set(file)
 		if file_sync:
@@ -4187,7 +4494,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			for host in targetHostDic:
 				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 					if not __global_suppress_printout:
-						print(f"Skipping unavailable host: {host}")
+						eprint(f"Skipping unavailable host: {host}")
 					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
@@ -4212,11 +4519,14 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
 			return hosts
 		for command in commands:
+			if _emo:
+				# Ctrl-C during an earlier command: run no more
+				break
 			hosts = []
 			for host in targetHostDic:
 				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 					if not __global_suppress_printout:
-						print(f"Skipping unavailable host: {host}")
+						eprint(f"Skipping unavailable host: {host}")
 					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
@@ -4286,7 +4596,7 @@ def generate_default_config(args):
 		'DEFAULT_ENV_FILES': DEFAULT_ENV_FILES + args.env_files,
 		'DEFAULT_NO_HISTORY': args.no_history,
 		'DEFAULT_HISTORY_FILE': args.history_file,
-		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * os.cpu_count() else None,
+		'DEFAULT_MAX_CONNECTIONS': args.max_connections if args.max_connections != 4 * _cpu_count() else None,
 		'DEFAULT_JSON_MODE': args.json,
 		'DEFAULT_PRINT_SUCCESS_HOSTS': args.success_hosts,
 		'DEFAULT_GREPPABLE_MODE': args.greppable,
@@ -4297,6 +4607,15 @@ def generate_default_config(args):
 		'DEFAULT_DIFF_DISPLAY_THRESHOLD': args.diff_display_threshold,
 		'FORCE_TRUECOLOR': args.force_truecolor,
 	}
+
+def _is_system_config_path(path):
+	'''Whether path is one of the absolute (system-wide) locations in CONFIG_FILE_CHAIN.'''
+	target = os.path.abspath(os.path.expanduser(path))
+	return any(
+		os.path.abspath(entry) == target
+		for entry in CONFIG_FILE_CHAIN
+		if os.path.isabs(entry)
+	)
 
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
@@ -4319,9 +4638,20 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			backup = False
 		else:
 			_exit_with_code(0, "Aborted by user, no config file written")
+	# neither the new file nor the backup may end up more open than the old file was
+	try:
+		previous_mode = stat.S_IMODE(os.stat(CONFIG_FILE).st_mode)
+	except OSError:
+		previous_mode = None
 	try:
 		if backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
+			# the backup holds the old passwords: owner only
+			if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
+				try:
+					os.chmod(CONFIG_FILE+'.bak', previous_mode & 0o600)
+				except OSError:
+					pass
 	except Exception as e:
 		eprint(f"Error: Unable to backup the config file: {e!r}")
 		eprint(f"Do you want to continue writing the new config file to {CONFIG_FILE!r}? (y/n)")
@@ -4329,13 +4659,69 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		if not inStr or not inStr.lower().strip().startswith('y'):
 			_exit_with_code(0, "Aborted by user, no config file written")
 	try:
-		with open(CONFIG_FILE,'w') as f:
-			json.dump(__configs_from_file,f,indent=4)
+		# configs can hold passwords: owner only, except the system-wide locations every user reads
+		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
+		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
+		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
+		if os.path.islink(CONFIG_FILE) and hasattr(os, 'getuid') and os.lstat(CONFIG_FILE).st_uid not in (os.getuid(), 0):
+			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
+		target = os.path.realpath(CONFIG_FILE)
+		try:
+			st = os.stat(target)
+		except FileNotFoundError:
+			st = None
+		if st is None or not hasattr(os, 'getuid') or st.st_uid == os.getuid():
+			# new or ours: write a temporary file and rename it over, a failure never empties the old config
+			if st is not None:
+				# only tighten an existing file, an admin may have locked it down further
+				new_mode = stat.S_IMODE(st.st_mode) & mode
+			else:
+				# a file replacing a backed up one keeps its tighter mode
+				new_mode = mode if previous_mode is None else previous_mode & mode
+			temporary = '{}.{}.tmp'.format(target, uuid4().hex)
+			fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, new_mode)
+			try:
+				with os.fdopen(fd, 'w') as f:
+					if hasattr(os, 'fchmod'):
+						# O_CREAT's mode is reduced by the umask, set it exactly
+						os.fchmod(f.fileno(), new_mode)
+					if st is not None and hasattr(os, 'chown'):
+						try:
+							os.chown(temporary, -1, st.st_gid)
+						except OSError:
+							pass
+					json.dump(__configs_from_file,f,indent=4)
+					f.flush()
+					os.fsync(f.fileno())
+				os.replace(temporary, target)
+			except BaseException:
+				try:
+					os.unlink(temporary)
+				except OSError:
+					pass
+				raise
+		else:
+			# someone else's file we can write to: renaming over it would take it over, write it in place
+			new_mode = stat.S_IMODE(st.st_mode) & mode
+			fd = os.open(target, os.O_WRONLY)
+			with os.fdopen(fd, 'w') as f:
+				if hasattr(os, 'fchmod'):
+					try:
+						os.fchmod(fd, new_mode)
+					except OSError:
+						pass
+				# only write the passwords if it is no more open than new_mode
+				if stat.S_IMODE(os.fstat(fd).st_mode) & ~new_mode:
+					raise PermissionError('cannot restrict the permissions of {!r} to {:o}, not writing passwords to it'.format(CONFIG_FILE, new_mode))
+				f.truncate()
+				json.dump(__configs_from_file,f,indent=4)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
+		return True
 	except Exception as e:
 		eprint(f"Error: Unable to write to the config file: {e!r}")
 		eprint('Printing the config file to stdout:')
 		print(json.dumps(__configs_from_file, indent=4))
+		return False
 
 #%% ------------ Argument Processing -----------------
 def _positive_int(value):
@@ -4425,7 +4811,7 @@ def process_args(args = None):
 		cfpa, args = cfp.parse_known_args(args)
 		if cfpa.config_file:
 			if os.path.exists(cfpa.config_file):
-				configs = load_config_file(os.path.expanduser(cfpa.config_file))
+				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
 				apply_config_key_compat(configs)
 				globals().update(configs)
 				__configs_from_file.update(configs)
@@ -4512,9 +4898,10 @@ def process_config_file(args):
 				configFileToWriteTo = args.store_config_file
 		else:
 			configFileToWriteTo = None
-		write_default_config(args,configFileToWriteTo,force=args.generate_config_file)
+		written = write_default_config(args,configFileToWriteTo,force=args.generate_config_file)
 		if not args.commands and not args.file:
-			if configFileToWriteTo:
+			# a failed write already printed the new config, the file holds the old one (or nothing)
+			if configFileToWriteTo and written:
 				with open(configFileToWriteTo,'r') as f:
 					eprint(f"Config file {configFileToWriteTo} content: \n{f.read()}")
 			_exit_with_code(0)
@@ -4582,7 +4969,9 @@ def process_control_master_config(args):
 
 def set_global_with_args(args):
 	global _emo
+	global _no_env
 	global _env_files
+	global _explicit_env_files
 	global __DEBUG_MODE
 	global _encoding
 	global __returnZero
@@ -4594,6 +4983,13 @@ def set_global_with_args(args):
 		_env_files = [args.env_file]
 	else:
 		_env_files = DEFAULT_ENV_FILES + args.env_files if args.env_files else DEFAULT_ENV_FILES
+	_explicit_env_files = {
+		os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+		for path in ([args.env_file] if args.env_file else []) + list(args.env_files or [])
+	}
+	# set before main() echoes the command, which already expands the hosts
+	_no_env = args.no_env
+	_refresh_expansion_caches()
 	__DEBUG_MODE = args.debug
 	_encoding = args.encoding
 	if args.return_zero:
@@ -4628,23 +5024,32 @@ def main(args = None):
 	if args.error_only:
 		__global_suppress_printout = True
 
+	# failures in every repeat count towards the exit code, not only the last run. Only names are kept
+	# between runs, a long --repeat loop must not hold every run's output
+	failedHostNames = set()
+	succeededHosts = set()
+	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
+	if not args.no_history:
+		record_command_history(vars(args))
+	runArgs = dict(vars(args), no_history=True)
 	for i in range(args.repeat):
+		if _emo:
+			# Ctrl-C during an earlier run: no more repeats
+			break
 		if i > 0 and args.interval > 0:
 			eprint(f"Sleeping for {args.interval} seconds")
 			time.sleep(args.interval)
 
 		if not __global_suppress_printout: 
 			eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
-		hosts = run_command_on_hosts(**vars(args),called=False)
-		#print('*'*80)
-		#if not __global_suppress_printout: eprint('-'*80)
-	succeededHosts = set()
-	for host in hosts:
-		if host.returncode and host.returncode != 0:
-			__mainReturnCode += 1
-			__failedHosts.add(host.name)
-		else:
-			succeededHosts.add(host.name)
+		for host in run_command_on_hosts(**runArgs,called=False):
+			if host.returncode and host.returncode != 0:
+				failedHostNames.add(host.name)
+			else:
+				succeededHosts.add(host.name)
+	# each failing host counts once, however many runs or commands it failed
+	__mainReturnCode += len(failedHostNames)
+	__failedHosts |= failedHostNames
 	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
 	if __mainReturnCode > 0:

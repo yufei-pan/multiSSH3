@@ -111,11 +111,20 @@ def run_cli(args, timeout=30, check=False):
 
 
 def _clear_expand_caches():
+	# every memoized resolution / env result, so tests cannot see each other's lookups
+	getattr(multiSSH3, "_dns_cache", {}).clear()
+	multiSSH3.__expansion_env_state = None
+	getattr(multiSSH3, "_consulted_env", {}).clear()
+	getattr(multiSSH3, "_reported_invalid_hosts", set()).clear()
 	for name in (
+		"getIP",
+		"readEnvFromFile",
 		"__validate_expand_hostname",
 		"__expandIPv4Address",
 		"__expand_hostname",
 		"__expand_hostnames",
+		"_ssh_config_target",
+		"_ssh_config_values",
 		"get_terminal_color_capability",
 		"rgb_to_ansi_color_string",
 		"int_to_unique_ansi_color",
@@ -129,7 +138,9 @@ def _clear_expand_caches():
 def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,
+		"_commands_started": multiSSH3._commands_started,
 		"_env_files": list(multiSSH3._env_files),
+		"_explicit_env_files": set(multiSSH3._explicit_env_files),
 		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
 		"__keyPressesIn": [list(line) for line in multiSSH3.__keyPressesIn],
 		"DEFAULT_IPMI_DEFINITIONS": [dict(item) for item in multiSSH3.DEFAULT_IPMI_DEFINITIONS],
@@ -154,6 +165,7 @@ def restore_module_globals():
 	for k, v in saved.items():
 		if k in (
 			"_env_files",
+			"_explicit_env_files",
 			"__globalUnavailableHosts",
 			"__keyPressesIn",
 			"DEFAULT_IPMI_DEFINITIONS",
@@ -164,6 +176,7 @@ def restore_module_globals():
 			continue
 		setattr(multiSSH3, k, v)
 	multiSSH3._env_files = list(saved["_env_files"])
+	multiSSH3._explicit_env_files = set(saved["_explicit_env_files"])
 	multiSSH3.__globalUnavailableHosts = dict(saved["__globalUnavailableHosts"])
 	multiSSH3.__keyPressesIn = [list(line) for line in saved["__keyPressesIn"]]
 	multiSSH3.DEFAULT_IPMI_DEFINITIONS = [dict(item) for item in saved["DEFAULT_IPMI_DEFINITIONS"]]

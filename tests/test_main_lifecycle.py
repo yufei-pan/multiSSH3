@@ -54,6 +54,7 @@ def test_record_command_history_writes_timestamped_command(tmp_path, monkeypatch
 
 def test_signal_handler_first_interrupt_sets_emergency_stop(monkeypatch, capsys):
 	monkeypatch.setattr(multiSSH3, "_emo", False)
+	monkeypatch.setattr(multiSSH3, "_commands_started", True)  # commands are running
 	multiSSH3.signal_handler(None, None)
 
 	assert multiSSH3._emo is True
@@ -73,6 +74,7 @@ def test_signal_handler_second_interrupt_kills_only_own_children(monkeypatch):
 	commands = []
 	child, dead_child = Proc(), DeadProc()
 	monkeypatch.setattr(multiSSH3, "_emo", True)
+	monkeypatch.setattr(multiSSH3, "_commands_started", True)
 	monkeypatch.setattr(multiSSH3, "__running_procs", {child, dead_child})
 	monkeypatch.setattr(multiSSH3.os, "system", lambda command: commands.append(command))
 
@@ -154,7 +156,7 @@ def test_exit_with_code_caps_status_at_255(monkeypatch):
 
 def test_main_counts_each_failed_host_when_outputs_merge(monkeypatch, tmp_path, capsys):
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
 	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
 
@@ -185,3 +187,194 @@ def test_record_command_history_creates_owner_only_file(tmp_path):
 
 	assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 	assert "secret" in path.read_text()
+
+
+def _names_only_resolve_ips(hostname, local=False):
+	# keep host validation hermetic: IP literals resolve, names do not
+	return hostname if hostname[:1].isdigit() else None
+
+
+def test_main_no_env_ignores_environment_host_aliases(monkeypatch, tmp_path):
+	monkeypatch.setenv("MSSH_TEST_ENV_HOSTS", "127.0.0.2")
+	monkeypatch.setattr(multiSSH3, "getIP", _names_only_resolve_ips)
+	ran = []
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: ran.extend(h.name for h in kwargs["hosts"]))
+
+	# main() echoes the command (expanding hosts) before it runs it
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["--no_env", "-q", "--no_history", "-ef", str(tmp_path / "none.env"), "MSSH_TEST_ENV_HOSTS", "true"])
+
+	assert ran == []
+
+
+def test_main_counts_failures_from_every_repeat(fake_host, monkeypatch, capsys):
+	return_codes = iter([7, 0, 0])
+
+	def fake_run(**kwargs):
+		host = fake_host("flaky", "check")
+		host.returncode = next(return_codes)
+		return [host]
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["127.0.0.1", "check", "--repeat", "3", "--no_history"])
+
+	assert exc_info.value.code == 1
+	assert "failed_hosts: flaky" in capsys.readouterr().err
+
+
+def test_main_repeat_counts_failing_hosts_once_and_releases_old_runs(fake_host, monkeypatch, capsys):
+	import gc
+	import weakref
+
+	earlier_runs = []
+
+	def fake_run(**kwargs):
+		gc.collect()
+		assert all(ref() is None for ref in earlier_runs)  # earlier runs' output is not kept
+		hosts = [fake_host("bad1", "check"), fake_host("bad2", "check")]
+		for host in hosts:
+			host.returncode = 1
+		earlier_runs.append(weakref.ref(hosts[0]))
+		return hosts
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["127.0.0.1", "check", "--repeat", "3", "--no_history"])
+
+	assert exc_info.value.code == 2  # two hosts failed, not 2 x 3 runs
+	assert "count: 2" in capsys.readouterr().err
+
+
+def test_history_records_the_cli_options_not_the_default_env_files(monkeypatch, tmp_path):
+	history = tmp_path / "history"
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: None)
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["127.0.0.1", "true", "--repeat", "2", "-hf", str(history)])
+
+	line = history.read_text().splitlines()[0]
+	# replaying -efs=... would mark every default env file explicit, skipping the ownership check
+	assert "-efs=" not in line
+	assert "-r=2" in line
+
+
+def test_main_repeat_counts_hosts_failing_in_different_runs(fake_host, monkeypatch, capsys):
+	failing = iter(["hostA", "hostB"])
+
+	def fake_run(**kwargs):
+		host = fake_host(next(failing), "check")
+		host.returncode = 1
+		return [host]
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["127.0.0.1", "check", "--repeat", "2", "--no_history"])
+
+	assert exc_info.value.code == 2
+	assert "failed_hosts: hostA,hostB" in capsys.readouterr().err
+
+
+def test_repeated_command_is_recorded_in_history_once(monkeypatch, tmp_path):
+	history = tmp_path / "history"
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: None)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["127.0.0.1", "true", "--repeat", "3", "-hf", str(history)])
+
+	lines = history.read_text().splitlines()
+	assert len(lines) == 1  # replaying it repeats 3 times, not 3 x 3
+	assert "-r=3" in lines[0]
+
+
+def test_one_ctrl_c_before_any_command_starts_runs_nothing(tmp_path):
+	import signal
+	import subprocess
+	import sys
+	import time
+	from pathlib import Path
+
+	marker = tmp_path / "ran"
+	script = tmp_path / "mssh_slow_lookup.py"
+	script.write_text(
+		"import sys, time\n"
+		"sys.path.insert(0, {root!r})\n"
+		"import multiSSH3\n"
+		"multiSSH3._resolve_dns = lambda hostname: time.sleep(3)\n"
+		"multiSSH3._ssh_config_target = lambda hostname: None\n"
+		"prefetch = multiSSH3._prefetch_ips\n"
+		"def announce(names):\n"
+		"    print('resolving', flush=True)\n"
+		"    prefetch(names)\n"
+		"multiSSH3._prefetch_ips = announce\n"
+		"multiSSH3.processRunOnHosts = lambda **kwargs: open({marker!r}, 'w').close()\n"
+		"multiSSH3.main(['-q', '-I', 'slowhost[1-64]', 'reboot'])\n".format(
+			root=str(Path(multiSSH3.__file__).resolve().parent), marker=str(marker)))
+	proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmp_path)
+	assert proc.stdout.readline().strip() == b"resolving"
+	time.sleep(0.3)
+	started = time.monotonic()
+	proc.send_signal(signal.SIGINT)  # once
+	try:
+		proc.wait(timeout=20)
+	finally:
+		proc.kill()
+
+	assert time.monotonic() - started < 2
+	assert proc.returncode == 1
+	assert not marker.exists()  # reboot was not sent to any host
+
+
+def test_ctrl_c_during_a_run_skips_the_remaining_repeats(fake_host, monkeypatch):
+	runs = []
+
+	def fake_run(**kwargs):
+		runs.append(1)
+		multiSSH3._emo = True  # Ctrl-C while the command runs
+		host = fake_host("mock-a", "true")
+		host.returncode = 137
+		return [host]
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["127.0.0.1", "true", "--repeat", "3", "--no_history"])
+
+	assert len(runs) == 1
+
+
+def test_cli_run_does_not_start_after_a_ctrl_c(monkeypatch):
+	ran = []
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: ran.append(1))
+	monkeypatch.setattr(multiSSH3, "_emo", True)  # e.g. pressed during the previous repeat
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.run_command_on_hosts(hosts="127.0.0.1", commands=["true"], no_watch=True, quiet=True,
+			no_history=True, called=False, will_update_unreachable_hosts=False)
+
+	assert exc_info.value.code == 1
+	assert ran == []
+
+
+def test_ctrl_c_during_the_first_command_skips_the_next(monkeypatch):
+	ran = []
+
+	def fake_process(**kwargs):
+		ran.append(kwargs["hosts"][0].command)
+		multiSSH3._emo = True
+
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", fake_process)
+	monkeypatch.setattr(multiSSH3, "_emo", False)
+
+	multiSSH3.run_command_on_hosts(hosts="127.0.0.1", commands=["first", "second"], no_watch=True, quiet=True,
+		no_history=True, called=False, will_update_unreachable_hosts=False)
+
+	assert ran == ["first"]
