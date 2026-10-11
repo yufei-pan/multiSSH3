@@ -239,7 +239,7 @@ When hostname need to be resolved, mssh will check in the following order:
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - Lookup using `socket.getaddrinfo()` to query dns server ( IPv4 preferred, IPv6 accepted ). Names are looked up in parallel.
-- If the ssh config (`ssh -G`) maps the name to another `HostName` or through a `ProxyJump` / `ProxyCommand`, it is valid ( `#IP#` uses the `HostName`'s address when it resolves ). Catch-all blocks such as `Host *` do not count, so typos are still rejected.
+- If the ssh config (`ssh -G`) maps the name to another `HostName` or through a `ProxyJump` / `ProxyCommand`, it is valid ( `#IP#` uses the `HostName`'s address when it resolves ). A catch-all block such as `Host *` only counts when it gives the name a `HostName` that resolves (e.g. `HostName %h.corp.example`), so typos are still rejected.
 
 > TLDR:
 >
