@@ -66,7 +66,7 @@ def test_no_env_change_between_library_calls_is_honoured(monkeypatch, tmp_path):
 @pytest.mark.parametrize("commands", [["true"], None], ids=["command", "interactive"])
 def test_skipped_unreachable_host_message_goes_to_stderr(monkeypatch, tmp_path, capsys, commands):
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: None)
 	multiSSH3.__globalUnavailableHosts["127.0.0.9"] = int(multiSSH3.time.monotonic() + 300)
 

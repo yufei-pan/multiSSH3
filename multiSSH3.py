@@ -3689,19 +3689,21 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	return rtnStr
 
 #%% ------------ Run / Process Hosts Block ----------------
-def _private_dir(path):
+def _private_dir(path, create=True):
 	'''
-	Create path (mode 0700) if missing and return True if it is a directory only we control.
+	Return True if path is a directory only we control, creating it (mode 0700) if create.
 
 	A directory in a shared place like /tmp could have been created by someone else first,
 	so it must not be a symlink, must be owned by us and must not be accessible to others.
+	Without create, nothing is changed on disk.
 	'''
-	try:
-		os.mkdir(path, 0o700)
-	except FileExistsError:
-		pass
-	except OSError:
-		return False
+	if create:
+		try:
+			os.mkdir(path, 0o700)
+		except FileExistsError:
+			pass
+		except OSError:
+			return False
 	try:
 		st = os.lstat(path)
 	except OSError:
@@ -3716,6 +3718,8 @@ def _private_dir(path):
 		# others could already have put files in it
 		return False
 	if st.st_mode & 0o077:
+		if not create:
+			return False
 		# ours but readable by others (an older tool or the user made it), tighten it
 		try:
 			os.chmod(path, 0o700)
@@ -3734,9 +3738,12 @@ def _owned_and_not_writable_by_others(path):
 		return False
 	return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
-def _unavailable_hosts_file_path():
+def _unavailable_hosts_file_path(create=True):
 	'''
 	Where unavailable hosts are cached between runs, or None to run without the cache.
+
+	create: set up the private cache directory (for writing). Without it only an existing one
+	is used, so reading the cache changes nothing on disk.
 
 	The per-user runtime dir ($XDG_RUNTIME_DIR) is private and cleared at reboot. Without
 	it (cron, su, non systemd), a private directory in the temp dir is used. The home
@@ -3750,7 +3757,7 @@ def _unavailable_hosts_file_path():
 		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for cache_dir in candidates:
-		if _private_dir(cache_dir):
+		if _private_dir(cache_dir, create):
 			return os.path.join(cache_dir, 'unavailable_hosts.csv')
 	return None
 
@@ -4277,7 +4284,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		record_command_history(locals())
 	if error_only:
 		__global_suppress_printout = True
-	unavailable_path = _unavailable_hosts_file_path()
+	unavailable_path = _unavailable_hosts_file_path(create=False)
 	if unavailable_path and os.path.exists(unavailable_path):
 		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path, max_ttl=unavailable_host_expiry)
 		__globalUnavailableHosts.update(loaded_unavailable)

@@ -154,7 +154,7 @@ def test_exit_with_code_caps_status_at_255(monkeypatch):
 
 def test_main_counts_each_failed_host_when_outputs_merge(monkeypatch, tmp_path, capsys):
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
 	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
 

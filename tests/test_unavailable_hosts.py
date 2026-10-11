@@ -73,7 +73,7 @@ def test_process_run_marks_timeout_unavailable(tmp_path, fake_host, monkeypatch)
 	unavailable = {}
 	monkeypatch.setattr(multiSSH3.tempfile, "gettempdir", lambda: str(tmp_path))
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(path))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(path))
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda *args, **kwargs: [])
 
 	multiSSH3.processRunOnHosts(
@@ -105,7 +105,7 @@ def test_process_run_marks_timeout_unavailable_when_late_stderr_follows_marker(
 	host.stderr = ["Timeout!", "late child stderr"]
 	unavailable = {}
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(path))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(path))
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda *args, **kwargs: [])
 
 	multiSSH3.processRunOnHosts(
@@ -134,7 +134,7 @@ def test_run_on_hosts_without_skipping_preserves_unrelated_unavailable_records(
 	path.write_text("#boot_id,boot-a\navailable-now,{}\nstill-down,{}\n".format(expiry, expiry))
 	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(path))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(path))
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
 
 	def finish_hosts(hosts, **kwargs):
@@ -261,7 +261,7 @@ def test_process_run_without_cache_location_keeps_state_in_memory(fake_host, mon
 	host.stderr = ["Timeout!"]
 	unavailable = {}
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: None)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: None)
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda *args, **kwargs: [])
 
 	multiSSH3.processRunOnHosts(timeout=1, password=None, max_connections=1, hosts=[host], return_unfinished=False,
@@ -273,7 +273,7 @@ def test_process_run_without_cache_location_keeps_state_in_memory(fake_host, mon
 
 
 def test_run_on_hosts_without_cache_location_runs(monkeypatch):
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: None)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: None)
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
 
 	hosts = multiSSH3.run_command_on_hosts(hosts="127.0.0.1", commands=["true"], no_start=True, no_watch=True,
@@ -318,3 +318,16 @@ def test_own_cache_dir_readable_by_others_is_tightened(cache_dirs, monkeypatch):
 
 	assert os.path.dirname(path) == str(cache_dir)
 	assert stat.S_IMODE(os.stat(cache_dir).st_mode) == 0o700
+
+
+@posix_only
+def test_run_without_updating_the_cache_creates_no_cache_directory(cache_dirs, monkeypatch):
+	runtime_dir, temp_dir = cache_dirs
+	monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+
+	multiSSH3.run_command_on_hosts(hosts="127.0.0.1", commands=["true"], no_start=True, no_watch=True, quiet=True,
+		no_history=True, called=True, will_update_unreachable_hosts=False)
+
+	assert list(runtime_dir.iterdir()) == []
+	assert list(temp_dir.iterdir()) == []

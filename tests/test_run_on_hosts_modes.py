@@ -227,7 +227,7 @@ def test_file_sync_missing_globs_exits_when_cli(monkeypatch, tmp_path):
 
 def _oneonone(monkeypatch, tmp_path, hosts, commands, **kwargs):
 	_mock_run(monkeypatch)
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	return multiSSH3.run_command_on_hosts(
 		hosts=hosts,
 		commands=commands,
@@ -272,7 +272,7 @@ def test_oneonone_unreachable_host_keeps_its_command_slot(monkeypatch, tmp_path)
 
 def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_path):
 	_mock_run(monkeypatch)
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
 	monkeypatch.delitem(multiSSH3._binPaths, "sshpass", raising=False)
 	commands = []
@@ -296,7 +296,7 @@ def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_
 
 def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 	_mock_run(monkeypatch)
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
 	monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
 	started = []
