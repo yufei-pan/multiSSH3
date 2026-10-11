@@ -490,7 +490,13 @@ def _open_trusted_file(path, explicit_flag):
 	The check runs on the opened file, so the file cannot be swapped between check and read.
 	'''
 	# O_NONBLOCK so opening a planted FIFO does not wait for a writer, it is rejected below
-	f = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0)), 'r')
+	fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
+	try:
+		f = os.fdopen(fd, 'r')
+	except Exception:
+		# e.g. a directory: os.open works, fdopen does not
+		os.close(fd)
+		raise
 	untrusted = _untrusted_file_reason(os.fstat(f.fileno()))
 	if not untrusted:
 		return f
@@ -516,7 +522,7 @@ def load_config_file(config_file, check_trust=True):
 	Returns:
 		dict: The config
 	'''
-	if not os.path.exists(config_file):
+	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
 	try:
 		f = _open_trusted_file(config_file, '--config_file') if check_trust else open(config_file,'r')

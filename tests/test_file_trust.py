@@ -195,3 +195,25 @@ def test_unreadable_env_file_is_skipped_with_a_warning(monkeypatch, tmp_path, ca
 
 	assert multiSSH3.readEnvFromFile() == {}
 	assert "Permission denied" in capsys.readouterr().err
+
+
+def test_config_path_that_is_a_directory_is_skipped_quietly(tmp_path, capsys):
+	directory = tmp_path / "multiSSH3.config.json"
+	directory.mkdir()
+	open_fds = len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else None
+
+	assert multiSSH3.load_config_file(str(directory)) == {}
+	assert capsys.readouterr().err == ""
+	if open_fds is not None:
+		assert len(os.listdir("/proc/self/fd")) == open_fds  # no leaked descriptor
+
+
+def test_opening_a_directory_does_not_leak_its_descriptor(tmp_path):
+	if not os.path.isdir("/proc/self/fd"):
+		pytest.skip("needs /proc/self/fd")
+	open_fds = len(os.listdir("/proc/self/fd"))
+
+	with pytest.raises(OSError):
+		multiSSH3._open_trusted_file(str(tmp_path), "--config_file")
+
+	assert len(os.listdir("/proc/self/fd")) == open_fds

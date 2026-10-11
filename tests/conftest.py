@@ -115,6 +115,7 @@ def _clear_expand_caches():
 	getattr(multiSSH3, "_dns_cache", {}).clear()
 	multiSSH3.__expansion_env_state = None
 	getattr(multiSSH3, "_consulted_env", {}).clear()
+	getattr(multiSSH3, "_reported_invalid_hosts", set()).clear()
 	for name in (
 		"getIP",
 		"readEnvFromFile",
