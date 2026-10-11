@@ -314,3 +314,20 @@ def test_ip_magic_string_without_an_ip_uses_the_ssh_address(fake_host, monkeypat
 	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
 
 	assert commands[0][-1] == "ping -c1 jump-only"
+
+
+def test_typed_lines_are_sent_before_stdin_closes_when_the_tui_quits(fake_host, monkeypatch):
+	class RecordingPipe(io.BytesIO):
+		def close(self):
+			self.sent = self.getvalue()
+			super().close()
+
+	pipe = RecordingPipe()
+	host = fake_host("mock-a", "read answer")
+	host.interactive_stdin = False  # the TUI quit right after the user typed
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list("yes\n"), []])
+
+	multiSSH3.__handle_writing_stream(pipe, threading.Event(), host)
+
+	assert pipe.closed
+	assert pipe.sent == b"yes\n"

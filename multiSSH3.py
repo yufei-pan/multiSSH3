@@ -2019,7 +2019,14 @@ def __handle_writing_stream(stream,stop_event,host):
 		else:
 			time.sleep(0.01) # sleep for 10ms
 	if not stop_event.is_set():
-		# the TUI ended while the command runs: nobody can type any more, give it end of input
+		# the TUI ended while the command runs: send the lines already typed, then end of input
+		try:
+			while sentInputPos < len(__keyPressesIn) - 1:
+				stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+				sentInputPos += 1
+			stream.flush()
+		except Exception:
+			pass
 		try:
 			stream.close()
 		except Exception:
