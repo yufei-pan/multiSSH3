@@ -21,7 +21,6 @@ setup(
         ],
     },
     install_requires=[
-        'argparse',
         'ipaddress',
     ],
     classifiers=[
