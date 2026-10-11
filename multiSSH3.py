@@ -621,6 +621,7 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.interactive_stdin = True # forward the curses TUI key presses to stdin, False gives the command /dev/null
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -659,6 +660,7 @@ class Host:
 		newHost.lastUpdateTime = self.lastUpdateTime
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
+		newHost.interactive_stdin = self.interactive_stdin
 		return newHost
 
 #%% ------------ Exportable Help Functions ----------------
@@ -2061,7 +2063,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				if __DEBUG_MODE:
 					host.stderr.append('Running command: '+' '.join(formatedCMD))
 				#host.stdout = []
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=subprocess.PIPE)
+				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
+				stdin = subprocess.PIPE if host.interactive_stdin else subprocess.DEVNULL
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
 				__running_procs.add(proc)
 				# create a thread to handle stdout
 				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
@@ -2072,8 +2076,10 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				stderr_thread.start()
 				# create a thread to handle stdin
 				stdin_stop_event = threading.Event()
-				stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
-				stdin_thread.start()
+				stdin_thread = None
+				if host.interactive_stdin:
+					stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
+					stdin_thread.start()
 				# Monitor the subprocess and terminate it after the timeout
 				host.lastUpdateTime = time.monotonic()
 				timeoutLineAppended = False
@@ -2119,7 +2125,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				# Wait for output processing to complete
 				stdout_thread.join(timeout=1)
 				stderr_thread.join(timeout=1)
-				stdin_thread.join(timeout=1)
+				if stdin_thread:
+					stdin_thread.join(timeout=1)
 				if not _emo:
 					stdout = None
 					stderr = None
@@ -3505,8 +3512,11 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
+	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
+	for host in hosts:
+		host.interactive_stdin = use_tui
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
-	if __curses_available and not no_watch and threads and not return_unfinished  and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10:
+	if use_tui and threads:
 		total_sleeped = 0
 		while any([host.returncode is None for host in hosts]):
 			time.sleep(sleep_interval)  # avoid busy-waiting

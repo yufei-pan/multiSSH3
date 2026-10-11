@@ -1,3 +1,4 @@
+import os
 import io
 import threading
 
@@ -176,3 +177,48 @@ def test_run_command_stderr_captured(fake_host, monkeypatch):
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 1
 	assert any("boom" in line for line in host.stderr)
+
+
+def _process(hosts, **overrides):
+	kwargs = dict(timeout=5, password=None, max_connections=2, hosts=hosts, return_unfinished=False, no_watch=True,
+		json=False, no_output=True, greppable=False, unavailableHosts={}, will_update_unreachable_hosts=False,
+		pre_merge=False)
+	kwargs.update(overrides)
+	multiSSH3.processRunOnHosts(**kwargs)
+
+
+def test_command_reading_stdin_gets_eof_without_tui(fake_host):
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "cat", shell=True)
+	started = time.monotonic()
+
+	_process([host], no_watch=True)
+
+	assert host.returncode == 0  # not 124: nobody can type, so stdin must not stay open
+	assert time.monotonic() - started < 3
+
+
+def test_tui_keeps_stdin_open_for_key_presses(fake_host, monkeypatch):
+	import curses
+
+	seen = []
+
+	def fake_start(hosts, **kwargs):
+		for host in hosts:
+			seen.append(host.interactive_stdin)
+			host.returncode = 0
+		return []
+
+	host = fake_host("mock-a", "cat")
+	monkeypatch.setattr(multiSSH3, "__curses_available", True)
+	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", fake_start)
+	monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)
+
+	_process([host], no_watch=False)
+
+	assert seen == [True]
