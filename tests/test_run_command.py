@@ -234,3 +234,37 @@ def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
 
 	assert commands[0][-2] == "v6-host"  # [ssh, ..., '--', target, command]: not rewritten to 10.0.0.x
 	assert any("ip_prefix" in line for line in host.output)
+
+
+def test_stdin_closes_when_the_tui_exits_early(fake_host, monkeypatch):
+	import curses
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "sleep 0.3; cat", shell=True)
+	monkeypatch.setattr(multiSSH3, "__curses_available", True)
+	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)  # e.g. the user pressed ESC
+	started = time.monotonic()
+
+	_process([host], no_watch=False)
+
+	assert host.returncode == 0  # cat got end of input once nobody could type any more
+	assert time.monotonic() - started < 3
+
+
+def test_hosts_started_without_process_run_get_no_stdin_pipe(fake_host):
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "cat", shell=True)
+	started = time.monotonic()
+
+	threads = multiSSH3.start_run_on_hosts([host], timeout=5)
+	multiSSH3.join_threads(threads, timeout=10)
+
+	assert host.returncode == 0
+	assert time.monotonic() - started < 3

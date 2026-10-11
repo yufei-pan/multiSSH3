@@ -691,7 +691,7 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
-		self.interactive_stdin = True # forward the curses TUI key presses to stdin, False gives the command /dev/null
+		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -1888,7 +1888,7 @@ def __handle_writing_stream(stream,stop_event,host):
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
 	sentInputPos = 0
-	while not stop_event.is_set():
+	while not stop_event.is_set() and host.interactive_stdin:
 		if sentInputPos < len(__keyPressesIn) - 1 :
 			stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
 			stream.flush()
@@ -1900,6 +1900,12 @@ def __handle_writing_stream(stream,stop_event,host):
 			host.lastUpdateTime = time.monotonic()
 		else:
 			time.sleep(0.01) # sleep for 10ms
+	if not stop_event.is_set():
+		# the TUI ended while the command runs: nobody can type any more, give it end of input
+		try:
+			stream.close()
+		except Exception:
+			pass
 	if sentInputPos < len(__keyPressesIn) - 1 :
 		eprint(f"Warning: {len(__keyPressesIn)-sentInputPos} lines of key presses are not sent before the process is terminated!")
 	# # send the last line
@@ -2290,6 +2296,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				stderr_thread.join(timeout=1)
 				if stdin_thread:
 					stdin_thread.join(timeout=1)
+				if proc.stdin is not None and proc.stdin.closed:
+					# communicate() would flush the closed pipe and raise
+					proc.stdin = None
 				if not _emo:
 					stdout = None
 					stderr = None
@@ -3720,27 +3729,32 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		host.interactive_stdin = use_tui
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
 	if use_tui and threads:
-		total_sleeped = 0
-		while any([host.returncode is None for host in hosts]):
-			time.sleep(sleep_interval)  # avoid busy-waiting
-			total_sleeped += sleep_interval
-			if sleep_interval < 0.001:
-				sleep_interval *= 2
-			elif sleep_interval < 0.01:
-				sleep_interval *= 1.1
-			if total_sleeped > 0.1:
-				break
-		if any([host.returncode is None for host in hosts]):
-			try:
-				curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
-			except Exception:
+		try:
+			total_sleeped = 0
+			while any([host.returncode is None for host in hosts]):
+				time.sleep(sleep_interval)  # avoid busy-waiting
+				total_sleeped += sleep_interval
+				if sleep_interval < 0.001:
+					sleep_interval *= 2
+				elif sleep_interval < 0.01:
+					sleep_interval *= 1.1
+				if total_sleeped > 0.1:
+					break
+			if any([host.returncode is None for host in hosts]):
 				try:
-					os.environ['TERM'] = 'xterm-256color'
 					curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
-				except Exception as e:
-					eprint(f"Curses print error: {e}")
-					import traceback
-					print(traceback.format_exc())
+				except Exception:
+					try:
+						os.environ['TERM'] = 'xterm-256color'
+						curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
+					except Exception as e:
+						eprint(f"Curses print error: {e}")
+						import traceback
+						print(traceback.format_exc())
+		finally:
+			# the TUI is gone (finished, ESC, or failed): commands still running get end of input
+			for host in hosts:
+				host.interactive_stdin = False
 	if not return_unfinished:
 		# wait until all hosts have a return code
 		while any([host.returncode is None for host in hosts]):
