@@ -26,3 +26,9 @@ def test_replace_magic_strings_host():
 	s = multiSSH3.replace_magic_strings("run on #HOST#", ["#HOST#", "#HOSTNAME#"], "node1")
 	assert s == "run on node1"
 
+
+
+def test_replace_magic_strings_inserts_backslashes_literally():
+	# re.sub would read these as an escape (\a) and a group reference (\1)
+	assert multiSSH3.replace_magic_strings("whoami #USER#", ["#USER#"], "CORP\\alice") == "whoami CORP\\alice"
+	assert multiSSH3.replace_magic_strings("echo #user#", ["#USER#"], "a\\1b") == "echo a\\1b"

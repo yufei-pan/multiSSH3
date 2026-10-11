@@ -699,7 +699,8 @@ def replace_magic_strings(string,keys,value,case_sensitive=False):
 		if case_sensitive:
 			string = string.replace(key,value)
 		else:
-			string = re.sub(re.escape(key),value,string,flags=re.IGNORECASE)
+			# a function replacement is inserted as is, a string one would expand backslashes
+			string = re.sub(re.escape(key),lambda _match: value,string,flags=re.IGNORECASE)
 	return string
 
 def pretty_format_table(data, delimiter = '\t',header = None):
