@@ -4821,8 +4821,10 @@ def main(args = None):
 	if args.error_only:
 		__global_suppress_printout = True
 
-	# failures in every repeat count towards the exit code, not only the last run
-	allHosts = []
+	# failures in every repeat count towards the exit code, not only the last run. Only names are kept
+	# between runs, a long --repeat loop must not hold every run's output
+	failedHostCount = 0
+	succeededHosts = set()
 	for i in range(args.repeat):
 		if i > 0 and args.interval > 0:
 			eprint(f"Sleeping for {args.interval} seconds")
@@ -4830,14 +4832,16 @@ def main(args = None):
 
 		if not __global_suppress_printout: 
 			eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
-		allHosts += run_command_on_hosts(**vars(args),called=False)
-	succeededHosts = set()
-	for host in allHosts:
-		if host.returncode and host.returncode != 0:
-			__mainReturnCode += 1
-			__failedHosts.add(host.name)
-		else:
-			succeededHosts.add(host.name)
+		runFailures = 0
+		for host in run_command_on_hosts(**vars(args),called=False):
+			if host.returncode and host.returncode != 0:
+				runFailures += 1
+				__failedHosts.add(host.name)
+			else:
+				succeededHosts.add(host.name)
+		# the worst run, a host failing in every run counts once
+		failedHostCount = max(failedHostCount, runFailures)
+	__mainReturnCode += failedHostCount
 	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
 	if __mainReturnCode > 0:

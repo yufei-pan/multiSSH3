@@ -221,3 +221,28 @@ def test_main_counts_failures_from_every_repeat(fake_host, monkeypatch, capsys):
 
 	assert exc_info.value.code == 1
 	assert "failed_hosts: flaky" in capsys.readouterr().err
+
+
+def test_main_repeat_counts_failing_hosts_once_and_releases_old_runs(fake_host, monkeypatch, capsys):
+	import gc
+	import weakref
+
+	earlier_runs = []
+
+	def fake_run(**kwargs):
+		gc.collect()
+		assert all(ref() is None for ref in earlier_runs)  # earlier runs' output is not kept
+		hosts = [fake_host("bad1", "check"), fake_host("bad2", "check")]
+		for host in hosts:
+			host.returncode = 1
+		earlier_runs.append(weakref.ref(hosts[0]))
+		return hosts
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["127.0.0.1", "check", "--repeat", "3", "--no_history"])
+
+	assert exc_info.value.code == 2  # two hosts failed, not 2 x 3 runs
+	assert "count: 2" in capsys.readouterr().err
