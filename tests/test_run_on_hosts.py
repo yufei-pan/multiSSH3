@@ -93,3 +93,14 @@ def test_skip_hosts_works_for_hosts_without_ip(ssh_config_only_hosts):
 		no_start=True, no_watch=True, quiet=True, no_history=True, called=True, will_update_unreachable_hosts=False)
 
 	assert [host.name for host in hosts] == ["jump-b"]
+
+
+def test_hosts_without_ip_are_not_looked_up_again(ssh_config_only_hosts, monkeypatch):
+	lookups = []
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: lookups.append(hostname))
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="jump-a,jump-b", commands=["true"], username="bob",
+		no_start=True, no_watch=True, quiet=True, no_history=True, called=True, will_update_unreachable_hosts=False)
+
+	assert sorted(host.name for host in hosts) == ["bob@jump-a", "bob@jump-b"]
+	assert sorted(lookups) == ["jump-a", "jump-b"]  # once each, in the parallel prefetch

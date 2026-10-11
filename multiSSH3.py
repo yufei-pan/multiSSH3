@@ -663,7 +663,7 @@ if __curses_available:
 
 #%% ------------ Host Object ----------------
 class Host:
-	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=...,ip = None):
+	def __init__(self, name, command, files = None,ipmi = False,interface_ip_prefix = None,scp=False,extraargs=None,gatherMode=False,identity_file=None,shell=False,i = -1,uuid=...,ip = ...):
 		self.name = name # the name of the host (hostname or IP address)
 		self.command = command # the command to run on the host
 		self.returncode = None # the return code of the command
@@ -685,7 +685,8 @@ class Host:
 		self.i = i if i != -1 else _get_i()
 		self.uuid = uuid if uuid is not ... else uuid4()
 		self.identity_file = identity_file
-		self.ip = ip if ip else getIP(name)
+		# None is a host reachable only through the ssh config, only look up when no address was given
+		self.ip = getIP(name) if ip is ... else ip
 		self.current_color_pair = [-1, -1, 1]
 		self.output_buffer = io.BytesIO()
 		self.stdout_buffer = io.BytesIO()
