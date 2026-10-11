@@ -1533,11 +1533,13 @@ def __validate_expand_hostname(hostname):
 		# ssh reaches it through the ssh config, e.g. a host behind a ProxyJump
 		return [hostname]
 	else:
-		eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
 		global __mainReturnCode
-		__mainReturnCode += 1
 		global __failedHosts
-		__failedHosts.add(hostname)
+		# validated again after the caches refresh: report and count each bad name once
+		if hostname not in __failedHosts:
+			eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
+			__mainReturnCode += 1
+			__failedHosts.add(hostname)
 		return []
 
 @cache_decorator

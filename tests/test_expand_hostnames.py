@@ -222,3 +222,17 @@ def test_names_already_looked_up_start_no_more_thread_pools(monkeypatch, hermeti
 		multiSSH3.compact_hostnames(names + ["extra{}".format(i)])
 
 	assert len(pools) == 1
+
+
+def test_invalid_host_counts_once_when_caches_refresh(monkeypatch, hermetic_resolution):
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	before = multiSSH3.__mainReturnCode
+	multiSSH3.expand_hostnames(["mssh-typo-host"])
+	monkeypatch.setenv("MSSH_UNRELATED", "changed")  # any env change refreshes the expansion caches
+	monkeypatch.setattr(multiSSH3, "_no_env", False)
+	multiSSH3._refresh_expansion_caches()
+
+	multiSSH3.expand_hostnames(["mssh-typo-host"])
+
+	assert multiSSH3.__mainReturnCode == before + 1
