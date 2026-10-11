@@ -3947,7 +3947,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			for host in targetHostDic:
 				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 					if not __global_suppress_printout:
-						print(f"Skipping unavailable host: {host}")
+						eprint(f"Skipping unavailable host: {host}")
 					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
@@ -3976,7 +3976,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			for host in targetHostDic:
 				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
 					if not __global_suppress_printout:
-						print(f"Skipping unavailable host: {host}")
+						eprint(f"Skipping unavailable host: {host}")
 					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
@@ -4392,6 +4392,8 @@ def main(args = None):
 	if args.error_only:
 		__global_suppress_printout = True
 
+	# failures in every repeat count towards the exit code, not only the last run
+	allHosts = []
 	for i in range(args.repeat):
 		if i > 0 and args.interval > 0:
 			eprint(f"Sleeping for {args.interval} seconds")
@@ -4399,11 +4401,9 @@ def main(args = None):
 
 		if not __global_suppress_printout: 
 			eprint(f"Running the {i+1}/{args.repeat} time") if args.repeat > 1 else None
-		hosts = run_command_on_hosts(**vars(args),called=False)
-		#print('*'*80)
-		#if not __global_suppress_printout: eprint('-'*80)
+		allHosts += run_command_on_hosts(**vars(args),called=False)
 	succeededHosts = set()
-	for host in hosts:
+	for host in allHosts:
 		if host.returncode and host.returncode != 0:
 			__mainReturnCode += 1
 			__failedHosts.add(host.name)

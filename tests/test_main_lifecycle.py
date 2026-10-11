@@ -203,3 +203,21 @@ def test_main_no_env_ignores_environment_host_aliases(monkeypatch, tmp_path):
 		multiSSH3.main(["--no_env", "-q", "--no_history", "-ef", str(tmp_path / "none.env"), "MSSH_TEST_ENV_HOSTS", "true"])
 
 	assert ran == []
+
+
+def test_main_counts_failures_from_every_repeat(fake_host, monkeypatch, capsys):
+	return_codes = iter([7, 0, 0])
+
+	def fake_run(**kwargs):
+		host = fake_host("flaky", "check")
+		host.returncode = next(return_codes)
+		return [host]
+
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", fake_run)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["127.0.0.1", "check", "--repeat", "3", "--no_history"])
+
+	assert exc_info.value.code == 1
+	assert "failed_hosts: flaky" in capsys.readouterr().err
