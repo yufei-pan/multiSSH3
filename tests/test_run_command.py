@@ -222,3 +222,15 @@ def test_tui_keeps_stdin_open_for_key_presses(fake_host, monkeypatch):
 	_process([host], no_watch=False)
 
 	assert seen == [True]
+
+
+def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
+	host = fake_host("v6-host", "true", interface_ip_prefix="10.0.0.", ip="2001:db8::5")
+	commands = []
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda cmd, **kwargs: commands.append(cmd) or FakeProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert commands[0][-2] == "v6-host"  # [ssh, ..., '--', target, command]: not rewritten to 10.0.0.x
+	assert any("ip_prefix" in line for line in host.output)

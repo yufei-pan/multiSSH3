@@ -116,6 +116,7 @@ def _clear_expand_caches():
 		"__expandIPv4Address",
 		"__expand_hostname",
 		"__expand_hostnames",
+		"_ssh_config_target",
 		"get_terminal_color_capability",
 		"rgb_to_ansi_color_string",
 		"int_to_unique_ansi_color",

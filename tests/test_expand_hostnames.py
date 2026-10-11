@@ -138,3 +138,45 @@ def test_expanding_a_range_resolves_names_in_parallel(monkeypatch, hermetic_reso
 	assert result == {"node{}".format(i): "10.0.0.{}".format(i) for i in range(1, 21)}
 	assert sorted(lookups) == sorted("node{}".format(i) for i in range(1, 21))  # each name once
 	assert elapsed < 2  # one after another takes 20 x 0.2 s = 4 s
+
+
+def _fake_addrinfo(*addresses):
+	import socket
+
+	def getaddrinfo(host, port, *args, **kwargs):
+		if host != "mssh-dual.invalid":
+			raise socket.gaierror("not found")
+		return [(socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, 0)) for a in addresses]
+	return getaddrinfo
+
+
+def test_ipv6_only_name_resolves(monkeypatch, hermetic_resolution):
+	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo", _fake_addrinfo("2001:db8::5"))
+
+	assert multiSSH3.getIP("mssh-dual.invalid") == "2001:db8::5"
+
+
+def test_ipv4_is_preferred_when_name_has_both(monkeypatch, hermetic_resolution):
+	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo", _fake_addrinfo("2001:db8::5", "192.0.2.5"))
+
+	assert multiSSH3.getIP("mssh-dual.invalid") == "192.0.2.5"
+
+
+def test_ssh_config_aliases_are_valid_hosts(monkeypatch, tmp_path, hermetic_resolution):
+	import shutil
+
+	real_ssh = shutil.which("ssh")
+	if not real_ssh:
+		pytest.skip("ssh not installed")
+	config = tmp_path / "ssh_config"
+	config.write_text("Host gpu-alias\n  HostName 127.0.0.7\nHost jump-only\n  ProxyJump bastion\n")
+	wrapper = tmp_path / "ssh"
+	wrapper.write_text('#!/bin/sh\nexec {} -F {} "$@"\n'.format(real_ssh, config))
+	wrapper.chmod(0o755)
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", str(wrapper))
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)  # none of these names are in DNS
+
+	result = multiSSH3.expand_hostnames(["gpu-alias", "jump-only", "typo-host"])
+
+	# the alias gets its HostName's address, the jump host is only reachable through ssh, the typo is rejected
+	assert result == {"gpu-alias": "127.0.0.7", "jump-only": None}

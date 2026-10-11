@@ -342,14 +342,57 @@ def getIP(hostname: str,local=False):
 	if local:
 		return None
 	# Then we check the DNS
-	return _resolve_dns(hostname)
+	ip = _resolve_dns(hostname)
+	if ip is None:
+		# an ~/.ssh/config alias: use the address of its HostName
+		target = _ssh_config_target(hostname)
+		if target and target.lower() != hostname.lower():
+			# local lookup only, a HostName that is itself an alias must not recurse
+			ip = getIP(target,local=True) or _resolve_dns(target)
+	return ip
 
 def _resolve_dns(hostname):
-	'''Look hostname up in DNS, returning its IP address or None.'''
+	'''Look hostname up in DNS (IPv4 or IPv6, preferring IPv4), returning its IP address or None.'''
 	try:
-		return socket.gethostbyname(hostname)
+		infos = socket.getaddrinfo(hostname, None, 0, socket.SOCK_STREAM)
 	except Exception:
 		return None
+	addresses = [info[4][0] for info in infos if info[0] == socket.AF_INET]
+	addresses += [info[4][0] for info in infos if info[0] == socket.AF_INET6]
+	return addresses[0] if addresses else None
+
+@cache_decorator
+def _ssh_config_target(hostname):
+	'''
+	The host ssh really connects to for hostname, when the ssh config maps it.
+
+	Returns:
+		str: The HostName ssh would use, when the config gives hostname another HostName or a
+			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
+			None for names the config does not know, so typos are still caught.
+	'''
+	if 'ssh' not in _binPaths or not hostname or hostname.startswith('-'):
+		return None
+	try:
+		# ssh -G prints the resolved config without connecting (OpenSSH 6.8+)
+		result = subprocess.run([_binPaths['ssh'], '-G', '--', hostname], stdout=subprocess.PIPE,
+						  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
+	except Exception:
+		return None
+	if result.returncode != 0:
+		return None
+	config = {}
+	for line in result.stdout.splitlines():
+		key, _, value = line.partition(' ')
+		config[key.lower()] = value.strip()
+	target = config.get('hostname')
+	if not target:
+		return None
+	# for a name it does not know, ssh -G prints the name back (lowercased) as the hostname
+	has_proxy = any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
+	if target.lower() != hostname.lower() or has_proxy:
+		return target
+	return None
 
 
 _i_counter = count()
@@ -1460,6 +1503,9 @@ def __validate_expand_hostname(hostname):
 		return expand_hostnames(readEnvFromFile()[hostname].split(','))
 	elif getIP(hostname,local=False):
 		return [hostname]
+	elif _ssh_config_target(hostname):
+		# ssh reaches it through the ssh config, e.g. a host behind a ProxyJump
+		return [hostname]
 	else:
 		eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
 		global __mainReturnCode
@@ -1959,6 +2005,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			ip_prefix = host.interface_ip_prefix
 		if ip_prefix:
 			try:
+				if ':' in str(host.ip):
+					raise ValueError('interface_ip_prefix only applies to IPv4 addresses')
 				hostOctets = host.ip.split('.')
 				prefixOctets = ip_prefix.split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
