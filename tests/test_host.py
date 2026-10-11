@@ -32,3 +32,10 @@ def test_replace_magic_strings_inserts_backslashes_literally():
 	# re.sub would read these as an escape (\a) and a group reference (\1)
 	assert multiSSH3.replace_magic_strings("whoami #USER#", ["#USER#"], "CORP\\alice") == "whoami CORP\\alice"
 	assert multiSSH3.replace_magic_strings("echo #user#", ["#USER#"], "a\\1b") == "echo a\\1b"
+
+
+def test_host_with_ip_none_still_looks_the_name_up(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: "10.1.2.3" if hostname == "node1" else None)
+
+	assert multiSSH3.Host("node1", "true", ip=None).ip == "10.1.2.3"
+	assert multiSSH3.Host("bob@node1", "true", ip=None).ip == "10.1.2.3"

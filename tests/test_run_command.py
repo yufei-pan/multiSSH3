@@ -302,3 +302,15 @@ def test_stdin_pipe_is_closed_when_the_tui_ends_during_startup(fake_host, monkey
 
 	assert procs[0].pipe.closed  # end of input, not a pipe left open forever
 	assert time.monotonic() - started < 1.5  # ended by the close, not the safety deadline
+
+
+def test_ip_magic_string_without_an_ip_uses_the_ssh_address(fake_host, monkeypatch):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: None)  # reachable only through the ssh config
+	host = multiSSH3.Host("jump-only", "ping -c1 #IP#", ip=None)
+	commands = []
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda cmd, **kwargs: commands.append(cmd) or FakeProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert commands[0][-1] == "ping -c1 jump-only"
