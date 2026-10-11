@@ -149,7 +149,7 @@ Defaults are read from the following chain map stored as json files, top ones ov
 
 > Config and env files found on these default paths are only loaded when they are owned by you or root and nobody else can write to them (group write is fine when the group is your own private group). Others are skipped with a warning that shows the `chmod` fix. Files you name with `--config_file`, `--env_file` or `--env_files` are always loaded.
 >
-> `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above stay `0644` so every user can read them.
+> `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above are written `0644` so every user can read them. An existing file's permissions are only ever tightened, and a file whose permissions cannot be restricted is left untouched (the config is printed instead).
 
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
@@ -239,7 +239,7 @@ When hostname need to be resolved, mssh will check in the following order:
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - Lookup using `socket.getaddrinfo()` to query dns server ( IPv4 preferred, IPv6 accepted ). Names are looked up in parallel.
-- If the ssh config (`ssh -G`) maps the name to another `HostName` or through a `ProxyJump` / `ProxyCommand`, it is valid ( `#IP#` uses the `HostName`'s address when it resolves ).
+- If the ssh config (`ssh -G`) maps the name to another `HostName` or through a `ProxyJump` / `ProxyCommand`, it is valid ( `#IP#` uses the `HostName`'s address when it resolves ). Catch-all blocks such as `Host *` do not count, so typos are still rejected.
 
 > TLDR:
 >
