@@ -145,3 +145,24 @@ def test_planted_fifo_does_not_hang_loading(monkeypatch, tmp_path, kind):
 		pytest.fail("opening a planted FIFO blocked")
 
 	assert result == [{}]
+
+
+def test_skipped_env_file_hint_keeps_the_other_env_files(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "_env_files", [_env_file(tmp_path, 0o666)])
+	multiSSH3.readEnvFromFile.cache_clear()
+
+	multiSSH3.readEnvFromFile()
+
+	# --env_file would replace the whole env file chain, --env_files adds to it
+	assert "pass it with --env_files" in capsys.readouterr().err
+
+
+def test_explicit_env_file_matches_however_it_is_spelled(monkeypatch, tmp_path, capsys):
+	_env_file(tmp_path, 0o666)
+	monkeypatch.chdir(tmp_path)
+	args = multiSSH3.process_args(["--env_files", "./hosts.env", "127.0.0.1", "true"])
+	multiSSH3.set_global_with_args(args)  # the default chain also has plain 'hosts.env'
+	multiSSH3.readEnvFromFile.cache_clear()
+
+	assert multiSSH3.readEnvFromFile()["MSSH_TRUST_ALIAS"] == "127.0.0.5"
+	assert "Ignoring 'hosts.env'" not in capsys.readouterr().err

@@ -779,7 +779,8 @@ def readEnvFromFile():
 	for envf in envfs:
 		envf = os.path.expanduser(os.path.expandvars(envf))
 		if os.path.exists(envf):
-			f = open(envf,'r') if envf in _explicit_env_files else _open_trusted_file(envf, '--env_file')
+			# --env_files adds to the env file chain, --env_file would replace it
+			f = open(envf,'r') if os.path.abspath(envf) in _explicit_env_files else _open_trusted_file(envf, '--env_files')
 			if f is None:
 				continue
 			with f:
@@ -4781,7 +4782,7 @@ def set_global_with_args(args):
 	else:
 		_env_files = DEFAULT_ENV_FILES + args.env_files if args.env_files else DEFAULT_ENV_FILES
 	_explicit_env_files = {
-		os.path.expanduser(os.path.expandvars(path))
+		os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
 		for path in ([args.env_file] if args.env_file else []) + list(args.env_files or [])
 	}
 	# set before main() echoes the command, which already expands the hosts
