@@ -99,3 +99,26 @@ def test_explicit_env_file_is_trusted(monkeypatch, tmp_path):
 	multiSSH3.readEnvFromFile.cache_clear()
 
 	assert multiSSH3.readEnvFromFile()["MSSH_TRUST_ALIAS"] == "127.0.0.5"
+
+
+def _path_looks_safe_when_checked(monkeypatch, path):
+	# stands in for a file swapped after the check: stat(path) says owner-only, the real file is not
+	real_stat = os.stat
+	looks_safe = SimpleNamespace(st_uid=os.getuid(), st_gid=os.getgid(), st_mode=0o100600)
+	monkeypatch.setattr(multiSSH3.os, "stat", lambda p, *a, **k: looks_safe if str(p) == path else real_stat(p, *a, **k))
+
+
+def test_config_trust_check_uses_the_opened_file(monkeypatch, tmp_path):
+	path = _config(tmp_path, 0o666)
+	_path_looks_safe_when_checked(monkeypatch, path)
+
+	assert multiSSH3.load_config_file(path) == {}
+
+
+def test_env_file_trust_check_uses_the_opened_file(monkeypatch, tmp_path):
+	path = _env_file(tmp_path, 0o666)
+	monkeypatch.setattr(multiSSH3, "_env_files", [path])
+	multiSSH3.readEnvFromFile.cache_clear()
+	_path_looks_safe_when_checked(monkeypatch, path)
+
+	assert "MSSH_TRUST_ALIAS" not in multiSSH3.readEnvFromFile()

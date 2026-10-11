@@ -373,7 +373,7 @@ def _is_private_group(uid, gid):
 		return False
 	return gid == owner.pw_gid and group.gr_name == owner.pw_name and set(group.gr_mem) <= {owner.pw_name}
 
-def _untrusted_file_reason(path):
+def _untrusted_file_reason(st):
 	'''
 	Check a config / env file found on the default search paths before loading it.
 
@@ -381,14 +381,13 @@ def _untrusted_file_reason(path):
 	write is allowed when the group is the owner's private group, as user private group
 	systems (Debian, Ubuntu, RHEL) create files group-writable by default.
 
+	Args:
+		st (os.stat_result): fstat() of the opened file
+
 	Returns:
 		tuple: (reason, fixable_with_chmod), or None when the file can be loaded
 	'''
 	if pwd is None or not hasattr(os, 'getuid'):
-		return None
-	try:
-		st = os.stat(path)
-	except OSError:
 		return None
 	if st.st_uid not in (os.getuid(), 0):
 		return 'it is owned by uid {}, not by you or root'.format(st.st_uid), False
@@ -402,18 +401,24 @@ def _untrusted_file_reason(path):
 		return 'group {} can write to it'.format(group), True
 	return None
 
-def _skip_untrusted_file(path, explicit_flag):
-	'''Warn and return True when path fails _untrusted_file_reason.'''
-	untrusted = _untrusted_file_reason(path)
+def _open_trusted_file(path, explicit_flag):
+	'''
+	Open path for reading if it passes _untrusted_file_reason, else warn and return None.
+
+	The check runs on the opened file, so the file cannot be swapped between check and read.
+	'''
+	f = open(path, 'r')
+	untrusted = _untrusted_file_reason(os.fstat(f.fileno()))
 	if not untrusted:
-		return False
+		return f
+	f.close()
 	reason, fixable = untrusted
 	if fixable:
 		fix = 'fix with: chmod g-w,o-w {}, or pass it with {}'.format(shlex.quote(path), explicit_flag)
 	else:
 		fix = 'pass it with {} to use it anyway'.format(explicit_flag)
 	eprint('Warning: Ignoring {!r} because {}; {}'.format(path, reason, fix))
-	return True
+	return None
 
 def load_config_file(config_file, check_trust=True):
 	global __working_config_file
@@ -430,10 +435,11 @@ def load_config_file(config_file, check_trust=True):
 	'''
 	if not os.path.exists(config_file):
 		return {}
-	if check_trust and _skip_untrusted_file(config_file, '--config_file'):
-		return {}
 	try:
-		with open(config_file,'r') as f:
+		f = _open_trusted_file(config_file, '--config_file') if check_trust else open(config_file,'r')
+		if f is None:
+			return {}
+		with f:
 			config = json.load(f)
 		__working_config_file = config_file
 	except Exception as e:
@@ -694,9 +700,10 @@ def readEnvFromFile():
 	for envf in envfs:
 		envf = os.path.expanduser(os.path.expandvars(envf))
 		if os.path.exists(envf):
-			if envf not in _explicit_env_files and _skip_untrusted_file(envf, '--env_file'):
+			f = open(envf,'r') if envf in _explicit_env_files else _open_trusted_file(envf, '--env_file')
+			if f is None:
 				continue
-			with open(envf,'r') as f:
+			with f:
 				lines = f.readlines()
 			for line in lines:
 				line = line.strip()
