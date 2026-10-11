@@ -422,6 +422,9 @@ def _ssh_config_target(hostname):
 		probe_target = as_for_this_name(probe.get('hostname', ''))
 		probe_proxies = [as_for_this_name(probe.get(key, 'none')) for key in ('proxyjump', 'proxycommand')]
 		if probe_target == target.lower() and probe_proxies == proxies:
+			# a HostName template (Host * / HostName %h.example) is only real for names whose target resolves
+			if target.lower() != hostname.lower() and (getIP(target,local=True) or _resolve_dns(target)):
+				return target
 			return None
 	return target
 

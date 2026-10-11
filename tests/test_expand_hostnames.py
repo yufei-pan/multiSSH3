@@ -342,3 +342,23 @@ def test_getip_looks_a_host_up_once_however_it_is_written(monkeypatch, hermetic_
 
 	assert results == {"10.2.3.4"}
 	assert lookups == ["n1"]
+
+
+def test_catch_all_hostname_template_accepts_names_whose_target_resolves(monkeypatch, tmp_path, hermetic_resolution):
+	import shutil
+
+	real_ssh = shutil.which("ssh")
+	if not real_ssh:
+		pytest.skip("ssh not installed")
+	config = tmp_path / "ssh_config"
+	config.write_text("Host *\n  HostName %h.corp.example\n")
+	wrapper = tmp_path / "ssh"
+	wrapper.write_text('#!/bin/sh\nexec {} -F {} "$@"\n'.format(real_ssh, config))
+	wrapper.chmod(0o755)
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", str(wrapper))
+	# only the full name is in DNS, as with a search domain ssh's config adds itself
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: "10.9.9.1" if hostname == "node1.corp.example" else None)
+
+	result = multiSSH3.expand_hostnames(["node1", "nodee1-typo"])
+
+	assert result == {"node1": "10.9.9.1"}
