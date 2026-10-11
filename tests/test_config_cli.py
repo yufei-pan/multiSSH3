@@ -95,9 +95,10 @@ def test_store_config_file_keeps_system_wide_location_readable(monkeypatch, tmp_
 	assert _store_config(monkeypatch, system_config) == 0o644
 
 
-def test_store_config_file_still_writes_when_permissions_cannot_change(monkeypatch, tmp_path):
+def test_store_config_file_refuses_file_it_cannot_make_private(monkeypatch, tmp_path, capsys):
 	shared = tmp_path / "team.json"
 	shared.write_text('{"DEFAULT_TIMEOUT": 5}')
+	shared.chmod(0o666)  # someone else's file we can write but not chmod
 
 	def not_our_file(fd, mode):
 		raise PermissionError(1, "Operation not permitted")
@@ -107,7 +108,9 @@ def test_store_config_file_still_writes_when_permissions_cannot_change(monkeypat
 	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
 	multiSSH3.write_default_config(args, str(shared), force=True)
 
-	assert json.loads(shared.read_text())["DEFAULT_PASSWORD"] == "secret"  # not left truncated
+	# the passwords must not land in a file others can read, and the file must not be emptied
+	assert shared.read_text() == '{"DEFAULT_TIMEOUT": 5}'
+	assert '"DEFAULT_PASSWORD": "secret"' in capsys.readouterr().out
 
 
 def test_store_config_file_keeps_locked_down_system_config_locked(monkeypatch, tmp_path, umask_002):

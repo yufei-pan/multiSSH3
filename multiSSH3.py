@@ -4464,8 +4464,9 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 				try:
 					os.fchmod(fd, new_mode)
 				except OSError:
-					# not our file: write it with its current permissions, as before
-					pass
+					# not our file: only write the passwords if it is already no more open than new_mode
+					if stat.S_IMODE(os.fstat(fd).st_mode) & ~new_mode:
+						raise PermissionError('cannot restrict the permissions of {!r} to {:o}, not writing passwords to it'.format(CONFIG_FILE, new_mode))
 			# truncate only now, a failure above must not leave the file empty
 			f.truncate()
 			json.dump(__configs_from_file,f,indent=4)
