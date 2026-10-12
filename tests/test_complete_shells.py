@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import time
 
@@ -110,7 +111,9 @@ def _interactive_output(shell, env, home):
 	'''Everything a fresh interactive shell prints before its first prompt, without the prompt.'''
 	argv = {'bash': [shell, '-i'], 'zsh': [shell, '-i'], 'fish': [shell, '-i']}[os.path.basename(shell)]
 	result = subprocess.run(argv, input=b'exit\n', env=dict(env, PS1='', PROMPT=''), cwd=str(home), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
-	return result.returncode, result.stdout.decode('utf-8', 'replace')
+	# bash 4.2's readline turns on xterm's meta key mode again when keys were bound at the first
+	# prompt: the same invisible mode, sent twice
+	return result.returncode, re.sub('(\x1b\\[\\?1034h)+', '\x1b[?1034h', result.stdout.decode('utf-8', 'replace'))
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])

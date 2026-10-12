@@ -94,6 +94,7 @@ BASH_TEST_RC = r'''
 PS1='@@READY@@ '
 bind -x '"\C-x\C-p": printf "@@LINE[%s]@@\n" "$READLINE_LINE"'
 {bash_completion}
+{pre}
 # a command with its own completion, for delegation tests
 _fakecmd() {{ COMPREPLY=($(compgen -W "alpha beta" -- "$2")); }}
 complete -F _fakecmd fakecmd
@@ -107,6 +108,7 @@ complete -F _fakefile fakefile
 ZSH_TEST_RC = r'''
 PS1='@@READY@@ '
 autoload -Uz compinit && compinit -u -D
+{pre}
 _mssh_test_print() {{ print -r -- "@@LINE[$BUFFER]@@" }}
 zle -N _mssh_test_print
 bindkey '^X^P' _mssh_test_print
@@ -114,6 +116,7 @@ bindkey '^X^P' _mssh_test_print
 _fakecmd() {{ compadd alpha beta }}
 compdef _fakecmd fakecmd
 [[ -r {glue} ]] && source {glue} 2>/dev/null
+{extra}
 '''
 
 def require_blesh():
@@ -154,16 +157,18 @@ def blesh_session(home, env, glue=None):
 	session.read_until(b'@@READY@@', timeout=60)
 	return session
 
-def bash_session(home, env, glue, bash_completion=True, extra=''):
+def bash_session(home, env, glue, bash_completion=True, extra='', pre=''):
+	'''An interactive bash with the glue; pre runs before the glue loads, extra after.'''
 	rc = home / 'test.bashrc'
 	loader = '. /usr/share/bash-completion/bash_completion 2>/dev/null' if bash_completion else ''
-	rc.write_text(BASH_TEST_RC.format(bash_completion=loader, glue=glue, extra=extra))
+	rc.write_text(BASH_TEST_RC.format(bash_completion=loader, glue=glue, extra=extra, pre=pre))
 	session = Session([require_shell('bash'), '--noprofile', '--rcfile', str(rc), '-i'], env, cwd=home)
 	session.read_until(b'@@READY@@')
 	return session
 
-def zsh_session(home, env, glue):
-	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue))
+def zsh_session(home, env, glue, pre='', extra=''):
+	'''An interactive zsh with the glue; pre runs before the glue loads, extra after.'''
+	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue, pre=pre, extra=extra))
 	session = Session([require_shell('zsh'), '-i'], dict(env, ZDOTDIR=str(home)), cwd=home)
 	session.read_until(b'@@READY@@')
 	return session
@@ -182,3 +187,20 @@ def fish_complete(env, glue, line):
 
 def _fish_quote(word):
 	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"
+
+FISH_TEST_CONFIG = r'''
+set -g fish_greeting
+function fish_prompt; printf '@@READY@@ '; end
+bind \cx\cp 'printf "@@LINE[%s]@@\\n" (commandline)'
+{pre}
+'''
+
+def fish_session(home, env, keys_glue, pre=''):
+	'''An interactive fish with the Ctrl-R glue in conf.d; pre runs in config.fish (after conf.d).'''
+	config = home / '.config' / 'fish'
+	(config / 'conf.d').mkdir(parents=True, exist_ok=True)
+	(config / 'conf.d' / 'mssh-complete.fish').write_text(keys_glue)
+	(config / 'config.fish').write_text(FISH_TEST_CONFIG.format(pre=pre))
+	session = Session([require_shell('fish'), '-i'], env, cwd=home)
+	session.read_until(b'@@READY@@', timeout=20)
+	return session

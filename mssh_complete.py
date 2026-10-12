@@ -3060,7 +3060,7 @@ _mssh_complete() {
 		{
 			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
-		} | @ENGINE@ query 2>/dev/null || :
+		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
 	[[ $resp == MSSHC1$'\n'* ]] || return 0
 	while IFS= read -r line; do
@@ -3110,6 +3110,276 @@ _mssh_complete() {
 }
 
 complete -o default -o bashdefault -F _mssh_complete mssh mssh3 multissh multissh3 multiSSH3 2>/dev/null
+
+# ---- grey suggestions, the Ctrl-R picker and the mssh line editor (SP2) ----
+
+_mssh_complete_engine() {
+	@ENGINE@ "$@"
+}
+
+_mssh_complete_is_mssh() {
+	# whether $1 is an mssh command line: an mssh name, then a space
+	[[ $1 =~ ^[[:space:]]*([^[:space:]]*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)[[:space:]] ]]
+}
+
+_mssh_complete_request() {
+	# print a request with flags $1 for the line $2 (before the cursor) $3 (after it), then the history tail
+	printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$1 term=${TERM-}" "$2" "$3" ''
+	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
+}
+
+_mssh_complete_prompt() {
+	# the prompt the picker and the editor redraw (bash clears the line before a bind -x command):
+	# expanded on bash 4.4 and later, else PS1 itself for the engine to expand
+	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
+		_mssh_complete_ps1=${PS1@P}
+		_mssh_complete_expand=0
+	else
+		_mssh_complete_ps1=$PS1
+		_mssh_complete_expand=1
+	fi
+}
+
+_mssh_complete_cut() {
+	# READLINE_LINE before and after READLINE_POINT, which readline counts in bytes before bash 5
+	(( _mssh_complete_bytes )) && local LC_ALL=C
+	_mssh_complete_before=${READLINE_LINE:0:READLINE_POINT}
+	_mssh_complete_after=${READLINE_LINE:READLINE_POINT}
+}
+
+_mssh_complete_set() {
+	# READLINE_LINE=$1 with the cursor after its first $2 characters
+	local head=${1:0:$2}
+	READLINE_LINE=$1
+	(( _mssh_complete_bytes )) && local LC_ALL=C
+	READLINE_POINT=${#head}
+}
+
+_mssh_complete_apply() {
+	# apply a pick or edit response ($1): the line, the cursor, and _mssh_complete_action / _keys
+	local line text= cursor=
+	_mssh_complete_action=
+	_mssh_complete_keys=
+	[[ $1 == MSSHC1$'\n'* && $1 == *$'\n'E ]] || return 1
+	while IFS= read -r line; do
+		case ${line:0:2} in
+			'L ') cursor=${line:2}; cursor=${cursor%%$'\t'*}; text=${line#*$'\t'} ;;
+			'K ') _mssh_complete_action=${line:2}; _mssh_complete_action=${_mssh_complete_action%%$'\t'*}; _mssh_complete_keys=${line#*$'\t'} ;;
+		esac
+	done <<< "$1"
+	[[ $cursor =~ ^[0-9]+$ ]] || return 1
+	_mssh_complete_set "$text" "$cursor"
+}
+
+_mssh_complete_pick() {
+	# the picker for the mssh line in READLINE_LINE; fails when it is unavailable
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand resp status
+	local _mssh_complete_action _mssh_complete_keys
+	_mssh_complete_cut
+	_mssh_complete_prompt
+	resp=$(_mssh_complete_request "pick=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null)
+	status=$?
+	(( status == 0 )) && _mssh_complete_apply "$resp"
+	(( status <= 1 ))
+}
+
+_mssh_complete_ctrl_r() {
+	# Ctrl-R (a macro: the hook key of keymap $1, then "\C-x\C-y"): the picker on mssh lines, else
+	# what Ctrl-R did before
+	local keymap=$1 previous
+	bind -m "$keymap" '"\C-x\C-y": ""'
+	_mssh_complete_is_mssh "$READLINE_LINE" && _mssh_complete_pick && return 0
+	previous=_mssh_complete_previous_${keymap//-/_}
+	previous=${!previous-}
+	case $previous in
+		x:*) eval "${previous#x:}" ;;
+		?*)
+			# put the previous binding back while it runs (a reverse search repeats with Ctrl-R
+			# only when Ctrl-R is bound to it); the next prompt takes Ctrl-R back
+			bind -m "$keymap" "$previous"
+			bind -m "$keymap" '"\C-x\C-y": "\C-r"'
+			_mssh_complete_unarmed="${_mssh_complete_unarmed-} $keymap"
+			[[ ${PROMPT_COMMAND-} == *_mssh_complete_rearm\;* ]] || PROMPT_COMMAND="_mssh_complete_rearm;${PROMPT_COMMAND-}"
+			;;
+	esac
+	return 0
+}
+
+_mssh_complete_rearm() {
+	# PROMPT_COMMAND, once after a Ctrl-R fallback: Ctrl-R opens the picker again
+	local status=$? keymap
+	for keymap in ${_mssh_complete_unarmed-}; do
+		_mssh_complete_arm "$keymap"
+	done
+	_mssh_complete_unarmed=
+	PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_rearm;/}
+	return $status
+}
+
+_mssh_complete_arm() {
+	# bind Ctrl-R in readline keymap $1 to its hook key, then "\C-x\C-y"; each keymap has its own
+	# hook key: before bash 5.1 one table holds the bind -x commands of all keymaps
+	if [[ $1 == emacs ]]; then
+		bind -m emacs '"\C-r": "\C-x\C-o\C-x\C-y"' 2>/dev/null
+	else
+		bind -m vi-insert '"\C-r": "\C-x\C-q\C-x\C-y"' 2>/dev/null
+	fi
+}
+
+_mssh_complete_previous() {
+	# the Ctrl-R binding of readline keymap $1, as a bind argument or x:<shell command> (bind -x),
+	# into _mssh_complete_found; fails when it is unbound or cannot be told (bind -x before bash 4.3)
+	local line
+	_mssh_complete_found=
+	while IFS= read -r line; do
+		[[ $line == '"\C-r": "'*'"' ]] || continue
+		line=${line#'"\C-r": "'}
+		line=${line%'"'}
+		line=${line//'\"'/'"'}
+		_mssh_complete_found=x:${line//'\\'/'\'}
+		return 0
+	done < <(bind -m "$1" -X 2>/dev/null || :)
+	while IFS= read -r line; do
+		if [[ $line == '"\C-r": '* ]]; then
+			_mssh_complete_found=$line
+			return 0
+		fi
+	done < <(bind -m "$1" -s 2>/dev/null; bind -m "$1" -p 2>/dev/null || :)
+	return 1
+}
+
+_mssh_complete_space() {
+	# space ("\C-x\C-t\C-x\C-y"): after an mssh name alone, the mssh line editor; else a space
+	local resp _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
+	local _mssh_complete_before _mssh_complete_after
+	local -a expand=()
+	bind -m emacs '"\C-x\C-y": ""'
+	case $READLINE_LINE in
+		mssh|mssh3|multissh|multissh3|multiSSH3)
+			if (( READLINE_POINT == ${#READLINE_LINE} )); then
+				_mssh_complete_prompt
+				(( _mssh_complete_expand )) && expand=(--expand)
+				resp=$(fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
+					MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null)
+				if _mssh_complete_apply "$resp"; then
+					case $_mssh_complete_action in
+						abandon) READLINE_LINE= READLINE_POINT=0; bind -m emacs '"\C-x\C-y": accept-line' ;;
+						pass) bind -m emacs "\"\\C-x\\C-y\": \"$_mssh_complete_keys\"" ;;
+					esac
+					return 0
+				fi
+			fi
+			;;
+	esac
+	if [[ $_mssh_complete_space_previous == magic-space ]]; then
+		bind -m emacs '"\C-x\C-y": magic-space'
+		return 0
+	fi
+	_mssh_complete_cut
+	READLINE_LINE="$_mssh_complete_before $_mssh_complete_after"
+	(( READLINE_POINT += 1 ))
+}
+
+if [[ -n ${BLE_VERSION-} ]]; then
+	_mssh_complete_bytes=0
+
+	_mssh_complete_ble_call() {
+		# run a binding the way ble-bind -P printed it: -m KEYMAP -f|-x|-c KEY COMMAND
+		case $3 in
+			-f) builtin eval -- "ble/widget/$5" ;;
+			-x) ble/widget/.EDIT_COMMAND "$5" ;;
+			-c) ble/widget/.SHELL_COMMAND "$5" ;;
+		esac
+	}
+
+	function ble/widget/mssh-complete/ctrl-r {
+		# Ctrl-R: the picker on mssh lines, else the widget Ctrl-R had
+		if _mssh_complete_is_mssh "$_ble_edit_str" && ble/widget/.EDIT_COMMAND _mssh_complete_pick; then
+			return 0
+		fi
+		local previous=_mssh_complete_previous_$_ble_decode_keymap
+		[[ -n ${!previous-} ]] && builtin eval -- "_mssh_complete_ble_call ${!previous}"
+		return 0
+	}
+
+	_mssh_complete_ble_bind() {
+		# take Ctrl-R in ble.sh keymap $1 when its binding is a widget or a command
+		local line
+		while IFS= read -r line; do
+			case $line in
+				*' -f C-r '*|*' -x C-r '*|*' -c C-r '*)
+					[[ $line == *mssh-complete/ctrl-r* ]] && return 0
+					printf -v "_mssh_complete_previous_$1" '%s' "${line#ble-bind }"
+					ble-bind -m "$1" -f C-r mssh-complete/ctrl-r
+					return 0
+					;;
+			esac
+		done < <(ble-bind -m "$1" -P 2>/dev/null || :)
+	}
+	blehook/eval-after-load keymap_emacs '_mssh_complete_ble_bind emacs'
+	blehook/eval-after-load keymap_vi '_mssh_complete_ble_bind vi_imap'
+
+	_mssh_complete_ble_source() {
+		# define ble.sh's mssh suggestion source and put it first
+		declare -F ble/complete/auto-complete/enter >/dev/null 2>&1 || return 0
+		function ble/complete/auto-complete/source:mssh {
+			# grey text for mssh lines: 1 lets the next source try, 148 when typing interrupted the query
+			((_ble_edit_ind == ${#_ble_edit_str})) || return 1
+			_mssh_complete_is_mssh "$_ble_edit_str" || return 1
+			local request=$_ble_base_run/$$.mssh-complete.request answer=$_ble_base_run/$$.mssh-complete.answer line text= status
+			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' > "$request" 2>/dev/null || return 1
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			status=$?
+			((status == 148)) && return 148
+			((status == 0)) || return 1
+			while IFS= read -r line; do
+				[[ $line == 'G '* ]] && text=${line#*$'\t'}
+			done < "$answer"
+			[[ -n $text ]] || return 1
+			ble/complete/auto-complete/enter h 0 "$text" '' "$_ble_edit_str$text"
+		}
+		[[ " ${_ble_complete_auto_source[*]-} " == *' mssh '* ]] || _ble_complete_auto_source=(mssh ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"})
+	}
+	blehook/eval-after-load complete _mssh_complete_ble_source
+elif [[ $- == *i* ]]; then
+	# readline counts READLINE_POINT in bytes before bash 5
+	_mssh_complete_bytes=0
+	(( BASH_VERSINFO[0] < 5 )) && _mssh_complete_bytes=1
+
+	_mssh_complete_keys() {
+		# PROMPT_COMMAND, once, at the first prompt: take the keys. Not while the rc file loads: there
+		# stderr is often /dev/null, and readline starting then would lose its terminal setup
+		local status=$? keymap previous
+		PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_keys;/}
+		[[ -o emacs || -o vi ]] || return $status
+		for keymap in emacs vi-insert; do
+			# take Ctrl-R only when its binding can be called back (and is not already ours)
+			if _mssh_complete_previous "$keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
+				printf -v "_mssh_complete_previous_${keymap//-/_}" '%s' "$_mssh_complete_found"
+				if [[ $keymap == emacs ]]; then
+					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs'
+				else
+					bind -m vi-insert -x '"\C-x\C-q": _mssh_complete_ctrl_r vi-insert'
+				fi
+				_mssh_complete_arm "$keymap"
+			fi
+		done
+		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]]; then
+			# the mssh line editor, entered with a space after an mssh name; only over a plain space key
+			previous=$(bind -m emacs -p 2>/dev/null | grep -F '" ": ' || :)
+			_mssh_complete_space_previous=${previous#'" ": '}
+			case $_mssh_complete_space_previous in
+				self-insert|magic-space)
+					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space'
+					bind -m emacs '" ": "\C-x\C-t\C-x\C-y"'
+					;;
+			esac
+		fi
+		return $status
+	}
+	[[ ${PROMPT_COMMAND-} == *_mssh_complete_keys\;* ]] || PROMPT_COMMAND="_mssh_complete_keys;${PROMPT_COMMAND-}"
+fi
 '''
 
 ZSH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ zsh: autocomplete for mssh (multiSSH3), protocol MSSHC1
