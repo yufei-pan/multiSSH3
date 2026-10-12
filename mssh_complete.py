@@ -2204,6 +2204,203 @@ def engine_for(request, directory=Ellipsis, now=None):
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	return engine
 
+#%% ------------ Terminal ----------------
+# the keys terminals send as escape sequences (xterm, VT220, rxvt, linux console)
+_KEY_SEQUENCES = {
+	'\x1b[A': 'up', '\x1b[B': 'down', '\x1b[C': 'right', '\x1b[D': 'left',
+	'\x1bOA': 'up', '\x1bOB': 'down', '\x1bOC': 'right', '\x1bOD': 'left',
+	'\x1b[H': 'home', '\x1b[F': 'end', '\x1bOH': 'home', '\x1bOF': 'end',
+	'\x1b[1~': 'home', '\x1b[4~': 'end', '\x1b[7~': 'home', '\x1b[8~': 'end',
+	'\x1b[2~': 'insert', '\x1b[3~': 'delete', '\x1b[5~': 'pgup', '\x1b[6~': 'pgdn',
+	'\x1b[1;5C': 'ctrl-right', '\x1b[1;5D': 'ctrl-left', '\x1b[5C': 'ctrl-right', '\x1b[5D': 'ctrl-left',
+	'\x1bOc': 'ctrl-right', '\x1bOd': 'ctrl-left',
+	'\x1b[1;3C': 'alt-right', '\x1b[1;3D': 'alt-left', '\x1b\x1b[C': 'alt-right', '\x1b\x1b[D': 'alt-left',
+}
+_KEY_NAMES = {'\r': 'enter', '\n': 'enter', '\t': 'tab', '\x7f': 'backspace', '\x08': 'backspace', '\x00': 'ctrl-space'}
+
+def decode_keys(data):
+	'''
+	Split bytes read from a terminal into keys.
+
+	Returns:
+		list: (name, raw bytes) pairs. name is a key name ('up', 'enter', 'ctrl-r', 'alt-f', 'esc', 'unknown')
+			or, for text, the character itself.
+	'''
+	text = data.decode('utf-8', 'replace')
+	keys = []
+	index = 0
+	while index < len(text):
+		char = text[index]
+		if char == '\x1b':
+			for length in range(min(len(text) - index, 7), 1, -1):
+				sequence = text[index:index + length]
+				if sequence in _KEY_SEQUENCES:
+					keys.append((_KEY_SEQUENCES[sequence], sequence.encode()))
+					index += length
+					break
+			else:
+				if index + 1 < len(text) and text[index + 1] in '[O':
+					# an escape sequence nobody named: up to its final byte
+					end = index + 2
+					while end < len(text) and not '@' <= text[end] <= '~':
+						end += 1
+					keys.append(('unknown', text[index:end + 1].encode()))
+					index = end + 1
+				elif index + 1 < len(text):
+					# Alt + key arrives as Esc then the key
+					keys.append(('alt-' + text[index + 1], text[index:index + 2].encode('utf-8')))
+					index += 2
+				else:
+					keys.append(('esc', b'\x1b'))
+					index += 1
+			continue
+		if char in _KEY_NAMES:
+			keys.append((_KEY_NAMES[char], char.encode()))
+		elif ord(char) < 32:
+			keys.append(('ctrl-' + chr(ord(char) + 96), char.encode()))
+		else:
+			keys.append((char, char.encode('utf-8')))
+		index += 1
+	return keys
+
+def char_width(char):
+	'''Columns a character takes on a terminal: 0 (combining, control), 1, or 2 (wide).'''
+	import unicodedata
+	if ord(char) < 32 or ord(char) == 127 or unicodedata.combining(char) or unicodedata.category(char) in ('Mn', 'Me', 'Cf'):
+		return 0
+	return 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+
+_ESCAPES = None
+
+def strip_escapes(text):
+	'''text without terminal escape sequences and readline's \\001 / \\002 markers.'''
+	global _ESCAPES
+	if _ESCAPES is None:
+		import re
+		_ESCAPES = re.compile('\x1b\\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)|\x1b[()][0-9A-Za-z]|\x1b[@-Z\\\\-_]|[\x01\x02]')
+	return _ESCAPES.sub('', text)
+
+def text_width(text):
+	'''Columns text takes on a terminal, escape sequences left out.'''
+	return sum(char_width(char) for char in strip_escapes(text))
+
+def fit(text, width):
+	'''text cut to at most width columns (escape sequences are not counted and stay).'''
+	out = []
+	used = 0
+	index = 0
+	plain = strip_escapes(text)
+	if text_width(plain) <= width:
+		return text
+	while index < len(text) and used < width:
+		match = None
+		if text[index] in '\x1b\x01\x02':
+			match = _ESCAPES.match(text, index) if _ESCAPES is not None else None
+		if match:
+			out.append(match.group())
+			index = match.end()
+			continue
+		size = char_width(text[index])
+		if used + size > width:
+			break
+		out.append(text[index])
+		used += size
+		index += 1
+	return ''.join(out)
+
+def ghost_style(term):
+	'''The escape sequence that draws grey text on terminal type term, or None where grey text is not drawn.'''
+	if not term or term in ('dumb', 'unknown') or term.startswith(('vt52', 'cons25')):
+		return None
+	if '256color' in term or 'truecolor' in term or 'direct' in term:
+		return '\x1b[38;5;244m'
+	return '\x1b[2m'
+
+class Terminal(object):
+	'''The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on SIGTERM / SIGHUP.'''
+	def __init__(self, path='/dev/tty'):
+		self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+		self._saved = None
+		self._handlers = {}
+		self._pending = b''
+
+	def __enter__(self):
+		import signal
+		import termios
+		import tty
+		self._saved = termios.tcgetattr(self.fd)
+		for number in (signal.SIGTERM, signal.SIGHUP):
+			self._handlers[number] = signal.signal(number, self._interrupted)
+		# TCSANOW: TCSAFLUSH (the default) would drop keys typed while the program started
+		tty.setraw(self.fd, termios.TCSANOW)
+		return self
+
+	def _interrupted(self, number, frame):
+		self.restore()
+		raise SystemExit(128 + number)
+
+	def restore(self):
+		import termios
+		if self._saved is not None:
+			try:
+				termios.tcsetattr(self.fd, termios.TCSADRAIN, self._saved)
+			except termios.error:
+				pass
+
+	def __exit__(self, *exc):
+		import signal
+		self.restore()
+		for number, handler in self._handlers.items():
+			signal.signal(number, handler)
+		os.close(self.fd)
+
+	def size(self):
+		'''(rows, columns), 24x80 when the terminal does not say.'''
+		import fcntl
+		import struct
+		import termios
+		try:
+			rows, columns = struct.unpack('hh', fcntl.ioctl(self.fd, termios.TIOCGWINSZ, b'\0' * 4))
+			if rows > 0 and columns > 0:
+				return rows, columns
+		except OSError:
+			pass
+		return 24, 80
+
+	def write(self, text):
+		data = text.encode('utf-8', 'replace')
+		while data:
+			written = os.write(self.fd, data)
+			data = data[written:]
+
+	def read_keys(self, timeout=None):
+		'''The keys typed so far (waiting up to timeout seconds for the first, None: forever); [] on timeout.'''
+		import select
+		ready, _, _ = select.select([self.fd], [], [], timeout)
+		if not ready:
+			return []
+		data = self._pending + os.read(self.fd, 4096)
+		self._pending = b''
+		# a lone Esc may be the start of a sequence, and a character may be cut: wait for the rest
+		while data == b'\x1b' or _incomplete_utf8(data):
+			ready, _, _ = select.select([self.fd], [], [], 0.03)
+			if not ready:
+				break
+			data += os.read(self.fd, 4096)
+		cut = _incomplete_utf8(data)
+		if cut:
+			data, self._pending = data[:-cut], data[-cut:]
+		return decode_keys(data)
+
+def _incomplete_utf8(data):
+	'''How many bytes at the end of data start a UTF-8 character that is not complete yet (0 if none).'''
+	for back in range(1, min(len(data), 3) + 1):
+		byte = data[-back]
+		if byte & 0xC0 != 0x80:
+			needed = 2 if byte & 0xE0 == 0xC0 else 3 if byte & 0xF0 == 0xE0 else 4 if byte & 0xF8 == 0xF0 else 1
+			return back if needed > back else 0
+	return 0
+
 #%% ------------ Shell glue ----------------
 GLUE_MARK = 'MSSH_COMPLETE_GLUE'
 
