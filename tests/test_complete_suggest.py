@@ -41,6 +41,33 @@ def test_nothing_when_the_word_itself_is_unclear():
 	assert suggest('mssh x') is None
 
 
+SPLIT = [line(NOW - number, '-su', 'cloud', '"date"') for number in range(3)]
+SPLIT += [line(NOW - 10 - number, '-su', 'cloud,la,localhost,rtr', '"uptime"') for number in range(3)]
+
+
+def test_the_start_all_values_share_when_none_is_sure():
+	# cloud and cloud,la,localhost,rtr split the share, but both start with cloud
+	ghost = suggest('mssh cl', history=SPLIT)
+	assert (ghost.kind, ghost.text) == ('word', 'oud')
+
+
+def test_the_shared_start_is_escaped_for_the_shell():
+	history = [line(NOW - number, '-su', 'gpu[01-16]', '"date"') for number in range(3)]
+	history += [line(NOW - 10 - number, '-su', 'gpu[01-16],login1', '"uptime"') for number in range(3)]
+	assert suggest('mssh gp', shell='zsh', history=history).text == 'u\\[01-16\\]'
+
+
+def test_inside_a_quote_the_shared_start_leaves_the_quote_open():
+	history = [line(NOW - number, '-su', 'web1', '"systemctl status nginx"') for number in range(3)]
+	history += [line(NOW - 10 - number, '-su', 'web1', '"systemctl restart nginx"') for number in range(3)]
+	assert suggest('mssh web1 "sys', history=history).text == 'temctl '
+
+
+def test_no_shared_start_from_values_seen_once():
+	history = [line(NOW, '-su', 'onlyonce1', '"uptime"'), line(NOW - 1, '-su', 'onlyonce2', '"uptime"')]
+	assert suggest('mssh on', history=history) is None
+
+
 def test_option_values_continue_with_hosts_and_command():
 	ghost = suggest('mssh -u ro')
 	assert (ghost.kind, ghost.text) == ('line', 'ot storage1 "df -h /data"')

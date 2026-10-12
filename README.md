@@ -372,7 +372,7 @@ It learns from an index of your history and hosts, kept in mssh's private cache 
 
 ### Grey suggestions
 
-While you type an mssh line, the most likely rest of it shows in grey after the cursor: the rest of the line when one past invocation clearly fits, only the rest of the current word when only that is clear, nothing when mssh is not sure. → (or End, Ctrl-F) takes all of it, Alt-→ / Ctrl-→ / Alt-F one word. Enter runs only what you typed.
+While you type an mssh line, the most likely rest of it shows in grey after the cursor: the rest of the line when one past invocation clearly fits, only the rest of the current word when only that is clear, or the start every known value shares when none is (what TAB would insert), nothing when mssh is not sure. → (or End, Ctrl-F) takes all of it, Alt-→ / Ctrl-→ / Alt-F one word. Enter runs only what you typed.
 
 - **zsh:** built in; with [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) loaded, mssh becomes its first strategy on mssh lines.
 - **bash with [ble.sh](https://github.com/akinomyoga/ble.sh):** built in, as ble.sh's first suggestion source.

@@ -1667,6 +1667,16 @@ def _top_share(scores):
 		return None, 0.0
 	return best, max(scores[best], 0.0) / total
 
+def _common_prefix(texts):
+	'''The longest start all texts share ('' for none).'''
+	if not texts:
+		return ''
+	low, high = min(texts), max(texts)
+	end = 0
+	while end < len(low) and low[end] == high[end]:
+		end += 1
+	return low[:end]
+
 def shell_history_knowledge(lines, spec):
 	'''
 	The shell's history as weak records: lines running mssh like mssh history (passwords dropped),
@@ -1775,7 +1785,7 @@ class Engine(object):
 			return None
 		share *= self._support(context, top)
 		if share < T_WORD:
-			return None
+			return self._suggest_shared_start(context, typed, values, request.shell)
 		rest = top[len(typed):]
 		if context.open_quote:
 			closing = '"' if context.open_quote == '"' else "'"
@@ -1792,6 +1802,33 @@ class Engine(object):
 		if not rest:
 			return None
 		return Ghost('word', rest, share)
+
+	def _suggest_shared_start(self, context, typed, values, shell):
+		'''
+		When no value of the current slot is sure enough: the start all of them share, as TAB would
+		insert it, once they were used often enough between them. Never closes a quote.
+		'''
+		common = _common_prefix(list(values))
+		if len(common) <= len(typed):
+			return None
+		support = 1.0
+		if SUPPORT > 0:
+			uses = 0
+			for value in values:
+				uses += self.usage(context, value)[0]
+				support = float(uses) / (uses + SUPPORT)
+				if support >= T_WORD:
+					break
+		if support < T_WORD:
+			return None
+		rest = common[len(typed):]
+		if context.open_quote:
+			unsafe = '"\\$`' if context.open_quote == '"' else "'"
+			if any(char in unsafe for char in rest):
+				return None
+		else:
+			rest = _shell_escape(shell, rest)
+		return Ghost('word', rest, support)
 
 	def _suggest_command_words(self, context, shell, deadline):
 		'''
