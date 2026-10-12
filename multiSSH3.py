@@ -4183,19 +4183,33 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 		argsList.append('--file_sync' if not shortend else '-fs')
 	return ' '.join(argsList)
 
-def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSeperated = False,**kwargs) -> str:
+def _typed_host_str(hosts):
+	'''The hosts argument as given, without expanding, validating or sorting it (sets are sorted).'''
+	if isinstance(hosts, str):
+		return hosts
+	if isinstance(hosts, (set, frozenset)):
+		hosts = sorted(hosts)
+	return ','.join(str(host) for host in hosts)
+
+def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSeperated = False,typed_hosts = False,**kwargs) -> str:
 	# Allow explicit kwargs to override base parameters when forwarding dicts.
 	hosts = kwargs.get('hosts', hosts)
 	commands = kwargs.get('commands', commands)
 	shortend = kwargs.get('shortend', shortend)
 	tabSeperated = kwargs.get('tabSeperated', tabSeperated)
-	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
-	hostStr = formHostStr(hosts)
+	typed_hosts = kwargs.get('typed_hosts', typed_hosts)
+	if typed_hosts:
+		# the history keeps what was typed: aliases and ranges unexpanded, unresolvable names kept
+		hostStr = _typed_host_str(hosts) or 'EMPTY_HOSTS'
+	else:
+		hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
+		hostStr = formHostStr(hosts)
 	commandArgKwargs = dict(kwargs)
 	commandArgKwargs.pop('hosts', None)
 	commandArgKwargs.pop('commands', None)
 	commandArgKwargs.pop('shortend', None)
 	commandArgKwargs.pop('tabSeperated', None)
+	commandArgKwargs.pop('typed_hosts', None)
 	if commandArgKwargs.get('file'):
 		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
@@ -4227,6 +4241,7 @@ def record_command_history(kwargs):
 		historyKwargs.update(historyKwargs.pop('kwargs', None) or {})
 		historyKwargs['shortend'] = True
 		historyKwargs['tabSeperated'] = True
+		historyKwargs['typed_hosts'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
 		strCommand = getStrCommand(**historyKwargs)
 		# history can hold -p passwords, create it readable by the owner only
