@@ -1,0 +1,6 @@
+# Shell matrix image: current shells (see docs/superpowers/specs/2026-10-11-mssh-autocomplete-sp1-design.md)
+FROM debian:trixie-slim
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends bash bash-completion zsh fish python3 python3-pytest procps \
+ && rm -rf /var/lib/apt/lists/*
+ENV LANG=C.UTF-8

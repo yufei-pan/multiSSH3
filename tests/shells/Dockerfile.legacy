@@ -1,0 +1,7 @@
+# Shell matrix image: RHEL 8 era shells and Python 3.6 (see the autocomplete spec)
+FROM rockylinux:8
+RUN dnf -q -y install epel-release \
+ && dnf -q -y install bash bash-completion zsh fish python36 procps-ng glibc-langpack-en which \
+ && dnf clean all \
+ && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1'
+ENV LANG=en_US.UTF-8
