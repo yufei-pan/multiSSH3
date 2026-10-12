@@ -3752,6 +3752,15 @@ _mssh_complete_ghost_redraw() {
 	# line-pre-redraw hook: keep the grey text in step with the buffer
 	emulate -L zsh
 	local last=$_mssh_complete_last full
+	if (( ${+functions[_zsh_autosuggest_start]} )); then
+		# zsh-autosuggestions loaded after the first prompt (zinit turbo, zsh-defer): mssh becomes
+		# its first strategy, and once it has wrapped the widgets its grey text replaces ours
+		_mssh_complete_zas_strategy
+		if [[ $widgets[forward-char] != user:_mssh_complete_accept ]]; then
+			_mssh_complete_ghost_handover
+			return 0
+		fi
+	fi
 	if [[ $BUFFER == "$last" ]]; then
 		(( CURSOR == $#BUFFER )) || _mssh_complete_ghost_clear
 		return 0
@@ -3771,6 +3780,16 @@ _mssh_complete_ghost_redraw() {
 	_mssh_complete_asked=$BUFFER
 	exec {_mssh_complete_fd}< <(_mssh_complete_request 'ghost=1 nul=0' "$BUFFER" '' | _mssh_complete_engine query 2>/dev/null)
 	zle -F $_mssh_complete_fd _mssh_complete_ghost_ready
+}
+
+_mssh_complete_ghost_handover() {
+	# stop drawing grey text: drop ours (not what zsh-autosuggestions shows) and the hooks
+	add-zle-hook-widget -d line-pre-redraw _mssh_complete_ghost_redraw
+	add-zle-hook-widget -d line-finish _mssh_complete_ghost_finish
+	_mssh_complete_ghost_cancel
+	[[ -n $_mssh_complete_shown && $POSTDISPLAY == "$_mssh_complete_shown" ]] && POSTDISPLAY=
+	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
+	_mssh_complete_shown= _mssh_complete_highlight= _mssh_complete_last=
 }
 
 _mssh_complete_ghost_finish() {
@@ -3835,10 +3854,15 @@ _mssh_complete_setup() {
 	add-zsh-hook -d precmd _mssh_complete_setup
 	_mssh_complete_take_ctrl_r
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
-		(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
+		_mssh_complete_zas_strategy
 	else
 		_mssh_complete_ghost_setup
 	fi
+}
+
+_mssh_complete_zas_strategy() {
+	# zsh-autosuggestions asks mssh first
+	(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 
 if [[ -o interactive ]]; then
