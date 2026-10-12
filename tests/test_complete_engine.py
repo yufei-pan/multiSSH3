@@ -214,3 +214,31 @@ def test_degraded_mode_without_an_index():
 	response = mc.answer(mc.Request('bash', 'mssh --no_w', '', '--no_w', history=['mssh login9 "uptime"']), directory=None)
 	assert texts(response) == ['--no_watch']
 	assert texts(mc.answer(mc.Request('bash', 'mssh log', '', 'log', history=['mssh login9 "uptime"']), directory=None)) == ['login9']
+
+
+
+def test_passwords_in_shell_history_are_never_offered():
+	secret = 'Hunter2pw'
+	shell = mc.shell_history_knowledge([
+		'mssh -p{} gpu[01-16] uptime'.format(secret),
+		'sudo mssh -p {} gpu1 uptime'.format(secret),
+		'python3 multiSSH3.py --password={} gpu2 uptime'.format(secret),
+		'./multiSSH3.py -p={} gpu3 df'.format(secret),
+		'cd /tmp && mssh -ip {} gpu4 uptime'.format(secret),
+	], SPEC)
+	for before, word in (('mssh gpu[01-16] ', ''), ('mssh ', ''), ('mssh -', '-'), ('mssh h "', ''), ('mssh h "sudo', 'sudo'),
+			('mssh h "pyth', 'pyth'), ('mssh h "./mu', './mu'), ('mssh h "cd', 'cd'), ('mssh h ', ''), ('mssh h -', '-')):
+		for candidate in query(before, word=word, knowledges=[shell]).candidates:
+			assert secret not in candidate.text, (before, candidate.text)
+
+
+def test_mssh_behind_a_wrapper_is_read_as_mssh():
+	shell = mc.shell_history_knowledge(['sudo mssh -u deploy gpu1 "nvidia-smi"'], SPEC)
+	assert texts(query('mssh -u ', ' gpu1', knowledges=[shell]))[0] == 'deploy'
+
+
+def test_huge_typed_host_lists_are_not_offered():
+	hosts = ','.join('node{:04d}'.format(number) for number in range(2000))
+	knowledge = memory([line(NOW, '-su', hosts, '"uptime"')])
+	offered = texts(query('mssh node', knowledges=[knowledge]))
+	assert offered and all(len(text) <= 256 for text in offered)

@@ -429,3 +429,16 @@ Drafting and testing the implementation against real shells and the replay evalu
 | bash install | bash always loads the glue from `~/.bashrc` (data-dir `completion.bash` plus the marked block); the bash-completion per-user directory is not used | bash-completion being installed does not mean it runs: stock Debian root shells do not load it, so install would report success while TAB did nothing new |
 
 Measured at the target scale (10k hosts, 20k invocations): a TAB costs 30-45 ms (p50), a rebuild about 0.5 s, the index is 3 MB.
+
+## Changes from the final review
+
+| Area | Change | Why |
+|---|---|---|
+| Passwords | `-pVALUE` is read as `-p VALUE` (argparse's attached short option), and shell-history lines that run mssh behind a wrapper (`sudo mssh`, `python3 multiSSH3.py`, `cd x && mssh`) are parsed from the mssh word on | A password typed as `-pSECRET`, or behind a wrapper, was offered as a completion |
+| bash delegation | Delegated results drop the text in front of bash's own word | bash's word stops at `:` and `=`, so `a:b` completed to `a:a:bfile` |
+| bash escaping | No escaping when bash quotes file names itself (`files`, `dirs`); a `C` record may carry a fourth field, the unescaped text, which the glue uses when a delegated completion turned on file name quoting | Paths and words with spaces or `;` were escaped twice |
+| Typed host strings | Host strings longer than 256 characters are not offered whole | Recording hosts as typed can store a 2000-host list as one 18 KB string |
+| Aliases | `expand_hostnames_local` expands each alias once per user | Aliases with fan-out (`AA='BB,BB'`, `BB='AA,AA'`) made the index builder spin forever |
+| Range members | Members of ranges typed before are hosts; they are not listed beside the range itself unless typed on their own or named by the hosts argument (`-X`) | `mssh gpu[01-16] -X <TAB>` offered no member |
+| Shell options | The bash glue is safe under `set -e` and `set -u`; every process substitution ends with `\|\| :` | TAB killed `set -e` shells (bash 4.4 exits after a failed process substitution) and printed errors under `set -u` on bash 4.2/4.3 |
+| History | Lines with timestamps outside 0 .. 10^11 are ignored | A pathological timestamp stopped every index build |

@@ -1,6 +1,7 @@
 import socket
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -97,3 +98,25 @@ def test_completion_option_without_module(tmp_path):
 	result = subprocess.run([sys.executable, '-I', str(lone), '--completion', 'bash'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(tmp_path))
 	assert result.returncode == 1
 	assert b'autocomplete needs mssh_complete.py' in result.stderr
+
+
+
+def _finishes(function, seconds=5):
+	result = []
+	thread = threading.Thread(target=lambda: result.append(function()), daemon=True)
+	thread.start()
+	thread.join(seconds)
+	return result
+
+
+def test_expand_hostnames_local_handles_alias_cycles_with_fan_out(no_dns, monkeypatch):
+	monkeypatch.setenv('AA', 'BB,BB')
+	monkeypatch.setenv('BB', 'AA,AA')
+	assert _finishes(lambda: multiSSH3.expand_hostnames_local('AA')) == [([], [])]
+
+
+def test_expand_hostnames_local_handles_deep_shared_aliases(no_dns, monkeypatch):
+	for level in range(26):
+		monkeypatch.setenv('LV{}'.format(level), 'LV{0},LV{0}'.format(level + 1))
+	monkeypatch.setenv('LV26', '127.0.0.9')
+	assert _finishes(lambda: multiSSH3.expand_hostnames_local('LV0')) == [(['127.0.0.9'], [])]

@@ -1883,6 +1883,8 @@ def expand_hostnames_local(hosts):
 		hosts = [hosts]
 	expanded = set()
 	unresolved = set()
+	# each alias is expanded once per user: shared and looping aliases cannot multiply the work
+	walked = set()
 	def walk(text, user, depth):
 		for token in _split_host_str(text):
 			token_user = user
@@ -1903,7 +1905,8 @@ def expand_hostnames_local(hosts):
 				source = _local_hostname_source(name)
 				if source in ('env', 'env_file'):
 					# an alias loop expands to nothing
-					if depth < 32:
+					if depth < 32 and (name, token_user) not in walked:
+						walked.add((name, token_user))
 						value = os.environ.get(name) if source == 'env' else readEnvFromFile().get(name)
 						walk(value or '', token_user, depth + 1)
 					continue

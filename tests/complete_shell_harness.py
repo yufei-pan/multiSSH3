@@ -96,7 +96,11 @@ bind -x '"\C-x\C-p": printf "@@LINE[%s]@@\n" "$READLINE_LINE"'
 # a command with its own completion, for delegation tests
 _fakecmd() {{ COMPREPLY=($(compgen -W "alpha beta" -- "$2")); }}
 complete -F _fakecmd fakecmd
+# a command whose completion turns on filename quoting and offers nothing itself
+_fakefile() {{ compopt -o filenames; COMPREPLY=(); }}
+complete -F _fakefile fakefile
 [ -r {glue} ] && . {glue} 2>/dev/null
+{extra}
 '''
 
 ZSH_TEST_RC = r'''
@@ -111,10 +115,10 @@ compdef _fakecmd fakecmd
 [[ -r {glue} ]] && source {glue} 2>/dev/null
 '''
 
-def bash_session(home, env, glue, bash_completion=True):
+def bash_session(home, env, glue, bash_completion=True, extra=''):
 	rc = home / 'test.bashrc'
 	loader = '. /usr/share/bash-completion/bash_completion 2>/dev/null' if bash_completion else ''
-	rc.write_text(BASH_TEST_RC.format(bash_completion=loader, glue=glue))
+	rc.write_text(BASH_TEST_RC.format(bash_completion=loader, glue=glue, extra=extra))
 	session = Session([require_shell('bash'), '--noprofile', '--rcfile', str(rc), '-i'], env, cwd=home)
 	session.read_until(b'@@READY@@')
 	return session

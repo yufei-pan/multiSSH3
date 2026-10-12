@@ -153,3 +153,25 @@ def test_concurrent_first_query_waits_for_the_running_build(home, monkeypatch):
 	monkeypatch.setattr(mc, 'FIRST_BUILD_BUDGET', 0.2)
 	assert mc.load_for_query(directory, time.time()) == (None, [])
 	assert started == []
+
+
+
+def test_history_with_absurd_timestamps_still_builds(home):
+	with open(str(home / '.mssh_history'), 'a') as f:
+		f.write('9' * 400 + '\t/x/multiSSH3.py\t-su\th1\t"uptime"\n')
+		f.write('-' + '9' * 400 + '\t/x/multiSSH3.py\t-su\th2\t"uptime"\n')
+	index, _ = build()
+	assert 'c:nvidia-smi' in mc.SnapshotKnowledge(index, NOW).features
+
+
+def test_history_ranges_add_their_members(home):
+	index, _ = build()
+	names = set(mc.HostTable(index).names)
+	assert {'gpu{:02d}'.format(number) for number in range(1, 17)} <= names
+
+
+def test_skip_hosts_offers_members_of_a_range_typed_before(home):
+	build()
+	response = mc.answer(mc.Request('bash', 'mssh gpu[01-16] -X ', '', ''), directory=mc.cache_dir(), now=NOW)
+	singles = [candidate.text for candidate in response.candidates if '[' not in candidate.text and ',' not in candidate.text]
+	assert singles[:2] == ['gpu01', 'gpu02']

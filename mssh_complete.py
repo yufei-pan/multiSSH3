@@ -212,7 +212,7 @@ class ParserSpec(object):
 
 	def lookup(self, text):
 		'''
-		The option a word names, and the value attached to it with "=".
+		The option a word names, and the value attached to it ("-x=value", "--long=value", "-xVALUE").
 
 		Unique abbreviations of --long options are accepted, like argparse does.
 
@@ -226,7 +226,13 @@ class ParserSpec(object):
 		if sep:
 			option = self.by_string.get(name) or self._abbreviation(name)
 			return (option, value) if option is not None else (None, None)
-		return self._abbreviation(text), None
+		option = self._abbreviation(text)
+		if option is None and len(text) > 2 and text[0] == '-' and text[1] != '-':
+			# argparse reads -pVALUE as -p VALUE
+			short = self.by_string.get(text[:2])
+			if short is not None and short.nargs != '0':
+				return short, text[2:]
+		return option, None
 
 	def _abbreviation(self, name):
 		if not name.startswith('--') or len(name) < 3:
@@ -421,6 +427,16 @@ def _join_commands(commands):
 		joined.append(' '.join(run))
 	return joined
 
+def _attached(text, option):
+	'''The value attached to an option word: -x=value, --long=value or -xVALUE (None if there is none).'''
+	if text in option.strings or option.nargs == '0':
+		return None
+	if '=' in text:
+		return text.partition('=')[2]
+	if not text.startswith('--') and len(text) > 2:
+		return text[2:]
+	return None
+
 def _collect(words, roles, skip=()):
 	'''The options (with values), hosts and command words of a line, leaving out the words in skip.'''
 	options = []
@@ -430,10 +446,7 @@ def _collect(words, roles, skip=()):
 		if index in skip:
 			continue
 		if role == ROLE_OPTION and option is not None:
-			attached = None
-			if '=' in token.text and token.text not in option.strings:
-				attached = token.text.partition('=')[2]
-			options.append([option, attached])
+			options.append([option, _attached(token.text, option)])
 		elif role == ROLE_VALUE:
 			if options and options[-1][0] is option and options[-1][1] is None:
 				options[-1][1] = token.text
@@ -584,6 +597,8 @@ def parse_history_line(line, spec):
 	try:
 		ts = int(fields[0])
 	except ValueError:
+		return None
+	if not 0 <= ts < 10 ** 11:
 		return None
 	options = []
 	texts = []
@@ -1278,6 +1293,7 @@ def _import_mssh():
 
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
+RANGE_MEMBERS_LIMIT = 4096   # a range typed before adds its members as hosts up to this many
 
 def serialize_knowledge(memory):
 	'''
@@ -1337,8 +1353,16 @@ def build_index(directory, now=None, mssh=None):
 		add(address, SRC_ARP, address)
 	aliases = collect_aliases(mssh, history_tokens, set(hosts) | history_tokens)
 	for name in history_tokens:
-		if name not in aliases and '[' not in name:
-			add(name, SRC_HISTORY)
+		if name in aliases:
+			continue
+		if '[' in name:
+			# the members of a range typed before, so they complete one by one (e.g. for -X)
+			members = expand_ranges(name, limit=RANGE_MEMBERS_LIMIT)
+			if members != [name]:
+				for member in members:
+					add(member, SRC_HISTORY)
+			continue
+		add(name, SRC_HISTORY)
 	for _, members in aliases.values():
 		for member in members:
 			add(member, SRC_ALIAS)
@@ -1525,6 +1549,7 @@ GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most thi
 UNAVAILABLE_PENALTY = 0.5  # score factor for hosts mssh found unreachable
 SHELL_WEIGHT = 0.25        # weight of a shell history line next to an mssh history use
 MAX_CANDIDATES = 200
+MAX_HOSTS_TEXT = 256       # longer host strings typed before are not offered whole
 MAGIC_STRINGS = ('#HOST#', '#HOSTNAME#', '#USER#', '#USERNAME#', '#ID#', '#I#', '#UUID#', '#RESOLVEDNAME#', '#IP#')
 COMPLETION_ACTIONS = ('bash', 'zsh', 'fish', 'install', 'uninstall')
 ENCODINGS = ('utf-8', 'latin-1', 'ascii', 'utf-16', 'cp1252')
@@ -1545,13 +1570,15 @@ class Request(object):
 		self.history = list(history)
 
 class Candidate(object):
-	__slots__ = ('text', 'description', 'group', 'score')
+	'''A completion. raw is the text before bash escaping, when it differs.'''
+	__slots__ = ('text', 'description', 'group', 'score', 'raw')
 
-	def __init__(self, text, description='', group='', score=0.0):
+	def __init__(self, text, description='', group='', score=0.0, raw=None):
 		self.text = text
 		self.description = description
 		self.group = group
 		self.score = score
+		self.raw = raw
 
 	def __repr__(self):
 		return 'Candidate({!r}, {!r}, {!r}, {:.4g})'.format(self.text, self.description, self.group, self.score)
@@ -1574,8 +1601,21 @@ class Response(object):
 		self.ghost = None
 		self.diagnostics = []
 
+def _mssh_start(tokens):
+	'''Index of the word that runs mssh in a command line (mssh, sudo mssh, python3 multiSSH3.py, ...), or None.'''
+	for index, token in enumerate(tokens):
+		name = os.path.basename(token.text)
+		if name.endswith('.py'):
+			name = name[:-3]
+		if name in MSSH_NAMES:
+			return index
+	return None
+
 def shell_history_knowledge(lines, spec):
-	'''The shell's history as weak records: mssh lines like mssh history, other lines as local commands.'''
+	'''
+	The shell's history as weak records: lines running mssh like mssh history (passwords dropped),
+	other lines as local commands.
+	'''
 	memory = MemoryKnowledge()
 	count = len(lines)
 	for position, line in enumerate(lines):
@@ -1583,8 +1623,9 @@ def shell_history_knowledge(lines, spec):
 		tokens = lex(line) if line else []
 		if not tokens:
 			continue
-		if os.path.basename(tokens[0].text) in MSSH_NAMES:
-			features = line_features(tokens[1:], spec)
+		start = _mssh_start(tokens)
+		if start is not None:
+			features = line_features(tokens[start + 1:], spec)
 		else:
 			features = command_features(line)
 		if features:
@@ -1626,11 +1667,15 @@ class Engine(object):
 			candidates = self._commands(context, response, deadline)
 		if request.flags.get('nosort') == '1':
 			response.directives.add('nosort')
-		response.candidates = self._frame(candidates, context, request)
+		response.candidates = self._frame(candidates, context, request, response.directives)
 		return response
 
-	def _frame(self, candidates, context, request):
-		'''Turn slot values into replacements for the shell's word, best first, without duplicates.'''
+	def _frame(self, candidates, context, request, directives=()):
+		'''
+		Turn slot values into replacements for the shell's word, best first, without duplicates.
+
+		For bash, text left unquoted is escaped, except when bash quotes file names itself (files, dirs).
+		'''
 		word = _shell_word(request)
 		prefix = context.prefix
 		if word is None:
@@ -1652,12 +1697,14 @@ class Engine(object):
 					continue
 				if context.open_quote in ("'", "$'") and "'" in rest:
 					continue
-				if not context.open_quote:
+				if not context.open_quote and not {'files', 'dirs'} & set(directives):
 					rest = _bash_escape(rest)
 			if '\t' in rest or '\n' in rest:
 				continue
 			seen.add(full)
-			out.append(Candidate(full[len(base):len(prefix)] + rest, candidate.description, candidate.group, candidate.score))
+			text = full[len(base):len(prefix)] + rest
+			raw = full[len(base):]
+			out.append(Candidate(text, candidate.description, candidate.group, candidate.score, raw if raw != text else None))
 			if len(out) >= MAX_CANDIDATES:
 				break
 		return out
@@ -1751,7 +1798,7 @@ class Engine(object):
 		out = []
 		if not comma and not at:
 			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline).items():
-				if feature[2:] not in scores:
+				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		aliases = set()
 		for number, name in self.hosts.aliases_with_prefix(host_prefix):
@@ -1770,10 +1817,14 @@ class Engine(object):
 			return score
 		def single(name):
 			return Candidate(lead + name, 'unreachable recently' if name in unavailable else '', 'hosts', host_score(name))
-		# host groups typed before, e.g. node[1-3]
+		# ranges typed before, e.g. node[1-3]: their members are not listed beside them, unless typed
+		# on their own before or named by the hosts argument (-X)
+		in_ranges = set()
 		for name, score in scores.items():
 			if '[' in name and name not in aliases:
 				out.append(Candidate(lead + name, 'used before', 'groups', score))
+				in_ranges.update(expand_ranges(name, limit=RANGE_MEMBERS_LIMIT))
+		names -= in_ranges - set(boost) - set(scores)
 		if len(names) <= GROUP_THRESHOLD:
 			out.extend(single(name) for name in names)
 			return out
@@ -1792,6 +1843,8 @@ class Engine(object):
 				out.append(Candidate(lead + group_text, description, 'groups' if len(members) > 1 else 'hosts', sum(host_score(member) for member in members)))
 			used = sorted((name for name in names if scores.get(name)), key=lambda name: -scores[name])[:20]
 			out.extend(single(name) for name in used)
+		# the hosts the hosts argument names stay listed one by one (for -X)
+		out.extend(single(name) for name in sorted(names & set(boost)))
 		return out
 
 	def _commands(self, context, response, deadline):
@@ -1851,15 +1904,17 @@ def _clean(text):
 
 def format_response(response, nul=True):
 	'''
-	The response text: MSSHC1, a D line of directives, C lines (text\\tdescription\\tgroup), an X
-	line for delegation, then E, and a NUL unless nul is False.
+	The response text: MSSHC1, a D line of directives, C lines (text\\tdescription\\tgroup, then
+	\\traw when bash escaping changed the text), an X line for delegation, then E, and a NUL unless
+	nul is False.
 	'''
 	lines = [PROTOCOL]
 	if response.directives:
 		lines.append('D ' + ' '.join(sorted(response.directives)))
 	for candidate in response.candidates:
 		if safe_field(candidate.text) and '\t' not in candidate.text:
-			lines.append('C {}\t{}\t{}'.format(candidate.text, _clean(candidate.description), candidate.group))
+			raw = '\t' + candidate.raw if candidate.raw and safe_field(candidate.raw) and '\t' not in candidate.raw else ''
+			lines.append('C {}\t{}\t{}{}'.format(candidate.text, _clean(candidate.description), candidate.group, raw))
 	if response.delegate is not None:
 		index, prefix, words = response.delegate
 		fields = [str(index), prefix] + list(words)
@@ -1922,50 +1977,60 @@ _mssh_complete_split() {
 }
 
 _mssh_complete_delegate() {
-	# $1: index of the current word, $2: text put in front of every result, then the remote command words
-	local cword=$1 prefix=$2 cmd spec func item
-	shift 2
-	local -a words=("$@")
-	local cur=${words[cword]}
-	cmd=${words[0]}
+	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
+	# result, then the remote command words. The results land in _mssh_complete_delegated.
+	local word=$1 cword=$2 prefix=$3 cmd spec func item lead
+	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
+	shift 3
+	local -a words=("$@") found=()
+	local cur=${words[cword]-}
+	cmd=${words[0]-}
 	_mssh_complete_delegated=()
 	if [[ $cword -eq 0 ]]; then
 		while IFS= read -r item; do
-			_mssh_complete_delegated+=("$prefix$item")
-		done < <(compgen -c -- "$cur" 2>/dev/null)
-		return 0
-	fi
-	if ! complete -p -- "$cmd" >/dev/null 2>&1; then
-		if declare -F _comp_load >/dev/null 2>&1; then
-			_comp_load "$cmd" >/dev/null 2>&1
-		elif declare -F __load_completion >/dev/null 2>&1; then
-			__load_completion "$cmd" >/dev/null 2>&1
-		elif declare -F _completion_loader >/dev/null 2>&1; then
-			_completion_loader "$cmd" >/dev/null 2>&1
+			found+=("$item")
+		done < <(compgen -c -- "$cur" 2>/dev/null || :)
+	else
+		if ! complete -p -- "$cmd" >/dev/null 2>&1; then
+			if declare -F _comp_load >/dev/null 2>&1; then
+				_comp_load "$cmd" >/dev/null 2>&1 || :
+			elif declare -F __load_completion >/dev/null 2>&1; then
+				__load_completion "$cmd" >/dev/null 2>&1 || :
+			elif declare -F _completion_loader >/dev/null 2>&1; then
+				_completion_loader "$cmd" >/dev/null 2>&1 || :
+			fi
+		fi
+		spec=$(complete -p -- "$cmd" 2>/dev/null) || spec=
+		if [[ $spec =~ \ -F\ ([^ ]+) ]]; then
+			func=${BASH_REMATCH[1]}
+			local -a COMP_WORDS=("${words[@]}")
+			local COMP_CWORD=$cword COMP_LINE="${words[*]}" COMP_POINT
+			COMP_POINT=${#COMP_LINE}
+			local -a COMPREPLY=()
+			"$func" "$cmd" "$cur" "${words[cword-1]}" >/dev/null 2>&1 || :
+			found=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
+		else
+			while IFS= read -r item; do
+				found+=("$item")
+			done < <(compgen -f -- "$cur" 2>/dev/null || :)
 		fi
 	fi
-	spec=$(complete -p -- "$cmd" 2>/dev/null)
-	if [[ $spec =~ \ -F\ ([^ ]+) ]]; then
-		func=${BASH_REMATCH[1]}
-		local -a COMP_WORDS=("${words[@]}")
-		local COMP_CWORD=$cword COMP_LINE="${words[*]}" COMP_POINT
-		COMP_POINT=${#COMP_LINE}
-		local -a COMPREPLY=()
-		"$func" "$cmd" "$cur" "${words[cword-1]}" >/dev/null 2>&1
-		for item in "${COMPREPLY[@]}"; do
-			_mssh_complete_delegated+=("$prefix$item")
-		done
-	else
-		while IFS= read -r item; do
-			_mssh_complete_delegated+=("$prefix$item")
-		done < <(compgen -f -- "$cur" 2>/dev/null)
-	fi
+	# the results continue prefix + current word, but bash replaces only its own word, which ends
+	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word
+	lead=$prefix$cur
+	lead=${lead%"$word"}
+	for item in ${found[@]+"${found[@]}"}; do
+		item=$prefix$item
+		[[ -n $lead && $item == "$lead"* ]] && item=${item#"$lead"}
+		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
+	done
+	return 0
 }
 
 _mssh_complete() {
 	local cur=$2 resp line item flags ble=0 files=0 dirs=0 ended=0 delegate=0
 	local _mssh_complete_before _mssh_complete_after
-	local -a reply=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
+	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
@@ -1986,7 +2051,7 @@ _mssh_complete() {
 		{
 			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
-		} | @ENGINE@ query 2>/dev/null
+		} | @ENGINE@ query 2>/dev/null || :
 	) || return 0
 	[[ $resp == MSSHC1$'\n'* ]] || return 0
 	while IFS= read -r line; do
@@ -1994,31 +2059,40 @@ _mssh_complete() {
 			D)
 				for item in ${line:2}; do
 					case $item in
-						nospace|filenames|nosort) compopt -o "$item" 2>/dev/null ;;
-						nodefault) compopt +o default +o bashdefault 2>/dev/null ;;
+						nospace|filenames|nosort) compopt -o "$item" 2>/dev/null || : ;;
+						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
 						files) files=1 ;;
 						dirs) dirs=1 ;;
 					esac
 				done
 				;;
-			C) reply+=("${line:2}") ; reply[${#reply[@]}-1]=${reply[${#reply[@]}-1]%%$'\t'*} ;;
+			C)
+				# text, description, group, and the unescaped text when escaping changed it
+				_mssh_complete_split "${line:2}"
+				reply+=("${_mssh_complete_fields[0]}")
+				raws+=("${_mssh_complete_fields[3]-${_mssh_complete_fields[0]}}")
+				;;
 			X) _mssh_complete_split "${line:2}" ; delegate_fields=("${_mssh_complete_fields[@]}") ; delegate=1 ;;
 			E) ended=1 ;;
 		esac
 	done <<< "$resp"
 	(( ended )) || return 0
+	if (( delegate )) && (( ${#delegate_fields[@]} >= 3 )); then
+		_mssh_complete_delegate "$cur" "${delegate_fields[@]}"
+		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped
+		if [[ $(compopt 2>/dev/null) == *' -o filenames '* ]]; then
+			reply=(${raws[@]+"${raws[@]}"})
+		fi
+		reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
+	fi
 	if (( files || dirs )); then
-		compopt -o filenames 2>/dev/null
+		compopt -o filenames 2>/dev/null || :
 		while IFS= read -r item; do
 			reply+=("$item")
-		done < <(if (( files )); then compgen -f -- "$cur"; else compgen -d -- "$cur"; fi 2>/dev/null)
-	fi
-	if (( delegate )) && (( ${#delegate_fields[@]} >= 3 )); then
-		_mssh_complete_delegate "${delegate_fields[@]}"
-		reply+=("${_mssh_complete_delegated[@]}")
+		done < <(if (( files )); then compgen -f -- "$cur"; else compgen -d -- "$cur"; fi 2>/dev/null || :)
 	fi
 	COMPREPLY=()
-	for item in "${reply[@]}"; do
+	for item in ${reply[@]+"${reply[@]}"}; do
 		[[ -n ${seen[x$item]-} ]] && continue
 		seen[x$item]=1
 		COMPREPLY+=("$item")

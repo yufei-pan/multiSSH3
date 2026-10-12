@@ -179,3 +179,59 @@ def test_bash_always_loads_from_bashrc(tmp_path, monkeypatch):
 	assert glue.read_text().startswith('# MSSH_COMPLETE_GLUE')
 	assert mc.RC_BEGIN_CREATED in (home / '.bashrc').read_text()
 	assert not (home / '.local' / 'share' / 'bash-completion').exists()
+
+
+def test_bash_delegation_keeps_text_before_word_breaks(setup):
+	# bash's word ($2) stops at ":" and "=", the delegated results start at the whole word
+	env, home = setup
+	(home / 'a:bfile').write_text('')
+	(home / 'x=abc').write_text('')
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after('mssh h nosuchcmd a:b') == 'mssh h nosuchcmd a:bfile '
+		assert session.line_after('mssh h nosuchcmd x=a') == 'mssh h nosuchcmd x=abc '
+	finally:
+		session.close()
+
+
+def test_bash_history_paths_are_escaped_once(tmp_path):
+	path = str(tmp_path / 'home' / 'my hist.txt')
+	env, home = make_home(tmp_path, ["1790000000\t/x/multiSSH3.py\t-su -hf='{}'\th\t\"uptime\"".format(path)])
+	build_index(env)
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after('mssh -hf ' + path[:-len(' hist.txt')]) == 'mssh -hf ' + path.replace(' ', '\\ ') + ' '
+	finally:
+		session.close()
+
+
+def test_bash_delegation_that_turns_on_filenames_does_not_escape_twice(tmp_path):
+	env, home = make_home(tmp_path, ["1790000000\t/x/multiSSH3.py\t-su\th\t'fakefile ab;cd'"])
+	build_index(env)
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after('mssh h fakefile ab') == 'mssh h fakefile ab\\;cd '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('option', ['set -e', 'set -u'])
+def test_bash_shell_options_do_not_break_tab(setup, option):
+	env, home = setup
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=option)
+	try:
+		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
+		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
+		assert b'unbound variable' not in session.output
+	finally:
+		session.close()
+
+
+def test_bash_set_e_survives_a_missing_engine(setup):
+	# bash 4.4 exits a set -e shell after a process substitution whose command failed
+	env, home = setup
+	session = bash_session(home, env, glue_file(home, 'bash', ['/nonexistent/engine']), bash_completion=False, extra='set -e')
+	try:
+		assert session.line_after('mssh h zzq') == 'mssh h zzq'
+	finally:
+		session.close()

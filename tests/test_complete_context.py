@@ -137,3 +137,11 @@ def test_roles_agree_with_argparse():
 		commands = [token.text for token, (role, _) in zip(tokens, roles) if role == 'command']
 		assert hosts == ([parsed.hosts] if parsed.hosts != multiSSH3.DEFAULT_HOSTS or 'all' in words else []), words
 		assert commands == parsed.commands, words
+
+
+
+@pytest.mark.parametrize('text, dest, value', [('-pHunter2pw', 'password', 'Hunter2pw'), ('-t30', 'timeout', '30'), ('-uroot', 'username', 'root')])
+def test_attached_short_option_values_follow_argparse(text, dest, value):
+	option, attached = SPEC.lookup(text)
+	assert (option.dest if option else None, attached) == (dest, value)
+	assert str(vars(multiSSH3.get_parser().parse_args([text]))[dest]) == value
