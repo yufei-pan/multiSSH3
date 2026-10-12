@@ -2998,7 +2998,7 @@ class LineEditor(object):
 		texts, word = self.complete(self.text[:self.cursor])
 		if not texts:
 			return
-		common = os.path.commonprefix(texts)
+		common = _common_prefix(texts)
 		if len(common) > len(word) and common.startswith(word):
 			self._insert(common[len(word):])
 			if len(set(texts)) == 1 and self.cursor == len(self.text):
@@ -4129,7 +4129,7 @@ def _tab(candidates, typed, policy, quoted, nospace):
 	if policy == 'ranked' or len(set(texts)) == 1:
 		choice, unique = texts[0], True
 	else:
-		choice, unique = os.path.commonprefix(texts), False
+		choice, unique = _common_prefix(texts), False
 	if not choice.startswith(typed):
 		return None, ''
 	suffix = ('"' if quoted else '') + ' ' if unique and not nospace else ''
