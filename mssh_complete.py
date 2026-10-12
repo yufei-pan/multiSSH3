@@ -1632,6 +1632,41 @@ def _mssh_start(tokens):
 			return index
 	return None
 
+# tuned with `mssh-complete eval` (ghost policy): wrong suggestions under 10% of those shown on
+# synthetic and real history, the most keys saved on top of TAB
+T_WORD = 0.7   # confidence the top value of the current word needs before its rest is suggested
+T_LINE = 0.6   # share each following slot's top value needs before the rest of the line is suggested
+SUPPORT = 1.0  # confidence = share * uses / (uses + SUPPORT): a value seen once is not yet sure
+
+class Ghost(object):
+	'''
+	A grey suggestion: text goes after the cursor.
+
+	kind is 'line' when the text goes past the current word into following slots, 'word' otherwise;
+	confidence is the smallest share that let it through.
+	'''
+	__slots__ = ('kind', 'text', 'confidence')
+
+	def __init__(self, kind, text, confidence):
+		self.kind = kind
+		self.text = text
+		self.confidence = confidence
+
+	def __repr__(self):
+		return 'Ghost({!r}, {!r}, {:.3f})'.format(self.kind, self.text, self.confidence)
+
+def _top_share(scores):
+	'''(top value, its share of the positive scores) of a value -> score dict, or (None, 0).'''
+	best = None
+	total = 0.0
+	for value, score in scores.items():
+		total += max(score, 0.0)
+		if best is None or (score, value) > (scores[best], best):
+			best = value
+	if best is None or total <= 0:
+		return None, 0.0
+	return best, max(scores[best], 0.0) / total
+
 def shell_history_knowledge(lines, spec):
 	'''
 	The shell's history as weak records: lines running mssh like mssh history (passwords dropped),
@@ -1665,15 +1700,36 @@ def _shell_word(request):
 def _bash_escape(text):
 	return ''.join('\\' + char if char in _BASH_SPECIAL else char for char in text)
 
+# characters zsh reads specially in an unquoted word, globs included (zsh fails on a glob that matches nothing)
+_ZSH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!*?[]#~^{}')
+
+def _zsh_escape(text):
+	return ''.join('\\' + char if char in _ZSH_SPECIAL else char for char in text)
+
+# characters fish reads specially in an unquoted word
+_FISH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()*?[]#~{}')
+
+def _shell_escape(shell, text):
+	'''text escaped for an unquoted word of shell.'''
+	special = {'bash': _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
+	if special is None:
+		return text
+	return ''.join('\\' + char if char in special else char for char in text)
+
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
 	def __init__(self, spec, knowledges=(), hosts=None, users=()):
+		self.history_path = None
 		self.spec = spec
 		self.knowledges = [knowledge for knowledge in knowledges if knowledge is not None]
 		self.hosts = hosts if hosts is not None else HostTable()
 		self.users = list(users)
 
 	def query(self, request, deadline=None):
+		if request.flags.get('ghost') == '1':
+			response = Response(parse_context(request.before, request.after, self.spec))
+			response.ghost = self.suggest(request, deadline)
+			return response
 		context = parse_context(request.before, request.after, self.spec)
 		response = Response(context)
 		if context is None:
@@ -1691,12 +1747,179 @@ class Engine(object):
 		response.candidates = self._frame(candidates, context, request, response.directives)
 		return response
 
+	def suggest(self, request, deadline=None):
+		'''
+		The grey suggestion for a line with the cursor at its end, or None.
+
+		The current word's most likely value (when its share of the scores reaches T_WORD), then,
+		when each following positional slot's top value reaches T_LINE, those slots: the hosts and
+		the first command. Options are never added. The suggestion always extends the typed text.
+		'''
+		if request.after.strip():
+			return None
+		tokens = lex(request.before)
+		if not tokens or os.path.basename(tokens[0].text) not in MSSH_NAMES:
+			return None
+		context = parse_context(request.before, request.after, self.spec)
+		if context is None or (context.slot == SLOT_VALUE and context.option.dest in PASSWORD_DESTS):
+			return None
+		if context.slot == SLOT_COMMAND and not context.quoted and context.mode == 'plain' and context.command_words:
+			return self._suggest_command_words(context, request.shell, deadline)
+		typed = context.value
+		values = {}
+		for candidate in self._slot_candidates(context, deadline):
+			if candidate.text.startswith(typed):
+				values[candidate.text] = max(values.get(candidate.text, 0.0), candidate.score)
+		top, share = _top_share(values)
+		if top is None:
+			return None
+		share *= self._support(context, top)
+		if share < T_WORD:
+			return None
+		rest = top[len(typed):]
+		if context.open_quote:
+			closing = '"' if context.open_quote == '"' else "'"
+			unsafe = '"\\$`' if closing == '"' else "'"
+			if any(char in unsafe for char in rest):
+				return None
+			if context.slot == SLOT_COMMAND:
+				rest += closing
+		elif rest:
+			rest = _shell_escape(request.shell, rest)
+		continuation, rest_share = self._continuation(context, top, request.shell, deadline)
+		if continuation and rest_share >= T_LINE:
+			return Ghost('line', rest + continuation, min(share, rest_share))
+		if not rest:
+			return None
+		return Ghost('word', rest, share)
+
+	def _suggest_command_words(self, context, shell, deadline):
+		'''
+		Suggestion for a command typed as unquoted words: the rest of the most likely past command
+		whose words start with the typed ones, each word escaped so the remote command is the same.
+		'''
+		typed = context.command_words
+		commands = {}
+		for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed), context.features, deadline).items():
+			words = [token.text for token in lex(feature[2:])]
+			if len(words) >= len(typed) and words[:len(typed) - 1] == typed[:-1] and words[len(typed) - 1].startswith(typed[-1]):
+				key = tuple(words)
+				commands[key] = commands.get(key, 0.0) + score
+		top, share = _top_share(commands)
+		if top is None:
+			return None
+		uses = self._uses('c:' + ' '.join(top))
+		share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
+		next_words = {}
+		for words, score in commands.items():
+			next_words[words[len(typed) - 1]] = next_words.get(words[len(typed) - 1], 0.0) + score
+		word, word_share = _top_share(next_words)
+		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
+		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):])
+		more = ''.join(' ' + _shell_escape(shell, extra) for extra in top[len(typed):])
+		if more and share >= T_LINE:
+			return Ghost('line', rest + more, share)
+		if rest and word_share >= T_WORD:
+			return Ghost('word', _shell_escape(shell, word[len(typed[-1]):]), word_share)
+		return None
+
+	def _uses(self, feature):
+		'''How many times a feature was used, over all knowledge.'''
+		count = 0
+		for knowledge in self.knowledges:
+			key = knowledge.feature_key(feature)
+			if key is not None and hasattr(knowledge, 'feature_uses'):
+				count += knowledge.feature_uses(key)[0]
+		return count
+
+	def usage(self, context, value):
+		'''(times used, last used unix time) of a value of the current slot, over all knowledge.'''
+		if context.slot == SLOT_HOSTS:
+			segment = value.rpartition(',')[2].rpartition('@')[2]
+			features = ['h:' + value, 't:' + segment]
+		elif context.slot == SLOT_VALUE:
+			features = ['v:{}={}'.format(context.option.dest, value)]
+		elif context.slot == SLOT_OPTION:
+			option = self.spec.lookup(value)[0]
+			features = ['o:' + option.long] if option else []
+		else:
+			features = [('f:' if context.mode in PATH_MODES else 'c:') + value]
+		best = (0, 0)
+		for feature in features:
+			count = 0
+			last = 0
+			for knowledge in self.knowledges:
+				key = knowledge.feature_key(feature)
+				if key is not None and hasattr(knowledge, 'feature_uses'):
+					uses, when = knowledge.feature_uses(key)
+					count += uses
+					last = max(last, when)
+			best = max(best, (count, last))
+		return best
+
+	def _support(self, context, value):
+		'''uses / (uses + SUPPORT) for a value of the current slot: evidence behind a suggestion.'''
+		if SUPPORT <= 0:
+			return 1.0
+		uses = self.usage(context, value)[0]
+		return float(uses) / (uses + SUPPORT)
+
+	def _slot_candidates(self, context, deadline):
+		'''The slot values the providers rank for the current slot, unframed.'''
+		scratch = Response(context)
+		if context.slot == SLOT_OPTION:
+			return self._options(context, 'zsh')
+		if context.slot == SLOT_VALUE:
+			return self._values(context, scratch, deadline)
+		if context.slot == SLOT_HOSTS:
+			return self._hosts(context.value, context, deadline)
+		return self._commands(context, scratch, deadline)
+
+	def _continuation(self, context, value, shell, deadline):
+		'''
+		The following positional slots nobody typed yet, as text, and the smallest share among them.
+
+		After a hosts value: the first command. After an option value: the hosts (when not typed)
+		and the first command (when not typed). Only in plain mode, never after commands.
+		'''
+		if context.mode != 'plain' or context.open_quote or context.slot in (SLOT_OPTION, SLOT_COMMAND):
+			return '', 0.0
+		features = set(context.features)
+		if any(feature.startswith('c:') for feature in features):
+			return '', 0.0
+		text = ''
+		shares = []
+		if context.slot == SLOT_HOSTS:
+			features.update(make_features([], value, []))
+		else:
+			features.add('v:{}={}'.format(context.option.dest, value))
+			if not context.hosts:
+				hosts, share = _top_share(self._feature_values('h:', features, deadline))
+				if hosts is None:
+					return '', 0.0
+				text += ' ' + _shell_escape(shell, hosts)
+				shares.append(share)
+				features.update(make_features([], hosts, []))
+		command, share = _top_share(self._feature_values('c:', features, deadline))
+		quote = _quote_command(command) if command is not None else None
+		if quote is None:
+			return '', 0.0
+		text += ' ' + quote + command + quote
+		shares.append(share)
+		return text, min(shares)
+
+	def _feature_values(self, kind, features, deadline):
+		'''value -> score of every feature of a kind ('h:', 'c:'), scored against features.'''
+		return {feature[len(kind):]: score for feature, score in score_features(self.knowledges, kind, sorted(features), deadline).items()}
+
 	def _frame(self, candidates, context, request, directives=()):
 		'''
 		Turn slot values into replacements for the shell's word, best first, without duplicates.
 
-		For bash, text left unquoted is escaped, except when bash quotes file names itself (files, dirs).
+		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
+		text left unquoted is escaped for that shell, except when bash quotes file names itself.
 		'''
+		literal = request.shell == 'bash' or request.flags.get('insert') == '1'
 		word = _shell_word(request)
 		prefix = context.prefix
 		if word is None:
@@ -1713,13 +1936,13 @@ class Engine(object):
 			if not full.startswith(prefix) or full in seen:
 				continue
 			rest = full[len(prefix):]
-			if request.shell == 'bash':
+			if literal:
 				if context.open_quote == '"' and any(char in rest for char in '"\\$`'):
 					continue
 				if context.open_quote in ("'", "$'") and "'" in rest:
 					continue
-				if not context.open_quote and not {'files', 'dirs'} & set(directives):
-					rest = _bash_escape(rest)
+				if not context.open_quote and not (request.shell == 'bash' and {'files', 'dirs'} & set(directives)):
+					rest = _shell_escape(request.shell, rest)
 			if '\t' in rest or '\n' in rest:
 				continue
 			seen.add(full)
@@ -1936,6 +2159,8 @@ def format_response(response, nul=True):
 		if safe_field(candidate.text) and '\t' not in candidate.text:
 			raw = '\t' + candidate.raw if candidate.raw and safe_field(candidate.raw) and '\t' not in candidate.raw else ''
 			lines.append('C {}\t{}\t{}{}'.format(candidate.text, _clean(candidate.description), candidate.group, raw))
+	if response.ghost is not None and safe_field(response.ghost.text) and '\t' not in response.ghost.text:
+		lines.append('G {}\t{}'.format(response.ghost.kind, response.ghost.text))
 	if response.delegate is not None:
 		index, prefix, words = response.delegate
 		fields = [str(index), prefix] + list(words)
@@ -1949,6 +2174,10 @@ def answer(request, deadline=None, directory=Ellipsis, now=None):
 	Answer a request from the index in directory: mssh's cache dir by default, None for no index
 	(degraded: options from mssh's parser, shell history, no ranking from mssh history).
 	'''
+	return engine_for(request, directory, now).query(request, deadline)
+
+def engine_for(request, directory=Ellipsis, now=None):
+	'''The engine for a request: the index in directory (as for answer), its history tail, the shell's history.'''
 	now = time.time() if now is None else now
 	if directory is Ellipsis:
 		directory = cache_dir()
@@ -1971,7 +2200,9 @@ def answer(request, deadline=None, directory=Ellipsis, now=None):
 		# fish lists its history newest first, the others oldest first
 		history = request.history[::-1] if request.shell == 'fish' else request.history
 		knowledges.append(shell_history_knowledge(history, spec))
-	return Engine(spec, knowledges, HostTable(index), users).query(request, deadline)
+	engine = Engine(spec, knowledges, HostTable(index), users)
+	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
+	return engine
 
 #%% ------------ Shell glue ----------------
 GLUE_MARK = 'MSSH_COMPLETE_GLUE'
