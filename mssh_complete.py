@@ -1870,8 +1870,9 @@ class Engine(object):
 		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
 		if more and share >= T_LINE:
 			return Ghost('line', rest + more, share)
-		if rest and word_share >= T_WORD:
-			return Ghost('word', _shell_escape(shell, word[len(typed[-1]):], True), word_share)
+		word_rest = _shell_escape(shell, word[len(typed[-1]):], True)
+		if word_rest and word_share >= T_WORD:
+			return Ghost('word', word_rest, word_share)
 		return None
 
 	def _uses(self, feature):
