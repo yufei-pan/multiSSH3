@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import time
 
@@ -110,7 +111,9 @@ def _interactive_output(shell, env, home):
 	'''Everything a fresh interactive shell prints before its first prompt, without the prompt.'''
 	argv = {'bash': [shell, '-i'], 'zsh': [shell, '-i'], 'fish': [shell, '-i']}[os.path.basename(shell)]
 	result = subprocess.run(argv, input=b'exit\n', env=dict(env, PS1='', PROMPT=''), cwd=str(home), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
-	return result.returncode, result.stdout.decode('utf-8', 'replace')
+	# bash 4.2's readline turns on xterm's meta key mode again when keys were bound at the first
+	# prompt: the same invisible mode, sent twice
+	return result.returncode, re.sub('(\x1b\\[\\?1034h)+', '\x1b[?1034h', result.stdout.decode('utf-8', 'replace'))
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
@@ -124,7 +127,8 @@ def test_new_shells_stay_silent(tmp_path, shell, damage):
 	command = ['/nonexistent/engine'] if damage == 'no engine' else ENGINE
 	code, messages = mc.install(shell, home=str(home), environ=env, command=command)
 	assert code == 0, messages
-	glues = [line.split(' ', 1)[1] for line in messages if line.startswith('wrote ')]
+	# fish sources its conf.d file itself, as bash and zsh source the rc block: mssh writes both whole
+	glues = [line.split(' ', 1)[1] for line in messages if line.startswith('wrote ') and '/conf.d/' not in line]
 	for glue in glues:
 		if damage == 'deleted':
 			os.unlink(glue)
@@ -134,6 +138,35 @@ def test_new_shells_stay_silent(tmp_path, shell, damage):
 			with open(glue, 'a') as f:
 				f.write('\n((( broken syntax\n')
 	assert _interactive_output(path, env, home) == baseline
+
+
+def test_new_bash_with_the_editor_stays_silent(tmp_path):
+	path = require_shell('bash')
+	env, home = make_home(tmp_path)
+	baseline = _interactive_output(path, env, home)
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)[0] == 0
+	assert _interactive_output(path, env, home) == baseline
+
+
+def test_install_turns_the_editor_on_and_off(tmp_path):
+	env, home = make_home(tmp_path)
+	(home / '.bashrc').write_text('alias ll="ls -l"\n')
+	mc.install('bash', home=str(home), environ=env, editor=True)
+	assert 'export MSSH_COMPLETE_EDITOR=1\n' in (home / '.bashrc').read_text()
+	code, messages = mc.install('bash', home=str(home), environ=env)
+	text = (home / '.bashrc').read_text()
+	assert 'MSSH_COMPLETE_EDITOR' not in text and text.count('# >>> mssh completion >>>') == 1
+	assert messages[-1] == 'updated the mssh block in ' + str(home / '.bashrc')
+	assert mc.install('bash', home=str(home), environ=env)[1][-1] == '{} already loads it'.format(home / '.bashrc')
+
+
+def test_completion_command_takes_the_editor_word(monkeypatch):
+	calls = []
+	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (calls.append((shell, editor)), (0, []))[1])
+	assert mc.completion_command(['install', 'bash', 'editor']) == 0
+	assert mc.completion_command(['install', 'bash', '--editor']) == 0
+	assert mc.completion_command(['install', 'zsh', 'editor']) == 2
+	assert calls == [('bash', True), ('bash', True)]
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])

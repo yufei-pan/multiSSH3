@@ -27,6 +27,71 @@ def synthetic(home, hosts=10000, invocations=20000):
 	(home / '.ssh' / 'config').write_text(''.join('Host node{:05d}\n'.format(number) for number in range(hosts)))
 
 
+def on_terminal(command, data, env):
+	'''
+	Start command with data on stdin and a pseudo-terminal as its controlling terminal.
+	Returns (process, master fd, slave fd); the slave stays open here so the master never reads EIO.
+	'''
+	import fcntl
+	import pty
+	import termios
+	master, slave = pty.openpty()
+
+	def attach():
+		os.setsid()
+		fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+	process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, preexec_fn=attach)
+	process.stdin.write(data)
+	process.stdin.close()
+	return process, master, slave
+
+
+def wait_output(master, timeout=10.0):
+	'''Read what the program draws next; the time it took in ms.'''
+	import select
+	started = time.monotonic()
+	ready, _, _ = select.select([master], [], [], timeout)
+	if ready:
+		os.read(master, 65536)
+		# the rest of the same frame
+		while select.select([master], [], [], 0.005)[0]:
+			os.read(master, 65536)
+	return (time.monotonic() - started) * 1000
+
+
+def interactive(engine, env):
+	'''Editor start and per-key time, picker open time.'''
+	env = dict(env, MSSH_COMPLETE_PROMPT='$ ', TERM='xterm-256color')
+	starts, keys, opens = [], [], []
+	for _ in range(5):
+		started = time.monotonic()
+		process, master, slave = on_terminal(engine + ['edit', 'mssh '], b'', env)
+		wait_output(master)
+		starts.append((time.monotonic() - started) * 1000)
+		for key in 'node00042':
+			os.write(master, key.encode())
+			keys.append(wait_output(master))
+		os.write(master, b'\x03')
+		process.stdout.read()
+		process.wait(timeout=10)
+		os.close(master)
+		os.close(slave)
+		request = 'MSSHC1\0bash\x005.2\0pick=1\0mssh node0\0\0\0'.encode()
+		started = time.monotonic()
+		process, master, slave = on_terminal(engine + ['pick'], request, env)
+		wait_output(master)
+		opens.append((time.monotonic() - started) * 1000)
+		os.write(master, b'\x1b')
+		process.stdout.read()
+		process.wait(timeout=10)
+		os.close(master)
+		os.close(slave)
+	keys.sort()
+	print('editor start: p50 {:6.1f} ms'.format(statistics.median(starts)))
+	print('editor key:   p50 {:6.1f} ms  max {:6.1f} ms'.format(statistics.median(keys), keys[-1]))
+	print('picker open:  p50 {:6.1f} ms'.format(statistics.median(opens)))
+
+
 def main():
 	tmp = Path(tempfile.mkdtemp())
 	try:
@@ -50,6 +115,16 @@ def main():
 				timings.append((time.monotonic() - started) * 1000)
 			timings.sort()
 			print('query {!r:32} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
+		for line in ('mssh node0004', 'mssh -u r', 'mssh node00042 "nvid'):
+			request = 'MSSHC1\0bash\x005.2\0ghost=1 nul=0\0{}\0\0\0'.format(line).encode()
+			timings = []
+			for _ in range(15):
+				started = time.monotonic()
+				subprocess.run(engine + ['query'], input=request, env=env, stdout=subprocess.DEVNULL, check=True)
+				timings.append((time.monotonic() - started) * 1000)
+			timings.sort()
+			print('suggest {!r:30} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
+		interactive(engine, env)
 	finally:
 		shutil.rmtree(str(tmp), ignore_errors=True)
 

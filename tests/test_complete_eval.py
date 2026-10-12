@@ -46,3 +46,21 @@ def test_report_lists_every_slot():
 	report = mc.format_report(mc.evaluate(mc.synthetic_history(entries=200), SPEC, limit=20))
 	assert report.splitlines()[0].split()[:3] == ['policy', 'slot', 'cases']
 	assert 'hosts-back' in report and 'ranked' in report
+
+
+def test_ghost_suggestions_are_rarely_wrong_and_save_more_than_tab():
+	totals = mc.evaluate(mc.synthetic_history(entries=600), SPEC, limit=150, policies=('bash', 'ghost'))
+	ghost = {slot: total for (policy, slot), total in totals.items() if policy == 'ghost'}
+	shown = sum(total['shown'] for total in ghost.values())
+	assert shown and float(sum(total['divergent'] for total in ghost.values())) / shown <= 0.10
+	assert sum(total['altered'] for total in ghost.values()) == 0
+
+	def saved(policy):
+		chosen = [totals[(policy, slot)] for slot in ghost]
+		return 1 - float(sum(total['keys'] for total in chosen)) / sum(total['chars'] for total in chosen)
+	assert saved('ghost') > saved('bash')
+
+
+def test_report_has_a_ghost_table():
+	report = mc.format_report(mc.evaluate(mc.synthetic_history(entries=300), SPEC, limit=50))
+	assert 'shown' in report and '\nghost ' in report

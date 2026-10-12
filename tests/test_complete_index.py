@@ -175,3 +175,25 @@ def test_skip_hosts_offers_members_of_a_range_typed_before(home):
 	response = mc.answer(mc.Request('bash', 'mssh gpu[01-16] -X ', '', ''), directory=mc.cache_dir(), now=NOW)
 	singles = [candidate.text for candidate in response.candidates if '[' not in candidate.text and ',' not in candidate.text]
 	assert singles[:2] == ['gpu01', 'gpu02']
+
+
+def test_index_counts_uses_and_last_use_of_each_feature(home):
+	index, _ = build()
+	snapshot = mc.SnapshotKnowledge(index, NOW)
+	memory = mc.MemoryKnowledge()
+	memory.add_history(HISTORY, mc.spec_from_parser(multiSSH3.get_parser()), NOW)
+	for feature, uses in (('h:gpu[01-16]', (2, 1789990100)), ('v:username=admin', (1, 1789990200)), ('c:uptime', (1, 1789990300))):
+		assert snapshot.feature_uses(snapshot.feature_key(feature)) == uses
+		assert memory.feature_uses(feature) == uses
+
+
+def test_an_index_of_the_previous_format_is_not_read(home):
+	_, directory = build()
+	path = os.path.join(directory, mc.INDEX_NAME)
+	with open(path, encoding='utf-8') as f:
+		data = f.read()
+	assert data.startswith(mc.INDEX_MAGIC + '\0' + mc.INDEX_FORMAT + '\0')
+	with open(path, 'w', encoding='utf-8') as f:
+		f.write(mc.INDEX_MAGIC + '\0' + '1' + data[len(mc.INDEX_MAGIC) + 1 + len(mc.INDEX_FORMAT):])
+	with pytest.raises(mc.IndexCorrupt):
+		mc.NsvIndex.load(path)
