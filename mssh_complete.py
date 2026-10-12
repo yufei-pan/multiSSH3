@@ -2666,6 +2666,301 @@ def apply_pick(request, picker, word, context):
 	before = request.before[:len(request.before) - len(word)] + item.text + suffix
 	return before + request.after, len(before)
 
+#%% ------------ Line editor ----------------
+_PROMPT_ESCAPES = None
+
+def expand_prompt(ps1, environ=None, now=None):
+	'''
+	PS1 expanded the way bash does for its common escapes (\\u \\h \\H \\w \\W \\$ \\[ \\] \\e \\033 \\n
+	\\t \\d \\@ \\A \\T \\j \\s \\v \\V \\!), for bash 4.2 / 4.3 where ${PS1@P} does not exist.
+	$(...) and variables stay as they are.
+	'''
+	import socket
+	environ = os.environ if environ is None else environ
+	now = time.localtime(time.time() if now is None else now)
+	home = environ.get('HOME', '')
+	cwd = environ.get('PWD') or os.getcwd()
+	short = '~' + cwd[len(home):] if home and (cwd == home or cwd.startswith(home + '/')) else cwd
+	host = socket.gethostname()
+	user = environ.get('USER') or environ.get('LOGNAME') or ''
+	if not user:
+		import getpass
+		try:
+			user = getpass.getuser()
+		except Exception:
+			user = ''
+	version = environ.get('BASH_VERSION', '')
+	values = {
+		'u': user, 'h': host.split('.')[0], 'H': host, 'w': short, 'W': os.path.basename(short) if short not in ('/', '~') else short,
+		'$': '#' if hasattr(os, 'geteuid') and os.geteuid() == 0 else '$', '[': '\x01', ']': '\x02', 'e': '\x1b', 'n': '\n',
+		't': time.strftime('%H:%M:%S', now), 'T': time.strftime('%I:%M:%S', now), '@': time.strftime('%I:%M %p', now),
+		'A': time.strftime('%H:%M', now), 'd': time.strftime('%a %b %d', now), 'j': '0', 's': 'bash',
+		'v': '.'.join(version.split('.')[:2]), 'V': version.split('(')[0], '!': '!', '\\': '\\', 'a': '\a',
+	}
+	out = []
+	index = 0
+	while index < len(ps1):
+		char = ps1[index]
+		if char == '\\' and index + 1 < len(ps1):
+			name = ps1[index + 1]
+			if ps1[index + 1:index + 4].isdigit() and len(ps1[index + 1:index + 4]) == 3:
+				out.append(chr(int(ps1[index + 1:index + 4], 8)))
+				index += 4
+				continue
+			if name in values:
+				out.append(values[name])
+				index += 2
+				continue
+		out.append(char)
+		index += 1
+	return ''.join(out)
+
+def readline_keyseq(raw):
+	'''raw key bytes written in readline's key sequence notation (for a bind macro).'''
+	out = []
+	for byte in bytearray(raw):
+		if byte == 0x1b:
+			out.append('\\e')
+		elif byte == 0x5c:
+			out.append('\\\\')
+		elif byte == 0x22:
+			out.append('\\"')
+		elif byte == 0x7f:
+			out.append('\\C-?')
+		elif byte < 32:
+			out.append('\\C-' + chr(byte + 96))
+		elif byte < 127:
+			out.append(chr(byte))
+		else:
+			out.append('\\{:03o}'.format(byte))
+	return ''.join(out)
+
+class LineEditor(object):
+	'''
+	The plain-bash editor for an mssh line, as state: text, cursor and the grey suggestion.
+
+	The editor owns the text after its prefix (the line it started with, "mssh "). handle() returns
+	None to keep editing or the bytes readline must replay when the editor hands the line back
+	(the key that ended it and any keys typed after it), or the action 'abandon'.
+
+	suggest(before) -> Ghost or None; complete(before) -> (candidate texts, word) where the texts
+	replace word at the end of before; pick(text, cursor, slot_only) -> (text, cursor) or None.
+	'''
+	def __init__(self, text, suggest=None, complete=None, pick=None):
+		self.text = text
+		self.cursor = len(text)
+		self.prefix = len(text)
+		self.suggest = suggest
+		self.complete = complete
+		self.pick = pick
+		self.ghost = ''
+		self._ghost_for = None
+
+	def refresh(self):
+		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
+		if self.cursor != len(self.text) or self.suggest is None:
+			self.ghost = ''
+			self._ghost_for = None
+			return
+		if self._ghost_for == self.text:
+			return
+		ghost = None
+		try:
+			ghost = self.suggest(self.text)
+		except Exception as e:
+			_debug('suggestion failed: {!r}'.format(e))
+		self.ghost = ghost.text if ghost is not None else ''
+		self._ghost_for = self.text
+
+	def _insert(self, text):
+		at_end = self.cursor == len(self.text)
+		self.text = self.text[:self.cursor] + text + self.text[self.cursor:]
+		self.cursor += len(text)
+		if at_end and self.ghost.startswith(text):
+			# typing along the suggestion keeps the rest of it
+			self.ghost = self.ghost[len(text):]
+			self._ghost_for = self.text
+
+	def _accept(self, whole):
+		if not self.ghost:
+			return False
+		if whole:
+			taken = self.ghost
+		else:
+			# leading spaces, then the next word
+			stripped = len(self.ghost) - len(self.ghost.lstrip(' '))
+			end = self.ghost.find(' ', stripped)
+			taken = self.ghost if end < 0 else self.ghost[:end]
+		self._insert(taken)
+		return True
+
+	def _word_left(self):
+		position = self.cursor
+		while position > self.prefix and self.text[position - 1] == ' ':
+			position -= 1
+		while position > self.prefix and self.text[position - 1] != ' ':
+			position -= 1
+		return position
+
+	def _word_right(self):
+		position = self.cursor
+		while position < len(self.text) and self.text[position] == ' ':
+			position += 1
+		while position < len(self.text) and self.text[position] != ' ':
+			position += 1
+		return position
+
+	def handle(self, name, raw):
+		'''
+		Apply one key.
+
+		Returns:
+			None to keep editing; ('pass', bytes) to hand the line back with bytes for readline to
+			replay; ('abandon', b'') to drop the line
+		'''
+		at_end = self.cursor == len(self.text)
+		if name == 'enter':
+			return 'pass', raw
+		if name == 'ctrl-c':
+			return 'abandon', b''
+		if len(name) == 1 and name >= ' ':
+			self._insert(name)
+		elif name == 'backspace':
+			if self.cursor <= self.prefix:
+				# deleting into the prefix: the line is readline's again
+				if self.cursor > 0:
+					self.text = self.text[:self.cursor - 1] + self.text[self.cursor:]
+					self.cursor -= 1
+				return 'pass', b''
+			self.text = self.text[:self.cursor - 1] + self.text[self.cursor:]
+			self.cursor -= 1
+		elif name in ('delete', 'ctrl-d'):
+			if self.cursor < len(self.text):
+				self.text = self.text[:self.cursor] + self.text[self.cursor + 1:]
+		elif name in ('left', 'ctrl-b'):
+			if self.cursor <= self.prefix:
+				return 'pass', raw
+			self.cursor -= 1
+		elif name in ('right', 'ctrl-f'):
+			if not (at_end and self._accept(True)):
+				self.cursor = min(len(self.text), self.cursor + 1)
+		elif name in ('end', 'ctrl-e'):
+			if not (at_end and self._accept(True)):
+				self.cursor = len(self.text)
+		elif name in ('home', 'ctrl-a'):
+			self.cursor = self.prefix
+		elif name in ('alt-right', 'ctrl-right', 'alt-f'):
+			if not (at_end and self._accept(False)):
+				self.cursor = self._word_right()
+		elif name in ('alt-left', 'ctrl-left', 'alt-b'):
+			self.cursor = self._word_left()
+		elif name == 'ctrl-u':
+			self.text = self.text[self.cursor:]
+			self.cursor = 0
+			return 'pass', b''
+		elif name == 'ctrl-w':
+			start = self._word_left()
+			if start <= self.prefix and self.cursor == self.prefix:
+				return 'pass', raw
+			self.text = self.text[:start] + self.text[self.cursor:]
+			self.cursor = start
+		elif name == 'tab':
+			self._tab()
+		elif name == 'ctrl-r':
+			self._pick(False)
+		else:
+			return 'pass', raw
+		self.refresh()
+		return None
+
+	def _tab(self):
+		if self.complete is None:
+			return
+		texts, word = self.complete(self.text[:self.cursor])
+		if not texts:
+			return
+		common = os.path.commonprefix(texts)
+		if len(common) > len(word) and common.startswith(word):
+			self._insert(common[len(word):])
+			if len(set(texts)) == 1 and self.cursor == len(self.text):
+				self._insert(' ')
+		else:
+			self._pick(True)
+
+	def _pick(self, slot_only):
+		if self.pick is None:
+			return
+		result = self.pick(self.text, self.cursor, slot_only)
+		if result is not None:
+			self.text, self.cursor = result
+			self._ghost_for = None
+
+	def layout(self, prompt, width):
+		'''
+		Where things go on screen: (rows used, cursor row, cursor column, column after the last
+		character), rows counted from the prompt's row, wrapped at width.
+		'''
+		def advance(row, column, chunk):
+			for char in strip_escapes(chunk):
+				size = char_width(char)
+				if column + size > width:
+					row, column = row + 1, 0
+				column += size
+			return row, column
+		row, column = advance(0, 0, prompt)
+		cursor_row, cursor_column = advance(row, column, self.text[:self.cursor])
+		end_row, end_column = advance(row, column, self.text + self.ghost)
+		return end_row + 1, cursor_row, cursor_column, end_column
+
+	def draw(self, term, prompt, style):
+		'''Draw the prompt's last line, the text and the grey suggestion; leave the cursor at the text's cursor.'''
+		width = term.size()[1]
+		rows, cursor_row, cursor_column, end_column = self.layout(prompt, width)
+		ghost = (style + self.ghost + '\x1b[0m') if (style and self.ghost) else ''
+		out = []
+		if getattr(self, '_row', 0):
+			out.append('\x1b[{}A'.format(self._row))
+		out.append('\r' + prompt + self.text + ghost + '\x1b[J')
+		end_row = rows - 1
+		if end_column == width:
+			# the terminal waits to wrap until the next character: wrap now so moves are exact
+			out.append('\r\n')
+			end_row += 1
+		if end_row > cursor_row:
+			out.append('\x1b[{}A'.format(end_row - cursor_row))
+		out.append('\r')
+		if cursor_column:
+			out.append('\x1b[{}C'.format(cursor_column))
+		term.write(''.join(out))
+		self._row = cursor_row
+
+	def erase(self, term):
+		'''Erase what the editor drew; the cursor ends at the start of the prompt's row.'''
+		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r\x1b[J')
+		self._row = 0
+
+	def run(self, term, prompt, style=None):
+		'''
+		Edit until the line is handed back.
+
+		Returns:
+			tuple: ('pass', bytes readline replays) or ('abandon', b'')
+		'''
+		self._row = 0
+		self.refresh()
+		self.draw(term, prompt, style)
+		while True:
+			keys = term.read_keys()
+			for number, (name, raw) in enumerate(keys):
+				outcome = self.handle(name, raw)
+				if outcome is not None:
+					action, replay = outcome
+					# keys typed after the one that ended the editor belong to readline
+					replay += b''.join(rest for _, rest in keys[number + 1:])
+					self.erase(term)
+					return action, replay
+			self.draw(term, prompt, style)
+
 #%% ------------ Shell glue ----------------
 GLUE_MARK = 'MSSH_COMPLETE_GLUE'
 
