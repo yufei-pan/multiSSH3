@@ -406,6 +406,19 @@ def test_zsh_suggests_and_right_arrow_accepts(home, zas, after):
 		session.close()
 
 
+def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
+	env, home = make_home(tmp_path, ["17900000{:02d}\t/x/multiSSH3.py\t-su -f='my file.txt'\tnode1\t/tmp".format(number) for number in range(6)])
+	build_index(env)
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh -f m')
+		session.read_until(b'file.txt', 10)
+		# not 'my\\' with a dangling backslash
+		assert printed(session, '\x1bf') == 'mssh -f my\\ file.txt'
+	finally:
+		session.close()
+
+
 def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 	env, home = home
 	session = zsh_with(env, home)

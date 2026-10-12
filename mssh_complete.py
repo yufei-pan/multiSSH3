@@ -2802,6 +2802,29 @@ def apply_pick(request, picker, word, context):
 	return before + request.after, len(before)
 
 #%% ------------ Line editor ----------------
+def _first_word(text):
+	'''
+	Leading spaces, then the first word of text: a backslash and the character it escapes, and a
+	quote and what follows up to the next one of its kind (or the end), kept together. Inside a
+	quoted command the closing quote comes last, so its words are still taken one at a time.
+	'''
+	position = len(text) - len(text.lstrip(' '))
+	quote = ''
+	while position < len(text):
+		char = text[position]
+		if char == '\\' and quote != "'":
+			position += 2
+			continue
+		if quote:
+			if char == quote:
+				quote = ''
+		elif char in '"\'':
+			quote = char
+		elif char == ' ':
+			break
+		position += 1
+	return text[:position]
+
 def _completed_word_end(before):
 	'''What follows a word completed at the end of before: its closing quote and a space, nothing after a directory.'''
 	tokens = lex(before)
@@ -2943,10 +2966,7 @@ class LineEditor(object):
 		if whole:
 			taken = self.ghost
 		else:
-			# leading spaces, then the next word
-			stripped = len(self.ghost) - len(self.ghost.lstrip(' '))
-			end = self.ghost.find(' ', stripped)
-			taken = self.ghost if end < 0 else self.ghost[:end]
+			taken = _first_word(self.ghost)
 		self._insert(taken)
 		return True
 
@@ -3773,9 +3793,14 @@ _mssh_complete_accept() {
 	emulate -L zsh
 	setopt extended_glob
 	local take
+	local -a words
 	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
 		take=$_mssh_complete_shown
-		[[ $WIDGET == *forward-word ]] && take=${(M)take##[[:space:]]#[^[:space:]]##}
+		if [[ $WIDGET == *forward-word ]]; then
+			# the first shell word, escapes and quotes kept with it
+			words=(${(z)take})
+			take=${words[1]:+${(M)take##[[:space:]]#}${words[1]}}
+		fi
 		BUFFER+=${take:-$_mssh_complete_shown}
 		CURSOR=$#BUFFER
 		return 0

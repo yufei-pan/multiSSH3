@@ -67,6 +67,15 @@ def test_accept_a_word(key):
 	assert edit.text == 'mssh gpu[01-16] "nvidia-smi"'
 
 
+@pytest.mark.parametrize('ghost, word', [
+	('my\\ file.txt node1', 'my\\ file.txt'), (' "ls -la" x', ' "ls -la"'), (" 'a b'c d", " 'a b'c"), ('-h /data"', '-h'),
+])
+def test_accept_a_word_keeps_escapes_and_quotes_together(ghost, word):
+	edit = editor(suggest=lambda before: mc.Ghost('line', ghost, 0.9) if before == 'mssh -f m' else None)
+	keys(edit, '-', 'f', ' ', 'm', 'alt-f')
+	assert edit.text == 'mssh -f m' + word
+
+
 def test_moving_off_the_end_hides_the_suggestion_and_right_moves():
 	edit = editor()
 	keys(edit, 'g', 'p', 'left')
