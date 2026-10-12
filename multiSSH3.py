@@ -1864,6 +1864,82 @@ def expand_hostnames(hosts):
 		hosts = frozenset(hosts)
 	return __expand_hostnames(hosts)
 
+def expand_hostnames_local(hosts):
+	'''
+	Expand host strings without DNS or ssh config lookups.
+
+	Ranges, IPv4 ranges and env / env file aliases (recursively) are expanded like
+	expand_hostnames does. A name that is not an IP address, in the hosts file or an alias
+	is kept as it is and also listed as unresolved: only DNS or the ssh config could confirm it.
+	Nothing is printed and no failure is counted.
+
+	Args:
+		hosts (str or iterable): Host strings, each may hold several hosts separated by ","
+
+	Returns:
+		tuple: (expanded, unresolved), two lists in natural sort order. user@ prefixes are kept.
+	'''
+	if isinstance(hosts, str):
+		hosts = [hosts]
+	expanded = set()
+	unresolved = set()
+	def walk(text, user, depth):
+		for token in _split_host_str(text):
+			token_user = user
+			if '@' in token:
+				token_user, token = token.split('@', 1)
+				token_user = token_user.strip() or user
+			token = token.strip()
+			if not token:
+				continue
+			if _IPV4_RANGE_RE.match(token):
+				names = __expandIPv4Address(frozenset([token]))
+			else:
+				names = __expand_hostname(token, validate=False)
+			for name in names:
+				name = name.strip().strip('$')
+				if not name:
+					continue
+				source = _local_hostname_source(name)
+				if source in ('env', 'env_file'):
+					# an alias loop expands to nothing
+					if depth < 32:
+						value = os.environ.get(name) if source == 'env' else readEnvFromFile().get(name)
+						walk(value or '', token_user, depth + 1)
+					continue
+				full = '{}@{}'.format(token_user, name) if token_user else name
+				expanded.add(full)
+				if source is None:
+					unresolved.add(full)
+	for host in hosts:
+		walk(str(host), None, 0)
+	return sorted(expanded, key=_natural_sort_key), sorted(unresolved, key=_natural_sort_key)
+
+def compact_hostnames_local(names):
+	'''
+	Compact host names into range strings without DNS.
+
+	Like compact_hostnames, but the result is checked by expanding the ranges only, so names
+	are never resolved and nothing is printed. If the compacted form does not expand back to
+	exactly the names, the names are returned unchanged.
+
+	Args:
+		names (iterable): Host names, no aliases or ranges
+
+	Returns:
+		list: Range strings (or names) in natural sort order
+	'''
+	host_set = frozenset(name.strip() for name in names if name and name.strip())
+	if not host_set:
+		return []
+	compacted = __compact_hostnames(host_set)
+	back = set()
+	for text in compacted:
+		back.update(__expand_hostname(text, validate=False))
+	if back != host_set:
+		return sorted(host_set, key=_natural_sort_key)
+	return sorted(compacted, key=_natural_sort_key)
+
 # environment variables host expansion looked up since the last refresh, with the value seen (None: unset)
 _consulted_env = {}
 
