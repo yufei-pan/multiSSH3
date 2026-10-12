@@ -350,6 +350,34 @@ mssh will replace some magic strings in the command string with host specific va
 
 > Note: Resolved name is the IP / Hostname with user appended and ip prefix applied. This is what got used to connect to the host.
 
+## Autocomplete
+
+mssh completes hosts, options, option values and remote commands when you press TAB, in bash, zsh and fish.
+
+```bash
+mssh --completion install     # set it up for the shell you run this from
+mssh --completion uninstall   # remove it again
+mssh --completion bash        # or print the script (bash, zsh or fish)
+```
+
+- **Hosts:** host strings you typed before, env file aliases, `/etc/hosts`, ssh config `Host` entries, `known_hosts` and the ARP table. Large clusters are offered as ranges (`node[0001-2000]`) until what you typed narrows them down. Hosts mssh recently found unreachable come last.
+- **Options and values:** option names, and values you used before (`-u`, `-t`, ...). Paths complete as files. Passwords are never completed.
+- **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`), and the magic strings (`#HOST#`, ...).
+
+Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[01-16] "` the commands you run on those hosts come first, and in the hosts of `mssh ▮ "systemctl restart slurmd"` the hosts you restarted slurmd on come first.
+
+Completion never removes what you typed, prints nothing, and falls back to the shell's normal completion when anything is slow or missing.
+
+It learns from an index of your history and hosts, kept in mssh's private cache directory (`$XDG_RUNTIME_DIR/multiSSH3` or `/tmp/multiSSH3-<uid>`) and rebuilt in the background when its sources change. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
+
+| Environment variable | Effect |
+| --- | --- |
+| `MSSH_COMPLETE_TIMEOUT` | Seconds the shell waits for an answer (default 0.3) |
+| `MSSH_COMPLETE_SHELL_HISTORY` | Lines of shell history sent along (default 1000) |
+| `MSSH_COMPLETE_DEBUG` | `1` logs errors to `complete.log` in the cache directory |
+
+> Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded) and fish 3.3 to 4.0. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
+
 ## Options
 
 Here details the options for multiSSH3 6.02 @ 2025-11-10

@@ -307,8 +307,7 @@ The glue calls `mssh-complete query` if `mssh-complete` is on `PATH` when the gl
 - `mssh --completion uninstall [SHELL]` removes exactly what install wrote, including marked rc-file blocks, leaving the rc file byte-for-byte as it was before install.
 - Marked rc-file blocks are fail-safe: bash `[ -r F ] && . F 2>/dev/null`, zsh `[[ -r F ]] && source F 2>/dev/null`. A missing, unreadable or broken glue file therefore produces no output and no error in a new shell. The glue file itself only defines functions and registers completion when sourced; it runs no Python and no external commands at shell start.
 - Locations:
-  - bash with bash-completion: `${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}/completions/` — file `mssh`, plus symlinks for `mssh3`, `multissh`, `multissh3`, `multiSSH3` (bash-completion lazy-loads by command name; no shell-startup cost).
-  - bash without bash-completion: `${XDG_DATA_HOME:-$HOME/.local/share}/multiSSH3/completion.bash`, plus a marked `source` block appended to `~/.bashrc` (sourcing a small file, no Python at shell start).
+  - bash: `${XDG_DATA_HOME:-$HOME/.local/share}/multiSSH3/completion.bash`, plus a marked `source` block appended to `~/.bashrc` (sourcing a small file, no Python at shell start). The bash-completion per-user directory is not used: see "Changes made while planning".
   - zsh: `${XDG_DATA_HOME:-$HOME/.local/share}/multiSSH3/completion.zsh`, plus a marked `source` block appended to `~/.zshrc`; the file registers via `compdef` when available.
   - fish: `${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/<name>.fish` for each of the five names (autoloaded).
 - Not recommended (documented only): `eval "$(mssh --completion bash)"` in an rc file, which runs Python on every shell start.
@@ -406,3 +405,27 @@ Real-shell behavior differs across shell and bash-completion versions, and the d
 1. Bump `version` in `multiSSH3.py`; `mssh_complete.py` declares its own `version` and the protocol version `MSSHC1`.
 2. `uvpack` multiSSH3.
 3. In `cas-toolbox`: add `mssh-complete = "mssh_complete:main"` to `[project.scripts]` and bump the `multissh3` pin in the next Monday roll-up.
+
+## Changes made while planning
+
+Drafting and testing the implementation against real shells and the replay evaluation changed these details; the code follows this section where it differs from the text above.
+
+| Area | Change | Why |
+|---|---|---|
+| Host groups | Built with `compact_hostnames_local()` (DNS-free, checked by range expansion) instead of `compact_hostnames(verify=True)` | `compact_hostnames` validates every name through DNS and prints errors |
+| Use weight | Each use counts `USE_FLOOR` (0.1) plus the decayed part | With pure decay, history older than a few months scored about 1e-15 and lost to static hosts |
+| Context term | `log(1 + weight(r)) * sim(r, line)`; features in more than half of the records are left out of `sim` | A host used nine times outranked the only host a command was ever run on, through a near-universal feature |
+| Option features | `o:` keys on the option's long string, not its dest | `-x` and `-a` share a dest, so `--no_skip_unreachable` inherited the score of the `-su` every history line records |
+| Path modes | With `-f`, `-fs` or `-G` the command words are `f:` path features | File sync paths showed up as programs |
+| Protocol | The response ends with an `E` line before the NUL; fish sends `nul=0` and gets no NUL; the engine reverses fish history (newest first) | fish command substitution cannot carry NUL; the `E` line marks a complete response |
+| rc blocks | End with `\|\| :` | A missing or broken glue file left `$?` at 1 or 2 in every new shell |
+| Env file aliases | Only values made of host-list characters count, and only when used as a host, list-like (`,`, `[`) or made of known hosts | `~/.bashrc` holds `PATH`, `PS1`, `EDITOR`, ... |
+| Test baseline | The existing suite has 520 tests | 269 was an older count |
+| Python 3.6 | The argparse cross-check is skipped there | `parse_intermixed_args` arrived in Python 3.7; mssh itself falls back to `parse_known_args` on 3.6 |
+| Providers | Providers are `Engine` methods (`_options`, `_values`, `_hosts`, `_commands`); there is no empty `remote_probe` provider | SP3 adds remote probing where it plugs in; an empty stub would only be dead code |
+| Case | The `icase` flag is sent but SP1 matches case-sensitively | Case-insensitive matching has to reach every prefix lookup in the index; left for a follow-up |
+| zsh groups | zsh shows one list (`compadd -V mssh`) in rank order, with descriptions | Separate groups per kind would break the cross-kind rank order |
+| Benchmark | `tests/bench_complete.py` does not time shell start | The installed glue runs no commands at shell start, and `test_new_shells_stay_silent` checks it prints nothing and keeps `$?` |
+| bash install | bash always loads the glue from `~/.bashrc` (data-dir `completion.bash` plus the marked block); the bash-completion per-user directory is not used | bash-completion being installed does not mean it runs: stock Debian root shells do not load it, so install would report success while TAB did nothing new |
+
+Measured at the target scale (10k hosts, 20k invocations): a TAB costs 30-45 ms (p50), a rebuild about 0.5 s, the index is 3 MB.
