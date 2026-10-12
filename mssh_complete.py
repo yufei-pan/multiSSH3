@@ -1718,15 +1718,19 @@ def _zsh_escape(text):
 # characters fish reads specially in an unquoted word
 _FISH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()*?[]#~{}')
 
-# in a remote command's words bash would also read # as a comment and expand ~, globs and braces
-_BASH_COMMAND_SPECIAL = _BASH_SPECIAL | frozenset('#~*?[]{}')
+# in a word taken literally bash would also read # as a comment and expand ~, globs and braces
+_BASH_STRICT_SPECIAL = _BASH_SPECIAL | frozenset('#~*?[]{}')
 
-def _shell_escape(shell, text, command=False):
-	'''text escaped for an unquoted word of shell; command: words of the remote command (bash leaves globs only in hosts).'''
-	special = {'bash': _BASH_COMMAND_SPECIAL if command else _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
+def _shell_escape(shell, text, strict=False):
+	'''text escaped for an unquoted word of shell; strict: a word taken literally (bash leaves globs only in hosts).'''
+	special = {'bash': _BASH_STRICT_SPECIAL if strict else _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
 	if special is None:
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
+
+def _literal_word(context):
+	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
+	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
@@ -1797,7 +1801,7 @@ class Engine(object):
 			if context.slot == SLOT_COMMAND:
 				rest += closing
 		elif rest:
-			rest = _shell_escape(request.shell, rest, context.slot == SLOT_COMMAND)
+			rest = _shell_escape(request.shell, rest, _literal_word(context))
 		continuation, rest_share = self._continuation(context, top, request.shell, deadline)
 		if continuation and rest_share >= T_LINE:
 			return Ghost('line', rest + continuation, min(share, rest_share))
@@ -1829,7 +1833,7 @@ class Engine(object):
 			if any(char in unsafe for char in rest):
 				return None
 		else:
-			rest = _shell_escape(shell, rest, context.slot == SLOT_COMMAND)
+			rest = _shell_escape(shell, rest, _literal_word(context))
 		return Ghost('word', rest, support)
 
 	def _suggest_command_words(self, context, shell, deadline):
@@ -1956,9 +1960,11 @@ class Engine(object):
 		Turn slot values into replacements for the shell's word, best first, without duplicates.
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
-		text left unquoted is escaped for that shell, except when bash quotes file names itself.
+		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
 		'''
 		literal = request.shell == 'bash' or request.flags.get('insert') == '1'
+		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
+		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		word = _shell_word(request)
 		prefix = context.prefix
 		if word is None:
@@ -1980,8 +1986,8 @@ class Engine(object):
 					continue
 				if context.open_quote in ("'", "$'") and "'" in rest:
 					continue
-				if not context.open_quote and not (request.shell == 'bash' and {'files', 'dirs'} & set(directives)):
-					rest = _shell_escape(request.shell, rest, context.slot == SLOT_COMMAND)
+				if not context.open_quote and not bash_quotes:
+					rest = _shell_escape(request.shell, rest, _literal_word(context))
 			if '\t' in rest or '\n' in rest:
 				continue
 			seen.add(full)
@@ -4446,6 +4452,53 @@ def _cmd_pick():
 	sys.stdout.buffer.flush()
 	return 0
 
+def editor_completions(engine, before):
+	'''
+	What the editor's TAB may put in place of the word ending before: (texts, word).
+
+	Paths are listed as bash's TAB lists them: ~ expanded, names taken as they are, hidden files
+	included; what is added to the word as typed is escaped (inside an open quote, names the quote
+	cannot hold are left out).
+	'''
+	context = parse_context(before, '', engine.spec)
+	if context is None:
+		return [], ''
+	# the word as typed (escapes and quotes included): what the candidates' rests are added to
+	tokens = lex(before)
+	if not context.prefix:
+		word = ''
+	elif tokens and tokens[-1].text == context.prefix and before.endswith(tokens[-1].raw):
+		word = tokens[-1].raw
+	elif before.endswith(context.prefix):
+		word = context.prefix
+	else:
+		return [], ''
+	response = engine.query(Request('bash', before, '', context.prefix, flags={'insert': '1'}))
+	texts = [word + candidate.text[len(context.prefix):] for candidate in response.candidates if candidate.text.startswith(context.prefix)]
+	if {'files', 'dirs'} & set(response.directives):
+		directory, slash, start = context.value.rpartition('/')
+		listed = os.path.expanduser(directory + slash) if slash else '.'
+		try:
+			names = sorted(os.listdir(listed))
+		except OSError:
+			names = []
+		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
+		for name in names:
+			if not name.startswith(start):
+				continue
+			is_dir = os.path.isdir(os.path.join(listed, name))
+			if not is_dir and 'files' not in response.directives:
+				continue
+			rest = name[len(start):] + ('/' if is_dir else '')
+			if context.open_quote:
+				if any(char in unsafe for char in rest):
+					continue
+			else:
+				rest = _shell_escape('bash', rest, True)
+			if word + rest not in texts:
+				texts.append(word + rest)
+	return texts, word
+
 def _cmd_edit(args):
 	'''
 	mssh-complete edit [--expand] TEXT: the plain-bash editor for an mssh line.
@@ -4456,7 +4509,6 @@ def _cmd_edit(args):
 	editor cannot start; the shell then goes on as if it had not been asked.
 	'''
 	import argparse
-	import glob
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
 	parser.add_argument('--expand', action='store_true')
 	parser.add_argument('text')
@@ -4478,16 +4530,7 @@ def _cmd_edit(args):
 		return engine.suggest(Request('bash', before, '', ''))
 
 	def complete(before):
-		context = parse_context(before, '', engine.spec)
-		if context is None or not before.endswith(context.prefix):
-			return [], ''
-		response = engine.query(Request('bash', before, '', context.prefix))
-		texts = [candidate.text for candidate in response.candidates]
-		if 'files' in response.directives or 'dirs' in response.directives:
-			for path in sorted(glob.glob(context.value + '*')):
-				if 'files' in response.directives or os.path.isdir(path):
-					texts.append(context.prefix[:context.value_start] + path + ('/' if os.path.isdir(path) else ''))
-		return texts, context.prefix
+		return editor_completions(engine, before)
 
 	def pick(text, cursor, slot_only):
 		if 'history' not in cache:

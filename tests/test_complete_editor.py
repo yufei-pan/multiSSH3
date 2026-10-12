@@ -1,6 +1,7 @@
 '''The plain-bash mssh line editor as a state machine, its drawing, and the bash 4.2/4.3 prompt expander.'''
 import pytest
 
+import multiSSH3
 import mssh_complete as mc
 from vt_grid import FakeTerminal, Grid
 
@@ -139,6 +140,25 @@ def test_tab_ends_a_unique_match_as_the_picker_does():
 	edit = editor('mssh host "', complete=lambda before: (['ls -la'], 'ls -l'))
 	keys(edit, 'l', 's', ' ', '-', 'l', 'tab')
 	assert edit.text == 'mssh host "ls -la" '
+
+
+def test_editor_file_names_follow_bash(tmp_path, monkeypatch):
+	# like bash's TAB: ~ expanded, [ ] and * read as names, hidden files listed, the result escaped
+	for name in ('my file.txt', 'a[1].txt', '.hidden'):
+		(tmp_path / name).write_text('')
+	(tmp_path / 'sub').mkdir()
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setenv('HOME', str(tmp_path))
+	engine = mc.Engine(mc.spec_from_parser(multiSSH3.get_parser()), [])
+
+	def texts(before):
+		return sorted(mc.editor_completions(engine, before)[0])
+	assert texts('mssh -f my') == ['my\\ file.txt']
+	assert texts('mssh -f my\\ f') == ['my\\ file.txt']
+	assert texts('mssh -f a') == ['a\\[1\\].txt']
+	assert texts('mssh -f .h') == ['.hidden']
+	assert texts('mssh -f s') == ['sub/']
+	assert texts('mssh -f ~/my') == ['~/my\\ file.txt']
 
 
 def test_tab_with_nothing_to_insert_opens_the_slot_menu():
