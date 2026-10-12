@@ -1,9 +1,14 @@
 # Shell matrix image: CentOS 7, bash only (end of life: packages come from the vault and archives)
 FROM centos:7
 RUN sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#\?baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|' /etc/yum.repos.d/CentOS-*.repo \
- && yum -y -q install python3 bash-completion which procps-ng \
+ && yum -y -q install python3 bash-completion which procps-ng xz gawk \
  && yum clean all \
  && python3 -m pip install -q --disable-pip-version-check 'pip<22' \
  && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1'
 # no C.UTF-8 here, and the C locale would hide bash 4.2's byte-counted COMP_POINT
 ENV LANG=en_US.UTF-8
+# ble.sh (Bash Line Editor), pinned: the autocomplete tests also run inside it
+ADD --checksum=sha256:7a2445f138e7f099dd5dee749391a8b045646d1b8a605975885be5b34b6b5f7e \
+    https://github.com/akinomyoga/ble.sh/releases/download/nightly/ble-nightly-20260908%2Bd81fd54.tar.xz /tmp/blesh.tar.xz
+RUN mkdir -p /opt/blesh && tar -xJf /tmp/blesh.tar.xz -C /opt/blesh --strip-components=1 && rm /tmp/blesh.tar.xz
+ENV MSSH_TEST_BLESH=/opt/blesh/ble.sh

@@ -9,8 +9,8 @@ images=("$@")
 status=0
 for name in "${images[@]}"; do
 	case $name in
-		centos7) required=bash ;;
-		modern|legacy) required=bash,zsh,fish ;;
+		centos7) required=bash,blesh ;;
+		modern|legacy) required=bash,zsh,fish,blesh ;;
 		*) echo "unknown image: $name" >&2; exit 2 ;;
 	esac
 	echo "=== $name (requires $required)"

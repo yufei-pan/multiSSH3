@@ -391,6 +391,7 @@ Real-shell behavior differs across shell and bash-completion versions, and the d
 - "bash without bash-completion" runs in every image by not loading bash-completion.
 - The matrix must pass before any change to glue, install or the protocol is merged; for engine-only changes the local suite is enough.
 - Versions below the tested floors (bash < 4.2, zsh < 5.5, fish 3.0–3.2) are best effort and not tested; fish < 3.0 is unsupported.
+- Every image also has ble.sh (the 2026-09-08 nightly, `d81fd54`, pinned by checksum) at `$MSSH_TEST_BLESH`; `tests/test_complete_blesh.py` checks that TAB completion works inside it, that its grey suggestions come from the engine (→ accepts them), that a slow engine does not hold up typing, and that the glue adds no output at shell start. `MSSH_REQUIRE_SHELLS` includes `blesh` in all three images.
 
 ## Out of scope for SP1
 
