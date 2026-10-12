@@ -1718,9 +1718,12 @@ def _zsh_escape(text):
 # characters fish reads specially in an unquoted word
 _FISH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()*?[]#~{}')
 
-def _shell_escape(shell, text):
-	'''text escaped for an unquoted word of shell.'''
-	special = {'bash': _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
+# in a remote command's words bash would also read # as a comment and expand ~, globs and braces
+_BASH_COMMAND_SPECIAL = _BASH_SPECIAL | frozenset('#~*?[]{}')
+
+def _shell_escape(shell, text, command=False):
+	'''text escaped for an unquoted word of shell; command: words of the remote command (bash leaves globs only in hosts).'''
+	special = {'bash': _BASH_COMMAND_SPECIAL if command else _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
 	if special is None:
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
@@ -1794,7 +1797,7 @@ class Engine(object):
 			if context.slot == SLOT_COMMAND:
 				rest += closing
 		elif rest:
-			rest = _shell_escape(request.shell, rest)
+			rest = _shell_escape(request.shell, rest, context.slot == SLOT_COMMAND)
 		continuation, rest_share = self._continuation(context, top, request.shell, deadline)
 		if continuation and rest_share >= T_LINE:
 			return Ghost('line', rest + continuation, min(share, rest_share))
@@ -1826,7 +1829,7 @@ class Engine(object):
 			if any(char in unsafe for char in rest):
 				return None
 		else:
-			rest = _shell_escape(shell, rest)
+			rest = _shell_escape(shell, rest, context.slot == SLOT_COMMAND)
 		return Ghost('word', rest, support)
 
 	def _suggest_command_words(self, context, shell, deadline):
@@ -1851,12 +1854,12 @@ class Engine(object):
 			next_words[words[len(typed) - 1]] = next_words.get(words[len(typed) - 1], 0.0) + score
 		word, word_share = _top_share(next_words)
 		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
-		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):])
-		more = ''.join(' ' + _shell_escape(shell, extra) for extra in top[len(typed):])
+		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
+		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
 		if more and share >= T_LINE:
 			return Ghost('line', rest + more, share)
 		if rest and word_share >= T_WORD:
-			return Ghost('word', _shell_escape(shell, word[len(typed[-1]):]), word_share)
+			return Ghost('word', _shell_escape(shell, word[len(typed[-1]):], True), word_share)
 		return None
 
 	def _uses(self, feature):
@@ -1978,7 +1981,7 @@ class Engine(object):
 				if context.open_quote in ("'", "$'") and "'" in rest:
 					continue
 				if not context.open_quote and not (request.shell == 'bash' and {'files', 'dirs'} & set(directives)):
-					rest = _shell_escape(request.shell, rest)
+					rest = _shell_escape(request.shell, rest, context.slot == SLOT_COMMAND)
 			if '\t' in rest or '\n' in rest:
 				continue
 			seen.add(full)

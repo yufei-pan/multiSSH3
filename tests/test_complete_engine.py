@@ -242,3 +242,10 @@ def test_huge_typed_host_lists_are_not_offered():
 	knowledge = memory([line(NOW, '-su', hosts, '"uptime"')])
 	offered = texts(query('mssh node', knowledges=[knowledge]))
 	assert offered and all(len(text) <= 256 for text in offered)
+
+
+def test_bash_tab_escapes_command_words_bash_would_expand():
+	knowledges = [memory([line(NOW - number, '-su', 'node1', '"echo #HOST# ~"') for number in range(5)])]
+	assert texts(query('mssh node1 echo ', knowledges=knowledges)) == ['\\#HOST\\#']
+	# host ranges are mssh's: bash leaves them as typed
+	assert texts(query('mssh gpu', word='gpu'))[0] == 'gpu[01-16]'
