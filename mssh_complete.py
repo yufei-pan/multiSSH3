@@ -223,16 +223,15 @@ class ParserSpec(object):
 		if option is not None:
 			return option, None
 		name, sep, value = text.partition('=')
-		if sep:
-			option = self.by_string.get(name) or self._abbreviation(name)
-			return (option, value) if option is not None else (None, None)
-		option = self._abbreviation(text)
-		if option is None and len(text) > 2 and text[0] == '-' and text[1] != '-':
-			# argparse reads -pVALUE as -p VALUE
+		option = (self.by_string.get(name) or self._abbreviation(name)) if sep else self._abbreviation(text)
+		if option is not None:
+			return option, (value if sep else None)
+		if len(text) > 2 and text[0] == '-' and text[1] != '-':
+			# argparse reads -pVALUE as -p VALUE, '=' in VALUE included
 			short = self.by_string.get(text[:2])
 			if short is not None and short.nargs != '0':
 				return short, text[2:]
-		return option, None
+		return None, None
 
 	def _abbreviation(self, name):
 		if not name.startswith('--') or len(name) < 3:
