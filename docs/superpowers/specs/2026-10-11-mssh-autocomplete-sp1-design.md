@@ -50,6 +50,7 @@ Each later sub-project gets its own spec → plan → implementation cycle.
 | Performance | Observed, not gated. ~100 ms per TAB acceptable for now. Safety deadlines exist only to protect the prompt |
 | Quality | Replay evaluation of keystroke savings and candidate rank is the primary metric; a TAB that alters or deletes operator-typed text must never occur |
 | Python floor | Same as multiSSH3/cas-toolbox (`>=3.6` syntax: no walrus, no dataclasses) |
+| History hosts field | `~/.mssh_history` records the hosts exactly as typed. Before this change it recorded them expanded, sorted and validated (aliases replaced by members, unresolvable names dropped, with an error printed while recording); lines written before the change keep that form |
 | Shell test matrix | Docker images: modern (Debian trixie), legacy (Rocky Linux 8 + EPEL) and CentOS 7 (bash only). Tested floors: bash 4.2, bash-completion 2.1, zsh 5.5, fish 3.3, Python 3.6. Inside the matrix, a missing required shell is a failure, not a skip |
 | CentOS 7 | bash compatibility only (bash 4.2.46, bash-completion 2.1, Python 3.6.8); its zsh 5.0.2 and fish 2.3.1 are not supported |
 | fish < 3.0 | Unsupported: the glue registers nothing and the installer refuses with a message |
@@ -60,7 +61,7 @@ Each later sub-project gets its own spec → plan → implementation cycle.
 - CLI shape: `mssh [opts] HOSTS COMMAND...`, parsed with `parse_intermixed_args` (options may appear anywhere), falling back to `parse_known_args` with unknown tokens appended to commands. About 60 options, many with several aliases.
 - Host syntax: comma-separated tokens; ranges (`node[1-10]`, `10.0.0.1-3`, `[a-c]`); `user@host`; env-variable and env-file aliases (recursive); `/etc/hosts`; ssh config; DNS.
 - `_local_hostname_source()` classifies a host without DNS (`ip`, `env`, `env_file`, or needs DNS). `__expand_hostname(text, validate=False)` expands ranges without resolving. `compact_hostnames(verify=True)` produces round-trip-verified range strings.
-- `~/.mssh_history` lines: `<ts>\t<prog>\t<shortened args>\t<hosts>\t<commands>`, mode 0600, append-only.
+- `~/.mssh_history` lines: `<ts>\t<prog>\t<shortened args>\t<hosts>\t<commands>`, mode 0600, append-only. Until this change the hosts field went through `formHostStr()` → `compact_hostnames()`, which expands aliases and ranges, validates names (DNS included), drops unresolvable ones and re-sorts: typing `us_east` recorded its members, and `zzz-bad,localhost` recorded `localhost`. Completion must learn what operators type, so `record_command_history()` now records the hosts argument as typed; the `> command` echo printed at start keeps its current form.
 - `_unavailable_hosts_file_path()` defines the private cache dir; `unavailable_hosts.csv` lives there.
 - `multiSSH3TUI.py` holds an earlier k-gram `CommandSearcher` prototype; SP1 does not reuse it, but SP2's picker may borrow its fuzzy word search.
 
@@ -73,7 +74,7 @@ Measured on the development machine (Python 3.13): bare `python3 -I -S` startup 
 | File | Change |
 |---|---|
 | `mssh_complete.py` | New. Engine, index reader/builder, providers, ranking, glue renderers, `mssh-complete` CLI |
-| `multiSSH3.py` | Adds `--completion` option (lazy-imports `mssh_complete`) and public `expand_hostnames_local()` |
+| `multiSSH3.py` | Adds `--completion` option (lazy-imports `mssh_complete`), public `expand_hostnames_local()` and `compact_hostnames_local()`, and records history hosts as typed |
 | `setup.py` | `py_modules=['multiSSH3', 'mssh_complete']`; console script `mssh-complete=mssh_complete:main` |
 | `tests/` | New test modules for the engine, index, invariants, evaluation and real-shell integration |
 | `tests/shells/` | Dockerfiles for the modern and legacy shell images, and `run_matrix.sh` |
@@ -342,6 +343,8 @@ For each intended token, a TAB is simulated at every prefix length. A TAB is *us
 - the **divergent-TAB rate** per slot and position, i.e. how often pressing TAB would insert something the operator did not want;
 - the **appended-suffix cost** per slot (e.g. a trailing space after a host when the operator's next character is `,`), which decides each slot's `nospace` policy;
 - **TABs that alter or delete operator-typed text: required to be zero.**
+
+History lines written before hosts were recorded as typed hold expanded host strings, so host-slot scores on them measure the wrong target. The history file does not say which mssh version wrote a line, so `eval` accepts `--since TIMESTAMP` to replay only entries written after the upgrade (default: all entries).
 
 Output is aggregate numbers only. Every ranking change (constants, sources, thresholds) is justified with this report, including SP2's ghost suggestions later.
 
