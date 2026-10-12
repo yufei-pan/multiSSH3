@@ -606,3 +606,279 @@ def parse_history_line(line, spec):
 		hosts = ''
 	return HistoryEntry(ts, options, hosts, [token.text for token in lex(fields[4])], texts)
 
+#%% ------------ Index storage (NSV) ----------------
+INDEX_MAGIC = 'MSSHCIDX'
+INDEX_FORMAT = '1'
+INDEX_NAME = 'complete-index.v1.nsv'
+
+class IndexCorrupt(Exception):
+	'''The index file is not a complete index this version can read.'''
+
+def safe_field(text):
+	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
+	return '\0' not in text and '\n' not in text
+
+def write_nsv(path, header, sections):
+	'''
+	Write an index file atomically (a temporary file in the same directory, then os.replace).
+
+	Row 0 holds the magic, the format, "key=value" header fields and "@section=start,count"
+	entries; every other row is a section row with its fields joined by NUL.
+
+	Args:
+		path (str): Where to write, mode 0600
+		header (dict): str -> str
+		sections (list): (name, rows) pairs, rows a list of lists of str
+
+	Raises:
+		ValueError: a field holds NUL or a newline
+	'''
+	import tempfile
+	body = []
+	table = []
+	row_number = 1
+	for name, rows in sections:
+		table.append('@{}={},{}'.format(name, row_number, len(rows)))
+		row_number += len(rows)
+		for row in rows:
+			for field in row:
+				if not safe_field(field):
+					raise ValueError('field {!r} of section {} holds NUL or a newline'.format(field[:40], name))
+			body.append('\0'.join(row))
+	head = [INDEX_MAGIC, INDEX_FORMAT] + ['{}={}'.format(key, value) for key, value in sorted(header.items())] + table
+	for field in head:
+		if not safe_field(field):
+			raise ValueError('header field {!r} holds NUL or a newline'.format(field[:40]))
+	data = '\0'.join(head) + '\n' + ''.join(row + '\n' for row in body)
+	fd, temporary = tempfile.mkstemp(prefix='.complete-index.', dir=os.path.dirname(path) or '.')
+	try:
+		with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
+			f.write(data)
+			f.flush()
+			os.fsync(f.fileno())
+		os.replace(temporary, path)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
+class NsvIndex(object):
+	'''An index file split into rows; a row is only split into fields when it is read.'''
+	def __init__(self, data):
+		self.rows = data.split('\n')
+		head = self.rows[0].split('\0')
+		if len(head) < 2 or head[0] != INDEX_MAGIC:
+			raise IndexCorrupt('not an mssh completion index')
+		if head[1] != INDEX_FORMAT:
+			raise IndexCorrupt('index format {!r}, this version reads {!r}'.format(head[1], INDEX_FORMAT))
+		self.header = {}
+		self.sections = {}
+		total = 1
+		for field in head[2:]:
+			key, sep, value = field.partition('=')
+			if not sep:
+				raise IndexCorrupt('bad header field {!r}'.format(field[:40]))
+			if key.startswith('@'):
+				start, _, count = value.partition(',')
+				try:
+					start, count = int(start), int(count)
+				except ValueError:
+					raise IndexCorrupt('bad section entry {!r}'.format(field[:40])) from None
+				self.sections[key[1:]] = (start, count)
+				total += count
+			else:
+				self.header[key] = value
+		# a complete file ends with a newline, leaving one empty string after the last row
+		if len(self.rows) != total + 1 or self.rows[-1] != '':
+			raise IndexCorrupt('truncated index')
+		for start, count in self.sections.values():
+			if start < 1 or start + count > total:
+				raise IndexCorrupt('section outside the index')
+		self._single = {}
+
+	@classmethod
+	def load(cls, path):
+		with open(path, 'r', encoding='utf-8', errors='surrogateescape', newline='') as f:
+			return cls(f.read())
+
+	def count(self, name):
+		return self.sections.get(name, (0, 0))[1]
+
+	def row(self, name, index):
+		start, count = self.sections[name]
+		if not 0 <= index < count:
+			raise IndexError('row {} of section {} ({} rows)'.format(index, name, count))
+		line = self.rows[start + index]
+		return line.split('\0') if line else []
+
+	def single(self, name):
+		'''A section stored as one row, split once and kept.'''
+		cached = self._single.get(name)
+		if cached is None:
+			cached = self.row(name, 0) if self.count(name) else []
+			self._single[name] = cached
+		return cached
+
+#%% ------------ Knowledge ----------------
+HALF_LIFE = 7 * 24 * 3600.0
+USE_FLOOR = 0.1   # what any use keeps counting however old: frequency outlives recency
+
+def decay(age):
+	'''Factor for weights age seconds old: halves every HALF_LIFE.'''
+	if age <= 0:
+		return 1.0
+	return 0.5 ** (age / HALF_LIFE)
+
+def use_weight(age):
+	'''Weight of one use age seconds ago: USE_FLOOR plus a recency part that halves every HALF_LIFE.'''
+	return USE_FLOOR + decay(age)
+
+def _prefix_range(sorted_items, prefix):
+	'''(lo, hi): sorted_items[lo:hi] are the items starting with prefix.'''
+	lo = bisect_left(sorted_items, prefix)
+	hi = lo
+	while hi < len(sorted_items) and sorted_items[hi].startswith(prefix):
+		hi += 1
+	return lo, hi
+
+class MemoryKnowledge(object):
+	'''
+	Records held in memory: identical invocations share one record whose weight sums their uses.
+
+	Used for the history tail not yet in the index, the shell's history, the replay evaluation,
+	and by the builder to aggregate records before writing them.
+	'''
+	def __init__(self):
+		self.records = []
+		self._by_features = {}
+		self._postings = {}
+		self._weights = {}
+		self._sorted = None
+
+	def add(self, features, weight):
+		key = tuple(features)
+		rid = self._by_features.get(key)
+		if rid is None:
+			rid = len(self.records)
+			self._by_features[key] = rid
+			self.records.append([0.0, list(features)])
+			for feature in features:
+				self._postings.setdefault(feature, []).append(rid)
+			self._sorted = None
+		self.records[rid][0] += weight
+		for feature in features:
+			self._weights[feature] = self._weights.get(feature, 0.0) + weight
+
+	def add_history(self, lines, spec, now):
+		'''Add ~/.mssh_history lines, each weighted by its age.'''
+		for line in lines:
+			entry = parse_history_line(line, spec)
+			if entry is not None:
+				self.add(entry.features(), use_weight(now - entry.ts))
+
+	def record_count(self):
+		return len(self.records)
+
+	def feature_range(self, prefix):
+		if self._sorted is None:
+			self._sorted = sorted(self._postings)
+		lo, hi = _prefix_range(self._sorted, prefix)
+		return [(text, text) for text in self._sorted[lo:hi]]
+
+	def feature_key(self, text):
+		return text if text in self._postings else None
+
+	def postings(self, key):
+		return self._postings[key]
+
+	def record(self, rid):
+		weight, features = self.records[rid]
+		return weight, features
+
+	def feature_weight(self, key):
+		return self._weights.get(key, 0.0)
+
+class SnapshotKnowledge(object):
+	'''The records stored in the index, read lazily, with weights decayed to now.'''
+	def __init__(self, index, now):
+		self.index = index
+		self.features = index.single('features')
+		built = float(index.header.get('built', now) or now)
+		self.scale = decay(now - built)
+		self._weights = None
+
+	def record_count(self):
+		return self.index.count('records')
+
+	def feature_range(self, prefix):
+		lo, hi = _prefix_range(self.features, prefix)
+		return [(key, self.features[key]) for key in range(lo, hi)]
+
+	def feature_key(self, text):
+		key = bisect_left(self.features, text)
+		return key if key < len(self.features) and self.features[key] == text else None
+
+	def postings(self, key):
+		return [int(rid) for rid in self.index.row('postings', key)]
+
+	def record(self, rid):
+		row = self.index.row('records', rid)
+		return float(row[0]) * self.scale, [self.features[int(key)] for key in row[1:]]
+
+	def feature_weight(self, key):
+		if self._weights is None:
+			self._weights = self.index.single('fweights')
+		return float(self._weights[key]) * self.scale
+
+#%% ------------ Ranking ----------------
+BETA = 0.1                  # weight of plain frecency next to similarity with the line
+KIND_WEIGHTS = {}           # feature kind ('h', 't', 'v', 'c', ...) -> weight, 1.0 when absent
+COMMON_SHARE = 0.5          # a feature in more than this share of the records carries no context
+MAX_CONTEXT_RECORDS = 20000 # records read per query for context
+
+def score_features(knowledges, prefix, line_features, deadline=None):
+	'''
+	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge.
+
+	score(c) = BETA * frecency(c) + sum over records r holding c of log(1 + weight(r)) * sim(r, line),
+	where sim sums idf(f) * KIND_WEIGHTS[kind of f] over the features f shared by r and the line.
+	Features in more than COMMON_SHARE of the records are left out of sim; frequency counts
+	logarithmically there, so matching the line beats being used often.
+
+	Returns:
+		dict: feature text -> score
+	'''
+	scores = {}
+	for knowledge in knowledges:
+		for key, text in knowledge.feature_range(prefix):
+			scores[text] = scores.get(text, 0.0) + BETA * knowledge.feature_weight(key)
+	if not scores or not line_features:
+		return scores
+	total = sum(knowledge.record_count() for knowledge in knowledges)
+	similarity = [dict() for _ in knowledges]
+	for feature in line_features:
+		lists = []
+		for knowledge in knowledges:
+			key = knowledge.feature_key(feature)
+			lists.append(knowledge.postings(key) if key is not None else [])
+		df = sum(len(rids) for rids in lists)
+		if not df or df > COMMON_SHARE * total:
+			continue
+		weight = math.log(1.0 + float(total) / df) * KIND_WEIGHTS.get(feature[0], 1.0)
+		for sim, rids in zip(similarity, lists):
+			for rid in rids:
+				sim[rid] = sim.get(rid, 0.0) + weight
+	touched = 0
+	for knowledge, sim in zip(knowledges, similarity):
+		for rid, value in sim.items():
+			touched += 1
+			if touched > MAX_CONTEXT_RECORDS or (deadline is not None and touched % 256 == 0 and time.monotonic() > deadline):
+				return scores
+			weight, features = knowledge.record(rid)
+			for text in features:
+				if text.startswith(prefix):
+					scores[text] = scores.get(text, 0.0) + math.log1p(weight) * value
+	return scores
+
