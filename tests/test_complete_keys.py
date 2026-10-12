@@ -336,3 +336,21 @@ def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
 	finally:
 		session.close()
+
+
+# ---------------------------------------------------------------- fish
+
+def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
+	env, home = home
+	pre = "bind \\cr 'commandline -r FISHPREV'"
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		session.send('\x15')
+		assert printed(session, 'ls\x12') == 'FISHPREV'
+	finally:
+		session.close()
