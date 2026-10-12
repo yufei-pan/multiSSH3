@@ -50,6 +50,8 @@ Each later sub-project gets its own spec → plan → implementation cycle.
 | Performance | Observed, not gated. ~100 ms per TAB acceptable for now. Safety deadlines exist only to protect the prompt |
 | Quality | Replay evaluation of keystroke savings and candidate rank is the primary metric; a TAB that alters or deletes operator-typed text must never occur |
 | Python floor | Same as multiSSH3/cas-toolbox (`>=3.6` syntax: no walrus, no dataclasses) |
+| Shell test matrix | Docker images: modern (Debian trixie) and legacy (Rocky Linux 8 + EPEL). Tested floors: bash 4.4, zsh 5.5, fish 3.3, Python 3.6. Inside the matrix, a missing shell is a failure, not a skip |
+| rc-file safety | Installed rc blocks source the glue only if it is readable and discard its stderr, so a broken or missing glue file can never print in a new shell |
 
 ## Context (existing code this builds on)
 
@@ -72,6 +74,7 @@ Measured on the development machine (Python 3.13): bare `python3 -I -S` startup 
 | `multiSSH3.py` | Adds `--completion` option (lazy-imports `mssh_complete`) and public `expand_hostnames_local()` |
 | `setup.py` | `py_modules=['multiSSH3', 'mssh_complete']`; console script `mssh-complete=mssh_complete:main` |
 | `tests/` | New test modules for the engine, index, invariants, evaluation and real-shell integration |
+| `tests/shells/` | Dockerfiles for the modern and legacy shell images, and `run_matrix.sh` |
 | `README.md` | New "Autocomplete" section |
 | `cas-toolbox/pyproject.toml` (separate repo, release step) | Add `mssh-complete = "mssh_complete:main"` to `[project.scripts]` and bump the `multissh3` pin |
 
@@ -295,7 +298,8 @@ The glue calls `mssh-complete query` if `mssh-complete` is on `PATH` when the gl
 
 - `mssh --completion bash|zsh|fish` prints the glue to stdout.
 - `mssh --completion install [SHELL]` detects the shell from the parent process (`/proc/<ppid>/comm`, falling back to `$SHELL`) unless given, writes the files below, and prints every path it wrote or changed. It is idempotent and refuses to overwrite a file it did not write (files carry a marker line with the glue version).
-- `mssh --completion uninstall [SHELL]` removes exactly what install wrote, including marked rc-file blocks.
+- `mssh --completion uninstall [SHELL]` removes exactly what install wrote, including marked rc-file blocks, leaving the rc file byte-for-byte as it was before install.
+- Marked rc-file blocks are fail-safe: bash `[ -r F ] && . F 2>/dev/null`, zsh `[[ -r F ]] && source F 2>/dev/null`. A missing, unreadable or broken glue file therefore produces no output and no error in a new shell. The glue file itself only defines functions and registers completion when sourced; it runs no Python and no external commands at shell start.
 - Locations:
   - bash with bash-completion: `${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}/completions/` — file `mssh`, plus symlinks for `mssh3`, `multissh`, `multissh3`, `multiSSH3` (bash-completion lazy-loads by command name; no shell-startup cost).
   - bash without bash-completion: `${XDG_DATA_HOME:-$HOME/.local/share}/multiSSH3/completion.bash`, plus a marked `source` block appended to `~/.bashrc` (sourcing a small file, no Python at shell start).
@@ -344,7 +348,7 @@ A benchmark script (not a unit test), `tests/bench_complete.py`, generates a 10k
 
 ## Testing
 
-pytest, plain `test_*` functions, in `tests/`. zsh and fish tests are skipped when the shell is not installed.
+pytest, plain `test_*` functions, in `tests/`. On a developer machine, real-shell tests for a shell that is not installed are skipped so the local loop stays fast; the Docker shell matrix (below) is where every shell must run.
 
 - **Context parser:** table-driven cases covering `nargs='?'`, `-x=value`, `--`, quoted and unterminated commands, intermixed options, unknown options, the "dash inside COMMANDS" rule, and cursor positions in every slot. Oracle test: for complete generated lines, slot assignment matches what `multiSSH3.get_parser().parse_intermixed_args()` produces.
 - **Ranking:** synthetic fixtures for forward affinity, backtracking affinity, IDF down-weighting of universal features, backoff with no context, and host-group score aggregation.
@@ -355,8 +359,27 @@ pytest, plain `test_*` functions, in `tests/`. zsh and fish tests are skipped wh
   - the replay evaluation reports zero TABs that alter or delete operator-typed text on the synthetic datasets.
 - **Index:** NSV round-trip; lazy decoding touches only needed rows; staleness detected for each source kind; inline tail merge; scrub threshold triggers a rebuild; corrupt and truncated snapshots handled; atomic replacement; rebuild lock and stale-lock recovery; cache-dir agreement with `multiSSH3`.
 - **`multiSSH3.py` additions:** `expand_hostnames_local()` (ranges, env and env-file aliases, unresolved list, no DNS calls, no side effects on failure counters); `--completion` printing, install, uninstall (into a temporary `HOME`), and the missing-module hint.
-- **Real shells in a pty** (same harness as the design probe): bash with and without bash-completion; the probe's quoting and word-break cases; quote closed on a unique match; delegation using a deterministic fake command with its own registered completion function; timeout fallback (engine replaced by a sleeper) still yields filename completion within the deadline; no stray output on screen; installed glue adds no measurable shell-startup cost. zsh and fish equivalents where installed.
+- **Real shells in a pty** (same harness as the design probe): bash with and without bash-completion; the probe's quoting and word-break cases; quote closed on a unique match; delegation using a deterministic fake command with its own registered completion function; timeout fallback (engine replaced by a sleeper) still yields filename completion within the deadline; no stray output on screen; installed glue adds no measurable shell-startup cost. zsh and fish equivalents of each case.
+- **Shell start safety** (every shell, every matrix image): after `mssh --completion install`, a fresh interactive shell prints zero bytes beyond its prompt and exits 0. The same holds with the glue file deleted, made unreadable, or replaced with a syntax error, and with the engine missing or crashing. After `uninstall`, rc files are byte-for-byte identical to before install.
 - **Regression:** the existing suite (269 tests) keeps passing.
+
+### Docker shell matrix
+
+Real-shell behavior differs across shell and bash-completion versions, and the development machine has only bash. The matrix runs the shell-integration tests, the shell-start safety tests and the engine unit tests inside containers:
+
+| Image | bash | bash-completion | zsh | fish | Python |
+|---|---|---|---|---|---|
+| modern: `debian:trixie-slim` | 5.2.37 | 2.16 (`_comp_load`, `_comp_command_offset`) | 5.9 | 4.0.2 | 3.13.5 |
+| legacy: `rockylinux:8` + EPEL | 4.4.20 | 2.7 (`__load_completion`, `_command_offset`) | 5.5.1 | 3.3.1 | 3.6.8 (`python36`) |
+
+(Versions as available on 2026-10-11.)
+
+- `tests/shells/Dockerfile.modern` and `tests/shells/Dockerfile.legacy` install the shells, bash-completion, Python and a pytest that supports the image's Python (pytest 7.0.x for 3.6).
+- `tests/shells/run_matrix.sh` builds the images (cached by Docker), then runs the tests in each with the repository bind-mounted read-only and `HOME` set to a fresh temporary directory, so nothing touches the host's shell configuration.
+- Inside the matrix, `MSSH_REQUIRE_SHELLS=bash,zsh,fish` turns any "shell not installed" skip into a failure, so zsh and fish support cannot pass without being run.
+- "bash without bash-completion" runs in both images by not loading bash-completion.
+- The matrix must pass before any change to glue, install or the protocol is merged; for engine-only changes the local suite is enough.
+- Shell versions older than the legacy image (e.g. bash 4.2 on EL7) are best effort and not tested.
 
 ## Out of scope for SP1
 
