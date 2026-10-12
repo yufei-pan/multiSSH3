@@ -2712,8 +2712,60 @@ def _quote_command(command):
 		return "'"
 	return None
 
+def simulate_ghost(engine, before, intended, quoted=False, ahead='', shell='bash', tab=True):
+	'''
+	Simulate an operator typing intended after before (nothing behind the cursor) with grey suggestions.
+
+	At each position the operator takes the suggestion when it is what they mean: all of it when the
+	rest of their line starts with it (ahead is what they would type after the slot), else its first
+	word when that matches; otherwise, with tab, they press TAB when bash's TAB would insert what they
+	mean (as simulate_slot's bash policy), else they type a character.
+
+	Returns:
+		dict: keys, chars, visited, shown (positions with a suggestion), divergent (shown but not
+			what the operator means), altered (TAB candidates not extending what was typed: must stay 0)
+	'''
+	result = {'keys': 0, 'chars': len(intended), 'visited': 0, 'shown': 0, 'divergent': 0, 'altered': 0}
+	target = intended + ('"' if quoted else '') + ahead
+	position = 0
+	while position < len(intended):
+		ghost = engine.suggest(Request(shell, before + intended[:position], '', ''))
+		result['visited'] += 1
+		if ghost is not None:
+			result['shown'] += 1
+			remaining = target[position:]
+			word = ghost.text.split(' ', 1)[0] if not ghost.text.startswith(' ') else ''
+			if remaining.startswith(ghost.text):
+				result['keys'] += 1
+				position += len(ghost.text)
+				continue
+			if word and remaining.startswith(word):
+				result['keys'] += 1
+				position += len(word)
+				continue
+			result['divergent'] += 1
+		if tab:
+			typed = intended[:position]
+			response = engine.query(Request('zsh', before + typed, '', typed))
+			result['altered'] += sum(1 for candidate in response.candidates if not candidate.text.startswith(typed))
+			inserted, suffix = _tab(response.candidates, typed, 'bash', quoted, 'nospace' in response.directives)
+			if inserted and intended[position:].startswith(inserted):
+				result['keys'] += 1
+				position += len(inserted)
+				if suffix and position < len(intended):
+					result['keys'] += 1
+				continue
+		result['keys'] += 1
+		position += 1
+	return result
+
 def slot_cases(entry):
-	'''(slot, before, after, intended, quoted) cases to replay for one history entry.'''
+	'''
+	(slot, before, after, intended, quoted, ahead) cases to replay for one history entry.
+
+	ahead is how the positional slots after this one read when nothing follows the cursor yet
+	(the grey suggestions' continuation), '' when they are not suggested.
+	'''
 	import shlex
 	options = [(option, value, name) for (option, value), name in zip(entry.options, entry.option_texts) if option.dest not in PASSWORD_DESTS]
 	option_texts = [name if value is None else '{}={}'.format(name, shlex.quote(value)) for option, value, name in options]
@@ -2728,22 +2780,25 @@ def slot_cases(entry):
 		quoted_commands.append(quote + command + quote)
 	head = ' '.join(['mssh'] + option_texts) + ' '
 	tail = (' ' + ' '.join(quoted_commands)) if quoted_commands else ''
+	first_command = (' ' + quoted_commands[0]) if quoted_commands else ''
+	plain = not any(option.dest in ('file', 'file_sync', 'gather_mode', 'ipmi') for option, _, _ in options)
 	cases = []
 	if entry.hosts and not any(char in entry.hosts for char in ' \'"\\$`'):
-		cases.append(('hosts', head, '', entry.hosts, False))
+		cases.append(('hosts', head, '', entry.hosts, False, first_command if plain else ''))
 		if tail:
-			cases.append(('hosts-back', head, tail, entry.hosts, False))
+			cases.append(('hosts-back', head, tail, entry.hosts, False, ''))
 		if commands and _quote_command(commands[0]) == '"':
-			cases.append(('command', head + entry.hosts + ' "', '', commands[0], True))
+			cases.append(('command', head + entry.hosts + ' "', '', commands[0], True, ''))
 	for number, (_, value, name) in enumerate(options):
 		others = ' '.join(['mssh'] + option_texts[:number] + option_texts[number + 1:]) + ' '
 		rest = (' ' + entry.hosts + tail) if entry.hosts else ''
-		cases.append(('option', others + '-', rest, name[1:], False))
+		cases.append(('option', others + '-', rest, name[1:], False, ''))
 		if value and not any(char in value for char in ' \'"\\$`\t'):
-			cases.append(('value', others + name + ' ', rest, value, False))
+			ahead = ((' ' + entry.hosts) if entry.hosts else '') + first_command if plain else ''
+			cases.append(('value', others + name + ' ', rest, value, False, ahead))
 	return cases
 
-def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked')):
+def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost')):
 	'''
 	Replay history lines in time order: each entry is typed with only the entries before it known.
 
@@ -2754,7 +2809,8 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked')):
 		limit (int): Replay at most this many of the newest entries
 
 	Returns:
-		dict: (policy, slot) -> totals of simulate_slot results plus 'cases'
+		dict: (policy, slot) -> totals of simulate_slot (or, for the ghost policy, simulate_ghost)
+			results plus 'cases'
 	'''
 	entries = sorted((entry for entry in (parse_history_line(line, spec) for line in lines) if entry is not None), key=lambda entry: entry.ts)
 	replay = [number for number, entry in enumerate(entries) if entry.ts >= since][-limit:] if limit else []
@@ -2767,10 +2823,20 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked')):
 	for number in replay:
 		entry = entries[number]
 		engine = Engine(spec, [memory])
-		for slot, before, after, intended, quoted in slot_cases(entry):
+		for slot, before, after, intended, quoted, ahead in slot_cases(entry):
 			if not intended:
 				continue
 			for policy in policies:
+				if policy == 'ghost':
+					# suggestions need the cursor at the end of the line: replay the slot typed last
+					if slot in ('hosts-back', 'option'):
+						continue
+					result = simulate_ghost(engine, before, intended, quoted, ahead)
+					total = totals.setdefault((policy, slot), {'cases': 0, 'keys': 0, 'chars': 0, 'visited': 0, 'shown': 0, 'divergent': 0, 'altered': 0})
+					total['cases'] += 1
+					for key in ('keys', 'chars', 'visited', 'shown', 'divergent', 'altered'):
+						total[key] += result[key]
+					continue
 				result = simulate_slot(engine, before, after, intended, quoted, policy)
 				total = totals.setdefault((policy, slot), {'cases': 0, 'keys': 0, 'chars': 0, 'top1': 0, 'top3': 0,
 					'mrr': 0.0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0})
@@ -2785,7 +2851,9 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked')):
 	return totals
 
 def format_report(totals):
-	'''The evaluation as a text table.'''
+	'''The evaluation as text tables: TAB policies, then grey suggestions.'''
+	ghost = {key: total for key, total in totals.items() if key[0] == 'ghost'}
+	totals = {key: total for key, total in totals.items() if key[0] != 'ghost'}
 	lines = ['{:7} {:10} {:>6} {:>7} {:>6} {:>6} {:>6} {:>9} {:>8} {:>7}'.format(
 		'policy', 'slot', 'cases', 'saved', 'top1', 'top3', 'mrr', 'divergent', 'altered', 'suffix')]
 	for (policy, slot), total in sorted(totals.items()):
@@ -2794,6 +2862,13 @@ def format_report(totals):
 			policy, slot, total['cases'], 1 - float(total['keys']) / (total['chars'] or 1),
 			float(total['top1']) / cases, float(total['top3']) / cases, total['mrr'] / cases,
 			float(total['divergent']) / (total['visited'] or 1), total['altered'], total['suffix_cost']))
+	if ghost:
+		lines.append('')
+		lines.append('{:7} {:10} {:>6} {:>7} {:>7} {:>7}'.format('policy', 'slot', 'cases', 'saved', 'shown', 'wrong'))
+		for (policy, slot), total in sorted(ghost.items()):
+			lines.append('{:7} {:10} {:>6} {:>6.1%} {:>6.1%} {:>6.1%}'.format(policy, slot, total['cases'],
+				1 - float(total['keys']) / (total['chars'] or 1), float(total['shown']) / (total['visited'] or 1),
+				float(total['divergent']) / (total['shown'] or 1)))
 	return '\n'.join(lines)
 
 def synthetic_history(seed=1, entries=1500, start=1700000000):
