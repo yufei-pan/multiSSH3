@@ -1,6 +1,8 @@
 '''The terminal layer the picker and the editor draw with: keys, display width, raw mode.'''
+import fcntl
 import os
 import pty
+import struct
 import termios
 
 import pytest
@@ -92,6 +94,14 @@ def test_terminal_restores_the_mode(tty_pair):
 		term.write('drawn')
 	assert termios.tcgetattr(slave) == before
 	assert os.read(master, 100).endswith(b'drawn')
+
+
+def test_terminal_reads_its_size(tty_pair):
+	# the kernel writes a whole struct winsize: Python 3.14+ refuses a smaller buffer
+	master, slave, path = tty_pair
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 960, 600))
+	with mc.Terminal(path) as term:
+		assert term.size() == (30, 120)
 
 
 def test_terminal_joins_a_character_cut_between_writes(tty_pair):

@@ -2359,7 +2359,8 @@ class Terminal(object):
 		import struct
 		import termios
 		try:
-			rows, columns = struct.unpack('hh', fcntl.ioctl(self.fd, termios.TIOCGWINSZ, b'\0' * 4))
+			# a whole struct winsize: the kernel writes all of it (Python 3.14+ checks)
+			rows, columns, _, _ = struct.unpack('HHHH', fcntl.ioctl(self.fd, termios.TIOCGWINSZ, b'\0' * 8))
 			if rows > 0 and columns > 0:
 				return rows, columns
 		except OSError:
