@@ -4005,6 +4005,22 @@ def _write_glue(path, text, messages):
 	messages.append('wrote ' + path)
 	return True
 
+def _rc_block(text, begin):
+	'''
+	Where the block opened by begin is in text: (start, body start, body end, end), or None.
+
+	Its markers are whole lines anywhere in the file: the first line, CRLF line ends and a closing
+	marker without a final newline included.
+	'''
+	import re
+	head = re.search(r'(?m)^' + re.escape(begin) + r'[ \t]*\r?\n', text)
+	if head is None:
+		return None
+	tail = re.compile(r'(?m)^' + re.escape(RC_END) + r'[ \t]*(?:\r?\n|\Z)').search(text, head.end())
+	if tail is None:
+		return None
+	return head.start(), head.end(), tail.start(), tail.end()
+
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
 	try:
@@ -4014,14 +4030,14 @@ def _add_rc_block(rc, body, messages):
 		text = None
 	if text is not None:
 		for begin in (RC_BEGIN, RC_BEGIN_CREATED):
-			start = text.find('\n' + begin + '\n')
-			end = text.find('\n' + RC_END + '\n', start + 1)
-			if start < 0 or end < 0:
+			found = _rc_block(text, begin)
+			if found is None:
 				continue
-			if text[start + len(begin) + 2:end + 1] == body + '\n':
+			_, body_start, body_end, _ = found
+			if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
 				messages.append('{} already loads it'.format(rc))
 				return
-			text = text[:start + len(begin) + 2] + body + text[end:]
+			text = text[:body_start] + body + '\n' + text[body_end:]
 			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
 				f.write(text)
 			messages.append('updated the mssh block in ' + rc)
@@ -4038,11 +4054,14 @@ def _remove_rc_block(rc, messages):
 	except FileNotFoundError:
 		return
 	for begin in (RC_BEGIN_CREATED, RC_BEGIN):
-		start = text.find('\n' + begin + '\n')
-		end = text.find('\n' + RC_END + '\n', start + 1)
-		if start < 0 or end < 0:
+		found = _rc_block(text, begin)
+		if found is None:
 			continue
-		text = text[:start] + text[end + len(RC_END) + 2:]
+		start, _, _, end = found
+		# the line break install put before the block goes with it
+		head = text[:start]
+		head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
+		text = head + text[end:]
 		if begin == RC_BEGIN_CREATED and not text:
 			os.unlink(rc)
 			messages.append('removed ' + rc + ' (mssh had created it)')
