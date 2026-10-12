@@ -1519,7 +1519,402 @@ def load_for_query(directory, now):
 		spawn_rebuild(directory)
 	return index, tail
 
+#%% ------------ Engine ----------------
+PRIOR = 0.001              # score of a candidate that nothing in history supports
+GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most this many
+UNAVAILABLE_PENALTY = 0.5  # score factor for hosts mssh found unreachable
+SHELL_WEIGHT = 0.25        # weight of a shell history line next to an mssh history use
+MAX_CANDIDATES = 200
+MAGIC_STRINGS = ('#HOST#', '#HOSTNAME#', '#USER#', '#USERNAME#', '#ID#', '#I#', '#UUID#', '#RESOLVEDNAME#', '#IP#')
+COMPLETION_ACTIONS = ('bash', 'zsh', 'fish', 'install', 'uninstall')
+ENCODINGS = ('utf-8', 'latin-1', 'ascii', 'utf-16', 'cp1252')
+# characters bash would read specially in an unquoted word (globs are left alone: mssh takes ranges)
+_BASH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!')
+
+class Request(object):
+	'''A completion request: the shell, its capability flags, the line split at the cursor, the word to replace.'''
+	__slots__ = ('shell', 'shell_version', 'flags', 'before', 'after', 'word', 'history')
+
+	def __init__(self, shell, before, after='', word=None, shell_version='', flags=None, history=()):
+		self.shell = shell
+		self.shell_version = shell_version
+		self.flags = dict(flags or {})
+		self.before = before
+		self.after = after
+		self.word = word
+		self.history = list(history)
+
+class Candidate(object):
+	__slots__ = ('text', 'description', 'group', 'score')
+
+	def __init__(self, text, description='', group='', score=0.0):
+		self.text = text
+		self.description = description
+		self.group = group
+		self.score = score
+
+	def __repr__(self):
+		return 'Candidate({!r}, {!r}, {!r}, {:.4g})'.format(self.text, self.description, self.group, self.score)
+
+class Response(object):
+	'''
+	The answer to a request.
+
+	candidates are replacements for the request's word, best first. delegate is
+	(word index, prefix, words) when the shell should add its own completion of a remote
+	command. ghost (SP2) and diagnostics (SP3) are not filled in yet.
+	'''
+	__slots__ = ('context', 'candidates', 'directives', 'delegate', 'ghost', 'diagnostics')
+
+	def __init__(self, context=None):
+		self.context = context
+		self.candidates = []
+		self.directives = set()
+		self.delegate = None
+		self.ghost = None
+		self.diagnostics = []
+
+def shell_history_knowledge(lines, spec):
+	'''The shell's history as weak records: mssh lines like mssh history, other lines as local commands.'''
+	memory = MemoryKnowledge()
+	count = len(lines)
+	for position, line in enumerate(lines):
+		line = line.strip()
+		tokens = lex(line) if line else []
+		if not tokens:
+			continue
+		if os.path.basename(tokens[0].text) in MSSH_NAMES:
+			features = line_features(tokens[1:], spec)
+		else:
+			features = command_features(line)
+		if features:
+			memory.add(features, SHELL_WEIGHT * 0.998 ** (count - 1 - position))
+	return memory
+
+def _shell_word(request):
+	'''The request's word as the engine compares it: zsh and fish send it quoted as typed.'''
+	if request.word is None:
+		return None
+	if request.shell in ('zsh', 'fish'):
+		tokens = lex(request.word)
+		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
+	return request.word
+
+def _bash_escape(text):
+	return ''.join('\\' + char if char in _BASH_SPECIAL else char for char in text)
+
+class Engine(object):
+	'''Answers completion requests from parsed options, history knowledge and the host table.'''
+	def __init__(self, spec, knowledges=(), hosts=None, users=()):
+		self.spec = spec
+		self.knowledges = [knowledge for knowledge in knowledges if knowledge is not None]
+		self.hosts = hosts if hosts is not None else HostTable()
+		self.users = list(users)
+
+	def query(self, request, deadline=None):
+		context = parse_context(request.before, request.after, self.spec)
+		response = Response(context)
+		if context is None:
+			return response
+		if context.slot == SLOT_OPTION:
+			candidates = self._options(context, request.shell)
+		elif context.slot == SLOT_VALUE:
+			candidates = self._values(context, response, deadline)
+		elif context.slot == SLOT_HOSTS:
+			candidates = self._hosts(context.value, context, deadline)
+		else:
+			candidates = self._commands(context, response, deadline)
+		if request.flags.get('nosort') == '1':
+			response.directives.add('nosort')
+		response.candidates = self._frame(candidates, context, request)
+		return response
+
+	def _frame(self, candidates, context, request):
+		'''Turn slot values into replacements for the shell's word, best first, without duplicates.'''
+		word = _shell_word(request)
+		prefix = context.prefix
+		if word is None:
+			word = prefix
+		if not prefix.endswith(word):
+			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
+			return []
+		base = prefix[:len(prefix) - len(word)]
+		lead = prefix[:context.value_start]
+		out = []
+		seen = set()
+		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
+			full = lead + candidate.text
+			if not full.startswith(prefix) or full in seen:
+				continue
+			rest = full[len(prefix):]
+			if request.shell == 'bash':
+				if context.open_quote == '"' and any(char in rest for char in '"\\$`'):
+					continue
+				if context.open_quote in ("'", "$'") and "'" in rest:
+					continue
+				if not context.open_quote:
+					rest = _bash_escape(rest)
+			if '\t' in rest or '\n' in rest:
+				continue
+			seen.add(full)
+			out.append(Candidate(full[len(base):len(prefix)] + rest, candidate.description, candidate.group, candidate.score))
+			if len(out) >= MAX_CANDIDATES:
+				break
+		return out
+
+	def _options(self, context, shell):
+		word = context.prefix
+		used = {option.dest for option, _ in context.options if not option.repeat}
+		groups = {option.group for option, _ in context.options if option.group}
+		scores = score_features(self.knowledges, 'o:', context.features)
+		out = []
+		for option in self.spec.options:
+			if option.dest in used or (option.group and option.group in groups):
+				continue
+			score = scores.get('o:' + option.long, 0.0) + PRIOR
+			if shell == 'bash' and (word in ('', '-') or word.startswith('--')):
+				strings = [option.long]
+			elif shell == 'bash':
+				strings = [string for string in option.strings if not string.startswith('--')]
+			else:
+				strings = option.strings
+			for string in strings:
+				if string.startswith(word):
+					out.append(Candidate(string, option.help, 'options', score))
+		return out
+
+	def _values(self, context, response, deadline):
+		option = context.option
+		dest = option.dest
+		word = context.value
+		if dest in PASSWORD_DESTS:
+			response.directives.add('nodefault')
+			return []
+		lead = 'v:{}='.format(dest)
+		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
+			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline).items()]
+		if dest in PATH_DESTS:
+			response.directives.add('files')
+		elif dest == 'identity_file':
+			response.directives.add('files')
+			out.extend(self._key_files(word))
+		elif dest in USER_DESTS:
+			users = set(self.users)
+			if os.environ.get('USER'):
+				users.add(os.environ['USER'])
+			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if user.startswith(word))
+		elif dest == 'skip_hosts':
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts)))
+		elif dest == 'completion':
+			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if action.startswith(word))
+		elif dest == 'encoding':
+			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if name.startswith(word))
+		if option.default and option.default.startswith(word):
+			out.append(Candidate(option.default, 'default', 'defaults', PRIOR / 2))
+		return out
+
+	def _key_files(self, word):
+		directory = os.path.expanduser('~/.ssh')
+		try:
+			entries = os.listdir(directory)
+		except OSError:
+			return []
+		out = []
+		for name in sorted(entries):
+			if name.endswith('.pub') or not (name.startswith('id_') or name + '.pub' in entries):
+				continue
+			text = '~/.ssh/' + name
+			if text.startswith(word):
+				out.append(Candidate(text, 'key', 'keys', PRIOR))
+		return out
+
+	def _members(self, hosts_text):
+		'''The host names a hosts argument names, as far as the index knows them (aliases, number ranges).'''
+		members = set()
+		for word in split_hosts(hosts_text or ''):
+			word = word.rpartition('@')[2]
+			alias = self.hosts.alias_index(word)
+			if alias is not None:
+				members.update(self.hosts.alias_members(alias))
+			else:
+				members.update(expand_ranges(word))
+		return members
+
+	def _hosts(self, text, context, deadline, boost=frozenset()):
+		'''Candidates for a hosts argument whose text so far is text: complete its last host.'''
+		head, comma, segment = text.rpartition(',')
+		user, at, host_prefix = segment.rpartition('@')
+		lead = head + comma + user + at
+		scores = {}
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline).items():
+			scores[feature[2:]] = score
+		out = []
+		if not comma and not at:
+			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline).items():
+				if feature[2:] not in scores:
+					out.append(Candidate(feature[2:], 'used before', 'history', score))
+		aliases = set()
+		for number, name in self.hosts.aliases_with_prefix(host_prefix):
+			aliases.add(name)
+			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
+		names = set(self.hosts.names_with_prefix(host_prefix))
+		names.update(name for name in scores if name.startswith(host_prefix) and '[' not in name)
+		names -= aliases
+		unavailable = self.hosts.unavailable
+		def host_score(name):
+			score = scores.get(name, 0.0) + PRIOR
+			if name in boost:
+				score += 1.0
+			if name in unavailable:
+				score *= UNAVAILABLE_PENALTY
+			return score
+		def single(name):
+			return Candidate(lead + name, 'unreachable recently' if name in unavailable else '', 'hosts', host_score(name))
+		# host groups typed before, e.g. node[1-3]
+		for name, score in scores.items():
+			if '[' in name and name not in aliases:
+				out.append(Candidate(lead + name, 'used before', 'groups', score))
+		if len(names) <= GROUP_THRESHOLD:
+			out.extend(single(name) for name in names)
+			return out
+		covered = set()
+		for group_text, members in self.hosts.groups():
+			if group_text.startswith(host_prefix) and len(members) > 1 and names.issuperset(members):
+				covered.update(members)
+				out.append(Candidate(lead + group_text, '{} hosts'.format(len(members)), 'groups', sum(host_score(member) for member in members)))
+		rest = names - covered
+		if len(rest) <= GROUP_THRESHOLD:
+			out.extend(single(name) for name in rest)
+		else:
+			for group_text in compact_names(rest):
+				members = expand_ranges(group_text)
+				description = '{} hosts'.format(len(members)) if len(members) > 1 else ''
+				out.append(Candidate(lead + group_text, description, 'groups' if len(members) > 1 else 'hosts', sum(host_score(member) for member in members)))
+			used = sorted((name for name in names if scores.get(name)), key=lambda name: -scores[name])[:20]
+			out.extend(single(name) for name in used)
+		return out
+
+	def _commands(self, context, response, deadline):
+		word = context.prefix
+		out = []
+		if context.mode in ('sync', 'gather'):
+			response.directives.add('files')
+		if word.count('#') % 2 == 1:
+			at = word.rfind('#')
+			for magic in MAGIC_STRINGS:
+				if magic.startswith(word[at:]):
+					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
+		if context.mode in PATH_MODES:
+			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline).items():
+				out.append(Candidate(feature[2:], 'used before', 'history', score))
+		elif context.quoted:
+			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline).items():
+				out.append(Candidate(feature[2:], '', 'history', score))
+		elif context.command_words:
+			typed = context.command_words[:-1]
+			partial = context.command_words[-1]
+			if not typed:
+				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline).items():
+					out.append(Candidate(feature[2:], '', 'history', score))
+			else:
+				following = {}
+				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline).items():
+					words = [token.text for token in lex(feature[2:])]
+					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial):
+						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
+				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
+		if context.mode == 'plain' and context.command_words is not None:
+			response.delegate = (context.command_word_index, context.command_prefix, list(context.command_words))
+		return out
+
+#%% ------------ Protocol ----------------
+def parse_request(data):
+	'''
+	Parse a request: MSSHC1\\0shell\\0version\\0flags\\0before\\0after\\0word\\0 then history lines.
+
+	Raises:
+		ValueError: not a request of this protocol
+	'''
+	text = data.decode('utf-8', 'surrogateescape')
+	parts = text.split('\0', 7)
+	if len(parts) < 8 or parts[0] != PROTOCOL:
+		raise ValueError('not an {} request'.format(PROTOCOL))
+	flags = {}
+	for flag in parts[3].split():
+		key, _, value = flag.partition('=')
+		flags[key] = value
+	history = [line for line in parts[7].split('\n') if line.strip()]
+	return Request(parts[1], parts[4], parts[5], parts[6], parts[2], flags, history)
+
+def _clean(text):
+	return ' '.join(str(text).split())
+
+def format_response(response, nul=True):
+	'''
+	The response text: MSSHC1, a D line of directives, C lines (text\\tdescription\\tgroup), an X
+	line for delegation, then E, and a NUL unless nul is False.
+	'''
+	lines = [PROTOCOL]
+	if response.directives:
+		lines.append('D ' + ' '.join(sorted(response.directives)))
+	for candidate in response.candidates:
+		if safe_field(candidate.text) and '\t' not in candidate.text:
+			lines.append('C {}\t{}\t{}'.format(candidate.text, _clean(candidate.description), candidate.group))
+	if response.delegate is not None:
+		index, prefix, words = response.delegate
+		fields = [str(index), prefix] + list(words)
+		if all(safe_field(field) and '\t' not in field for field in fields):
+			lines.append('X ' + '\t'.join(fields))
+	lines.append('E')
+	return ('\n'.join(lines) + '\n' + ('\0' if nul else '')).encode('utf-8', 'surrogateescape')
+
+def answer(request, deadline=None, directory=Ellipsis, now=None):
+	'''
+	Answer a request from the index in directory: mssh's cache dir by default, None for no index
+	(degraded: options from mssh's parser, shell history, no ranking from mssh history).
+	'''
+	now = time.time() if now is None else now
+	if directory is Ellipsis:
+		directory = cache_dir()
+	index, tail = (None, []) if directory is None else load_for_query(directory, now)
+	knowledges = []
+	users = ()
+	if index is not None:
+		spec = ParserSpec.from_rows([index.row('spec', number) for number in range(index.count('spec'))])
+		knowledges.append(SnapshotKnowledge(index, now))
+		config = {row[0]: row[1:] for row in (index.row('config', number) for number in range(index.count('config'))) if row}
+		users = config.get('users', ())
+	else:
+		# degraded: no index, so options come from mssh's parser and history is not ranked
+		spec = spec_from_parser(_import_mssh().get_parser())
+	if tail:
+		memory = MemoryKnowledge()
+		memory.add_history(tail, spec, now)
+		knowledges.append(memory)
+	if request.history:
+		# fish lists its history newest first, the others oldest first
+		history = request.history[::-1] if request.shell == 'fish' else request.history
+		knowledges.append(shell_history_knowledge(history, spec))
+	return Engine(spec, knowledges, HostTable(index), users).query(request, deadline)
+
 #%% ------------ Command line ----------------
+def _cmd_query():
+	deadline = time.monotonic() + float(os.environ.get('MSSH_COMPLETE_SOFT_DEADLINE', '0.2'))
+	data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
+	try:
+		request = parse_request(data)
+	except ValueError as e:
+		_debug('bad request: {}'.format(e))
+		return 1
+	try:
+		response = answer(request, deadline)
+	except Exception as e:
+		_debug('query failed: {!r}'.format(e))
+		return 1
+	sys.stdout.buffer.write(format_response(response, nul=request.flags.get('nul', '1') != '0'))
+	sys.stdout.buffer.flush()
+	return 0
+
 def _cmd_rebuild(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
 	try:
@@ -1543,12 +1938,14 @@ def _cmd_rebuild(args):
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv
 	command = argv[0] if argv else ''
+	if command == 'query':
+		return _cmd_query()
 	if command == 'rebuild':
 		return _cmd_rebuild(argv[1:])
 	if command in ('-V', '--version'):
 		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
 		return 0
-	print('usage: mssh-complete rebuild', file=sys.stderr)
+	print('usage: mssh-complete query | rebuild', file=sys.stderr)
 	return 2
 
 if __name__ == '__main__':
