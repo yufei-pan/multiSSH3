@@ -128,6 +128,35 @@ def test_bash_ctrl_r_on_other_lines_calls_a_previous_shell_command(home, where):
 		session.close()
 
 
+def test_bash_picker_leaves_keys_typed_after_the_choice(home):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12\rXYZ')
+		time.sleep(1)
+		assert words(printed(session, '')) == PICKED + ['XYZ']
+	finally:
+		session.close()
+
+
+def test_bash_ctrl_r_keeps_the_last_argument(home):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('true lastarg\r')
+		time.sleep(0.3)
+		session.send('mssh x\x12')
+		session.read_until(b'hosts', 10)
+		session.send('\x1b')
+		time.sleep(0.3)
+		session.send('\x15echo "[$_]"\r')
+		assert '[lastarg]' in session.read_until(b'[lastarg]', 10)
+	finally:
+		session.close()
+
+
 def test_bash_vi_mode_ctrl_r(home):
 	env, home = home
 	pre = 'set -o vi\nbind -m vi-insert -x \'"\\C-x\\C-p": printf "@@LINE[%s]@@\\n" "$READLINE_LINE"\''
@@ -147,7 +176,61 @@ def test_bash_vi_mode_ctrl_r(home):
 # ---------------------------------------------------------------- plain bash: the mssh line editor
 
 def editor_session(env, home, **kwargs):
+	if bash_version(env) < 44:
+		pytest.skip('the mssh line editor needs bash 4.4 or later')
 	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash'), extra=FAKE_MSSH)
+
+
+def test_editor_needs_bash_4_4(home):
+	env, home = home
+	if bash_version(env) >= 44:
+		pytest.skip('the editor runs here')
+	# bash 4.2 redraws a wrapped line wrongly after every bind -x command: space stays a plain space
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'))
+	try:
+		session.send('bind -p | grep -F \'" ": \'\r')
+		assert '" ": self-insert' in session.read_until(b'self-insert', 10)
+	finally:
+		session.close()
+
+
+def test_editor_keys_after_ctrl_r_go_to_the_picker_then_the_editor(home):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12\rXYZ')
+		time.sleep(1)
+		assert words(printed(session, '')) == PICKED + ['XYZ']
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+def test_editor_runs_pasted_lines_in_order(home):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh host1 uptime\rmssh host2 uptime\r')
+		output = session.read_until(b'@@RAN[host2', 15) + session.read_until(b']@@', 5)
+		assert '@@RAN[host1 uptime]@@' in output and '@@RAN[host2 uptime]@@' in output
+		assert output.index('@@RAN[host1 uptime]@@') < output.index('@@RAN[host2 uptime]@@')
+		assert 'not found' not in output
+	finally:
+		session.close()
+
+
+def test_editor_space_keeps_the_last_argument(home):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('true lastarg\r')
+		time.sleep(0.5)
+		session.send('echo "[$_]"\r')
+		assert '[lastarg]' in session.read_until(b'[lastarg]', 10)
+	finally:
+		session.close()
 
 
 def test_editor_shows_and_accepts_the_suggestion(home):
@@ -334,6 +417,19 @@ def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15\x12aa\x12\r')
 		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+	finally:
+		session.close()
+
+
+def test_zsh_picker_leaves_keys_typed_after_the_choice(home):
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12\rXYZ')
+		time.sleep(1)
+		assert words(printed(session, '')) == PICKED + ['XYZ']
 	finally:
 		session.close()
 

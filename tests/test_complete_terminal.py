@@ -44,11 +44,6 @@ def test_ghost_style(term, style):
 	assert mc.ghost_style(term) == style
 
 
-@pytest.mark.parametrize('data, cut', [(b'ab', 0), (b'a\xc3', 1), (b'\xe6\xbc', 2), ('é'.encode('utf-8'), 0), (b'\xf0\x9f\x98', 3), (b'', 0)])
-def test_incomplete_utf8(data, cut):
-	assert mc._incomplete_utf8(data) == cut
-
-
 @pytest.fixture
 def tty_pair():
 	master, slave = pty.openpty()
@@ -62,7 +57,31 @@ def test_terminal_keeps_keys_typed_before_it_started(tty_pair):
 	master, slave, path = tty_pair
 	os.write(master, b'xy')
 	with mc.Terminal(path) as term:
-		assert [name for name, _ in term.read_keys(timeout=1)] == ['x', 'y']
+		assert [term.read_key(timeout=1)[0], term.read_key(timeout=1)[0]] == ['x', 'y']
+
+
+def test_terminal_reads_one_key_and_leaves_the_rest_to_the_shell(tty_pair):
+	master, slave, path = tty_pair
+	os.write(master, b'a\x1b[Ab\xc3\xa9\x1bf\x1b\x1b[Ccd')
+	with mc.Terminal(path) as term:
+		assert term.read_key(timeout=1) == ('a', b'a')
+		assert term.has_input()
+		assert term.read_key(timeout=1) == ('up', b'\x1b[A')
+		assert term.read_key(timeout=1) == ('b', b'b')
+		assert term.read_key(timeout=1) == ('é', 'é'.encode('utf-8'))
+		assert term.read_key(timeout=1) == ('alt-f', b'\x1bf')
+		assert term.read_key(timeout=1) == ('alt-right', b'\x1b\x1b[C')
+		# what nobody read is still in the terminal, for whoever reads next
+		assert os.read(term.fd, 10) == b'cd'
+		assert not term.has_input()
+
+
+def test_terminal_tells_a_lone_esc_from_a_sequence(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b')
+		assert term.read_key(timeout=1) == ('esc', b'\x1b')
+		assert term.read_key(timeout=0.05) is None
 
 
 def test_terminal_restores_the_mode(tty_pair):
@@ -75,14 +94,22 @@ def test_terminal_restores_the_mode(tty_pair):
 	assert os.read(master, 100).endswith(b'drawn')
 
 
-def test_terminal_joins_a_character_cut_between_reads(tty_pair):
+def test_terminal_joins_a_character_cut_between_writes(tty_pair):
 	master, slave, path = tty_pair
 	with mc.Terminal(path) as term:
 		os.write(master, b'a\xc3')
-		assert term.read_keys(timeout=1) == [('a', b'a')]
+		assert term.read_key(timeout=1) == ('a', b'a')
 		os.write(master, b'\xa9')
-		assert term.read_keys(timeout=1) == [('é', 'é'.encode('utf-8'))]
-		assert term.read_keys(timeout=0.05) == []
+		assert term.read_key(timeout=1) == ('é', 'é'.encode('utf-8'))
+		assert term.read_key(timeout=0.05) is None
+
+
+def test_text_layout_counts_wrapping_and_wide_characters():
+	assert mc.text_layout('abc', 5) == (0, 3)
+	assert mc.text_layout('abcde', 5) == (0, 5)
+	assert mc.text_layout('abcdef', 5) == (1, 1)
+	assert mc.text_layout('abcd漢', 5) == (1, 2)
+	assert mc.text_layout('\x1b[1mab', 5) == (0, 2)
 
 
 def test_grid_wraps_wide_characters_and_restores_the_cursor():

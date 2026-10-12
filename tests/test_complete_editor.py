@@ -144,11 +144,37 @@ def test_tab_with_nothing_to_insert_opens_the_slot_menu():
 	assert opened == [True, False]
 
 
-def test_run_replays_the_ending_key_and_everything_typed_after_it():
+def test_run_hands_back_the_ending_key_and_leaves_later_keys_unread():
 	term = FakeTerminal(['g', 'x\x1b[Ayz'])
 	edit = editor()
-	assert edit.run(term, '$ ', '\x1b[2m') == ('pass', b'\x1b[Ayz')
+	assert edit.run(term, '$ ', '\x1b[2m') == ('pass', b'\x1b[A')
 	assert edit.text == 'mssh gx'
+	assert [name for name, _ in term.queue] == ['y', 'z']
+
+
+def test_keys_typed_after_ctrl_r_reach_the_picker_then_the_editor():
+	term = FakeTerminal(['\x12\rXY\r'])
+
+	def pick(text, cursor, slot_only):
+		picker = mc.Picker([mc.PickItem('gpu01')], [], 'hosts')
+		assert picker.run(term) == 'choose'
+		return text + 'gpu01 ', len(text) + 6
+	edit = editor(pick=pick)
+	assert edit.run(term, '$ ', None) == ('pass', b'\r')
+	assert edit.text == 'mssh gpu01 XY'
+
+
+def test_no_suggestion_is_asked_while_more_keys_wait():
+	calls = []
+	edit = editor(suggest=suggester(calls))
+	edit.run(FakeTerminal(['gpu', '\r']), '$ ', None)
+	assert calls == ['mssh ', 'mssh gpu']
+
+
+def test_an_accept_key_in_a_burst_still_takes_the_suggestion():
+	edit = editor()
+	assert edit.run(FakeTerminal(['gp\x1b[C\r']), '$ ', None) == ('pass', b'\r')
+	assert edit.text == 'mssh gpu[01-16] "nvidia-smi"'
 
 
 def test_draw_shows_grey_text_and_puts_the_cursor_after_the_typed_text():

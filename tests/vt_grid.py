@@ -138,10 +138,14 @@ class Grid(object):
 
 
 class FakeTerminal(object):
-	'''What the picker and the editor need from a Terminal, drawing into a Grid; keys are scripted batches.'''
-	def __init__(self, batches, rows=24, columns=80, grid=None):
+	'''
+	What the picker and the editor need from a Terminal, drawing into a Grid. Keys come in scripted
+	bursts (what the operator typed at once), one key per read; queue holds the burst's unread keys.
+	'''
+	def __init__(self, bursts, rows=24, columns=80, grid=None):
 		self.grid = grid or Grid(rows, columns)
-		self.batches = list(batches)
+		self.bursts = list(bursts)
+		self.queue = []
 
 	def size(self):
 		return self.grid.rows, self.grid.columns
@@ -149,9 +153,14 @@ class FakeTerminal(object):
 	def write(self, text):
 		self.grid.feed(text)
 
-	def read_keys(self, timeout=None):
+	def read_key(self, timeout=None):
 		import mssh_complete as mc
-		if not self.batches:
-			raise AssertionError('the program read more keys than the test scripted')
-		batch = self.batches.pop(0)
-		return mc.decode_keys(batch.encode('utf-8') if isinstance(batch, str) else batch)
+		if not self.queue:
+			if not self.bursts:
+				raise AssertionError('the program read more keys than the test scripted')
+			burst = self.bursts.pop(0)
+			self.queue = mc.decode_keys(burst.encode('utf-8') if isinstance(burst, str) else burst)
+		return self.queue.pop(0)
+
+	def has_input(self):
+		return bool(self.queue)

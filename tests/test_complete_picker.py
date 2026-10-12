@@ -101,9 +101,9 @@ def test_run_shows_the_rows_while_open():
 	seen = []
 
 	class Watching(FakeTerminal):
-		def read_keys(self, timeout=None):
+		def read_key(self, timeout=None):
 			seen.append(grid.lines())
-			return FakeTerminal.read_keys(self, timeout)
+			return FakeTerminal.read_key(self, timeout)
 
 	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(Watching(['\x1b'], grid=grid)) == 'cancel'
 	assert ' hosts ' in seen[0][1] and 'gpu01' in seen[0][2] and 'gpu02' in seen[0][3]
@@ -117,11 +117,30 @@ def test_run_at_the_bottom_scrolls_and_keeps_the_column():
 	assert grid.line(grid.cursor[0]) == '$ mssh gp'
 
 
-def test_run_redraws_the_prompt_bash_cleared():
+def test_run_redraws_the_line_bash_cleared_and_ends_at_its_start():
 	grid = Grid(24, 80)
-	assert mc.Picker(items('gpu01'), [], 'hosts').run(FakeTerminal(['\x1b'], grid=grid), '$ mssh gp x', 10) == 'cancel'
+	assert mc.Picker(items('gpu01'), [], 'hosts').run(FakeTerminal(['\x1b'], grid=grid), '$ mssh gp x', '$ mssh gp') == 'cancel'
 	assert grid.line(0) == '$ mssh gp x'
-	assert grid.cursor == (0, 9)
+	assert grid.cursor == (0, 0)
+
+
+def test_run_on_a_wrapped_line_opens_below_all_of_it():
+	grid = Grid(24, 20)
+	seen = []
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append((grid.lines(), grid.cursor))
+			return FakeTerminal.read_key(self, timeout)
+
+	line = '$ mssh gpu[01-16] nvidia-smi -q'
+	assert mc.Picker(items('gpu01'), [], 'hosts').run(Watching(['\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
+	shown, cursor = seen[0]
+	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
+	assert ' hosts ' in shown[2] and 'gpu01' in shown[3]
+	assert cursor == (0, 18)
+	assert grid.lines()[:3] == ['$ mssh gpu[01-16] nv', 'idia-smi -q', '']
+	assert grid.cursor == (0, 0)
 
 
 def test_run_is_unavailable_on_a_tiny_terminal():
@@ -147,6 +166,15 @@ def test_a_choice_inside_an_open_quote_closes_it():
 	picker = mc.Picker(slot, history, title)
 	line, cursor = mc.apply_pick(req, picker, word, mc.parse_context(req.before, req.after, SPEC))
 	assert line == 'mssh gpu[01-16] "nvidia-smi" ' and cursor == len(line)
+
+
+def test_history_tab_never_offers_passwords():
+	history = HISTORY + [line(NOW, '-su -p=hunter2', 'gpu[01-16]', '"nvidia-smi"'), line(NOW, '-su --ipmi_password=s3cret', 'bmc1', '"power status"')]
+	shell = ['mssh -p hunter2 storage1 uptime', 'mssh --password=hunter2 storage1 w', 'mssh storage1 df']
+	_, _, offered, _ = mc.picker_items(request('mssh ', history=shell), engine(history), history, NOW)
+	texts = [item.text for item in offered]
+	assert 'mssh storage1 df' in texts
+	assert not [text for text in texts if 'hunter2' in text or 's3cret' in text]
 
 
 def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
@@ -176,5 +204,7 @@ def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
 	for data, term in ((pick, 'xterm'), (pick, 'dumb'), (b'not a request', 'xterm')):
 		result = run_engine(['pick'], data, dict(env, TERM=term))
 		assert (result.returncode, result.stdout, result.stderr) == (2, b'', b'')
-	edit = run_engine(['edit', 'mssh '], b'', env)
-	assert (edit.returncode, edit.stdout) == (3, b'')
+	# shell history that is not UTF-8 does not stop it either
+	for history in (b'', b'ls\n\xff\xfe\n'):
+		edit = run_engine(['edit', 'mssh '], history, env)
+		assert (edit.returncode, edit.stdout, edit.stderr) == (3, b'', b'')

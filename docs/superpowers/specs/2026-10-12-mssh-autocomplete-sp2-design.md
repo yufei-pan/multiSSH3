@@ -301,3 +301,8 @@ Implementing and testing SP2 (unit tests, the synthetic replay, real bash 4.2 / 
 | Suggestions | on mssh lines | the engine also refuses lines whose first word is not an mssh name | |
 | Index file | (format 2) | still `complete-index.v1.nsv`, format 2 inside | an old engine finds a format it cannot read and rebuilds, as the design says |
 | ble.sh query limit | 300 ms | `MSSH_COMPLETE_GHOST_TIMEOUT` (ms, default 300) | |
+| Reading keys (final review) | (not specified) | the picker and the editor read one key at a time; the editor asks for no suggestion while more keys wait (an accept key still asks) | keys typed after the key that ends them stay in the terminal for the shell, in order: a burst after Ctrl-R, pasted mssh lines, keys typed after a choice |
+| Editor bash floor (final review) | bash 4.2+ | bash 4.4+; the Ctrl-R picker still works from 4.2 | bash 4.2 redraws a wrapped line wrongly after every `bind -x` command, and the editor runs one on every space |
+| bash hook keys (final review) | (not specified) | the hook commands end with `"$_"` | bash sets `$_` to a command's last argument: `cd $_` keeps working |
+| History tab (final review) | whole past invocations | lines that give a password option (`-p`, `--password`, `-ip`, `--ipmi_password`) are left out | passwords are never offered |
+| Picker on a wrapped line (final review) | (not specified) | with the line redrawn (bash), the menu opens below all of its rows and the cursor ends at the line's start | where bash redraws the line after a `bind -x` command |

@@ -376,7 +376,7 @@ While you type an mssh line, the most likely rest of it shows in grey after the 
 
 - **zsh:** built in; with [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) loaded, mssh becomes its first strategy on mssh lines.
 - **bash with [ble.sh](https://github.com/akinomyoga/ble.sh):** built in, as ble.sh's first suggestion source.
-- **plain bash:** turn on the mssh line editor, which takes over after you type an mssh name and a space, and hands the line back to readline on any key it does not handle (↑, Ctrl-K, ...) or when you delete into `mssh `:
+- **plain bash (4.4 or later):** turn on the mssh line editor, which takes over after you type an mssh name and a space, and hands the line back to readline on any key it does not handle (↑, Ctrl-K, ...) or when you delete into `mssh `:
 
   ```bash
   mssh --completion install bash editor

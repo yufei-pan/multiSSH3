@@ -2322,7 +2322,6 @@ class Terminal(object):
 		self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
 		self._saved = None
 		self._handlers = {}
-		self._pending = b''
 
 	def __enter__(self):
 		import signal
@@ -2373,33 +2372,79 @@ class Terminal(object):
 			written = os.write(self.fd, data)
 			data = data[written:]
 
-	def read_keys(self, timeout=None):
-		'''The keys typed so far (waiting up to timeout seconds for the first, None: forever); [] on timeout.'''
+	def _byte(self, timeout):
 		import select
-		ready, _, _ = select.select([self.fd], [], [], timeout)
-		if not ready:
-			return []
-		data = self._pending + os.read(self.fd, 4096)
-		self._pending = b''
-		# a lone Esc may be the start of a sequence, and a character may be cut: wait for the rest
-		while data == b'\x1b' or _incomplete_utf8(data):
-			ready, _, _ = select.select([self.fd], [], [], 0.03)
-			if not ready:
-				break
-			data += os.read(self.fd, 4096)
-		cut = _incomplete_utf8(data)
-		if cut:
-			data, self._pending = data[:-cut], data[-cut:]
-		return decode_keys(data)
+		if not select.select([self.fd], [], [], timeout)[0]:
+			return None
+		return os.read(self.fd, 1) or None
 
-def _incomplete_utf8(data):
-	'''How many bytes at the end of data start a UTF-8 character that is not complete yet (0 if none).'''
-	for back in range(1, min(len(data), 3) + 1):
-		byte = data[-back]
-		if byte & 0xC0 != 0x80:
-			needed = 2 if byte & 0xE0 == 0xC0 else 3 if byte & 0xF0 == 0xE0 else 4 if byte & 0xF8 == 0xF0 else 1
-			return back if needed > back else 0
-	return 0
+	def has_input(self):
+		'''Whether more typed keys are waiting.'''
+		import select
+		return bool(select.select([self.fd], [], [], 0)[0])
+
+	def read_key(self, timeout=None):
+		'''
+		The next key typed, as (name, raw bytes) like decode_keys; None when timeout seconds pass first
+		(None: wait forever). Reads that key's bytes and no more: what was typed after it stays in the
+		terminal, in order, for whoever reads next (the shell, once the picker or the editor is done).
+		'''
+		data = self._byte(timeout)
+		if data is None:
+			return None
+		if data == b'\x1b':
+			data += self._escape()
+		else:
+			data += self._utf8_rest(data)
+		keys = decode_keys(data)
+		return keys[0] if len(keys) == 1 else ('unknown', data)
+
+	def _utf8_rest(self, lead):
+		'''The continuation bytes of a UTF-8 character that starts with lead.'''
+		byte = lead[0]
+		needed = 1 if byte & 0xE0 == 0xC0 else 2 if byte & 0xF0 == 0xE0 else 3 if byte & 0xF8 == 0xF0 else 0
+		rest = b''
+		for _ in range(needed):
+			more = self._byte(0.05)
+			if more is None:
+				break
+			rest += more
+		return rest
+
+	def _escape(self):
+		'''After Esc: the rest of an escape sequence, Alt + a key, or nothing (a lone Esc).'''
+		second = self._byte(0.03)
+		if second is None:
+			return b''
+		if second == b'\x1b':
+			# Esc Esc [ C: Alt + an arrow on some terminals
+			return second + self._escape()
+		if second == b'O':
+			return second + (self._byte(0.03) or b'')
+		if second != b'[':
+			return second + self._utf8_rest(second)
+		out = second
+		while True:
+			byte = self._byte(0.03)
+			if byte is None:
+				return out
+			out += byte
+			# the final byte; "[[A" (linux console F1) has one more
+			if 0x40 <= byte[0] <= 0x7E and out != b'[[':
+				return out
+
+def text_layout(text, width, row=0, column=0):
+	'''
+	Where the cursor is after text is written from (row, column) on a terminal width columns wide,
+	wrapping before a character that does not fit. column == width: the row is full and the terminal
+	has not wrapped yet.
+	'''
+	for char in strip_escapes(text):
+		size = char_width(char)
+		if column + size > width:
+			row, column = row + 1, 0
+		column += size
+	return row, column
 
 #%% ------------ Picker ----------------
 PICKER_ROWS = 10       # candidate rows the picker shows at most
@@ -2560,14 +2605,17 @@ class Picker(object):
 		lines.append(fit(bottom_left + status + horizontal * max(inner - text_width(status), 0) + bottom_right, width))
 		return lines
 
-	def run(self, term, prompt=None, column=1):
+	def run(self, term, line=None, before=None):
 		'''
-		Show the menu below the cursor's line and read keys until a choice or a cancel.
+		Show the menu below the line and read keys until a choice or a cancel.
 
 		Args:
 			term (Terminal): In raw mode (line feeds keep the column)
-			prompt (str): The prompt line to draw first when the shell cleared it (bash), else None
-			column (int): With prompt: the 1-based column of the cursor on that line
+			line (str): The line to draw first when the shell cleared it (bash): the prompt's last line
+				and the whole command line; the menu opens below all of it and the cursor ends at its
+				start, where bash redraws it. None: the line is on screen, the menu opens below the
+				cursor's row and the cursor ends where it was.
+			before (str): With line: its part before the cursor
 
 		Returns:
 			str: 'choose', 'cancel', or 'unavailable' when the terminal is too small
@@ -2576,21 +2624,42 @@ class Picker(object):
 		height = min(PICKER_ROWS, rows - 4)
 		if height < 1 or width < 20:
 			return 'unavailable'
-		if prompt is not None:
-			term.write('\r' + prompt + '\x1b[K\r' + ('\x1b[{}C'.format(column - 1) if column > 1 else ''))
+		up = 0
+		cursor = ''
+		if line is not None:
+			end_row, end_column = text_layout(line, width)
+			row, column = text_layout(before, width)
+			if column >= width:
+				row, column = row + 1, 0
+			out = '\r' + line + '\x1b[J'
+			if end_column >= width:
+				# the terminal waits to wrap until the next character: wrap now so moves are exact
+				out += '\r\n'
+				end_row += 1
+			term.write(out)
+			up = end_row
+			# while the menu is open the cursor shows where it is in the line
+			cursor = ('\x1b[{}A'.format(end_row - row) if end_row > row else '') + '\r' + ('\x1b[{}C'.format(column) if column else '')
 		# make room below the line (the screen may scroll), come back to the same column and save it
 		lines = height + 2
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		try:
+			draw = True
 			while True:
-				menu = self.render(width - 1, height)
-				term.write(''.join('\r\n' + line + '\x1b[K' for line in menu) + '\x1b8')
-				for name, _ in term.read_keys():
-					outcome = self.handle(name)
-					if outcome:
-						return outcome
+				if draw:
+					menu = self.render(width - 1, height)
+					term.write(''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
+				outcome = self.handle(term.read_key()[0])
+				if outcome:
+					return outcome
+				# keys already typed are handled before the menu is drawn again
+				draw = not term.has_input()
 		finally:
-			term.write('\x1b8\r\n\x1b[J\x1b8')
+			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+
+def _sets_password(words, spec):
+	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
+	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
 
 def picker_items(request, engine, history_lines, now=None):
 	'''
@@ -2630,7 +2699,7 @@ def picker_items(request, engine, history_lines, now=None):
 			continue
 		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
 		text = ' '.join([name] + parts)
-		if not safe_field(text) or '\t' in text:
+		if not safe_field(text) or '\t' in text or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		if text in seen:
 			seen[text][1] += 1
@@ -2646,7 +2715,7 @@ def picker_items(request, engine, history_lines, now=None):
 	for line in shell_lines:
 		line = line.strip()
 		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT:
+		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _sets_password(tokens[1:], engine.spec):
 			seen[line] = [len(entries), 1]
 			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
@@ -2741,7 +2810,8 @@ class LineEditor(object):
 
 	The editor owns the text after its prefix (the line it started with, "mssh "). handle() returns
 	None to keep editing or the bytes readline must replay when the editor hands the line back
-	(the key that ended it and any keys typed after it), or the action 'abandon'.
+	(the key that ended it; keys typed after it stay in the terminal for readline), or the action
+	'abandon'.
 
 	suggest(before) -> Ghost or None; complete(before) -> (candidate texts, word) where the texts
 	replace word at the end of before; pick(text, cursor, slot_only) -> (text, cursor) or None.
@@ -2755,6 +2825,8 @@ class LineEditor(object):
 		self.pick = pick
 		self.ghost = ''
 		self._ghost_for = None
+		# more typed keys are waiting (set by run): no suggestion is asked for until they are handled
+		self.busy = False
 
 	def refresh(self):
 		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
@@ -2763,6 +2835,10 @@ class LineEditor(object):
 			self._ghost_for = None
 			return
 		if self._ghost_for == self.text:
+			return
+		if self.busy:
+			# no stale suggestion meanwhile; the next refresh asks
+			self.ghost = ''
 			return
 		ghost = None
 		try:
@@ -2782,6 +2858,11 @@ class LineEditor(object):
 			self._ghost_for = self.text
 
 	def _accept(self, whole):
+		if self._ghost_for != self.text:
+			# typed in a burst: ask now, the operator wants the suggestion
+			busy, self.busy = self.busy, False
+			self.refresh()
+			self.busy = busy
 		if not self.ghost:
 			return False
 		if whole:
@@ -2900,16 +2981,9 @@ class LineEditor(object):
 		Where things go on screen: (rows used, cursor row, cursor column, column after the last
 		character), rows counted from the prompt's row, wrapped at width.
 		'''
-		def advance(row, column, chunk):
-			for char in strip_escapes(chunk):
-				size = char_width(char)
-				if column + size > width:
-					row, column = row + 1, 0
-				column += size
-			return row, column
-		row, column = advance(0, 0, prompt)
-		cursor_row, cursor_column = advance(row, column, self.text[:self.cursor])
-		end_row, end_column = advance(row, column, self.text + self.ghost)
+		row, column = text_layout(prompt, width)
+		cursor_row, cursor_column = text_layout(self.text[:self.cursor], width, row, column)
+		end_row, end_column = text_layout(self.text + self.ghost, width, row, column)
 		return end_row + 1, cursor_row, cursor_column, end_column
 
 	def draw(self, term, prompt, style):
@@ -2944,22 +3018,21 @@ class LineEditor(object):
 		Edit until the line is handed back.
 
 		Returns:
-			tuple: ('pass', bytes readline replays) or ('abandon', b'')
+			tuple: ('pass', the bytes of the key readline replays) or ('abandon', b''); keys typed after
+				that key were not read: readline reads them next
 		'''
 		self._row = 0
 		self.refresh()
 		self.draw(term, prompt, style)
 		while True:
-			keys = term.read_keys()
-			for number, (name, raw) in enumerate(keys):
-				outcome = self.handle(name, raw)
-				if outcome is not None:
-					action, replay = outcome
-					# keys typed after the one that ended the editor belong to readline
-					replay += b''.join(rest for _, rest in keys[number + 1:])
-					self.erase(term)
-					return action, replay
-			self.draw(term, prompt, style)
+			name, raw = term.read_key()
+			self.busy = term.has_input()
+			outcome = self.handle(name, raw)
+			if outcome is not None:
+				self.erase(term)
+				return outcome
+			if not self.busy:
+				self.draw(term, prompt, style)
 
 #%% ------------ Shell glue ----------------
 GLUE_MARK = 'MSSH_COMPLETE_GLUE'
@@ -3357,21 +3430,23 @@ elif [[ $- == *i* ]]; then
 			# take Ctrl-R only when its binding can be called back (and is not already ours)
 			if _mssh_complete_previous "$keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
 				printf -v "_mssh_complete_previous_${keymap//-/_}" '%s' "$_mssh_complete_found"
+				# "$_" last: bash sets $_ to a command's last argument, so it keeps the operator's $_
 				if [[ $keymap == emacs ]]; then
-					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs'
+					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs "$_"'
 				else
-					bind -m vi-insert -x '"\C-x\C-q": _mssh_complete_ctrl_r vi-insert'
+					bind -m vi-insert -x '"\C-x\C-q": _mssh_complete_ctrl_r vi-insert "$_"'
 				fi
 				_mssh_complete_arm "$keymap"
 			fi
 		done
-		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]]; then
-			# the mssh line editor, entered with a space after an mssh name; only over a plain space key
+		# the mssh line editor, entered with a space after an mssh name; only over a plain space key and
+		# from bash 4.4 on (bash 4.2 redraws a wrapped line wrongly after every bind -x command)
+		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]] && (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 			previous=$(bind -m emacs -p 2>/dev/null | grep -F '" ": ' || :)
 			_mssh_complete_space_previous=${previous#'" ": '}
 			case $_mssh_complete_space_previous in
 				self-insert|magic-space)
-					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space'
+					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space "$_"'
 					bind -m emacs '" ": "\C-x\C-t\C-x\C-y"'
 					;;
 			esac
@@ -4306,12 +4381,11 @@ def _cmd_pick():
 			return 2
 		picker = Picker(slot, history, title, now)
 		prompt = _prompt_from_flags(request.flags)
-		column = 1
+		line = before = None
 		if prompt is not None:
-			column = text_width(prompt + request.before) + 1
-			prompt += request.before + request.after
+			line, before = prompt + request.before + request.after, prompt + request.before
 		with Terminal() as term:
-			outcome = picker.run(term, prompt, column)
+			outcome = picker.run(term, line, before)
 	except Exception as e:
 		_debug('pick failed: {!r}'.format(e))
 		return 2
@@ -4340,7 +4414,10 @@ def _cmd_edit(args):
 	parser.add_argument('text')
 	options = parser.parse_args(args)
 	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
-	history = [line for line in sys.stdin.read().split('\n') if line.strip()] if not sys.stdin.isatty() else []
+	history = []
+	if not sys.stdin.isatty():
+		data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
+		history = [line for line in data.decode('utf-8', 'surrogateescape').split('\n') if line.strip()]
 	try:
 		engine = engine_for(Request('bash', options.text, '', '', history=history))
 		term = Terminal()
@@ -4373,7 +4450,7 @@ def _cmd_edit(args):
 			return None
 		picker = Picker(slot, [] if slot_only else items, title)
 		editor.erase(term)
-		outcome = picker.run(term, prompt + text, text_width(prompt + text[:cursor]) + 1)
+		outcome = picker.run(term, prompt + text, prompt + text[:cursor])
 		if outcome != 'choose':
 			return None
 		return apply_pick(request, picker, word, parse_context(request.before, request.after, engine.spec))
