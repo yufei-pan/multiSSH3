@@ -10,7 +10,7 @@ setup(
     author='Yufei Pan',
     author_email='pan@zopyr.us',
     url='https://github.com/yufei-pan/multiSSH3',
-    py_modules=['multiSSH3'],
+    py_modules=['multiSSH3', 'mssh_complete'],
     entry_points={
         'console_scripts': [
             'mssh=multiSSH3:main',
@@ -18,6 +18,7 @@ setup(
             'multissh=multiSSH3:main',
             'multissh3=multiSSH3:main',
             'multiSSH3=multiSSH3:main',
+            'mssh-complete=mssh_complete:main',
         ],
     },
     classifiers=[

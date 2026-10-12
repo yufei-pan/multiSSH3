@@ -1,0 +1,145 @@
+'''Drive real shells for the autocomplete tests: a pseudo-terminal session, or a direct call.'''
+import os
+import pty
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+ENGINE = [sys.executable, '-I', str(REPO / 'mssh_complete.py')]
+
+def require_shell(name):
+	'''The path of shell name; skip the test if it is missing, unless MSSH_REQUIRE_SHELLS lists it.'''
+	path = shutil.which(name)
+	if path is None:
+		required = [shell for shell in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(',') if shell]
+		if name in required:
+			pytest.fail('{} is required here (MSSH_REQUIRE_SHELLS) but not installed'.format(name))
+		pytest.skip('{} is not installed'.format(name))
+	return path
+
+def make_home(tmp_path, history_lines=()):
+	'''A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).'''
+	home = tmp_path / 'home'
+	runtime = tmp_path / 'runtime'
+	home.mkdir()
+	runtime.mkdir(mode=0o700)
+	(home / '.mssh_history').write_text(''.join(line + '\n' for line in history_lines))
+	env = {
+		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '5',
+	}
+	return env, home
+
+def build_index(env):
+	'''Build the index the engine will use for env, so a test does not wait for the first build.'''
+	subprocess.run(ENGINE + ['rebuild'], env=env, stdout=subprocess.DEVNULL, check=True, timeout=60)
+
+class Session(object):
+	'''An interactive shell on a pseudo-terminal.'''
+	def __init__(self, argv, env, cwd=None):
+		self.pid, self.fd = pty.fork()
+		if self.pid == 0:
+			if cwd:
+				os.chdir(str(cwd))
+			os.execvpe(argv[0], argv, env)
+		self.output = b''
+
+	def read_until(self, marker, timeout=10.0):
+		'''Read until marker (bytes) shows up after what was read so far; return the new output.'''
+		start = len(self.output)
+		end = time.monotonic() + timeout
+		while marker not in self.output[start:] and time.monotonic() < end:
+			ready, _, _ = select.select([self.fd], [], [], 0.05)
+			if ready:
+				try:
+					chunk = os.read(self.fd, 65536)
+				except OSError:
+					break
+				if not chunk:
+					break
+				self.output += chunk
+		return self.output[start:].decode('utf-8', 'replace')
+
+	def send(self, data):
+		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)
+
+	def line_after(self, typed, keys='\t', timeout=10.0):
+		'''Type typed, press keys, then return the command line as the test binding (Ctrl-X Ctrl-P) prints it.'''
+		self.send(typed + keys)
+		time.sleep(0.3)
+		self.send('\x18\x10')
+		text = self.read_until(b']@@', timeout)
+		start = text.rfind('@@LINE[')
+		end = text.find(']@@', start)
+		self.send('\x15')   # clear the line for the next case
+		return text[start + 7:end] if start >= 0 and end > start else None
+
+	def close(self):
+		try:
+			os.kill(self.pid, signal.SIGKILL)
+			os.waitpid(self.pid, 0)
+		except OSError:
+			pass
+		os.close(self.fd)
+
+BASH_TEST_RC = r'''
+PS1='@@READY@@ '
+bind -x '"\C-x\C-p": printf "@@LINE[%s]@@\n" "$READLINE_LINE"'
+{bash_completion}
+# a command with its own completion, for delegation tests
+_fakecmd() {{ COMPREPLY=($(compgen -W "alpha beta" -- "$2")); }}
+complete -F _fakecmd fakecmd
+# a command whose completion turns on filename quoting and offers nothing itself
+_fakefile() {{ compopt -o filenames; COMPREPLY=(); }}
+complete -F _fakefile fakefile
+[ -r {glue} ] && . {glue} 2>/dev/null
+{extra}
+'''
+
+ZSH_TEST_RC = r'''
+PS1='@@READY@@ '
+autoload -Uz compinit && compinit -u -D
+_mssh_test_print() {{ print -r -- "@@LINE[$BUFFER]@@" }}
+zle -N _mssh_test_print
+bindkey '^X^P' _mssh_test_print
+# a command with its own completion, for delegation tests
+_fakecmd() {{ compadd alpha beta }}
+compdef _fakecmd fakecmd
+[[ -r {glue} ]] && source {glue} 2>/dev/null
+'''
+
+def bash_session(home, env, glue, bash_completion=True, extra=''):
+	rc = home / 'test.bashrc'
+	loader = '. /usr/share/bash-completion/bash_completion 2>/dev/null' if bash_completion else ''
+	rc.write_text(BASH_TEST_RC.format(bash_completion=loader, glue=glue, extra=extra))
+	session = Session([require_shell('bash'), '--noprofile', '--rcfile', str(rc), '-i'], env, cwd=home)
+	session.read_until(b'@@READY@@')
+	return session
+
+def zsh_session(home, env, glue):
+	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue))
+	session = Session([require_shell('zsh'), '-i'], dict(env, ZDOTDIR=str(home)), cwd=home)
+	session.read_until(b'@@READY@@')
+	return session
+
+def fish_complete(env, glue, line):
+	'''Completions fish offers for line (complete -C), as (text, description) pairs.'''
+	fish = require_shell('fish')
+	# fakecmd: a command with its own completion, for delegation tests
+	script = 'complete -c fakecmd -f -a "alpha beta"; source {}; complete -C{}'.format(glue, _fish_quote(line))
+	output = subprocess.run([fish, '--no-config', '-c', script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	pairs = []
+	for row in output.stdout.decode('utf-8', 'replace').splitlines():
+		text, _, description = row.partition('\t')
+		pairs.append((text, description))
+	return pairs
+
+def _fish_quote(word):
+	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"

@@ -35,10 +35,10 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.27'
+version = '6.28'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-10-10'
+COMMIT_DATE = '2026-10-11'
 # TODO: Add terminal TUI
 
 # no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
@@ -1863,6 +1863,85 @@ def expand_hostnames(hosts):
 	if not isinstance(hosts, frozenset):
 		hosts = frozenset(hosts)
 	return __expand_hostnames(hosts)
+
+def expand_hostnames_local(hosts):
+	'''
+	Expand host strings without DNS or ssh config lookups.
+
+	Ranges, IPv4 ranges and env / env file aliases (recursively) are expanded like
+	expand_hostnames does. A name that is not an IP address, in the hosts file or an alias
+	is kept as it is and also listed as unresolved: only DNS or the ssh config could confirm it.
+	Nothing is printed and no failure is counted.
+
+	Args:
+		hosts (str or iterable): Host strings, each may hold several hosts separated by ","
+
+	Returns:
+		tuple: (expanded, unresolved), two lists in natural sort order. user@ prefixes are kept.
+	'''
+	if isinstance(hosts, str):
+		hosts = [hosts]
+	expanded = set()
+	unresolved = set()
+	# each alias is expanded once per user: shared and looping aliases cannot multiply the work
+	walked = set()
+	def walk(text, user, depth):
+		for token in _split_host_str(text):
+			token_user = user
+			if '@' in token:
+				token_user, token = token.split('@', 1)
+				token_user = token_user.strip() or user
+			token = token.strip()
+			if not token:
+				continue
+			if _IPV4_RANGE_RE.match(token):
+				names = __expandIPv4Address(frozenset([token]))
+			else:
+				names = __expand_hostname(token, validate=False)
+			for name in names:
+				name = name.strip().strip('$')
+				if not name:
+					continue
+				source = _local_hostname_source(name)
+				if source in ('env', 'env_file'):
+					# an alias loop expands to nothing
+					if depth < 32 and (name, token_user) not in walked:
+						walked.add((name, token_user))
+						value = os.environ.get(name) if source == 'env' else readEnvFromFile().get(name)
+						walk(value or '', token_user, depth + 1)
+					continue
+				full = '{}@{}'.format(token_user, name) if token_user else name
+				expanded.add(full)
+				if source is None:
+					unresolved.add(full)
+	for host in hosts:
+		walk(str(host), None, 0)
+	return sorted(expanded, key=_natural_sort_key), sorted(unresolved, key=_natural_sort_key)
+
+def compact_hostnames_local(names):
+	'''
+	Compact host names into range strings without DNS.
+
+	Like compact_hostnames, but the result is checked by expanding the ranges only, so names
+	are never resolved and nothing is printed. If the compacted form does not expand back to
+	exactly the names, the names are returned unchanged.
+
+	Args:
+		names (iterable): Host names, no aliases or ranges
+
+	Returns:
+		list: Range strings (or names) in natural sort order
+	'''
+	host_set = frozenset(name.strip() for name in names if name and name.strip())
+	if not host_set:
+		return []
+	compacted = __compact_hostnames(host_set)
+	back = set()
+	for text in compacted:
+		back.update(__expand_hostname(text, validate=False))
+	if back != host_set:
+		return sorted(host_set, key=_natural_sort_key)
+	return sorted(compacted, key=_natural_sort_key)
 
 # environment variables host expansion looked up since the last refresh, with the value seen (None: unset)
 _consulted_env = {}
@@ -4183,19 +4262,33 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 		argsList.append('--file_sync' if not shortend else '-fs')
 	return ' '.join(argsList)
 
-def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSeperated = False,**kwargs) -> str:
+def _typed_host_str(hosts):
+	'''The hosts argument as given, without expanding, validating or sorting it (sets are sorted).'''
+	if isinstance(hosts, str):
+		return hosts
+	if isinstance(hosts, (set, frozenset)):
+		hosts = sorted(hosts)
+	return ','.join(str(host) for host in hosts)
+
+def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSeperated = False,typed_hosts = False,**kwargs) -> str:
 	# Allow explicit kwargs to override base parameters when forwarding dicts.
 	hosts = kwargs.get('hosts', hosts)
 	commands = kwargs.get('commands', commands)
 	shortend = kwargs.get('shortend', shortend)
 	tabSeperated = kwargs.get('tabSeperated', tabSeperated)
-	hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
-	hostStr = formHostStr(hosts)
+	typed_hosts = kwargs.get('typed_hosts', typed_hosts)
+	if typed_hosts:
+		# the history keeps what was typed: aliases and ranges unexpanded, unresolvable names kept
+		hostStr = _typed_host_str(hosts) or 'EMPTY_HOSTS'
+	else:
+		hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
+		hostStr = formHostStr(hosts)
 	commandArgKwargs = dict(kwargs)
 	commandArgKwargs.pop('hosts', None)
 	commandArgKwargs.pop('commands', None)
 	commandArgKwargs.pop('shortend', None)
 	commandArgKwargs.pop('tabSeperated', None)
+	commandArgKwargs.pop('typed_hosts', None)
 	if commandArgKwargs.get('file'):
 		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
@@ -4227,6 +4320,7 @@ def record_command_history(kwargs):
 		historyKwargs.update(historyKwargs.pop('kwargs', None) or {})
 		historyKwargs['shortend'] = True
 		historyKwargs['tabSeperated'] = True
+		historyKwargs['typed_hosts'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
 		strCommand = getStrCommand(**historyKwargs)
 		# history can hold -p passwords, create it readable by the owner only
@@ -4820,6 +4914,7 @@ def get_parser():
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
 	parser.add_argument('--host_file', type=str,help=f'File containing list of hosts to run the command on, one host per line. Default:{DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
+	parser.add_argument('--completion', nargs='+', metavar='ARG', help='Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL]" / "uninstall [SHELL]" it for the current user')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
@@ -5020,11 +5115,28 @@ def set_global_with_args(args):
 		DEFAULT_HOST_FILE = args.host_file
 
 #%% ------------ Wrapper Block ----------------
+def _completion_command(values):
+	'''Run `mssh --completion ...` with mssh_complete, which ships next to this file.'''
+	try:
+		import mssh_complete
+	except ImportError:
+		here = os.path.dirname(os.path.abspath(__file__))
+		if here not in sys.path:
+			sys.path.insert(0, here)
+		try:
+			import mssh_complete
+		except ImportError:
+			eprint('Error: autocomplete needs mssh_complete.py next to {} (it ships with the multiSSH3 package)'.format(os.path.abspath(__file__)))
+			return 1
+	return mssh_complete.completion_command(values)
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
 	args = process_args(args)
+	if args.completion:
+		_exit_with_code(_completion_command(args.completion))
 	args = process_config_file(args)
 	args = process_commands(args)
 	args = process_keys(args)

@@ -1,0 +1,9 @@
+# Shell matrix image: CentOS 7, bash only (end of life: packages come from the vault and archives)
+FROM centos:7
+RUN sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#\?baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|' /etc/yum.repos.d/CentOS-*.repo \
+ && yum -y -q install python3 bash-completion which procps-ng \
+ && yum clean all \
+ && python3 -m pip install -q --disable-pip-version-check 'pip<22' \
+ && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1'
+# no C.UTF-8 here, and the C locale would hide bash 4.2's byte-counted COMP_POINT
+ENV LANG=en_US.UTF-8
