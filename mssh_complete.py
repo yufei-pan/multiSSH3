@@ -2835,8 +2835,9 @@ def expand_prompt(ps1, environ=None, now=None):
 		char = ps1[index]
 		if char == '\\' and index + 1 < len(ps1):
 			name = ps1[index + 1]
-			if ps1[index + 1:index + 4].isdigit() and len(ps1[index + 1:index + 4]) == 3:
-				out.append(chr(int(ps1[index + 1:index + 4], 8)))
+			digits = ps1[index + 1:index + 4]
+			if len(digits) == 3 and all(digit in '01234567' for digit in digits):
+				out.append(chr(int(digits, 8)))
 				index += 4
 				continue
 			if name in values:

@@ -252,6 +252,11 @@ def test_expand_prompt_does_what_bash_does_for_common_escapes():
 	assert text == '\x01\x1b[1m\x02ops:~/src src 4.2\x1b[0m{} $(date)'.format('#' if mc.os.geteuid() == 0 else '$')
 
 
+def test_expand_prompt_takes_only_octal_digits():
+	# as bash: \\128 and \\9ab stay as written, \\101 is A
+	assert mc.expand_prompt('\\128 \\9ab \\101$ ', {'HOME': '/h', 'PWD': '/h'}) == '\\128 \\9ab A$ '
+
+
 @pytest.mark.parametrize('raw, keyseq', [
 	(b'\x1b[A', '\\e[A'), (b'"\\', '\\"\\\\'), (b'\r', '\\C-m'), (b'\x7f', '\\C-?'),
 	('é'.encode('utf-8'), '\\303\\251'), (b'', ''),
