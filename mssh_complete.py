@@ -4029,6 +4029,19 @@ def _rc_block(text, begin):
 		return None
 	return head.start(), head.end(), tail.start(), tail.end()
 
+def _editor_on(rc):
+	'''Whether the mssh block in rc turns the mssh line editor on.'''
+	try:
+		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
+			text = f.read()
+	except OSError:
+		return False
+	for begin in (RC_BEGIN, RC_BEGIN_CREATED):
+		found = _rc_block(text, begin)
+		if found is not None:
+			return 'export MSSH_COMPLETE_EDITOR=1' in text[found[1]:found[2]].splitlines()
+	return False
+
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
 	try:
@@ -4097,7 +4110,8 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 	Install the glue for shell for the current user. Never overwrites a file mssh did not write.
 
 	Args:
-		editor (bool): bash only: also turn on the mssh line editor (MSSH_COMPLETE_EDITOR=1 in the rc block)
+		editor (bool): bash only: also turn on the mssh line editor (MSSH_COMPLETE_EDITOR=1 in the rc block);
+			an rc block that already turns it on keeps it on
 
 	Returns:
 		tuple: (exit code, list of messages saying what was done)
@@ -4120,6 +4134,10 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 		# always ends with status 0: a missing or broken file must not even change $? in a new shell
 		line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
 		body = line.format(quoted)
+		if shell == 'bash' and not editor and _editor_on(paths['rc']):
+			# installing again after an upgrade keeps what the operator turned on
+			editor = True
+			messages.append('kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)')
 		if editor and shell == 'bash':
 			body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
 		_add_rc_block(paths['rc'], body, messages)
