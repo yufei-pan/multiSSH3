@@ -378,6 +378,8 @@ It learns from an index of your history and hosts, kept in mssh's private cache 
 
 > Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded) and fish 3.3 to 4.0. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
 
+> With [ble.sh](https://github.com/akinomyoga/ble.sh) loaded, bash also shows grey suggestions while you type, taken from mssh's completion; → accepts one. Tested with the 2026-09-08 ble.sh nightly on bash 4.2 to 5.2.
+
 ## Options
 
 Here details the options for multiSSH3 6.02 @ 2025-11-10

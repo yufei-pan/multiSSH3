@@ -42,8 +42,9 @@ def build_index(env):
 	subprocess.run(ENGINE + ['rebuild'], env=env, stdout=subprocess.DEVNULL, check=True, timeout=60)
 
 class Session(object):
-	'''An interactive shell on a pseudo-terminal.'''
-	def __init__(self, argv, env, cwd=None):
+	'''An interactive shell on a pseudo-terminal. print_key makes the shell print its command line.'''
+	def __init__(self, argv, env, cwd=None, print_key='\x18\x10'):
+		self.print_key = print_key
 		self.pid, self.fd = pty.fork()
 		if self.pid == 0:
 			if cwd:
@@ -71,10 +72,10 @@ class Session(object):
 		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)
 
 	def line_after(self, typed, keys='\t', timeout=10.0):
-		'''Type typed, press keys, then return the command line as the test binding (Ctrl-X Ctrl-P) prints it.'''
+		'''Type typed, press keys, then return the command line as the test binding (print_key) prints it.'''
 		self.send(typed + keys)
 		time.sleep(0.3)
-		self.send('\x18\x10')
+		self.send(self.print_key)
 		text = self.read_until(b']@@', timeout)
 		start = text.rfind('@@LINE[')
 		end = text.find(']@@', start)
@@ -114,6 +115,44 @@ _fakecmd() {{ compadd alpha beta }}
 compdef _fakecmd fakecmd
 [[ -r {glue} ]] && source {glue} 2>/dev/null
 '''
+
+def require_blesh():
+	'''The ble.sh script named by MSSH_TEST_BLESH; skip without it, unless MSSH_REQUIRE_SHELLS lists blesh.'''
+	path = os.environ.get('MSSH_TEST_BLESH', '')
+	if not path or not os.path.isfile(path):
+		if 'blesh' in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
+			pytest.fail('ble.sh is required here (MSSH_REQUIRE_SHELLS) but MSSH_TEST_BLESH does not name it')
+		pytest.skip('ble.sh is not installed (set MSSH_TEST_BLESH to its ble.sh)')
+	return path
+
+# ble.sh waits for a second key after Ctrl-X (a prefix there): the print binding is Ctrl-T instead
+BLESH_TEST_RC = r'''
+[[ $- == *i* ]] && source {blesh} --noattach
+PS1='@@READY@@ '
+bind -x '"\C-t": printf "@@LINE[%s]@@\n" "$READLINE_LINE"'
+_fakecmd() {{ COMPREPLY=($(compgen -W "alpha beta" -- "$2")); }}
+complete -F _fakecmd fakecmd
+{glue_line}
+[[ ${{BLE_VERSION-}} ]] && ble-attach
+'''
+
+def blesh_session(home, env, glue=None):
+	'''An interactive bash running ble.sh, with the glue unless glue is None (ble.sh caches warmed first).'''
+	blesh = require_blesh()
+	require_shell('bash')
+	rc = home / 'blesh.bashrc'
+	glue_line = '[ -r {0} ] && . {0} 2>/dev/null'.format(glue) if glue else ''
+	rc.write_text(BLESH_TEST_RC.format(blesh=blesh, glue_line=glue_line))
+	env = dict(env, USER=env.get('USER') or 'mssh-test')
+	argv = ['bash', '--noprofile', '--rcfile', str(rc), '-i']
+	if not (home / '.cache' / 'blesh').exists():
+		# the first start builds ble.sh's caches and says so: keep that out of the session
+		warm = Session(argv, env, cwd=home, print_key='\x14')
+		warm.read_until(b'@@READY@@', timeout=60)
+		warm.close()
+	session = Session(argv, env, cwd=home, print_key='\x14')
+	session.read_until(b'@@READY@@', timeout=60)
+	return session
 
 def bash_session(home, env, glue, bash_completion=True, extra=''):
 	rc = home / 'test.bashrc'
