@@ -370,15 +370,37 @@ Completion never removes what you typed, prints nothing, and falls back to the s
 
 It learns from an index of your history and hosts, kept in mssh's private cache directory (`$XDG_RUNTIME_DIR/multiSSH3` or `/tmp/multiSSH3-<uid>`) and rebuilt in the background when its sources change. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
 
+### Grey suggestions
+
+While you type an mssh line, the most likely rest of it shows in grey after the cursor: the rest of the line when one past invocation clearly fits, only the rest of the current word when only that is clear, nothing when mssh is not sure. → (or End, Ctrl-F) takes all of it, Alt-→ / Ctrl-→ / Alt-F one word. Enter runs only what you typed.
+
+- **zsh:** built in; with [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) loaded, mssh becomes its first strategy on mssh lines.
+- **bash with [ble.sh](https://github.com/akinomyoga/ble.sh):** built in, as ble.sh's first suggestion source.
+- **plain bash:** turn on the mssh line editor, which takes over after you type an mssh name and a space, and hands the line back to readline on any key it does not handle (↑, Ctrl-K, ...) or when you delete into `mssh `:
+
+  ```bash
+  mssh --completion install bash editor
+  ```
+
+- **fish:** fish's own suggestions already use mssh's completion.
+
+### Ctrl-R
+
+Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations. Type to filter, ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
+
 | Environment variable | Effect |
 | --- | --- |
 | `MSSH_COMPLETE_TIMEOUT` | Seconds the shell waits for an answer (default 0.3) |
+| `MSSH_COMPLETE_GHOST_TIMEOUT` | ble.sh only: milliseconds a grey suggestion may take (default 300) |
 | `MSSH_COMPLETE_SHELL_HISTORY` | Lines of shell history sent along (default 1000) |
+| `MSSH_COMPLETE_EDITOR` | `1` turns on the plain-bash mssh line editor (`install bash editor` sets it) |
 | `MSSH_COMPLETE_DEBUG` | `1` logs errors to `complete.log` in the cache directory |
 
-> Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded) and fish 3.3 to 4.0. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
+> Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
 
-> With [ble.sh](https://github.com/akinomyoga/ble.sh) loaded, bash also shows grey suggestions while you type, taken from mssh's completion; → accepts one. Tested with the 2026-09-08 ble.sh nightly on bash 4.2 to 5.2.
+> After upgrading mssh, run `mssh --completion install` again to get the new shell glue. Glue from an older mssh keeps working, without the newer features.
+
+> The plain-bash editor binds the space key, so every space typed in bash runs a tiny shell function; Ctrl-R becomes a key macro (the binding it replaced is called for other lines). Uninstall restores both in new shells.
 
 ## Options
 

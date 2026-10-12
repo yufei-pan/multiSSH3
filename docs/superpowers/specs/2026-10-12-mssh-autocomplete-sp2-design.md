@@ -273,3 +273,31 @@ pytest, plain `test_*` functions, in `tests/`; real-shell tests run in the Docke
 1. Bump `version` in `multiSSH3.py` and in `mssh_complete.py`.
 2. `uvpack` multiSSH3.
 3. cas-toolbox: bump the `multissh3` pin (and add `mssh-complete` to `[project.scripts]` if SP1's release did not) in the next Monday roll-up.
+
+
+## Deviations found while implementing
+
+Implementing and testing SP2 (unit tests, the synthetic replay, real bash 4.2 / 4.4 / 5.2, zsh 5.5 / 5.9, fish 3.3 / 4.0 and ble.sh in Docker) changed these details of the design above.
+
+| Area | The design said | Implemented | Why |
+|---|---|---|---|
+| Turning the editor on | `mssh --completion install bash --editor` | `mssh --completion install bash editor` (`mssh-complete install bash --editor` also works) | mssh's own argument parser rejects `--editor` as an unknown option |
+| Prompt for `pick` / `edit` | base64 `prompt=` flag | `$MSSH_COMPLETE_PROMPT` (with `expand=1` / `--expand` when it is PS1 itself, bash 4.2 / 4.3) | no encoding needed, any bytes pass |
+| `pick` / `edit` output | ends with `E` and a NUL | ends with `E` | the shells read it with command substitution |
+| Editor actions | `run`, `edit`, `pass`, `abandon` | `pass` (keys for readline, possibly none) and `abandon` | Enter is passed on as `\C-m`, so the operator's own Enter binding runs; a broken prefix passes nothing |
+| Hook keys | `\C-x\C-r` for Ctrl-R | `\C-x\C-o` (emacs), `\C-x\C-q` (vi-insert), `\C-x\C-t` (space), trampoline `\C-x\C-y` | `\C-x\C-r` is readline's `re-read-init-file`; before bash 5.1 one table holds the `bind -x` commands of all keymaps |
+| When bash takes its keys | when the glue loads | at the first prompt (PROMPT_COMMAND entry that removes itself) | the rc line sends stderr to /dev/null, where readline starting early loses its terminal setup; bindings made later in the rc file (fzf) are recorded too |
+| Ctrl-R on other lines, bash | `\C-x\C-y` bound to the recorded binding | a readline function or macro is put back on Ctrl-R while it runs and Ctrl-R is taken back at the next prompt; a shell command (fzf, atuin) is called directly; when the binding cannot be listed (`bind -x` before bash 4.3) Ctrl-R is left alone | readline's incremental search repeats on Ctrl-R only when Ctrl-R is bound to it |
+| Ctrl-R on other lines, zsh | the previous widget is called | also `bindkey -M isearch '^R'` to that widget | zsh's search repeats on Ctrl-R only when Ctrl-R is bound to it |
+| zsh setup | when the glue loads | at the first prompt (precmd, once) | zsh-autosuggestions loaded after the mssh block is found |
+| zsh-autosuggestions limit | 50 ms | 50 ms in its synchronous mode; the normal timeout in its asynchronous mode (the default from zsh 5.0.8) | async fetches do not block typing |
+| ble.sh | source and Ctrl-R defined at load | through `blehook/eval-after-load` (`complete`, `keymap_emacs`, `keymap_vi`); Ctrl-R is taken when its binding is a widget, `-x` or `-c` | ble.sh loads those modules lazily |
+| fish Ctrl-R | (not placed) | `~/.config/fish/conf.d/mssh-complete.fish`, taking Ctrl-R at the first prompt | fish loads completion files lazily; key bindings exist only from the first prompt |
+| Picker placement | the picker prints newlines and moves back up | the same, keeping the column with raw line feeds and save / restore cursor; no cursor position report | a late report over a slow link would leak into the shell's input |
+| Picker without an index | "building index…" status, filled in later | the first query builds the index within SP1's first-build budget | one code path |
+| Editor entry | space bound to the macro | only when space is `self-insert` or `magic-space` | other space bindings are the operator's |
+| Thresholds | `T_word = 0.5`, `T_line = 0.6` | `T_WORD = 0.7`, `T_LINE = 0.6`, confidence = share × uses / (uses + 1) | tuned on synthetic and real history: 7% of shown suggestions wrong, more keys saved than TAB alone |
+| Raw mode | (not specified) | `TCSANOW` | the default `TCSAFLUSH` drops keys typed while the program starts |
+| Suggestions | on mssh lines | the engine also refuses lines whose first word is not an mssh name | |
+| Index file | (format 2) | still `complete-index.v1.nsv`, format 2 inside | an old engine finds a format it cannot read and rebuilds, as the design says |
+| ble.sh query limit | 300 ms | `MSSH_COMPLETE_GHOST_TIMEOUT` (ms, default 300) | |
