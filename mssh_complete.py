@@ -623,7 +623,7 @@ def parse_history_line(line, spec):
 
 #%% ------------ Index storage (NSV) ----------------
 INDEX_MAGIC = 'MSSHCIDX'
-INDEX_FORMAT = '1'
+INDEX_FORMAT = '2'
 INDEX_NAME = 'complete-index.v1.nsv'
 
 class IndexCorrupt(Exception):
@@ -770,9 +770,11 @@ class MemoryKnowledge(object):
 		self._by_features = {}
 		self._postings = {}
 		self._weights = {}
+		self._uses = {}
 		self._sorted = None
 
-	def add(self, features, weight):
+	def add(self, features, weight, ts=0):
+		'''Add one use of an invocation with these features, at unix time ts (0 if unknown).'''
 		key = tuple(features)
 		rid = self._by_features.get(key)
 		if rid is None:
@@ -785,13 +787,15 @@ class MemoryKnowledge(object):
 		self.records[rid][0] += weight
 		for feature in features:
 			self._weights[feature] = self._weights.get(feature, 0.0) + weight
+			count, last = self._uses.get(feature, (0, 0))
+			self._uses[feature] = (count + 1, max(last, ts))
 
 	def add_history(self, lines, spec, now):
 		'''Add ~/.mssh_history lines, each weighted by its age.'''
 		for line in lines:
 			entry = parse_history_line(line, spec)
 			if entry is not None:
-				self.add(entry.features(), use_weight(now - entry.ts))
+				self.add(entry.features(), use_weight(now - entry.ts), entry.ts)
 
 	def record_count(self):
 		return len(self.records)
@@ -814,6 +818,10 @@ class MemoryKnowledge(object):
 
 	def feature_weight(self, key):
 		return self._weights.get(key, 0.0)
+
+	def feature_uses(self, key):
+		'''(times used, last used unix time) of a feature.'''
+		return self._uses.get(key, (0, 0))
 
 class SnapshotKnowledge(object):
 	'''The records stored in the index, read lazily, with weights decayed to now.'''
@@ -846,6 +854,15 @@ class SnapshotKnowledge(object):
 		if self._weights is None:
 			self._weights = self.index.single('fweights')
 		return float(self._weights[key]) * self.scale
+
+	def feature_uses(self, key):
+		'''(times used, last used unix time) of a feature.'''
+		counts = self.index.single('fcounts')
+		lasts = self.index.single('flast')
+		try:
+			return int(counts[key]), int(lasts[key])
+		except (IndexError, ValueError):
+			return 0, 0
 
 #%% ------------ Ranking ----------------
 BETA = 0.1                  # weight of plain frecency next to similarity with the line
@@ -1300,7 +1317,7 @@ def serialize_knowledge(memory):
 	The features, records, postings and feature weight rows of the heaviest MAX_RECORDS records.
 
 	Returns:
-		tuple: (features, record rows, posting rows, fweights row)
+		tuple: (features, record rows, posting rows, fweights row, fcounts row, flast row)
 	'''
 	records = sorted(memory.records, key=lambda record: -record[0])[:MAX_RECORDS]
 	features = sorted({feature for _, record_features in records for feature in record_features if safe_field(feature)})
@@ -1314,7 +1331,9 @@ def serialize_knowledge(memory):
 		for number in ids:
 			postings[number].append(str(rid))
 			weights[number] += weight
-	return features, record_rows, postings, ['%.6g' % weight for weight in weights]
+	uses = [memory.feature_uses(feature) for feature in features]
+	return (features, record_rows, postings, ['%.6g' % weight for weight in weights],
+		[str(count) for count, _ in uses], [str(last) for _, last in uses])
 
 def build_index(directory, now=None, mssh=None):
 	'''
@@ -1330,7 +1349,7 @@ def build_index(directory, now=None, mssh=None):
 	lines, offset, inode = read_history(history_path)
 	memory = MemoryKnowledge()
 	memory.add_history(lines, spec, now)
-	features, record_rows, postings, fweights = serialize_knowledge(memory)
+	features, record_rows, postings, fweights, fcounts, flast = serialize_knowledge(memory)
 	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
 	hosts = {}
 	def add(name, source, address=''):
@@ -1407,6 +1426,8 @@ def build_index(directory, now=None, mssh=None):
 		('sources', source_rows),
 		('features', [features]),
 		('fweights', [fweights]),
+		('fcounts', [fcounts]),
+		('flast', [flast]),
 		('postings', postings),
 		('records', record_rows),
 		('host_names', [names]),
