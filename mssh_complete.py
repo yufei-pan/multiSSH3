@@ -1714,14 +1714,8 @@ def _shell_word(request):
 		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
 	return request.word
 
-def _bash_escape(text):
-	return ''.join('\\' + char if char in _BASH_SPECIAL else char for char in text)
-
 # characters zsh reads specially in an unquoted word, globs included (zsh fails on a glob that matches nothing)
 _ZSH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!*?[]#~^{}')
-
-def _zsh_escape(text):
-	return ''.join('\\' + char if char in _ZSH_SPECIAL else char for char in text)
 
 # characters fish reads specially in an unquoted word
 _FISH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()*?[]#~{}')
