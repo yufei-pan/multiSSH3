@@ -4911,6 +4911,7 @@ def get_parser():
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
 	parser.add_argument('--host_file', type=str,help=f'File containing list of hosts to run the command on, one host per line. Default:{DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
+	parser.add_argument('--completion', nargs='+', metavar='ARG', help='Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL]" / "uninstall [SHELL]" it for the current user')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
@@ -5111,11 +5112,28 @@ def set_global_with_args(args):
 		DEFAULT_HOST_FILE = args.host_file
 
 #%% ------------ Wrapper Block ----------------
+def _completion_command(values):
+	'''Run `mssh --completion ...` with mssh_complete, which ships next to this file.'''
+	try:
+		import mssh_complete
+	except ImportError:
+		here = os.path.dirname(os.path.abspath(__file__))
+		if here not in sys.path:
+			sys.path.insert(0, here)
+		try:
+			import mssh_complete
+		except ImportError:
+			eprint('Error: autocomplete needs mssh_complete.py next to {} (it ships with the multiSSH3 package)'.format(os.path.abspath(__file__)))
+			return 1
+	return mssh_complete.completion_command(values)
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
 	args = process_args(args)
+	if args.completion:
+		_exit_with_code(_completion_command(args.completion))
 	args = process_config_file(args)
 	args = process_commands(args)
 	args = process_keys(args)

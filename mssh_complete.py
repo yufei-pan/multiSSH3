@@ -2172,6 +2172,157 @@ def render_glue(shell, command=None):
 	quote = _fish_quote if shell == 'fish' else shlex.quote
 	return _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
 
+#%% ------------ Install ----------------
+RC_BEGIN = '# >>> mssh completion >>>'
+RC_BEGIN_CREATED = '# >>> mssh completion (created this file) >>>'
+RC_END = '# <<< mssh completion <<<'
+
+def detect_shell(environ=None):
+	'''The shell that ran us (parent process), else $SHELL; None if neither is bash, zsh or fish.'''
+	environ = os.environ if environ is None else environ
+	name = ''
+	try:
+		with open('/proc/{}/comm'.format(os.getppid())) as f:
+			name = f.read().strip()
+	except OSError:
+		pass
+	name = os.path.basename(name).lstrip('-')
+	if name not in SHELLS:
+		name = os.path.basename(environ.get('SHELL', '')).lstrip('-')
+	return name if name in SHELLS else None
+
+def _fish_major():
+	'''The major version of the fish on PATH, or None.'''
+	import subprocess
+	try:
+		output = subprocess.run(['fish', '-c', 'echo $FISH_VERSION'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
+		return int(output.decode('ascii', 'replace').strip().split('.')[0])
+	except (OSError, ValueError, subprocess.SubprocessError):
+		return None
+
+def _ours(path):
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			return GLUE_MARK in f.readline()
+	except OSError:
+		return False
+
+def _write_glue(path, text, messages):
+	'''Write a glue file unless another file is in the way. Returns whether path holds the glue.'''
+	if os.path.lexists(path) and not _ours(path):
+		messages.append('skipped {}: it exists and mssh did not write it'.format(path))
+		return False
+	os.makedirs(os.path.dirname(path), exist_ok=True)
+	temporary = path + '.mssh-tmp'
+	with open(temporary, 'w', encoding='utf-8') as f:
+		f.write(text)
+	os.replace(temporary, path)
+	messages.append('wrote ' + path)
+	return True
+
+def _add_rc_block(rc, line, messages):
+	try:
+		with open(rc, encoding='utf-8', errors='surrogateescape') as f:
+			text = f.read()
+	except FileNotFoundError:
+		text = None
+	if text is not None and RC_END in text and (RC_BEGIN in text or RC_BEGIN_CREATED in text):
+		messages.append('{} already loads it'.format(rc))
+		return
+	block = '\n{}\n{}\n{}\n'.format(RC_BEGIN if text is not None else RC_BEGIN_CREATED, line, RC_END)
+	with open(rc, 'a', encoding='utf-8', errors='surrogateescape') as f:
+		f.write(block)
+	messages.append('added a block loading it to ' + rc)
+
+def _remove_rc_block(rc, messages):
+	try:
+		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
+			text = f.read()
+	except FileNotFoundError:
+		return
+	for begin in (RC_BEGIN_CREATED, RC_BEGIN):
+		start = text.find('\n' + begin + '\n')
+		end = text.find('\n' + RC_END + '\n', start + 1)
+		if start < 0 or end < 0:
+			continue
+		text = text[:start] + text[end + len(RC_END) + 2:]
+		if begin == RC_BEGIN_CREATED and not text:
+			os.unlink(rc)
+			messages.append('removed ' + rc + ' (mssh had created it)')
+		else:
+			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
+				f.write(text)
+			messages.append('removed the mssh block from ' + rc)
+		return
+
+def _paths(shell, home, environ):
+	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
+	config = environ.get('XDG_CONFIG_HOME') or os.path.join(home, '.config')
+	if shell == 'fish':
+		return {'files': [os.path.join(config, 'fish', 'completions', name + '.fish') for name in MSSH_NAMES]}
+	if shell == 'zsh':
+		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': os.path.join(home, '.zshrc')}
+	# always from ~/.bashrc: bash-completion's per-user directory only loads where bash-completion
+	# runs, which an installed package does not guarantee (stock Debian root shells do not load it)
+	return {'files': [os.path.join(data, 'multiSSH3', 'completion.bash')], 'rc': os.path.join(home, '.bashrc')}
+
+def install(shell, home=None, environ=None, command=None):
+	'''
+	Install the glue for shell for the current user. Never overwrites a file mssh did not write.
+
+	Returns:
+		tuple: (exit code, list of messages saying what was done)
+	'''
+	import shlex
+	environ = os.environ if environ is None else environ
+	home = home or os.path.expanduser('~')
+	messages = []
+	if shell == 'fish':
+		major = _fish_major()
+		if major is not None and major < 3:
+			return 1, ['fish {} is too old for mssh autocomplete: it needs fish 3.0 or later'.format(major)]
+	text = render_glue(shell, command)
+	paths = _paths(shell, home, environ)
+	written = [path for path in paths['files'] if _write_glue(path, text, messages)]
+	if paths.get('rc') and written:
+		quoted = shlex.quote(written[0])
+		# always ends with status 0: a missing or broken file must not even change $? in a new shell
+		line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
+		_add_rc_block(paths['rc'], line.format(quoted), messages)
+	return (0 if written else 1), messages
+
+def uninstall(shell, home=None, environ=None):
+	'''Remove what install wrote for shell. Returns (exit code, messages).'''
+	environ = os.environ if environ is None else environ
+	home = home or os.path.expanduser('~')
+	messages = []
+	paths = _paths(shell, home, environ)
+	for path in paths['files']:
+		if _ours(path):
+			os.unlink(path)
+			messages.append('removed ' + path)
+	if paths.get('rc'):
+		_remove_rc_block(paths['rc'], messages)
+	return 0, messages or ['nothing to remove']
+
+def completion_command(values):
+	'''`mssh --completion ...`: print the glue for a shell, or install / uninstall it.'''
+	action = values[0] if values else ''
+	if action in SHELLS and len(values) == 1:
+		sys.stdout.write(render_glue(action))
+		return 0
+	if action in ('install', 'uninstall') and len(values) <= 2:
+		shell = values[1] if len(values) == 2 else detect_shell()
+		if shell not in SHELLS:
+			print('mssh: cannot tell which shell to set up, name it: mssh --completion {} bash|zsh|fish'.format(action), file=sys.stderr)
+			return 2
+		code, messages = install(shell) if action == 'install' else uninstall(shell)
+		for message in messages:
+			print(message)
+		return code
+	print('usage: mssh --completion bash|zsh|fish | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
+	return 2
+
 #%% ------------ Command line ----------------
 def _cmd_query():
 	deadline = time.monotonic() + float(os.environ.get('MSSH_COMPLETE_SOFT_DEADLINE', '0.2'))
@@ -2217,10 +2368,12 @@ def main(argv=None):
 		return _cmd_query()
 	if command == 'rebuild':
 		return _cmd_rebuild(argv[1:])
+	if command in ('glue', 'install', 'uninstall'):
+		return completion_command(argv[1:] if command == 'glue' else argv)
 	if command in ('-V', '--version'):
 		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
 		return 0
-	print('usage: mssh-complete query | rebuild', file=sys.stderr)
+	print('usage: mssh-complete query | rebuild | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
 	return 2
 
 if __name__ == '__main__':

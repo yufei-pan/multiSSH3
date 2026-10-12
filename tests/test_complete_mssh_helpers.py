@@ -1,8 +1,11 @@
 import socket
+import subprocess
+import sys
 
 import pytest
 
 import multiSSH3
+from conftest import MULTISSH3_PY
 
 
 def test_history_records_hosts_as_typed(tmp_path, monkeypatch):
@@ -64,3 +67,33 @@ def test_compact_hostnames_local_round_trips_without_dns(no_dns):
 	names = ['node01', 'node02', 'node03', 'gpu1', '10.0.0.1', '10.0.0.2']
 	assert multiSSH3.compact_hostnames_local(names) == ['10.0.0.[1-2]', 'gpu1', 'node[01-03]']
 	assert multiSSH3.compact_hostnames_local([]) == []
+
+
+def test_completion_option_prints_glue():
+	result = subprocess.run([sys.executable, str(MULTISSH3_PY), '--completion', 'bash'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert result.returncode == 0
+	assert b'MSSH_COMPLETE_GLUE' in result.stdout
+	assert b'complete -o default -o bashdefault -F _mssh_complete mssh' in result.stdout
+
+
+def test_completion_option_rejects_unknown_action():
+	result = subprocess.run([sys.executable, str(MULTISSH3_PY), '--completion', 'tcsh'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert result.returncode == 2
+	assert b'usage: mssh --completion' in result.stderr
+
+
+def test_completion_option_is_completed():
+	import mssh_complete as mc
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	context = mc.parse_context('mssh --completion ', '', spec)
+	assert (context.slot, context.option.dest) == ('value', 'completion')
+	response = mc.Engine(spec).query(mc.Request('bash', 'mssh --completion ', '', ''))
+	assert sorted(candidate.text for candidate in response.candidates) == ['bash', 'fish', 'install', 'uninstall', 'zsh']
+
+
+def test_completion_option_without_module(tmp_path):
+	lone = tmp_path / 'multiSSH3.py'
+	lone.write_bytes(MULTISSH3_PY.read_bytes())
+	result = subprocess.run([sys.executable, '-I', str(lone), '--completion', 'bash'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(tmp_path))
+	assert result.returncode == 1
+	assert b'autocomplete needs mssh_complete.py' in result.stderr
