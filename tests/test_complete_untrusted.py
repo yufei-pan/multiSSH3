@@ -45,3 +45,19 @@ def test_picker_history():
 	request = mc.Request('bash', 'mssh ', '', '', history=shell)
 	_, _, items, _ = mc.picker_items(request, engine(history), history)
 	assert sorted(item.text for item in items) == ['mssh -su node1 uptime', 'mssh node1 w']
+
+
+def test_picker_draws_no_control_character():
+	# option help shows defaults from the operator's config; the title holds hosts from the line
+	evil = 'a\x1b]0;owned\x07b'
+	picker = mc.Picker([mc.PickItem('node1', evil), mc.PickItem(evil)], [mc.PickItem('mssh ' + evil)], 'commands for ' + evil, now=NOW, unicode=True)
+	for tab in ('slot', 'history'):
+		picker.tab = tab
+		drawn = ''.join(picker.render(80, 3))
+		assert '\x1b]' not in drawn and '\x07' not in drawn
+
+
+def test_descriptions_sent_to_the_shell_hold_no_control_character():
+	response = mc.Response(None)
+	response.candidates = [mc.Candidate('node1', 'a\x1b]0;owned\x07b', 'hosts', 1.0)]
+	assert '\x1b' not in mc.format_response(response, nul=False).decode()

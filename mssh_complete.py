@@ -632,6 +632,10 @@ def _has_control(text):
 	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
 	return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
 
+def _printable(text):
+	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
+	return ''.join('?' if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in text)
+
 def safe_field(text):
 	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
 	return '\0' not in text and '\n' not in text
@@ -2198,7 +2202,7 @@ def parse_request(data):
 	return Request(parts[1], parts[4], parts[5], parts[6], parts[2], flags, history)
 
 def _clean(text):
-	return ' '.join(str(text).split())
+	return _printable(' '.join(str(text).split()))
 
 def format_response(response, nul=True):
 	'''
@@ -2629,7 +2633,8 @@ class Picker(object):
 		horizontal, vertical, top_left, top_right, bottom_left, bottom_right = (
 			('─', '│', '┌', '┐', '└', '┘') if self.unicode else ('-', '|', '+', '+', '+', '+'))
 		inner = max(width - 3, 10)
-		title = ' {} '.format(self.titles[self.tab] + (' · ' + self.query if self.query and self.unicode else (' : ' + self.query if self.query else '')))
+		# what is drawn shows control characters as ?: option help holds config defaults, titles hosts from the line
+		title = ' {} '.format(_printable(self.titles[self.tab] + (' · ' + self.query if self.query and self.unicode else (' : ' + self.query if self.query else ''))))
 		counter = ' {}/{} '.format(self.selected + 1 if matches else 0, len(matches))
 		fill = max(inner - text_width(title) - text_width(counter), 0)
 		lines = [fit(top_left + title + horizontal * fill + counter + top_right, width)]
@@ -2644,16 +2649,16 @@ class Picker(object):
 			if item.last:
 				age = _age(max(self.now - item.last, 0))
 				used.append(age if age == 'now' else age + ' ago')
-			right = '  '.join(([item.description] if item.description else []) + ([(' · ' if self.unicode else ', ').join(used)] if used else []))
+			right = '  '.join(([_printable(item.description)] if item.description else []) + ([(' · ' if self.unicode else ', ').join(used)] if used else []))
 			marker = '> ' if number == self.selected else '  '
-			left = fit(marker + item.text, max(inner - text_width(right) - 1, 8))
+			left = fit(marker + _printable(item.text), max(inner - text_width(right) - 1, 8))
 			middle = left + ' ' * max(inner - text_width(left) - text_width(right), 1) + right
 			middle = fit(middle, inner)
 			middle += ' ' * (inner - text_width(middle))
 			if number == self.selected:
 				middle = '\x1b[7m' + middle + '\x1b[27m'
 			lines.append(vertical + middle + vertical)
-		other = 'history' if self.tab == 'slot' else self.titles['slot']
+		other = 'history' if self.tab == 'slot' else _printable(self.titles['slot'])
 		status = ' type to filter · Tab: {} · Esc '.format(other) if self.unicode else ' type to filter - Tab: {} - Esc '.format(other)
 		if not self.items['history' if self.tab == 'slot' else 'slot']:
 			status = status.replace(' · Tab: {}'.format(other), '').replace(' - Tab: {}'.format(other), '')
