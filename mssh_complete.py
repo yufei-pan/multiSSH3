@@ -2736,7 +2736,13 @@ def picker_items(request, engine, history_lines, now=None):
 	word = None
 	if context is not None and request.before.endswith(context.prefix):
 		word = context.prefix
-		response = engine.query(Request(request.shell, request.before, request.after, word, request.shell_version, dict(request.flags, insert='1')))
+		asked = word
+		if request.shell in ('zsh', 'fish'):
+			# their glues send the word as typed, quotes included: so does the picker
+			tokens = lex(request.before)
+			if tokens and tokens[-1].text == word and request.before.endswith(tokens[-1].raw):
+				asked = tokens[-1].raw
+		response = engine.query(Request(request.shell, request.before, request.after, asked, request.shell_version, dict(request.flags, insert='1')))
 		for candidate in response.candidates:
 			value = (candidate.raw or candidate.text)[context.value_start:]
 			uses, last = engine.usage(context, value)
