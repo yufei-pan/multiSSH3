@@ -882,3 +882,128 @@ def score_features(knowledges, prefix, line_features, deadline=None):
 					scores[text] = scores.get(text, 0.0) + math.log1p(weight) * value
 	return scores
 
+#%% ------------ Hosts ----------------
+SRC_HOSTS_FILE, SRC_SSH_CONFIG, SRC_KNOWN_HOSTS, SRC_ARP, SRC_HISTORY, SRC_ALIAS = 1, 2, 4, 8, 16, 32
+
+class HostTable(object):
+	'''Hosts, aliases and host groups from the index; empty without one.'''
+	def __init__(self, index=None):
+		self.index = index
+		self.names = index.single('host_names') if index is not None else []
+		self.alias_names = index.single('alias_names') if index is not None else []
+		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
+		self._groups = None
+
+	def names_with_prefix(self, prefix):
+		lo, hi = _prefix_range(self.names, prefix)
+		return self.names[lo:hi]
+
+	def aliases_with_prefix(self, prefix):
+		lo, hi = _prefix_range(self.alias_names, prefix)
+		return [(index, self.alias_names[index]) for index in range(lo, hi)]
+
+	def alias_index(self, name):
+		index = bisect_left(self.alias_names, name)
+		return index if index < len(self.alias_names) and self.alias_names[index] == name else None
+
+	def alias_members(self, index):
+		'''Member host names of the alias at index.'''
+		return [self.names[int(member)] for member in self.index.row('aliases', index)[1:]]
+
+	def alias_size(self, index):
+		return len(self.index.row('aliases', index)) - 1
+
+	def groups(self):
+		'''(range text, member names) of the host groups found when the index was built.'''
+		if self._groups is None:
+			self._groups = []
+			if self.index is not None:
+				for number in range(self.index.count('groups')):
+					row = self.index.row('groups', number)
+					self._groups.append((row[0], [self.names[int(member)] for member in row[1:]]))
+		return self._groups
+
+_DIGITS = '0123456789'
+
+def _is_digits(text):
+	return bool(text) and all(char in _DIGITS for char in text)
+
+def compact_names(names):
+	'''
+	Compact host names into range strings: node001..node512 -> node[001-512].
+
+	Names that differ only in their last run of digits (with the same number of digits) are
+	grouped, and each run of consecutive numbers becomes one range. Digits all members of a run
+	share stay in front of the range, so the range text starts with every prefix they share.
+
+	Returns:
+		list: Range strings and names that did not group, sorted
+	'''
+	buckets = {}
+	singles = []
+	for name in names:
+		end = len(name)
+		while end > 0 and name[end - 1] not in _DIGITS:
+			end -= 1
+		start = end
+		while start > 0 and name[start - 1] in _DIGITS:
+			start -= 1
+		if start == end:
+			singles.append(name)
+			continue
+		key = (name[:start], end - start, name[end:])
+		buckets.setdefault(key, []).append(int(name[start:end]))
+	out = list(singles)
+	for (stem, width, tail), numbers in buckets.items():
+		numbers.sort()
+		low = previous = numbers[0]
+		for number in numbers[1:] + [None]:
+			if number is not None and number == previous + 1:
+				previous = number
+				continue
+			out.append(_range_text(stem, width, tail, low, previous))
+			if number is not None:
+				low = previous = number
+	return sorted(out)
+
+def _range_text(stem, width, tail, low, high):
+	low_text = '{:0{}d}'.format(low, width)
+	high_text = '{:0{}d}'.format(high, width)
+	if low == high:
+		return stem + low_text + tail
+	common = 0
+	while common < width - 1 and low_text[common] == high_text[common]:
+		common += 1
+	return '{}{}[{}-{}]{}'.format(stem, low_text[:common], low_text[common:], high_text[common:], tail)
+
+def expand_ranges(text, limit=100000):
+	'''
+	Expand [a-b] and [a,b] number ranges in a host name, the common part of mssh's range syntax.
+
+	Text with letter or hex ranges, or that would expand to more than limit names, is returned
+	as it is (in a one-item list).
+	'''
+	start = text.find('[')
+	end = text.find(']', start + 1)
+	if start < 0 or end < 0:
+		return [text]
+	head, body, tail = text[:start], text[start + 1:end], text[end + 1:]
+	values = []
+	for part in body.split(','):
+		low, sep, high = part.strip().partition('-')
+		if sep and _is_digits(low) and _is_digits(high):
+			width = min(len(low), len(high))
+			values.extend('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
+		elif not sep and part.strip():
+			values.append(part.strip())
+		else:
+			return [text]
+		if len(values) > limit:
+			return [text]
+	out = []
+	for value in values:
+		out.extend(expand_ranges(head + value + tail, limit))
+		if len(out) > limit:
+			return [text]
+	return out
+
