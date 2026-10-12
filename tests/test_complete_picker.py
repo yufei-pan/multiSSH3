@@ -1,4 +1,6 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
+import pytest
+
 import multiSSH3
 import mssh_complete as mc
 from vt_grid import FakeTerminal, Grid
@@ -208,3 +210,13 @@ def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
 	for history in (b'', b'ls\n\xff\xfe\n'):
 		edit = run_engine(['edit', 'mssh '], history, env)
 		assert (edit.returncode, edit.stdout, edit.stderr) == (3, b'', b'')
+
+
+@pytest.mark.parametrize('shell', ['zsh', 'fish'])
+def test_slot_items_inside_an_open_quote_in_every_shell(shell):
+	# zsh and fish send the word as typed, quote included: the picker must too (here it ends in a space)
+	before = 'mssh storage1 "df '
+	bash = mc.picker_items(mc.Request('bash', before, '', None), engine(), HISTORY)
+	other = mc.picker_items(mc.Request(shell, before, '', None), engine(), HISTORY)
+	assert [item.text for item in bash[0]] == ['df -h /data']
+	assert [item.text for item in other[0]] == ['df -h /data'] and other[3] == bash[3]

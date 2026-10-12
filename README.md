@@ -382,6 +382,8 @@ While you type an mssh line, the most likely rest of it shows in grey after the 
   mssh --completion install bash editor
   ```
 
+  Installing again keeps it on; `mssh --completion uninstall bash`, then `mssh --completion install bash`, turns it off.
+
 - **fish:** fish's own suggestions already use mssh's completion.
 
 ### Ctrl-R

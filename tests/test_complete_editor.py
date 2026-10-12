@@ -1,6 +1,7 @@
 '''The plain-bash mssh line editor as a state machine, its drawing, and the bash 4.2/4.3 prompt expander.'''
 import pytest
 
+import multiSSH3
 import mssh_complete as mc
 from vt_grid import FakeTerminal, Grid
 
@@ -66,6 +67,15 @@ def test_accept_a_word(key):
 	assert edit.text == 'mssh gpu[01-16] "nvidia-smi"'
 
 
+@pytest.mark.parametrize('ghost, word', [
+	('my\\ file.txt node1', 'my\\ file.txt'), (' "ls -la" x', ' "ls -la"'), (" 'a b'c d", " 'a b'c"), ('-h /data"', '-h'),
+])
+def test_accept_a_word_keeps_escapes_and_quotes_together(ghost, word):
+	edit = editor(suggest=lambda before: mc.Ghost('line', ghost, 0.9) if before == 'mssh -f m' else None)
+	keys(edit, '-', 'f', ' ', 'm', 'alt-f')
+	assert edit.text == 'mssh -f m' + word
+
+
 def test_moving_off_the_end_hides_the_suggestion_and_right_moves():
 	edit = editor()
 	keys(edit, 'g', 'p', 'left')
@@ -129,6 +139,35 @@ def test_tab_inserts_the_common_part_then_a_space():
 	edit = editor(complete=lambda before: (['gpu01'], 'g'))
 	keys(edit, 'g', 'tab')
 	assert edit.text == 'mssh gpu01 '
+
+
+def test_tab_ends_a_unique_match_as_the_picker_does():
+	# no space after a directory; inside an open quote, the quote is closed first
+	edit = editor('mssh -f ', complete=lambda before: (['dir/'], 'di'))
+	keys(edit, 'd', 'i', 'tab')
+	assert edit.text == 'mssh -f dir/'
+	edit = editor('mssh host "', complete=lambda before: (['ls -la'], 'ls -l'))
+	keys(edit, 'l', 's', ' ', '-', 'l', 'tab')
+	assert edit.text == 'mssh host "ls -la" '
+
+
+def test_editor_file_names_follow_bash(tmp_path, monkeypatch):
+	# like bash's TAB: ~ expanded, [ ] and * read as names, hidden files listed, the result escaped
+	for name in ('my file.txt', 'a[1].txt', '.hidden'):
+		(tmp_path / name).write_text('')
+	(tmp_path / 'sub').mkdir()
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setenv('HOME', str(tmp_path))
+	engine = mc.Engine(mc.spec_from_parser(multiSSH3.get_parser()), [])
+
+	def texts(before):
+		return sorted(mc.editor_completions(engine, before)[0])
+	assert texts('mssh -f my') == ['my\\ file.txt']
+	assert texts('mssh -f my\\ f') == ['my\\ file.txt']
+	assert texts('mssh -f a') == ['a\\[1\\].txt']
+	assert texts('mssh -f .h') == ['.hidden']
+	assert texts('mssh -f s') == ['sub/']
+	assert texts('mssh -f ~/my') == ['~/my\\ file.txt']
 
 
 def test_tab_with_nothing_to_insert_opens_the_slot_menu():
@@ -220,6 +259,11 @@ def test_expand_prompt_does_what_bash_does_for_common_escapes():
 	environ = {'USER': 'ops', 'HOME': '/home/ops', 'PWD': '/home/ops/src', 'BASH_VERSION': '4.2.46(2)-release'}
 	text = mc.expand_prompt('\\[\\e[1m\\]\\u:\\w \\W \\v\\033[0m\\$ $(date)', environ)
 	assert text == '\x01\x1b[1m\x02ops:~/src src 4.2\x1b[0m{} $(date)'.format('#' if mc.os.geteuid() == 0 else '$')
+
+
+def test_expand_prompt_takes_only_octal_digits():
+	# as bash: \\128 and \\9ab stay as written, \\101 is A
+	assert mc.expand_prompt('\\128 \\9ab \\101$ ', {'HOME': '/h', 'PWD': '/h'}) == '\\128 \\9ab A$ '
 
 
 @pytest.mark.parametrize('raw, keyseq', [

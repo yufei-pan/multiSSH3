@@ -140,8 +140,18 @@ def test_roles_agree_with_argparse():
 
 
 
-@pytest.mark.parametrize('text, dest, value', [('-pHunter2pw', 'password', 'Hunter2pw'), ('-t30', 'timeout', '30'), ('-uroot', 'username', 'root')])
+@pytest.mark.parametrize('text, dest, value', [
+	('-pHunter2pw', 'password', 'Hunter2pw'), ('-t30', 'timeout', '30'), ('-uroot', 'username', 'root'),
+	# an attached value may hold '=' itself
+	('-pS3c=t', 'password', 'S3c=t'), ('-uroot=x', 'username', 'root=x'),
+])
 def test_attached_short_option_values_follow_argparse(text, dest, value):
 	option, attached = SPEC.lookup(text)
 	assert (option.dest if option else None, attached) == (dest, value)
 	assert str(vars(multiSSH3.get_parser().parse_args([text]))[dest]) == value
+
+
+def test_a_password_attached_with_an_equals_sign_is_never_learned():
+	tokens = mc.lex('-pS3c=t host uptime')
+	assert mc._sets_password(tokens, SPEC)
+	assert not [feature for feature in mc.line_features(tokens, SPEC) if 'S3c' in feature]

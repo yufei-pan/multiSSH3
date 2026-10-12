@@ -378,7 +378,8 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
 
 
-def zsh_with(env, home, zas=False, after=False):
+def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY):
+	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late).'''
 	pre = ''
 	if zas:
 		import os
@@ -387,7 +388,10 @@ def zsh_with(env, home, zas=False, after=False):
 				pytest.fail('zsh-autosuggestions is required here but not at ' + ZAS)
 			pytest.skip('zsh-autosuggestions is not installed at ' + ZAS)
 		pre = 'source ' + ZAS
-	(home / '.zsh_history').write_text(SHELL_HISTORY)
+		if late:
+			# as plugin managers do (zinit turbo, zsh-defer): after mssh set up its own widgets
+			pre, after = '_mssh_test_late() {{ add-zsh-hook -d precmd _mssh_test_late; {} }}\nadd-zsh-hook precmd _mssh_test_late'.format(pre), True
+	(home / '.zsh_history').write_text(shell_history)
 	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
 	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
 		pre=history if after else pre + '\n' + history, extra=pre if after else '')
@@ -402,6 +406,35 @@ def test_zsh_suggests_and_right_arrow_accepts(home, zas, after):
 		session.read_until(b'nvidia-smi', 10)
 		# zsh escapes the glob characters
 		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
+	finally:
+		session.close()
+
+
+def test_zsh_hands_grey_text_to_zsh_autosuggestions_loaded_later(home):
+	# its own history suggestion (date) and mssh's grey text (nvidia-smi) must not both be drawn
+	env, home = home
+	session = zsh_with(env, home, zas=True, late=True, shell_history=SHELL_HISTORY + 'mssh gpu[01-16] date\n')
+	try:
+		# a second prompt: zsh-autosuggestions has started
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 10)
+		session.send('mssh gp')
+		drawn = session.read_until(b'nvidia-smi', 10)
+		assert 'nvidia-smi' in drawn and 'date' not in drawn
+		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
+	finally:
+		session.close()
+
+
+def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
+	env, home = make_home(tmp_path, ["17900000{:02d}\t/x/multiSSH3.py\t-su -f='my file.txt'\tnode1\t/tmp".format(number) for number in range(6)])
+	build_index(env)
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh -f m')
+		session.read_until(b'file.txt', 10)
+		# not 'my\\' with a dangling backslash
+		assert printed(session, '\x1bf') == 'mssh -f my\\ file.txt'
 	finally:
 		session.close()
 

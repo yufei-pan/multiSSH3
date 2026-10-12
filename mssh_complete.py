@@ -223,16 +223,15 @@ class ParserSpec(object):
 		if option is not None:
 			return option, None
 		name, sep, value = text.partition('=')
-		if sep:
-			option = self.by_string.get(name) or self._abbreviation(name)
-			return (option, value) if option is not None else (None, None)
-		option = self._abbreviation(text)
-		if option is None and len(text) > 2 and text[0] == '-' and text[1] != '-':
-			# argparse reads -pVALUE as -p VALUE
+		option = (self.by_string.get(name) or self._abbreviation(name)) if sep else self._abbreviation(text)
+		if option is not None:
+			return option, (value if sep else None)
+		if len(text) > 2 and text[0] == '-' and text[1] != '-':
+			# argparse reads -pVALUE as -p VALUE, '=' in VALUE included
 			short = self.by_string.get(text[:2])
 			if short is not None and short.nargs != '0':
 				return short, text[2:]
-		return option, None
+		return None, None
 
 	def _abbreviation(self, name):
 		if not name.startswith('--') or len(name) < 3:
@@ -628,6 +627,14 @@ INDEX_NAME = 'complete-index.v1.nsv'
 
 class IndexCorrupt(Exception):
 	'''The index file is not a complete index this version can read.'''
+
+def _has_control(text):
+	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
+	return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+
+def _printable(text):
+	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
+	return ''.join('?' if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in text)
 
 def safe_field(text):
 	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
@@ -1707,24 +1714,25 @@ def _shell_word(request):
 		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
 	return request.word
 
-def _bash_escape(text):
-	return ''.join('\\' + char if char in _BASH_SPECIAL else char for char in text)
-
 # characters zsh reads specially in an unquoted word, globs included (zsh fails on a glob that matches nothing)
 _ZSH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!*?[]#~^{}')
-
-def _zsh_escape(text):
-	return ''.join('\\' + char if char in _ZSH_SPECIAL else char for char in text)
 
 # characters fish reads specially in an unquoted word
 _FISH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()*?[]#~{}')
 
-def _shell_escape(shell, text):
-	'''text escaped for an unquoted word of shell.'''
-	special = {'bash': _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
+# in a word taken literally bash would also read # as a comment and expand ~, globs and braces
+_BASH_STRICT_SPECIAL = _BASH_SPECIAL | frozenset('#~*?[]{}')
+
+def _shell_escape(shell, text, strict=False):
+	'''text escaped for an unquoted word of shell; strict: a word taken literally (bash leaves globs only in hosts).'''
+	special = {'bash': _BASH_STRICT_SPECIAL if strict else _BASH_SPECIAL, 'zsh': _ZSH_SPECIAL, 'fish': _FISH_SPECIAL}.get(shell)
 	if special is None:
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
+
+def _literal_word(context):
+	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
+	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
@@ -1759,12 +1767,16 @@ class Engine(object):
 
 	def suggest(self, request, deadline=None):
 		'''
-		The grey suggestion for a line with the cursor at its end, or None.
+		The grey suggestion for a line with the cursor at its end, or None (never one with a control character).
 
 		The current word's most likely value (when its share of the scores reaches T_WORD), then,
 		when each following positional slot's top value reaches T_LINE, those slots: the hosts and
 		the first command. Options are never added. The suggestion always extends the typed text.
 		'''
+		ghost = self._suggest(request, deadline)
+		return None if ghost is None or _has_control(ghost.text) else ghost
+
+	def _suggest(self, request, deadline):
 		if request.after.strip():
 			return None
 		tokens = lex(request.before)
@@ -1795,7 +1807,7 @@ class Engine(object):
 			if context.slot == SLOT_COMMAND:
 				rest += closing
 		elif rest:
-			rest = _shell_escape(request.shell, rest)
+			rest = _shell_escape(request.shell, rest, _literal_word(context))
 		continuation, rest_share = self._continuation(context, top, request.shell, deadline)
 		if continuation and rest_share >= T_LINE:
 			return Ghost('line', rest + continuation, min(share, rest_share))
@@ -1827,7 +1839,7 @@ class Engine(object):
 			if any(char in unsafe for char in rest):
 				return None
 		else:
-			rest = _shell_escape(shell, rest)
+			rest = _shell_escape(shell, rest, _literal_word(context))
 		return Ghost('word', rest, support)
 
 	def _suggest_command_words(self, context, shell, deadline):
@@ -1852,12 +1864,13 @@ class Engine(object):
 			next_words[words[len(typed) - 1]] = next_words.get(words[len(typed) - 1], 0.0) + score
 		word, word_share = _top_share(next_words)
 		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
-		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):])
-		more = ''.join(' ' + _shell_escape(shell, extra) for extra in top[len(typed):])
+		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
+		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
 		if more and share >= T_LINE:
 			return Ghost('line', rest + more, share)
-		if rest and word_share >= T_WORD:
-			return Ghost('word', _shell_escape(shell, word[len(typed[-1]):]), word_share)
+		word_rest = _shell_escape(shell, word[len(typed[-1]):], True)
+		if word_rest and word_share >= T_WORD:
+			return Ghost('word', word_rest, word_share)
 		return None
 
 	def _uses(self, feature):
@@ -1954,9 +1967,11 @@ class Engine(object):
 		Turn slot values into replacements for the shell's word, best first, without duplicates.
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
-		text left unquoted is escaped for that shell, except when bash quotes file names itself.
+		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
 		'''
 		literal = request.shell == 'bash' or request.flags.get('insert') == '1'
+		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
+		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		word = _shell_word(request)
 		prefix = context.prefix
 		if word is None:
@@ -1978,9 +1993,9 @@ class Engine(object):
 					continue
 				if context.open_quote in ("'", "$'") and "'" in rest:
 					continue
-				if not context.open_quote and not (request.shell == 'bash' and {'files', 'dirs'} & set(directives)):
-					rest = _shell_escape(request.shell, rest)
-			if '\t' in rest or '\n' in rest:
+				if not context.open_quote and not bash_quotes:
+					rest = _shell_escape(request.shell, rest, _literal_word(context))
+			if _has_control(rest):
 				continue
 			seen.add(full)
 			text = full[len(base):len(prefix)] + rest
@@ -2181,7 +2196,7 @@ def parse_request(data):
 	return Request(parts[1], parts[4], parts[5], parts[6], parts[2], flags, history)
 
 def _clean(text):
-	return ' '.join(str(text).split())
+	return _printable(' '.join(str(text).split()))
 
 def format_response(response, nul=True):
 	'''
@@ -2612,7 +2627,8 @@ class Picker(object):
 		horizontal, vertical, top_left, top_right, bottom_left, bottom_right = (
 			('─', '│', '┌', '┐', '└', '┘') if self.unicode else ('-', '|', '+', '+', '+', '+'))
 		inner = max(width - 3, 10)
-		title = ' {} '.format(self.titles[self.tab] + (' · ' + self.query if self.query and self.unicode else (' : ' + self.query if self.query else '')))
+		# what is drawn shows control characters as ?: option help holds config defaults, titles hosts from the line
+		title = ' {} '.format(_printable(self.titles[self.tab] + (' · ' + self.query if self.query and self.unicode else (' : ' + self.query if self.query else ''))))
 		counter = ' {}/{} '.format(self.selected + 1 if matches else 0, len(matches))
 		fill = max(inner - text_width(title) - text_width(counter), 0)
 		lines = [fit(top_left + title + horizontal * fill + counter + top_right, width)]
@@ -2627,16 +2643,16 @@ class Picker(object):
 			if item.last:
 				age = _age(max(self.now - item.last, 0))
 				used.append(age if age == 'now' else age + ' ago')
-			right = '  '.join(([item.description] if item.description else []) + ([(' · ' if self.unicode else ', ').join(used)] if used else []))
+			right = '  '.join(([_printable(item.description)] if item.description else []) + ([(' · ' if self.unicode else ', ').join(used)] if used else []))
 			marker = '> ' if number == self.selected else '  '
-			left = fit(marker + item.text, max(inner - text_width(right) - 1, 8))
+			left = fit(marker + _printable(item.text), max(inner - text_width(right) - 1, 8))
 			middle = left + ' ' * max(inner - text_width(left) - text_width(right), 1) + right
 			middle = fit(middle, inner)
 			middle += ' ' * (inner - text_width(middle))
 			if number == self.selected:
 				middle = '\x1b[7m' + middle + '\x1b[27m'
 			lines.append(vertical + middle + vertical)
-		other = 'history' if self.tab == 'slot' else self.titles['slot']
+		other = 'history' if self.tab == 'slot' else _printable(self.titles['slot'])
 		status = ' type to filter · Tab: {} · Esc '.format(other) if self.unicode else ' type to filter - Tab: {} - Esc '.format(other)
 		if not self.items['history' if self.tab == 'slot' else 'slot']:
 			status = status.replace(' · Tab: {}'.format(other), '').replace(' - Tab: {}'.format(other), '')
@@ -2714,7 +2730,13 @@ def picker_items(request, engine, history_lines, now=None):
 	word = None
 	if context is not None and request.before.endswith(context.prefix):
 		word = context.prefix
-		response = engine.query(Request(request.shell, request.before, request.after, word, request.shell_version, dict(request.flags, insert='1')))
+		asked = word
+		if request.shell in ('zsh', 'fish'):
+			# their glues send the word as typed, quotes included: so does the picker
+			tokens = lex(request.before)
+			if tokens and tokens[-1].text == word and request.before.endswith(tokens[-1].raw):
+				asked = tokens[-1].raw
+		response = engine.query(Request(request.shell, request.before, request.after, asked, request.shell_version, dict(request.flags, insert='1')))
 		for candidate in response.candidates:
 			value = (candidate.raw or candidate.text)[context.value_start:]
 			uses, last = engine.usage(context, value)
@@ -2737,7 +2759,7 @@ def picker_items(request, engine, history_lines, now=None):
 			continue
 		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
 		text = ' '.join([name] + parts)
-		if not safe_field(text) or '\t' in text or _sets_password(lex(fields[2]), engine.spec):
+		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		if text in seen:
 			seen[text][1] += 1
@@ -2753,7 +2775,7 @@ def picker_items(request, engine, history_lines, now=None):
 	for line in shell_lines:
 		line = line.strip()
 		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _sets_password(tokens[1:], engine.spec):
+		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
 			seen[line] = [len(entries), 1]
 			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
@@ -2774,6 +2796,37 @@ def apply_pick(request, picker, word, context):
 	return before + request.after, len(before)
 
 #%% ------------ Line editor ----------------
+def _first_word(text):
+	'''
+	Leading spaces, then the first word of text: a backslash and the character it escapes, and a
+	quote and what follows up to the next one of its kind (or the end), kept together. Inside a
+	quoted command the closing quote comes last, so its words are still taken one at a time.
+	'''
+	position = len(text) - len(text.lstrip(' '))
+	quote = ''
+	while position < len(text):
+		char = text[position]
+		if char == '\\' and quote != "'":
+			position += 2
+			continue
+		if quote:
+			if char == quote:
+				quote = ''
+		elif char in '"\'':
+			quote = char
+		elif char == ' ':
+			break
+		position += 1
+	return text[:position]
+
+def _completed_word_end(before):
+	'''What follows a word completed at the end of before: its closing quote and a space, nothing after a directory.'''
+	tokens = lex(before)
+	open_quote = tokens[-1].open_quote if tokens else ''
+	if open_quote:
+		return ('"' if open_quote == '"' else "'") + ' '
+	return '' if before.endswith('/') else ' '
+
 _PROMPT_ESCAPES = None
 
 def expand_prompt(ps1, environ=None, now=None):
@@ -2810,8 +2863,9 @@ def expand_prompt(ps1, environ=None, now=None):
 		char = ps1[index]
 		if char == '\\' and index + 1 < len(ps1):
 			name = ps1[index + 1]
-			if ps1[index + 1:index + 4].isdigit() and len(ps1[index + 1:index + 4]) == 3:
-				out.append(chr(int(ps1[index + 1:index + 4], 8)))
+			digits = ps1[index + 1:index + 4]
+			if len(digits) == 3 and all(digit in '01234567' for digit in digits):
+				out.append(chr(int(digits, 8)))
 				index += 4
 				continue
 			if name in values:
@@ -2906,10 +2960,7 @@ class LineEditor(object):
 		if whole:
 			taken = self.ghost
 		else:
-			# leading spaces, then the next word
-			stripped = len(self.ghost) - len(self.ghost.lstrip(' '))
-			end = self.ghost.find(' ', stripped)
-			taken = self.ghost if end < 0 else self.ghost[:end]
+			taken = _first_word(self.ghost)
 		self._insert(taken)
 		return True
 
@@ -3002,7 +3053,7 @@ class LineEditor(object):
 		if len(common) > len(word) and common.startswith(word):
 			self._insert(common[len(word):])
 			if len(set(texts)) == 1 and self.cursor == len(self.text):
-				self._insert(' ')
+				self._insert(_completed_word_end(self.text))
 		else:
 			self._pick(True)
 
@@ -3701,6 +3752,15 @@ _mssh_complete_ghost_redraw() {
 	# line-pre-redraw hook: keep the grey text in step with the buffer
 	emulate -L zsh
 	local last=$_mssh_complete_last full
+	if (( ${+functions[_zsh_autosuggest_start]} )); then
+		# zsh-autosuggestions loaded after the first prompt (zinit turbo, zsh-defer): mssh becomes
+		# its first strategy, and once it has wrapped the widgets its grey text replaces ours
+		_mssh_complete_zas_strategy
+		if [[ $widgets[forward-char] != user:_mssh_complete_accept ]]; then
+			_mssh_complete_ghost_handover
+			return 0
+		fi
+	fi
 	if [[ $BUFFER == "$last" ]]; then
 		(( CURSOR == $#BUFFER )) || _mssh_complete_ghost_clear
 		return 0
@@ -3722,6 +3782,16 @@ _mssh_complete_ghost_redraw() {
 	zle -F $_mssh_complete_fd _mssh_complete_ghost_ready
 }
 
+_mssh_complete_ghost_handover() {
+	# stop drawing grey text: drop ours (not what zsh-autosuggestions shows) and the hooks
+	add-zle-hook-widget -d line-pre-redraw _mssh_complete_ghost_redraw
+	add-zle-hook-widget -d line-finish _mssh_complete_ghost_finish
+	_mssh_complete_ghost_cancel
+	[[ -n $_mssh_complete_shown && $POSTDISPLAY == "$_mssh_complete_shown" ]] && POSTDISPLAY=
+	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
+	_mssh_complete_shown= _mssh_complete_highlight= _mssh_complete_last=
+}
+
 _mssh_complete_ghost_finish() {
 	# line-finish hook: no grey text on a line that was accepted
 	emulate -L zsh
@@ -3736,9 +3806,14 @@ _mssh_complete_accept() {
 	emulate -L zsh
 	setopt extended_glob
 	local take
+	local -a words
 	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
 		take=$_mssh_complete_shown
-		[[ $WIDGET == *forward-word ]] && take=${(M)take##[[:space:]]#[^[:space:]]##}
+		if [[ $WIDGET == *forward-word ]]; then
+			# the first shell word, escapes and quotes kept with it
+			words=(${(z)take})
+			take=${words[1]:+${(M)take##[[:space:]]#}${words[1]}}
+		fi
 		BUFFER+=${take:-$_mssh_complete_shown}
 		CURSOR=$#BUFFER
 		return 0
@@ -3779,10 +3854,15 @@ _mssh_complete_setup() {
 	add-zsh-hook -d precmd _mssh_complete_setup
 	_mssh_complete_take_ctrl_r
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
-		(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
+		_mssh_complete_zas_strategy
 	else
 		_mssh_complete_ghost_setup
 	fi
+}
+
+_mssh_complete_zas_strategy() {
+	# zsh-autosuggestions asks mssh first
+	(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 
 if [[ -o interactive ]]; then
@@ -3989,6 +4069,35 @@ def _write_glue(path, text, messages):
 	messages.append('wrote ' + path)
 	return True
 
+def _rc_block(text, begin):
+	'''
+	Where the block opened by begin is in text: (start, body start, body end, end), or None.
+
+	Its markers are whole lines anywhere in the file: the first line, CRLF line ends and a closing
+	marker without a final newline included.
+	'''
+	import re
+	head = re.search(r'(?m)^' + re.escape(begin) + r'[ \t]*\r?\n', text)
+	if head is None:
+		return None
+	tail = re.compile(r'(?m)^' + re.escape(RC_END) + r'[ \t]*(?:\r?\n|\Z)').search(text, head.end())
+	if tail is None:
+		return None
+	return head.start(), head.end(), tail.start(), tail.end()
+
+def _editor_on(rc):
+	'''Whether the mssh block in rc turns the mssh line editor on.'''
+	try:
+		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
+			text = f.read()
+	except OSError:
+		return False
+	for begin in (RC_BEGIN, RC_BEGIN_CREATED):
+		found = _rc_block(text, begin)
+		if found is not None:
+			return 'export MSSH_COMPLETE_EDITOR=1' in text[found[1]:found[2]].splitlines()
+	return False
+
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
 	try:
@@ -3998,14 +4107,14 @@ def _add_rc_block(rc, body, messages):
 		text = None
 	if text is not None:
 		for begin in (RC_BEGIN, RC_BEGIN_CREATED):
-			start = text.find('\n' + begin + '\n')
-			end = text.find('\n' + RC_END + '\n', start + 1)
-			if start < 0 or end < 0:
+			found = _rc_block(text, begin)
+			if found is None:
 				continue
-			if text[start + len(begin) + 2:end + 1] == body + '\n':
+			_, body_start, body_end, _ = found
+			if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
 				messages.append('{} already loads it'.format(rc))
 				return
-			text = text[:start + len(begin) + 2] + body + text[end:]
+			text = text[:body_start] + body + '\n' + text[body_end:]
 			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
 				f.write(text)
 			messages.append('updated the mssh block in ' + rc)
@@ -4022,11 +4131,14 @@ def _remove_rc_block(rc, messages):
 	except FileNotFoundError:
 		return
 	for begin in (RC_BEGIN_CREATED, RC_BEGIN):
-		start = text.find('\n' + begin + '\n')
-		end = text.find('\n' + RC_END + '\n', start + 1)
-		if start < 0 or end < 0:
+		found = _rc_block(text, begin)
+		if found is None:
 			continue
-		text = text[:start] + text[end + len(RC_END) + 2:]
+		start, _, _, end = found
+		# the line break install put before the block goes with it
+		head = text[:start]
+		head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
+		text = head + text[end:]
 		if begin == RC_BEGIN_CREATED and not text:
 			os.unlink(rc)
 			messages.append('removed ' + rc + ' (mssh had created it)')
@@ -4054,7 +4166,8 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 	Install the glue for shell for the current user. Never overwrites a file mssh did not write.
 
 	Args:
-		editor (bool): bash only: also turn on the mssh line editor (MSSH_COMPLETE_EDITOR=1 in the rc block)
+		editor (bool): bash only: also turn on the mssh line editor (MSSH_COMPLETE_EDITOR=1 in the rc block);
+			an rc block that already turns it on keeps it on
 
 	Returns:
 		tuple: (exit code, list of messages saying what was done)
@@ -4077,6 +4190,10 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 		# always ends with status 0: a missing or broken file must not even change $? in a new shell
 		line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
 		body = line.format(quoted)
+		if shell == 'bash' and not editor and _editor_on(paths['rc']):
+			# installing again after an upgrade keeps what the operator turned on
+			editor = True
+			messages.append('kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)')
 		if editor and shell == 'bash':
 			body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
 		_add_rc_block(paths['rc'], body, messages)
@@ -4436,6 +4553,53 @@ def _cmd_pick():
 	sys.stdout.buffer.flush()
 	return 0
 
+def editor_completions(engine, before):
+	'''
+	What the editor's TAB may put in place of the word ending before: (texts, word).
+
+	Paths are listed as bash's TAB lists them: ~ expanded, names taken as they are, hidden files
+	included; what is added to the word as typed is escaped (inside an open quote, names the quote
+	cannot hold are left out).
+	'''
+	context = parse_context(before, '', engine.spec)
+	if context is None:
+		return [], ''
+	# the word as typed (escapes and quotes included): what the candidates' rests are added to
+	tokens = lex(before)
+	if not context.prefix:
+		word = ''
+	elif tokens and tokens[-1].text == context.prefix and before.endswith(tokens[-1].raw):
+		word = tokens[-1].raw
+	elif before.endswith(context.prefix):
+		word = context.prefix
+	else:
+		return [], ''
+	response = engine.query(Request('bash', before, '', context.prefix, flags={'insert': '1'}))
+	texts = [word + candidate.text[len(context.prefix):] for candidate in response.candidates if candidate.text.startswith(context.prefix)]
+	if {'files', 'dirs'} & set(response.directives):
+		directory, slash, start = context.value.rpartition('/')
+		listed = os.path.expanduser(directory + slash) if slash else '.'
+		try:
+			names = sorted(os.listdir(listed))
+		except OSError:
+			names = []
+		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
+		for name in names:
+			if not name.startswith(start) or _has_control(name):
+				continue
+			is_dir = os.path.isdir(os.path.join(listed, name))
+			if not is_dir and 'files' not in response.directives:
+				continue
+			rest = name[len(start):] + ('/' if is_dir else '')
+			if context.open_quote:
+				if any(char in unsafe for char in rest):
+					continue
+			else:
+				rest = _shell_escape('bash', rest, True)
+			if word + rest not in texts:
+				texts.append(word + rest)
+	return texts, word
+
 def _cmd_edit(args):
 	'''
 	mssh-complete edit [--expand] TEXT: the plain-bash editor for an mssh line.
@@ -4446,7 +4610,6 @@ def _cmd_edit(args):
 	editor cannot start; the shell then goes on as if it had not been asked.
 	'''
 	import argparse
-	import glob
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
 	parser.add_argument('--expand', action='store_true')
 	parser.add_argument('text')
@@ -4468,16 +4631,7 @@ def _cmd_edit(args):
 		return engine.suggest(Request('bash', before, '', ''))
 
 	def complete(before):
-		context = parse_context(before, '', engine.spec)
-		if context is None or not before.endswith(context.prefix):
-			return [], ''
-		response = engine.query(Request('bash', before, '', context.prefix))
-		texts = [candidate.text for candidate in response.candidates]
-		if 'files' in response.directives or 'dirs' in response.directives:
-			for path in sorted(glob.glob(context.value + '*')):
-				if 'files' in response.directives or os.path.isdir(path):
-					texts.append(context.prefix[:context.value_start] + path + ('/' if os.path.isdir(path) else ''))
-		return texts, context.prefix
+		return editor_completions(engine, before)
 
 	def pick(text, cursor, slot_only):
 		if 'history' not in cache:

@@ -148,16 +148,41 @@ def test_new_bash_with_the_editor_stays_silent(tmp_path):
 	assert _interactive_output(path, env, home) == baseline
 
 
-def test_install_turns_the_editor_on_and_off(tmp_path):
+def test_install_turns_the_editor_on_and_keeps_it_on(tmp_path):
 	env, home = make_home(tmp_path)
-	(home / '.bashrc').write_text('alias ll="ls -l"\n')
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
 	mc.install('bash', home=str(home), environ=env, editor=True)
-	assert 'export MSSH_COMPLETE_EDITOR=1\n' in (home / '.bashrc').read_text()
+	assert 'export MSSH_COMPLETE_EDITOR=1\n' in rc.read_text()
+	# installing again after an upgrade, without the word, keeps it on and says how to turn it off
 	code, messages = mc.install('bash', home=str(home), environ=env)
-	text = (home / '.bashrc').read_text()
-	assert 'MSSH_COMPLETE_EDITOR' not in text and text.count('# >>> mssh completion >>>') == 1
-	assert messages[-1] == 'updated the mssh block in ' + str(home / '.bashrc')
-	assert mc.install('bash', home=str(home), environ=env)[1][-1] == '{} already loads it'.format(home / '.bashrc')
+	text = rc.read_text()
+	assert 'export MSSH_COMPLETE_EDITOR=1\n' in text and text.count('# >>> mssh completion >>>') == 1
+	assert messages[-2:] == ['kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)', '{} already loads it'.format(rc)]
+	mc.uninstall('bash', home=str(home), environ=env)
+	mc.install('bash', home=str(home), environ=env)
+	assert 'MSSH_COMPLETE_EDITOR' not in rc.read_text()
+
+
+@pytest.mark.parametrize('change', ['no final newline', 'crlf', 'moved to the top'])
+def test_install_finds_its_block_however_the_file_was_edited(tmp_path, change):
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	mc.install('bash', home=str(home), environ=env)
+	text = rc.read_text()
+	if change == 'no final newline':
+		text = text.rstrip('\n')
+	elif change == 'crlf':
+		text = text.replace('\n', '\r\n')
+	else:
+		begin = text.index('# >>> mssh')
+		text = text[begin:] + text[:begin]
+	rc.write_bytes(text.encode())
+	mc.install('bash', home=str(home), environ=env)
+	assert rc.read_text().count('# <<< mssh completion <<<') == 1
+	mc.uninstall('bash', home=str(home), environ=env)
+	assert 'mssh completion' not in rc.read_text() and 'alias ll="ls -l"' in rc.read_text()
 
 
 def test_completion_command_takes_the_editor_word(monkeypatch):

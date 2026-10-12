@@ -242,3 +242,18 @@ def test_huge_typed_host_lists_are_not_offered():
 	knowledge = memory([line(NOW, '-su', hosts, '"uptime"')])
 	offered = texts(query('mssh node', knowledges=[knowledge]))
 	assert offered and all(len(text) <= 256 for text in offered)
+
+
+def test_bash_tab_escapes_command_words_bash_would_expand():
+	knowledges = [memory([line(NOW - number, '-su', 'node1', '"echo #HOST# ~"') for number in range(5)])]
+	assert texts(query('mssh node1 echo ', knowledges=knowledges)) == ['\\#HOST\\#']
+	# host ranges are mssh's: bash leaves them as typed
+	assert texts(query('mssh gpu', word='gpu'))[0] == 'gpu[01-16]'
+
+
+def test_file_names_inserted_as_they_are_get_escaped():
+	knowledges = [memory([line(NOW - number, "-su -f='my file.txt'", 'node1', '/tmp') for number in range(3)])]
+	# the picker inserts the text itself
+	assert texts(query('mssh -f my', knowledges=knowledges, flags={'insert': '1'})) == ['my\\ file.txt']
+	# bash's own TAB quotes file names itself
+	assert texts(query('mssh -f my', knowledges=knowledges)) == ['my file.txt']

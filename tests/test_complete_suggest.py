@@ -83,6 +83,20 @@ def test_unquoted_command_words_are_escaped():
 	assert ghost.text == 'ta\\|wc'
 
 
+def test_bash_escapes_what_it_would_expand_in_command_words():
+	# a comment, a home directory and a glob belong to the remote command, not to the local shell
+	history = [line(NOW - number, '-su', 'node1', '"echo #HOST# ~ *.log"') for number in range(5)]
+	assert suggest('mssh node1 ec', history=history).text == 'ho \\#HOST\\# \\~ \\*.log'
+
+
+def test_never_an_empty_suggestion():
+	# lsblk is the likeliest whole command, ls the likeliest word: ls is typed already
+	history = [line(NOW - number, '-su', 'node1', 'lsblk') for number in range(10)]
+	history += [line(NOW - 20 - number, '-su', 'node1', '"ls {}"'.format(name)) for number, name in enumerate('abcdefghij') for _ in range(5)]
+	ghost = suggest('mssh node1 ls', history=history)
+	assert ghost is None or ghost.text
+
+
 def test_zsh_escapes_glob_characters():
 	assert suggest('mssh gp', shell='zsh').text == 'u\\[01-16\\] "nvidia-smi"'
 
