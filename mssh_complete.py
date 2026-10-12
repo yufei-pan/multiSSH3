@@ -1007,3 +1007,549 @@ def expand_ranges(text, limit=100000):
 			return [text]
 	return out
 
+#%% ------------ Cache directory ----------------
+def _private_dir(path, create=True):
+	'''
+	Whether path is a directory only we control, creating it (mode 0700) if create.
+
+	Same rules as multiSSH3._private_dir: not a symlink, owned by us, not accessible to others.
+	'''
+	import stat
+	if create:
+		try:
+			os.mkdir(path, 0o700)
+		except FileExistsError:
+			pass
+		except OSError:
+			return False
+	try:
+		st = os.lstat(path)
+	except OSError:
+		return False
+	if not stat.S_ISDIR(st.st_mode):
+		return False
+	if not hasattr(os, 'getuid'):
+		return True
+	if st.st_uid != os.getuid() or st.st_mode & 0o022:
+		return False
+	if st.st_mode & 0o077:
+		if not create:
+			return False
+		try:
+			os.chmod(path, 0o700)
+			st = os.lstat(path)
+		except OSError:
+			return False
+	return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+def _owned_and_not_writable_by_others(path):
+	if not hasattr(os, 'getuid'):
+		return True
+	try:
+		st = os.stat(path)
+	except OSError:
+		return False
+	return st.st_uid == os.getuid() and not st.st_mode & 0o022
+
+def cache_dir(create=True):
+	'''
+	mssh's private cache directory, where unavailable_hosts.csv lives, or None.
+
+	$XDG_RUNTIME_DIR/multiSSH3 when the runtime dir is ours, else <tempdir>/multiSSH3-<uid>,
+	exactly as multiSSH3._unavailable_hosts_file_path picks it.
+	'''
+	import tempfile
+	if hasattr(os, 'getuid'):
+		user_id = os.getuid()
+	else:
+		import getpass
+		user_id = getpass.getuser()
+	candidates = []
+	runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
+	if runtime_dir and _owned_and_not_writable_by_others(runtime_dir):
+		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
+	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
+	for directory in candidates:
+		if _private_dir(directory, create):
+			return directory
+	return None
+
+def _debug(message):
+	'''Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB).'''
+	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
+		return
+	directory = cache_dir()
+	if directory is None:
+		return
+	path = os.path.join(directory, 'complete.log')
+	try:
+		if os.path.getsize(path) > 256 * 1024:
+			with open(path, 'rb') as f:
+				f.seek(-128 * 1024, os.SEEK_END)
+				kept = f.read()
+			with open(path, 'wb') as f:
+				f.write(kept)
+	except OSError:
+		pass
+	try:
+		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a') as f:
+			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
+	except OSError:
+		pass
+
+#%% ------------ Index sources ----------------
+def read_hosts_file(path):
+	'''name -> address from a hosts file.'''
+	hosts = {}
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			for line in f:
+				fields = line.split('#', 1)[0].split()
+				for name in fields[1:]:
+					hosts.setdefault(name, fields[0])
+	except OSError:
+		pass
+	return hosts
+
+def read_ssh_config(path, base_dir, names, users, read):
+	'''
+	Add the Host names (no patterns) and User values of an ssh config file and the files it Includes.
+
+	Args:
+		path (str): The config file
+		base_dir (str): Where relative Include paths start (~/.ssh or /etc/ssh)
+		names (set), users (set): Filled in
+		read (list): Paths read so far, appended to (also stops Include loops)
+	'''
+	import glob
+	path = os.path.expanduser(path)
+	if path in read or len(read) > 64:
+		return
+	try:
+		f = open(path, encoding='utf-8', errors='replace')
+	except OSError:
+		return
+	read.append(path)
+	with f:
+		for line in f:
+			line = line.strip()
+			if not line or line.startswith('#'):
+				continue
+			key, _, value = line.replace('=', ' ', 1).partition(' ')
+			key = key.lower()
+			value = value.strip()
+			if key == 'host':
+				for pattern in value.split():
+					pattern = pattern.strip('"')
+					if pattern and not any(char in pattern for char in '*?!'):
+						names.add(pattern)
+			elif key == 'user' and value:
+				users.add(value.strip('"'))
+			elif key == 'include':
+				for pattern in value.split():
+					pattern = os.path.expanduser(pattern.strip('"'))
+					if not os.path.isabs(pattern):
+						pattern = os.path.join(base_dir, pattern)
+					for included in sorted(glob.glob(pattern)):
+						read_ssh_config(included, base_dir, names, users, read)
+
+def read_known_hosts(path):
+	'''Host names in a known_hosts file; hashed entries and patterns are skipped.'''
+	names = set()
+	try:
+		with open(os.path.expanduser(path), encoding='utf-8', errors='replace') as f:
+			for line in f:
+				fields = line.split()
+				if fields and fields[0].startswith('@'):
+					fields = fields[1:]
+				if not fields or fields[0].startswith('#'):
+					continue
+				for entry in fields[0].split(','):
+					if entry.startswith('|'):
+						continue
+					if entry.startswith('['):
+						entry = entry[1:].split(']', 1)[0]
+					if entry and not any(char in entry for char in '*?!'):
+						names.add(entry)
+	except OSError:
+		pass
+	return names
+
+def read_arp():
+	'''IPv4 addresses in the neighbour (ARP) table.'''
+	addresses = set()
+	try:
+		with open('/proc/net/arp') as f:
+			next(f, None)
+			for line in f:
+				fields = line.split()
+				# IP address, HW type, Flags, HW address, ...: flags 0x0 is an incomplete entry
+				if len(fields) >= 4 and fields[2] != '0x0':
+					addresses.add(fields[0])
+		return addresses
+	except OSError:
+		pass
+	if sys.platform == 'darwin':
+		import subprocess
+		try:
+			output = subprocess.run(['arp', '-an'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2).stdout
+		except (OSError, subprocess.SubprocessError):
+			return addresses
+		for line in output.decode('utf-8', 'replace').splitlines():
+			if '(' in line and ')' in line and 'incomplete' not in line:
+				addresses.add(line.split('(', 1)[1].split(')', 1)[0])
+	return addresses
+
+def read_history(path, start=0):
+	'''
+	The complete lines of a history file from byte offset start.
+
+	Returns:
+		tuple: (lines, offset after the last complete line, inode or None)
+	'''
+	try:
+		with open(path, 'rb') as f:
+			inode = os.fstat(f.fileno()).st_ino
+			f.seek(start)
+			data = f.read()
+	except OSError:
+		return [], start, None
+	cut = data.rfind(b'\n') + 1
+	text = data[:cut].decode('utf-8', 'surrogateescape')
+	return [line for line in text.split('\n') if line], start + cut, inode
+
+def _is_ip(text):
+	import ipaddress
+	try:
+		ipaddress.ip_address(text)
+		return True
+	except ValueError:
+		return False
+
+_ALIAS_VALUE_CHARS = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-,[]@*?:$')
+
+def collect_aliases(mssh, history_tokens, known):
+	'''
+	Host aliases: env file variables that look like host lists, and environment variables used as hosts.
+
+	An env file variable counts when it was used as a host, when its value holds a "," or a
+	range, or when everything it expands to is an IP address or a known host. Values with other
+	characters (paths, prompts, ...) never count.
+
+	Returns:
+		dict: name -> (source, member host names)
+	'''
+	aliases = {}
+	try:
+		variables = mssh.readEnvFromFile()
+	except Exception:
+		variables = {}
+	for name, value in variables.items():
+		if not name.isidentifier() or not value or not set(value) <= _ALIAS_VALUE_CHARS:
+			continue
+		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
+		if not members or members == [name]:
+			continue
+		if name in history_tokens or ',' in value or '[' in value or all(_is_ip(member) or member in known for member in members):
+			aliases[name] = ('env_file', members)
+	for name in history_tokens:
+		if name in aliases or not name.isidentifier() or name not in os.environ:
+			continue
+		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
+		if members and members != [name]:
+			aliases[name] = ('env', members)
+	return aliases
+
+def file_signature(path):
+	'''[path, inode, size, mtime_ns] of a file, or [path] if it cannot be read.'''
+	try:
+		st = os.stat(path)
+	except OSError:
+		return [path]
+	return [path, str(st.st_ino), str(st.st_size), str(st.st_mtime_ns)]
+
+def _import_mssh():
+	'''Import multiSSH3, also when both files were copied somewhere by hand.'''
+	here = os.path.dirname(os.path.abspath(__file__))
+	if here not in sys.path:
+		sys.path.insert(0, here)
+	import multiSSH3
+	return multiSSH3
+
+#%% ------------ Building the index ----------------
+MAX_RECORDS = 50000
+
+def serialize_knowledge(memory):
+	'''
+	The features, records, postings and feature weight rows of the heaviest MAX_RECORDS records.
+
+	Returns:
+		tuple: (features, record rows, posting rows, fweights row)
+	'''
+	records = sorted(memory.records, key=lambda record: -record[0])[:MAX_RECORDS]
+	features = sorted({feature for _, record_features in records for feature in record_features if safe_field(feature)})
+	feature_id = {feature: number for number, feature in enumerate(features)}
+	record_rows = []
+	postings = [[] for _ in features]
+	weights = [0.0] * len(features)
+	for rid, (weight, record_features) in enumerate(records):
+		ids = sorted(feature_id[feature] for feature in record_features if feature in feature_id)
+		record_rows.append(['%.6g' % weight] + [str(number) for number in ids])
+		for number in ids:
+			postings[number].append(str(rid))
+			weights[number] += weight
+	return features, record_rows, postings, ['%.6g' % weight for weight in weights]
+
+def build_index(directory, now=None, mssh=None):
+	'''
+	Read every source and write the index into directory.
+
+	Returns:
+		str: The index path
+	'''
+	now = time.time() if now is None else now
+	mssh = mssh or _import_mssh()
+	spec = spec_from_parser(mssh.get_parser())
+	history_path = os.path.expanduser(mssh.DEFAULT_HISTORY_FILE)
+	lines, offset, inode = read_history(history_path)
+	memory = MemoryKnowledge()
+	memory.add_history(lines, spec, now)
+	features, record_rows, postings, fweights = serialize_knowledge(memory)
+	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
+	hosts = {}
+	def add(name, source, address=''):
+		if not name or not safe_field(name) or any(char in name for char in ' \t,'):
+			return
+		entry = hosts.setdefault(name, [0, ''])
+		entry[0] |= source
+		if address and not entry[1]:
+			entry[1] = address
+	for name, address in read_hosts_file(mssh.DEFAULT_HOST_FILE).items():
+		add(name, SRC_HOSTS_FILE, address)
+	ssh_names, users, ssh_paths = set(), set(), []
+	read_ssh_config('~/.ssh/config', os.path.expanduser('~/.ssh'), ssh_names, users, ssh_paths)
+	read_ssh_config('/etc/ssh/ssh_config', '/etc/ssh', ssh_names, users, ssh_paths)
+	for name in ssh_names:
+		add(name, SRC_SSH_CONFIG)
+	for name in read_known_hosts('~/.ssh/known_hosts'):
+		add(name, SRC_KNOWN_HOSTS)
+	for address in read_arp():
+		add(address, SRC_ARP, address)
+	aliases = collect_aliases(mssh, history_tokens, set(hosts) | history_tokens)
+	for name in history_tokens:
+		if name not in aliases and '[' not in name:
+			add(name, SRC_HISTORY)
+	for _, members in aliases.values():
+		for member in members:
+			add(member, SRC_ALIAS)
+	names = sorted(hosts)
+	host_number = {name: number for number, name in enumerate(names)}
+	alias_names = sorted(aliases)
+	alias_rows = [[aliases[name][0]] + [str(host_number[member]) for member in aliases[name][1] if member in host_number] for name in alias_names]
+	group_rows = []
+	for text in mssh.compact_hostnames_local(names):
+		if '[' in text and safe_field(text):
+			members = [host_number[member] for member in getattr(mssh, '__expand_hostname')(text, validate=False) if member in host_number]
+			if len(members) > 1:
+				group_rows.append([text] + [str(number) for number in sorted(members)])
+	unavailable = []
+	unavailable_path = mssh._unavailable_hosts_file_path(create=False)
+	if unavailable_path:
+		unavailable = sorted(name for name in mssh._read_unavailable_hosts_file(unavailable_path) if safe_field(name))
+	env_files = [os.path.expanduser(os.path.expandvars(path)) for path in (mssh._env_files or mssh.DEFAULT_ENV_FILES)]
+	sources = [history_path, mssh.DEFAULT_HOST_FILE, os.path.expanduser('~/.ssh/config'), '/etc/ssh/ssh_config',
+		os.path.expanduser('~/.ssh/known_hosts')] + ssh_paths + env_files + [os.path.expanduser(path) for path in mssh.CONFIG_FILE_CHAIN]
+	if unavailable_path:
+		sources.append(unavailable_path)
+	sources += [os.path.abspath(mssh.__file__), os.path.abspath(__file__)]
+	seen = set()
+	source_rows = []
+	for path in sources:
+		if path not in seen and safe_field(path):
+			seen.add(path)
+			source_rows.append(file_signature(path))
+	header = {
+		'built': repr(now),
+		'arp_at': repr(now),
+		'engine': version,
+		'mssh_version': str(getattr(mssh, 'version', '')),
+		'history': history_path,
+		'history_offset': str(offset),
+		'history_ino': str(inode or ''),
+	}
+	sections = [
+		('spec', spec.to_rows()),
+		('config', [['users'] + sorted(user for user in users if safe_field(user))]),
+		('sources', source_rows),
+		('features', [features]),
+		('fweights', [fweights]),
+		('postings', postings),
+		('records', record_rows),
+		('host_names', [names]),
+		('host_meta', [[str(hosts[name][0]), hosts[name][1]] for name in names]),
+		('alias_names', [alias_names]),
+		('aliases', alias_rows),
+		('groups', group_rows),
+		('unavailable', [unavailable]),
+	]
+	path = os.path.join(directory, INDEX_NAME)
+	write_nsv(path, header, sections)
+	return path
+
+#%% ------------ Freshness ----------------
+TAIL_LIMIT_BYTES = 64 * 1024
+TAIL_LIMIT_ENTRIES = 500
+ARP_TTL = 300.0
+LOCK_NAME = 'complete-index.lock'
+LOCK_STALE = 60.0
+FIRST_BUILD_BUDGET = 2.0
+
+def check_freshness(index, now):
+	'''
+	Whether the index still matches its sources.
+
+	Returns:
+		tuple: ('fresh' | 'tail' | 'rebuild', history lines appended since the index was built).
+			With 'tail' the appended lines are few enough to merge in memory.
+	'''
+	history = index.header.get('history', '')
+	for number in range(index.count('sources')):
+		row = index.row('sources', number)
+		if row and row[0] != history and file_signature(row[0]) != row:
+			return 'rebuild', []
+	try:
+		if now - float(index.header.get('arp_at', '0')) > ARP_TTL:
+			return 'rebuild', []
+	except ValueError:
+		return 'rebuild', []
+	try:
+		offset = int(index.header.get('history_offset', '0'))
+	except ValueError:
+		return 'rebuild', []
+	try:
+		st = os.stat(history)
+	except OSError:
+		return ('rebuild', []) if offset else ('fresh', [])
+	if str(st.st_ino) != index.header.get('history_ino', '') and offset:
+		return 'rebuild', []
+	if st.st_size < offset:
+		return 'rebuild', []
+	if st.st_size == offset:
+		return 'fresh', []
+	if st.st_size - offset > TAIL_LIMIT_BYTES:
+		return 'rebuild', []
+	lines, _, _ = read_history(history, offset)
+	if len(lines) > TAIL_LIMIT_ENTRIES:
+		return 'rebuild', []
+	return 'tail', lines
+
+def take_lock(path, now=None):
+	'''Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).'''
+	now = time.time() if now is None else now
+	for _ in range(2):
+		try:
+			fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+		except FileExistsError:
+			try:
+				age = now - os.stat(path).st_mtime
+			except OSError:
+				continue
+			if age < LOCK_STALE:
+				return False
+			try:
+				os.unlink(path)
+			except OSError:
+				pass
+			continue
+		except OSError:
+			return False
+		with os.fdopen(fd, 'w') as f:
+			f.write('{} {}\n'.format(os.getpid(), int(now)))
+		return True
+	return False
+
+def spawn_rebuild(directory):
+	'''Start a detached `rebuild` unless one is running. Returns whether one was started.'''
+	lock = os.path.join(directory, LOCK_NAME)
+	if not take_lock(lock):
+		return False
+	import subprocess
+	try:
+		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), 'rebuild', '--lock', lock],
+			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+			close_fds=True, start_new_session=True, cwd='/')
+	except OSError as e:
+		_debug('cannot start rebuild: {!r}'.format(e))
+		try:
+			os.unlink(lock)
+		except OSError:
+			pass
+		return False
+	return True
+
+def _load_index(path):
+	try:
+		return NsvIndex.load(path)
+	except (OSError, IndexCorrupt, ValueError) as e:
+		_debug('index not usable: {!r}'.format(e))
+		return None
+
+def load_for_query(directory, now):
+	'''
+	The index to answer from and the history lines it is missing.
+
+	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one.
+
+	Returns:
+		tuple: (NsvIndex or None, history tail lines)
+	'''
+	path = os.path.join(directory, INDEX_NAME)
+	index = _load_index(path)
+	if index is None:
+		spawn_rebuild(directory)
+		until = time.monotonic() + FIRST_BUILD_BUDGET
+		while index is None and time.monotonic() < until:
+			time.sleep(0.05)
+			if os.path.exists(path):
+				index = _load_index(path)
+		if index is None:
+			return None, []
+	state, tail = check_freshness(index, now)
+	if state == 'rebuild':
+		spawn_rebuild(directory)
+	return index, tail
+
+#%% ------------ Command line ----------------
+def _cmd_rebuild(args):
+	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	try:
+		directory = cache_dir()
+		if directory is None:
+			print('mssh-complete: no private cache directory', file=sys.stderr)
+			return 1
+		print(build_index(directory))
+		return 0
+	except Exception as e:
+		_debug('rebuild failed: {!r}'.format(e))
+		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
+		return 1
+	finally:
+		if lock:
+			try:
+				os.unlink(lock)
+			except OSError:
+				pass
+
+def main(argv=None):
+	argv = sys.argv[1:] if argv is None else argv
+	command = argv[0] if argv else ''
+	if command == 'rebuild':
+		return _cmd_rebuild(argv[1:])
+	if command in ('-V', '--version'):
+		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
+		return 0
+	print('usage: mssh-complete rebuild', file=sys.stderr)
+	return 2
+
+if __name__ == '__main__':
+	sys.exit(main())

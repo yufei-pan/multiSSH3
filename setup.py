@@ -18,6 +18,7 @@ setup(
             'multissh=multiSSH3:main',
             'multissh3=multiSSH3:main',
             'multiSSH3=multiSSH3:main',
+            'mssh-complete=mssh_complete:main',
         ],
     },
     classifiers=[
