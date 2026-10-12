@@ -2776,6 +2776,14 @@ def apply_pick(request, picker, word, context):
 	return before + request.after, len(before)
 
 #%% ------------ Line editor ----------------
+def _completed_word_end(before):
+	'''What follows a word completed at the end of before: its closing quote and a space, nothing after a directory.'''
+	tokens = lex(before)
+	open_quote = tokens[-1].open_quote if tokens else ''
+	if open_quote:
+		return ('"' if open_quote == '"' else "'") + ' '
+	return '' if before.endswith('/') else ' '
+
 _PROMPT_ESCAPES = None
 
 def expand_prompt(ps1, environ=None, now=None):
@@ -3004,7 +3012,7 @@ class LineEditor(object):
 		if len(common) > len(word) and common.startswith(word):
 			self._insert(common[len(word):])
 			if len(set(texts)) == 1 and self.cursor == len(self.text):
-				self._insert(' ')
+				self._insert(_completed_word_end(self.text))
 		else:
 			self._pick(True)
 

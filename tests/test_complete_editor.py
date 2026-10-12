@@ -131,6 +131,16 @@ def test_tab_inserts_the_common_part_then_a_space():
 	assert edit.text == 'mssh gpu01 '
 
 
+def test_tab_ends_a_unique_match_as_the_picker_does():
+	# no space after a directory; inside an open quote, the quote is closed first
+	edit = editor('mssh -f ', complete=lambda before: (['dir/'], 'di'))
+	keys(edit, 'd', 'i', 'tab')
+	assert edit.text == 'mssh -f dir/'
+	edit = editor('mssh host "', complete=lambda before: (['ls -la'], 'ls -l'))
+	keys(edit, 'l', 's', ' ', '-', 'l', 'tab')
+	assert edit.text == 'mssh host "ls -la" '
+
+
 def test_tab_with_nothing_to_insert_opens_the_slot_menu():
 	opened = []
 
