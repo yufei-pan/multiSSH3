@@ -26,6 +26,17 @@ def test_pretty_format_table_with_header():
 	assert "1" in out
 
 
+def test_pretty_format_table_pads_wide_characters_by_display_width():
+	# East Asian wide characters take two terminal columns, a combining mark none.
+	out = multiSSH3.pretty_format_table([["name", "v"], ["中文", "1"], ["abcd", "2"], ["e\u0301", "3"]])
+	assert out == "name | v\n-----+--\n中文 | 1\nabcd | 2\ne\u0301    | 3\n"
+
+
+def test_pretty_format_table_pads_colored_cells_by_visible_width():
+	out = multiSSH3.pretty_format_table([["k", "v"], ["\x1b[31mred\x1b[0m", "1"], ["plain", "2"]])
+	assert out == "k     | v\n------+--\n\x1b[31mred\x1b[0m   | 1\nplain | 2\n"
+
+
 def test_get_terminal_size_fallback(monkeypatch):
 	import os as std_os
 

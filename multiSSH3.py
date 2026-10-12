@@ -892,7 +892,8 @@ def replace_magic_strings(string,keys,value,case_sensitive=False):
 	return string
 
 def pretty_format_table(data, delimiter = '\t',header = None):
-	version = 1.11
+	import unicodedata
+	version = 1.12
 	_ = version
 	if not data:
 		return ''
@@ -917,30 +918,21 @@ def pretty_format_table(data, delimiter = '\t',header = None):
 		data = tempData
 	data = [[str(item) for item in row] for row in data]
 	num_cols = len(data[0])
-	col_widths = [0] * num_cols
-	# Calculate the maximum width of each column
-	for c in range(num_cols):
-		#col_widths[c] = max(len(row[c]) for row in data)
-		# handle ansii escape sequences
-		col_widths[c] = max(len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',row[c])) for row in data)
+	# Widths count terminal columns: an East Asian wide character takes two,
+	# a combining mark and an ANSI color code none.
+	def char_width(ch):
+		if ch < '\u0300':  # ASCII and Latin-1
+			return 1
+		if unicodedata.combining(ch) or unicodedata.category(ch) in ('Mn', 'Me', 'Cf') or '\u1160' <= ch <= '\u11ff':
+			return 0
+		return 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+	def visible_len(s):
+		if '\x1b' in s:
+			s = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', s)
+		if not s or max(s) < '\u0300':
+			return len(s)
+		return sum(char_width(ch) for ch in s)
 	if header:
-		header_widths = [len(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', col)) for col in header]
-		col_widths = [max(col_widths[i], header_widths[i]) for i in range(num_cols)]
-	# Build the row format string
-	row_format = ' | '.join('{{:<{}}}'.format(width) for width in col_widths)
-	# Print the header
-	if not header:
-		header = data[0]
-		outTable = []
-		outTable.append(row_format.format(*header))
-		outTable.append('-+-'.join('-' * width for width in col_widths))
-		for row in data[1:]:
-			# if the row is empty, print an divider
-			if not any(row):
-				outTable.append('-+-'.join('-' * width for width in col_widths))
-			else:
-				outTable.append(row_format.format(*row))
-	else:
 		# pad / truncate header to appropriate length
 		if isinstance(header,str):
 			header = header.split(delimiter)
@@ -948,15 +940,19 @@ def pretty_format_table(data, delimiter = '\t',header = None):
 			header += ['']*(num_cols-len(header))
 		elif len(header) > num_cols:
 			header = header[:num_cols]
-		outTable = []
-		outTable.append(row_format.format(*header))
-		outTable.append('-+-'.join('-' * width for width in col_widths))
-		for row in data:
-			# if the row is empty, print an divider
-			if not any(row):
-				outTable.append('-+-'.join('-' * width for width in col_widths))
-			else:
-				outTable.append(row_format.format(*row))
+		rows = data
+	else:
+		header = data[0]
+		rows = data[1:]
+	# Calculate the maximum width of each column
+	col_widths = [max(visible_len(row[c]) for row in [header] + rows) for c in range(num_cols)]
+	def format_row(row):
+		return ' | '.join(cell + ' ' * (width - visible_len(cell)) for cell, width in zip(row, col_widths))
+	divider = '-+-'.join('-' * width for width in col_widths)
+	outTable = [format_row(header), divider]
+	for row in rows:
+		# if the row is empty, print an divider
+		outTable.append(format_row(row) if any(row) else divider)
 	return '\n'.join(outTable) + '\n'
 
 def join_threads(threads=...,timeout=None):
