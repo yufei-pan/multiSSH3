@@ -50,7 +50,9 @@ Each later sub-project gets its own spec → plan → implementation cycle.
 | Performance | Observed, not gated. ~100 ms per TAB acceptable for now. Safety deadlines exist only to protect the prompt |
 | Quality | Replay evaluation of keystroke savings and candidate rank is the primary metric; a TAB that alters or deletes operator-typed text must never occur |
 | Python floor | Same as multiSSH3/cas-toolbox (`>=3.6` syntax: no walrus, no dataclasses) |
-| Shell test matrix | Docker images: modern (Debian trixie) and legacy (Rocky Linux 8 + EPEL). Tested floors: bash 4.4, zsh 5.5, fish 3.3, Python 3.6. Inside the matrix, a missing shell is a failure, not a skip |
+| Shell test matrix | Docker images: modern (Debian trixie), legacy (Rocky Linux 8 + EPEL) and CentOS 7 (bash only). Tested floors: bash 4.2, bash-completion 2.1, zsh 5.5, fish 3.3, Python 3.6. Inside the matrix, a missing required shell is a failure, not a skip |
+| CentOS 7 | bash compatibility only (bash 4.2.46, bash-completion 2.1, Python 3.6.8); its zsh 5.0.2 and fish 2.3.1 are not supported |
+| fish < 3.0 | Unsupported: the glue registers nothing and the installer refuses with a message |
 | rc-file safety | Installed rc blocks source the glue only if it is readable and discard its stderr, so a broken or missing glue file can never print in a new shell |
 
 ## Context (existing code this builds on)
@@ -109,8 +111,8 @@ MSSHC1\0<shell>\0<shell_version>\0<flags>\0<before_cursor>\0<after_cursor>\0<wor
 <shell history tail, one entry per line>
 ```
 
-- `<before_cursor>` / `<after_cursor>`: the command line split at the cursor (bash: `${COMP_LINE:0:COMP_POINT}` and the rest). Sending text instead of an index avoids the character-vs-byte ambiguity of `COMP_POINT`.
-- `<word>`: the shell's own notion of the word being replaced (bash `$2`, zsh `$PREFIX`, fish current token). Candidates are returned relative to exactly this word.
+- `<before_cursor>` / `<after_cursor>`: the command line split at the cursor (bash: `${COMP_LINE:0:COMP_POINT}` and the rest). Sending text instead of an index keeps the unit question inside the glue. In a UTF-8 locale, bash 4.2 counts `COMP_POINT` in **bytes** while its substring expansion counts characters; bash 4.3 and later count both in characters (verified on 4.2.46, 4.3.48, 4.4.20/23, 5.0, 5.1, 5.2). The bash glue therefore slices inside a function with `local LC_ALL=C` on bash 4.2, which makes the slice byte-based and restores the locale on return.
+- `<word>`: the shell's own notion of the word being replaced (bash `$2`, zsh `$PREFIX`, fish `commandline -ct`). Candidates are returned relative to exactly this word. This word is not uniform across shells and versions, so the engine takes it as given: fish passes the raw token including an opening quote (`"a | gré`) and the engine dequotes it; bash 4.2 passes `@no` for `root@no` where bash 5.2 passes `no`, so the engine never assumes `@` splits words.
 - `<flags>`: space-separated `key=value` capability flags: `nosort=0|1`, `icase=0|1` (readline `completion-ignore-case`), `ble=0|1`, `zas=0|1` (zsh-autosuggestions), `term=<TERM>`. SP1 uses `nosort` and `icase`; the rest are recorded for SP2.
 
 **Response** (stdout), one record per line, terminated by a single `\0`:
@@ -272,21 +274,24 @@ Not indexed. Each request carries the shell's in-memory tail (default 1000 entri
   1. Build the request: before/after cursor text, `$2`, bash version, flags (`nosort` when bash ≥ 4.4; `icase` from `bind -v`, read once when the glue loads), and `fc -ln -1000`.
   2. `IFS= read -r -d '' -t "$deadline" resp < <(engine query 2>/dev/null)`. On timeout, nonzero status, or a bad first line: return with empty `COMPREPLY`.
   3. Apply directives with `compopt`; fill `COMPREPLY` from `C` records.
-  4. For an `X` record: load the command's completion (bash-completion's `_comp_load` in ≥ 2.12, `__load_completion` in older versions), run its function with local synthetic `COMP_WORDS`, `COMP_CWORD`, `COMP_LINE`, `COMP_POINT`, prepend `<prefix>` to each result, and merge with the engine's candidates (deduplicated, engine order first). Without bash-completion: `compgen -c` for the command word, `compgen -f` for its arguments.
-- Verified readline behavior this design relies on (bash 5.2, pty probe): inside an open quote, `$2` is the dequoted inner text (`"lscp` → `lscp`; `"a | gre` → `a | gre`); `=` and `@` break words (`-f=/et` → `/et`; `root@no` → `no`); `,` does not break words; `COMP_POINT` counts characters in a UTF-8 locale.
+  4. For an `X` record: load the command's completion with the first bash-completion loader that exists — `_comp_load` (2.12+), `__load_completion` (2.2–2.11), `_completion_loader` (2.0–2.1) — run its function with local synthetic `COMP_WORDS`, `COMP_CWORD`, `COMP_LINE`, `COMP_POINT`, prepend `<prefix>` to each result, and merge with the engine's candidates (deduplicated, engine order first). Without bash-completion: `compgen -c` for the command word, `compgen -f` for its arguments.
+- Verified readline behavior this design relies on (pty probes on bash 4.2.46 and 5.2.37): inside an open quote, `$2` is the dequoted inner text (`"lscp` → `lscp`; `"a | gre` → `a | gre`); `=` breaks words (`-f=/et` → `/et`); `,` does not break words; `@` differs by version (see Protocol).
+- The glue is written for bash 4.2: no namerefs (`local -n`, 4.3), no `${var@Q}` (4.4), no `mapfile -d` (4.4), no negative array subscripts (4.3). `compopt -o nosort` is used only on bash ≥ 4.4; older bash shows candidates alphabetically. Verified on 4.2: fractional `read -t` on a process substitution aborts on time; `compopt`, `mapfile`, associative arrays and `fc -ln` work.
 - SP1 adds no key bindings, readline variables, `PROMPT_COMMAND` or traps.
 
 ### zsh
 
 - The glue file defines `_mssh` and calls `compdef _mssh mssh mssh3 multissh multissh3 multiSSH3` only if `compdef` exists. It never runs `compinit`.
-- Request from `$LBUFFER` / `$RBUFFER`, `$PREFIX`, `fc -ln -1000`; same `read -t` deadline.
+- Request from `$LBUFFER` / `$RBUFFER`, `$PREFIX`, `fc -ln -1000`.
+- Deadline: the engine is opened on a file descriptor (`exec {fd}< <(engine query)`) and read with a timeout (`zselect -t` + `sysread`, or `read -t -u $fd`), then the descriptor is closed. `read -t` on a redirected process substitution (`read -t 0.2 x < <(…)`) ignores the timeout in zsh — verified on 5.0.2 and 5.9, where it waited for the producer — so it must not be used.
 - Candidates are added with `compadd -V <group> -d <descriptions>` in rank order, grouped as aliases, host groups, hosts, history, options, values.
 - Delegation: quoted commands use `compset -q`; then words are shifted to the remote command and `_normal` runs.
 
 ### fish
 
 - `complete -c <name> -f -a '(__mssh_complete)'` for each of the five names.
-- Request from `commandline -cp`, `commandline -p` with `commandline -C`, `commandline -ct`, and `history -n 1000`. Candidates are printed as `text\tdescription`.
+- Request from `commandline -cp`, `commandline -p` with `commandline -C` (characters), `commandline -ct` (raw token), and `history -n 1000`. Candidates are printed as `text\tdescription`; the glue splits engine records with `string split`.
+- Requires fish ≥ 3.0. fish 2.3.1 (CentOS 7 EPEL) lacks what the glue needs (`string split` produced nothing, no `string unescape`, `history` options rejected and plain `history` empty inside a completion function), so on fish < 3.0 the glue file returns before registering anything. Verified working on 3.3.1 and 4.0.2.
 - Delegation: `complete -C "<remote command line>"`.
 - fish's built-in autosuggestions consume these completions automatically.
 
@@ -297,7 +302,7 @@ The glue calls `mssh-complete query` if `mssh-complete` is on `PATH` when the gl
 ## Installation
 
 - `mssh --completion bash|zsh|fish` prints the glue to stdout.
-- `mssh --completion install [SHELL]` detects the shell from the parent process (`/proc/<ppid>/comm`, falling back to `$SHELL`) unless given, writes the files below, and prints every path it wrote or changed. It is idempotent and refuses to overwrite a file it did not write (files carry a marker line with the glue version).
+- `mssh --completion install [SHELL]` detects the shell from the parent process (`/proc/<ppid>/comm`, falling back to `$SHELL`) unless given, writes the files below, and prints every path it wrote or changed. It is idempotent and refuses to overwrite a file it did not write (files carry a marker line with the glue version). It refuses, with a message naming the minimum version, when the detected shell is below the supported floor (fish < 3.0).
 - `mssh --completion uninstall [SHELL]` removes exactly what install wrote, including marked rc-file blocks, leaving the rc file byte-for-byte as it was before install.
 - Marked rc-file blocks are fail-safe: bash `[ -r F ] && . F 2>/dev/null`, zsh `[[ -r F ]] && source F 2>/dev/null`. A missing, unreadable or broken glue file therefore produces no output and no error in a new shell. The glue file itself only defines functions and registers completion when sourced; it runs no Python and no external commands at shell start.
 - Locations:
@@ -359,7 +364,7 @@ pytest, plain `test_*` functions, in `tests/`. On a developer machine, real-shel
   - the replay evaluation reports zero TABs that alter or delete operator-typed text on the synthetic datasets.
 - **Index:** NSV round-trip; lazy decoding touches only needed rows; staleness detected for each source kind; inline tail merge; scrub threshold triggers a rebuild; corrupt and truncated snapshots handled; atomic replacement; rebuild lock and stale-lock recovery; cache-dir agreement with `multiSSH3`.
 - **`multiSSH3.py` additions:** `expand_hostnames_local()` (ranges, env and env-file aliases, unresolved list, no DNS calls, no side effects on failure counters); `--completion` printing, install, uninstall (into a temporary `HOME`), and the missing-module hint.
-- **Real shells in a pty** (same harness as the design probe): bash with and without bash-completion; the probe's quoting and word-break cases; quote closed on a unique match; delegation using a deterministic fake command with its own registered completion function; timeout fallback (engine replaced by a sleeper) still yields filename completion within the deadline; no stray output on screen; installed glue adds no measurable shell-startup cost. zsh and fish equivalents of each case.
+- **Real shells in a pty** (same harness as the design probe): bash with and without bash-completion; the probe's quoting and word-break cases; multibyte text before a mid-line cursor (the bash 4.2 byte-cursor case); the `root@no` word difference between bash versions; a slow engine hitting the zsh deadline; quote closed on a unique match; delegation using a deterministic fake command with its own registered completion function; timeout fallback (engine replaced by a sleeper) still yields filename completion within the deadline; no stray output on screen; installed glue adds no measurable shell-startup cost. zsh and fish equivalents of each case.
 - **Shell start safety** (every shell, every matrix image): after `mssh --completion install`, a fresh interactive shell prints zero bytes beyond its prompt and exits 0. The same holds with the glue file deleted, made unreadable, or replaced with a syntax error, and with the engine missing or crashing. After `uninstall`, rc files are byte-for-byte identical to before install.
 - **Regression:** the existing suite (269 tests) keeps passing.
 
@@ -371,15 +376,19 @@ Real-shell behavior differs across shell and bash-completion versions, and the d
 |---|---|---|---|---|---|
 | modern: `debian:trixie-slim` | 5.2.37 | 2.16 (`_comp_load`, `_comp_command_offset`) | 5.9 | 4.0.2 | 3.13.5 |
 | legacy: `rockylinux:8` + EPEL | 4.4.20 | 2.7 (`__load_completion`, `_command_offset`) | 5.5.1 | 3.3.1 | 3.6.8 (`python36`) |
+| centos7: `centos:7` (bash only) | 4.2.46 | 2.1 (`_completion_loader`, `_command_offset`) | — | — | 3.6.8 (`python3`) |
 
 (Versions as available on 2026-10-11.)
 
-- `tests/shells/Dockerfile.modern` and `tests/shells/Dockerfile.legacy` install the shells, bash-completion, Python and a pytest that supports the image's Python (pytest 7.0.x for 3.6).
+- `tests/shells/Dockerfile.modern`, `Dockerfile.legacy` and `Dockerfile.centos7` install the shells, bash-completion, Python and a pytest that supports the image's Python (pytest 7.0.x for 3.6).
+- CentOS 7 is end-of-life: its Dockerfile points the CentOS repositories at `vault.centos.org` and EPEL at `archives.fedoraproject.org/pub/archive/epel/7`, and installs `which` (present on real hosts, missing from the image).
+- CentOS 7 has no `C.UTF-8` locale, and bash silently falls back to byte semantics everywhere, which hides the byte-cursor case. Tests in that image run with `LANG=en_US.UTF-8`.
+- In the centos7 image `MSSH_REQUIRE_SHELLS=bash`; in the other two `MSSH_REQUIRE_SHELLS=bash,zsh,fish`.
 - `tests/shells/run_matrix.sh` builds the images (cached by Docker), then runs the tests in each with the repository bind-mounted read-only and `HOME` set to a fresh temporary directory, so nothing touches the host's shell configuration.
-- Inside the matrix, `MSSH_REQUIRE_SHELLS=bash,zsh,fish` turns any "shell not installed" skip into a failure, so zsh and fish support cannot pass without being run.
-- "bash without bash-completion" runs in both images by not loading bash-completion.
+- Inside the matrix, `MSSH_REQUIRE_SHELLS` turns any "required shell not installed" skip into a failure, so zsh and fish support cannot pass without being run.
+- "bash without bash-completion" runs in every image by not loading bash-completion.
 - The matrix must pass before any change to glue, install or the protocol is merged; for engine-only changes the local suite is enough.
-- Shell versions older than the legacy image (e.g. bash 4.2 on EL7) are best effort and not tested.
+- Versions below the tested floors (bash < 4.2, zsh < 5.5, fish 3.0–3.2) are best effort and not tested; fish < 3.0 is unsupported.
 
 ## Out of scope for SP1
 
