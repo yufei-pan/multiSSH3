@@ -2401,6 +2401,271 @@ def _incomplete_utf8(data):
 			return back if needed > back else 0
 	return 0
 
+#%% ------------ Picker ----------------
+PICKER_ROWS = 10       # candidate rows the picker shows at most
+HISTORY_LIMIT = 5000   # distinct past invocations the history tab offers
+
+class PickItem(object):
+	'''A picker row: text replaces the word (slot tab) or the whole line (history tab).'''
+	__slots__ = ('text', 'description', 'uses', 'last')
+
+	def __init__(self, text, description='', uses=0, last=0):
+		self.text = text
+		self.description = description
+		self.uses = uses
+		self.last = last
+
+	def __repr__(self):
+		return 'PickItem({!r})'.format(self.text)
+
+def fuzzy_score(query, text):
+	'''
+	How well query matches text: its characters in order (case-insensitive), with more for
+	consecutive characters and word starts. Space-separated terms must all match.
+
+	Returns:
+		float, or None when it does not match
+	'''
+	lower = text.lower()
+	score = 0.0
+	for term in query.lower().split():
+		position = 0
+		last = -2
+		for char in term:
+			found = lower.find(char, position)
+			if found < 0:
+				return None
+			score += 1.0
+			if found == last + 1:
+				score += 2.0
+			if found == 0 or not lower[found - 1].isalnum():
+				score += 1.5
+			last = found
+			position = found + 1
+	return score
+
+def _age(seconds):
+	'''A short age: now, 5m, 2h, 3d, 4w, 1y.'''
+	for size, unit in ((365 * 86400, 'y'), (7 * 86400, 'w'), (86400, 'd'), (3600, 'h'), (60, 'm')):
+		if seconds >= size:
+			return '{}{}'.format(int(seconds // size), unit)
+	return 'now'
+
+def _unicode_terminal():
+	import locale
+	return (locale.getpreferredencoding(False) or '').lower().replace('-', '') == 'utf8'
+
+class Picker(object):
+	'''
+	The Ctrl-R menu as state: a slot tab (candidates for the word at the cursor) and a history tab
+	(whole past invocations), a fuzzy filter and a selection. run() draws it below the prompt line.
+	'''
+	def __init__(self, slot_items, history_items, slot_title='', now=None, unicode=None):
+		self.items = {'slot': list(slot_items), 'history': list(history_items)}
+		self.titles = {'slot': slot_title or 'candidates', 'history': 'history'}
+		self.tab = 'slot' if self.items['slot'] else 'history'
+		self.query = ''
+		self.selected = 0
+		self.offset = 0
+		self.now = time.time() if now is None else now
+		self.unicode = _unicode_terminal() if unicode is None else unicode
+
+	def matches(self):
+		'''The rows of the current tab that match the filter, best first.'''
+		items = self.items[self.tab]
+		if not self.query:
+			return items
+		scored = []
+		for rank, item in enumerate(items):
+			score = fuzzy_score(self.query, item.text)
+			if score is not None:
+				# the filter decides, the context rank breaks near ties
+				scored.append((score - 3.0 * rank / len(items), rank, item))
+		scored.sort(key=lambda entry: (-entry[0], entry[1]))
+		return [item for _, _, item in scored]
+
+	def handle(self, name):
+		'''Apply one key. Returns 'choose', 'cancel' or None.'''
+		count = len(self.matches())
+		if name == 'enter':
+			return 'choose' if count else 'cancel'
+		if name in ('esc', 'ctrl-g', 'ctrl-c'):
+			return 'cancel'
+		if name in ('up', 'ctrl-p'):
+			self.selected = max(0, self.selected - 1)
+		elif name in ('down', 'ctrl-n', 'ctrl-r'):
+			self.selected = min(max(count - 1, 0), self.selected + 1)
+		elif name == 'pgup':
+			self.selected = max(0, self.selected - PICKER_ROWS)
+		elif name == 'pgdn':
+			self.selected = min(max(count - 1, 0), self.selected + PICKER_ROWS)
+		elif name == 'tab':
+			other = 'history' if self.tab == 'slot' else 'slot'
+			if self.items[other]:
+				self.tab = other
+				self.selected = self.offset = 0
+		elif name == 'backspace':
+			self.query = self.query[:-1]
+			self.selected = self.offset = 0
+		elif len(name) == 1 and name >= ' ':
+			self.query += name
+			self.selected = self.offset = 0
+		return None
+
+	def chosen(self):
+		matches = self.matches()
+		return matches[self.selected] if 0 <= self.selected < len(matches) else None
+
+	def render(self, width, rows):
+		'''
+		The menu's lines: a title, rows candidate rows (blank when fewer match), a status line;
+		each at most width columns. The selected row is in reverse video.
+		'''
+		matches = self.matches()
+		if self.selected < self.offset:
+			self.offset = self.selected
+		if self.selected >= self.offset + rows:
+			self.offset = self.selected - rows + 1
+		horizontal, vertical, top_left, top_right, bottom_left, bottom_right = (
+			('─', '│', '┌', '┐', '└', '┘') if self.unicode else ('-', '|', '+', '+', '+', '+'))
+		inner = max(width - 3, 10)
+		title = ' {} '.format(self.titles[self.tab] + (' · ' + self.query if self.query and self.unicode else (' : ' + self.query if self.query else '')))
+		counter = ' {}/{} '.format(self.selected + 1 if matches else 0, len(matches))
+		fill = max(inner - text_width(title) - text_width(counter), 0)
+		lines = [fit(top_left + title + horizontal * fill + counter + top_right, width)]
+		for number in range(self.offset, self.offset + rows):
+			if number >= len(matches):
+				lines.append(vertical + ' ' * (inner) + vertical)
+				continue
+			item = matches[number]
+			used = []
+			if item.uses:
+				used.append('used {}x'.format(item.uses))
+			if item.last:
+				age = _age(max(self.now - item.last, 0))
+				used.append(age if age == 'now' else age + ' ago')
+			right = '  '.join(([item.description] if item.description else []) + ([(' · ' if self.unicode else ', ').join(used)] if used else []))
+			marker = '> ' if number == self.selected else '  '
+			left = fit(marker + item.text, max(inner - text_width(right) - 1, 8))
+			middle = left + ' ' * max(inner - text_width(left) - text_width(right), 1) + right
+			middle = fit(middle, inner)
+			middle += ' ' * (inner - text_width(middle))
+			if number == self.selected:
+				middle = '\x1b[7m' + middle + '\x1b[27m'
+			lines.append(vertical + middle + vertical)
+		other = 'history' if self.tab == 'slot' else self.titles['slot']
+		status = ' type to filter · Tab: {} · Esc '.format(other) if self.unicode else ' type to filter - Tab: {} - Esc '.format(other)
+		if not self.items['history' if self.tab == 'slot' else 'slot']:
+			status = status.replace(' · Tab: {}'.format(other), '').replace(' - Tab: {}'.format(other), '')
+		lines.append(fit(bottom_left + status + horizontal * max(inner - text_width(status), 0) + bottom_right, width))
+		return lines
+
+	def run(self, term, prompt=None, column=1):
+		'''
+		Show the menu below the cursor's line and read keys until a choice or a cancel.
+
+		Args:
+			term (Terminal): In raw mode (line feeds keep the column)
+			prompt (str): The prompt line to draw first when the shell cleared it (bash), else None
+			column (int): With prompt: the 1-based column of the cursor on that line
+
+		Returns:
+			str: 'choose', 'cancel', or 'unavailable' when the terminal is too small
+		'''
+		rows, width = term.size()
+		height = min(PICKER_ROWS, rows - 4)
+		if height < 1 or width < 20:
+			return 'unavailable'
+		if prompt is not None:
+			term.write('\r' + prompt + '\x1b[K\r' + ('\x1b[{}C'.format(column - 1) if column > 1 else ''))
+		# make room below the line (the screen may scroll), come back to the same column and save it
+		lines = height + 2
+		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
+		try:
+			while True:
+				menu = self.render(width - 1, height)
+				term.write(''.join('\r\n' + line + '\x1b[K' for line in menu) + '\x1b8')
+				for name, _ in term.read_keys():
+					outcome = self.handle(name)
+					if outcome:
+						return outcome
+		finally:
+			term.write('\x1b8\r\n\x1b[J\x1b8')
+
+def picker_items(request, engine, history_lines, now=None):
+	'''
+	What the picker offers for a request.
+
+	Returns:
+		tuple: (slot items, slot title, history items, word): word is the text before the cursor the
+			slot items replace (None when nothing can be framed: the slot tab is empty)
+	'''
+	now = time.time() if now is None else now
+	context = parse_context(request.before, request.after, engine.spec)
+	slot = []
+	title = ''
+	word = None
+	if context is not None and request.before.endswith(context.prefix):
+		word = context.prefix
+		response = engine.query(Request(request.shell, request.before, request.after, word, request.shell_version, dict(request.flags, insert='1')))
+		for candidate in response.candidates:
+			value = (candidate.raw or candidate.text)[context.value_start:]
+			uses, last = engine.usage(context, value)
+			slot.append(PickItem(candidate.text, candidate.description, uses, last))
+		title = {SLOT_HOSTS: 'hosts', SLOT_OPTION: 'options'}.get(context.slot, '')
+		if context.slot == SLOT_VALUE:
+			title = context.option.long
+		elif context.slot == SLOT_COMMAND:
+			title = 'commands for ' + context.hosts if context.hosts else 'commands'
+	name = 'mssh'
+	tokens = lex(request.before)
+	if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES:
+		name = tokens[0].raw
+	features = set(context.features) if context is not None else set()
+	seen = {}
+	entries = []
+	for line in reversed(history_lines):
+		fields = line.rstrip('\r\n').split('\t')
+		if len(fields) != 5:
+			continue
+		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
+		text = ' '.join([name] + parts)
+		if not safe_field(text) or '\t' in text:
+			continue
+		if text in seen:
+			seen[text][1] += 1
+			continue
+		if len(entries) >= HISTORY_LIMIT:
+			continue
+		entry = parse_history_line(line, engine.spec)
+		overlap = len(features & set(entry.features())) if entry is not None else 0
+		ts = entry.ts if entry is not None else 0
+		seen[text] = [len(entries), 1]
+		entries.append([overlap, ts, text])
+	shell_lines = request.history[::-1] if request.shell != 'fish' else request.history
+	for line in shell_lines:
+		line = line.strip()
+		tokens = lex(line)
+		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT:
+			seen[line] = [len(entries), 1]
+			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
+	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
+	history = [PickItem(entries[number][2], '', seen[entries[number][2]][1], entries[number][1]) for number in order]
+	return slot, title, history, word
+
+def apply_pick(request, picker, word, context):
+	'''The new line and cursor after a choice: (line, cursor).'''
+	item = picker.chosen()
+	if picker.tab == 'history':
+		return item.text, len(item.text)
+	suffix = ' '
+	if context is not None and context.open_quote:
+		suffix = ('"' if context.open_quote == '"' else "'") + ' '
+	elif item.text.endswith('/'):
+		suffix = ''
+	before = request.before[:len(request.before) - len(word)] + item.text + suffix
+	return before + request.after, len(before)
+
 #%% ------------ Shell glue ----------------
 GLUE_MARK = 'MSSH_COMPLETE_GLUE'
 
