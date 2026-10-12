@@ -3399,7 +3399,7 @@ _mssh() {
 		{
 			print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$flags"$'\0'"$before"$'\0'"$after"$'\0'"$PREFIX"$'\0'
 			fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
-		} | @ENGINE@ query 2>/dev/null
+		} | _mssh_complete_engine query 2>/dev/null
 	)
 	(( end = EPOCHREALTIME + ${MSSH_COMPLETE_TIMEOUT:-0.3} ))
 	resp=
@@ -3441,6 +3441,241 @@ _mssh() {
 }
 
 (( $+functions[compdef] )) && compdef _mssh mssh mssh3 multissh multissh3 multiSSH3
+
+# ---- grey suggestions and the Ctrl-R picker (SP2) ----
+
+_mssh_complete_engine() {
+	@ENGINE@ "$@"
+}
+
+_mssh_complete_is_mssh() {
+	# whether $1 is an mssh command line: an mssh name, then a space
+	emulate -L zsh
+	local MATCH MBEGIN MEND
+	local -a match mbegin mend
+	[[ $1 =~ '^[[:space:]]*([^[:space:]]*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)[[:space:]]' ]]
+}
+
+_mssh_complete_request() {
+	# print a request with flags $1 for the line $2 (before the cursor) $3 (after it), then the history tail
+	print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$1 term=$TERM"$'\0'"$2"$'\0'"$3"$'\0'$'\0'
+	fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
+}
+
+_mssh_complete_ctrl_r() {
+	# Ctrl-R: the picker on mssh lines, else the widget Ctrl-R had
+	emulate -L zsh
+	local resp line text= cursor= st
+	if _mssh_complete_is_mssh "$BUFFER"; then
+		resp=$(_mssh_complete_request 'pick=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine pick 2>/dev/null)
+		st=$?
+		if (( st == 0 )) && [[ $resp == MSSHC1$'\n'*$'\n'E ]]; then
+			for line in "${(@f)resp}"; do
+				if [[ $line == 'L '* ]]; then
+					cursor=${${line#L }%%$'\t'*}
+					text=${line#*$'\t'}
+				fi
+			done
+			if [[ $cursor == <-> ]]; then
+				BUFFER=$text
+				CURSOR=$cursor
+			fi
+		fi
+		zle reset-prompt
+		(( st <= 1 )) && return 0
+	fi
+	[[ -n $_mssh_complete_previous ]] && zle $_mssh_complete_previous
+	return 0
+}
+
+_mssh_complete_take_ctrl_r() {
+	# bind Ctrl-R to the picker, keeping the widget it had for other lines
+	emulate -L zsh
+	local -a binding
+	binding=(${(z)"$(bindkey '^R')"})
+	[[ $binding[2] == _mssh_complete_ctrl_r ]] && return 0
+	[[ -n $binding[2] && $binding[2] != undefined-key ]] || return 0
+	typeset -g _mssh_complete_previous=$binding[2]
+	zle -N _mssh_complete_ctrl_r
+	bindkey '^R' _mssh_complete_ctrl_r
+	# an incremental search repeats on Ctrl-R only when Ctrl-R is bound to it
+	if [[ $_mssh_complete_previous == history-incremental-*search-backward ]] && [[ $(bindkey -M isearch '^R' 2>/dev/null) != *search* ]]; then
+		bindkey -M isearch '^R' $_mssh_complete_previous 2>/dev/null
+	fi
+}
+
+_zsh_autosuggest_strategy_mssh() {
+	# zsh-autosuggestions strategy: the engine's grey text for mssh lines, nothing for others
+	emulate -L zsh
+	zmodload zsh/zselect zsh/system zsh/datetime 2>/dev/null || return 0
+	_mssh_complete_is_mssh "$1" || return 0
+	local fd resp= chunk line limit=${MSSH_COMPLETE_TIMEOUT:-0.3}
+	local -F end
+	local -i remaining
+	# synchronous zsh-autosuggestions waits for the strategy while the operator types
+	(( ${+ZSH_AUTOSUGGEST_USE_ASYNC} )) || limit=0.05
+	exec {fd}< <(_mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
+	(( end = EPOCHREALTIME + limit ))
+	while true; do
+		(( remaining = (end - EPOCHREALTIME) * 100 ))
+		(( remaining > 0 )) || break
+		zselect -t $remaining -r $fd || break
+		sysread -i $fd chunk || break
+		resp+=$chunk
+	done
+	exec {fd}<&-
+	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for line in "${(@f)resp}"; do
+		[[ $line == 'G '* ]] && typeset -g suggestion="$1${line#*$'\t'}"
+	done
+	return 0
+}
+
+_mssh_complete_ghost_clear() {
+	# drop the grey text (inside a widget)
+	[[ -n $_mssh_complete_shown ]] || return 0
+	POSTDISPLAY=
+	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
+	_mssh_complete_shown=
+	_mssh_complete_highlight=
+}
+
+_mssh_complete_ghost_show() {
+	# show $1 as grey text after the buffer (inside a widget)
+	_mssh_complete_ghost_clear
+	[[ -n $1 ]] || return 0
+	POSTDISPLAY=$1
+	_mssh_complete_shown=$1
+	_mssh_complete_highlight="$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style"
+	region_highlight+=("$_mssh_complete_highlight")
+}
+
+_mssh_complete_ghost_cancel() {
+	# forget the pending query
+	[[ -n $_mssh_complete_fd ]] || return 0
+	zle -F $_mssh_complete_fd 2>/dev/null
+	exec {_mssh_complete_fd}<&- 2>/dev/null
+	_mssh_complete_fd=
+}
+
+_mssh_complete_ghost_ready() {
+	# zle -F handler: the engine answered the query for the buffer in _mssh_complete_asked
+	emulate -L zsh
+	local fd=$1 resp= chunk line text=
+	while sysread -i $fd chunk 2>/dev/null; do
+		resp+=$chunk
+	done
+	zle -F $fd
+	exec {fd}<&-
+	_mssh_complete_fd=
+	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for line in "${(@f)resp}"; do
+		[[ $line == 'G '* ]] && text=${line#*$'\t'}
+	done
+	[[ -n $text ]] && zle _mssh_complete_ghost_answer -- "$text"
+	return 0
+}
+
+_mssh_complete_ghost_answer() {
+	# widget: show the answer if the buffer is still the one asked about
+	emulate -L zsh
+	[[ $BUFFER == "$_mssh_complete_asked" ]] && (( CURSOR == $#BUFFER )) || return 0
+	_mssh_complete_ghost_show "$1"
+	zle -R
+}
+
+_mssh_complete_ghost_redraw() {
+	# line-pre-redraw hook: keep the grey text in step with the buffer
+	emulate -L zsh
+	local last=$_mssh_complete_last full
+	if [[ $BUFFER == "$last" ]]; then
+		(( CURSOR == $#BUFFER )) || _mssh_complete_ghost_clear
+		return 0
+	fi
+	_mssh_complete_last=$BUFFER
+	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
+		full=$last$_mssh_complete_shown
+		if [[ $BUFFER == "$last"?* && $full == "$BUFFER"?* ]]; then
+			# typed (or took) the next characters of the grey text: show the rest without a new query
+			_mssh_complete_ghost_show "${full#"$BUFFER"}"
+			return 0
+		fi
+	fi
+	_mssh_complete_ghost_clear
+	_mssh_complete_ghost_cancel
+	(( CURSOR == $#BUFFER )) && _mssh_complete_is_mssh "$BUFFER" || return 0
+	_mssh_complete_asked=$BUFFER
+	exec {_mssh_complete_fd}< <(_mssh_complete_request 'ghost=1 nul=0' "$BUFFER" '' | _mssh_complete_engine query 2>/dev/null)
+	zle -F $_mssh_complete_fd _mssh_complete_ghost_ready
+}
+
+_mssh_complete_ghost_finish() {
+	# line-finish hook: no grey text on a line that was accepted
+	emulate -L zsh
+	_mssh_complete_ghost_cancel
+	_mssh_complete_ghost_clear
+	_mssh_complete_last=
+}
+
+_mssh_complete_accept() {
+	# forward-char, end-of-line, forward-word and their vi forms: with grey text showing at the
+	# end of the line, take all of it (one word for the word widgets); else do the usual
+	emulate -L zsh
+	setopt extended_glob
+	local take
+	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
+		take=$_mssh_complete_shown
+		[[ $WIDGET == *forward-word ]] && take=${(M)take##[[:space:]]#[^[:space:]]##}
+		BUFFER+=${take:-$_mssh_complete_shown}
+		CURSOR=$#BUFFER
+		return 0
+	fi
+	zle _mssh_complete_orig_$WIDGET -- "$@"
+}
+
+_mssh_complete_ghost_setup() {
+	# grey text with own widgets (zsh 5.3 and later, a terminal with colours)
+	emulate -L zsh
+	autoload -Uz is-at-least add-zle-hook-widget
+	is-at-least 5.3 || return 0
+	[[ -n $TERM && $TERM != dumb ]] || return 0
+	zmodload zsh/zleparameter zsh/system 2>/dev/null || return 0
+	local widget key
+	typeset -g _mssh_complete_fd= _mssh_complete_asked= _mssh_complete_last= _mssh_complete_shown= _mssh_complete_highlight=
+	typeset -g _mssh_complete_style=fg=8
+	[[ $TERM == *256col* ]] && _mssh_complete_style=fg=244
+	zle -N _mssh_complete_ghost_answer
+	zle -N _mssh_complete_ghost_redraw
+	zle -N _mssh_complete_ghost_finish
+	add-zle-hook-widget line-pre-redraw _mssh_complete_ghost_redraw
+	add-zle-hook-widget line-finish _mssh_complete_ghost_finish
+	for widget in forward-char vi-forward-char end-of-line vi-end-of-line forward-word emacs-forward-word vi-forward-word; do
+		[[ -n ${widgets[$widget]} && ${widgets[$widget]} != user:_mssh_complete_accept ]] || continue
+		zle -A $widget _mssh_complete_orig_$widget
+		zle -N $widget _mssh_complete_accept
+	done
+	# Ctrl-Right and Alt-Right take a word, unless they are bound already
+	for key in '^[[1;5C' '^[[1;3C'; do
+		[[ $(bindkey "$key" 2>/dev/null) == *undefined-key* ]] && bindkey "$key" forward-word
+	done
+}
+
+_mssh_complete_setup() {
+	# precmd, once, at the first prompt (plugins loaded after the mssh block are there by then):
+	# Ctrl-R, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
+	add-zsh-hook -d precmd _mssh_complete_setup
+	_mssh_complete_take_ctrl_r
+	if (( ${+functions[_zsh_autosuggest_start]} )); then
+		(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
+	else
+		_mssh_complete_ghost_setup
+	fi
+}
+
+if [[ -o interactive ]]; then
+	autoload -Uz add-zsh-hook
+	add-zsh-hook precmd _mssh_complete_setup
+fi
 '''
 
 FISH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ fish: autocomplete for mssh (multiSSH3), protocol MSSHC1

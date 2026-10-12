@@ -288,3 +288,51 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		session.send('\x07')
 	finally:
 		session.close()
+
+
+# ---------------------------------------------------------------- zsh
+
+ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
+
+
+def zsh_with(env, home, zas=False, after=False):
+	pre = ''
+	if zas:
+		import os
+		if not os.path.isfile(ZAS):
+			if 'zas' in env.get('MSSH_REQUIRE_SHELLS', '') or 'zas' in os.environ.get('MSSH_REQUIRE_SHELLS', ''):
+				pytest.fail('zsh-autosuggestions is required here but not at ' + ZAS)
+			pytest.skip('zsh-autosuggestions is not installed at ' + ZAS)
+		pre = 'source ' + ZAS
+	(home / '.zsh_history').write_text(SHELL_HISTORY)
+	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
+	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
+		pre=history if after else pre + '\n' + history, extra=pre if after else '')
+
+
+@pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
+def test_zsh_suggests_and_right_arrow_accepts(home, zas, after):
+	env, home = home
+	session = zsh_with(env, home, zas, after)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		# zsh escapes the glob characters
+		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
+	finally:
+		session.close()
+
+
+def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		session.send('\x15\x12aa\x12\r')
+		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+	finally:
+		session.close()
