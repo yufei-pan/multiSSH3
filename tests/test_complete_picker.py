@@ -160,3 +160,21 @@ def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	assert len(texts) == len(set(texts))
 	picker = mc.Picker([], history)
 	assert mc.apply_pick(req, picker, None, None) == (texts[0], len(texts[0]))
+
+
+def run_engine(args, data, env):
+	'''Run the engine with no controlling terminal.'''
+	import subprocess
+	from complete_shell_harness import ENGINE
+	return subprocess.run(ENGINE + args, input=data, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, timeout=60)
+
+
+def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	pick = b'\0'.join([b'MSSHC1', b'bash', b'5.2', b'pick=1', b'mssh gp', b'', b'', b''])
+	for data, term in ((pick, 'xterm'), (pick, 'dumb'), (b'not a request', 'xterm')):
+		result = run_engine(['pick'], data, dict(env, TERM=term))
+		assert (result.returncode, result.stdout, result.stderr) == (2, b'', b'')
+	edit = run_engine(['edit', 'mssh '], b'', env)
+	assert (edit.returncode, edit.stdout) == (3, b'')

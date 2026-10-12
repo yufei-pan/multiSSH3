@@ -3671,6 +3671,124 @@ def _cmd_query():
 	sys.stdout.buffer.flush()
 	return 0
 
+def _prompt_from_flags(flags):
+	'''
+	The prompt line to redraw when a request says redraw=1 (bash clears the line before running
+	pick or edit), or None. The prompt is in $MSSH_COMPLETE_PROMPT: expanded, or PS1 itself with expand=1.
+	'''
+	if flags.get('redraw') != '1':
+		return None
+	prompt = os.environ.get('MSSH_COMPLETE_PROMPT', '')
+	if flags.get('expand') == '1':
+		prompt = expand_prompt(prompt)
+	return prompt.rsplit('\n', 1)[-1].replace('\x01', '').replace('\x02', '')
+
+def _cmd_pick():
+	'''
+	mssh-complete pick: the Ctrl-R picker. Reads a request on stdin, draws on /dev/tty, prints the new
+	line (MSSHC1, L <cursor>\\t<line>, E; no NUL: shells read it with command substitution). Exit 0
+	chosen, 1 cancelled, 2 unavailable (the shell then does what Ctrl-R did before).
+	'''
+	data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
+	try:
+		request = parse_request(data)
+	except ValueError:
+		return 2
+	if ghost_style(os.environ.get('TERM', '')) is None:
+		return 2
+	now = time.time()
+	try:
+		engine = engine_for(request, now=now)
+		history_lines = read_history(engine.history_path)[0] if engine.history_path else []
+		slot, title, history, word = picker_items(request, engine, history_lines, now)
+		if not slot and not history:
+			return 2
+		picker = Picker(slot, history, title, now)
+		prompt = _prompt_from_flags(request.flags)
+		column = 1
+		if prompt is not None:
+			column = text_width(prompt + request.before) + 1
+			prompt += request.before + request.after
+		with Terminal() as term:
+			outcome = picker.run(term, prompt, column)
+	except Exception as e:
+		_debug('pick failed: {!r}'.format(e))
+		return 2
+	if outcome == 'unavailable':
+		return 2
+	if outcome != 'choose':
+		return 1
+	line, cursor = apply_pick(request, picker, word, parse_context(request.before, request.after, engine.spec))
+	sys.stdout.buffer.write('MSSHC1\nL {}\t{}\nE\n'.format(cursor, line).encode('utf-8', 'surrogateescape'))
+	sys.stdout.buffer.flush()
+	return 0
+
+def _cmd_edit(args):
+	'''
+	mssh-complete edit [--expand] TEXT: the plain-bash editor for an mssh line.
+
+	The prompt to redraw is in $MSSH_COMPLETE_PROMPT (PS1 itself with --expand); stdin holds the
+	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
+	replays keys, written as a readline key sequence; abandon: drop the line), E. Exit 3 when the
+	editor cannot start; the shell then goes on as if it had not been asked.
+	'''
+	import argparse
+	import glob
+	parser = argparse.ArgumentParser(prog='mssh-complete edit')
+	parser.add_argument('--expand', action='store_true')
+	parser.add_argument('text')
+	options = parser.parse_args(args)
+	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
+	history = [line for line in sys.stdin.read().split('\n') if line.strip()] if not sys.stdin.isatty() else []
+	try:
+		engine = engine_for(Request('bash', options.text, '', '', history=history))
+		term = Terminal()
+	except Exception as e:
+		_debug('editor cannot start: {!r}'.format(e))
+		return 3
+	cache = {}
+
+	def suggest(before):
+		return engine.suggest(Request('bash', before, '', ''))
+
+	def complete(before):
+		context = parse_context(before, '', engine.spec)
+		if context is None or not before.endswith(context.prefix):
+			return [], ''
+		response = engine.query(Request('bash', before, '', context.prefix))
+		texts = [candidate.text for candidate in response.candidates]
+		if 'files' in response.directives or 'dirs' in response.directives:
+			for path in sorted(glob.glob(context.value + '*')):
+				if 'files' in response.directives or os.path.isdir(path):
+					texts.append(context.prefix[:context.value_start] + path + ('/' if os.path.isdir(path) else ''))
+		return texts, context.prefix
+
+	def pick(text, cursor, slot_only):
+		if 'history' not in cache:
+			cache['history'] = read_history(engine.history_path)[0] if engine.history_path else []
+		request = Request('bash', text[:cursor], text[cursor:], None, history=history)
+		slot, title, items, word = picker_items(request, engine, cache['history'])
+		if not slot and (slot_only or not items):
+			return None
+		picker = Picker(slot, [] if slot_only else items, title)
+		editor.erase(term)
+		outcome = picker.run(term, prompt + text, text_width(prompt + text[:cursor]) + 1)
+		if outcome != 'choose':
+			return None
+		return apply_pick(request, picker, word, parse_context(request.before, request.after, engine.spec))
+
+	editor = LineEditor(options.text, suggest, complete, pick)
+	try:
+		with term:
+			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
+	except Exception as e:
+		_debug('editor failed: {!r}'.format(e))
+		action, replay = 'pass', b''
+	out = 'MSSHC1\nL {}\t{}\nK {}\t{}\nE\n'.format(editor.cursor, editor.text, action, readline_keyseq(replay))
+	sys.stdout.buffer.write(out.encode('utf-8', 'surrogateescape'))
+	sys.stdout.buffer.flush()
+	return 0
+
 def _cmd_rebuild(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
 	try:
@@ -3717,12 +3835,16 @@ def main(argv=None):
 		return _cmd_rebuild(argv[1:])
 	if command == 'eval':
 		return _cmd_eval(argv[1:])
+	if command == 'pick':
+		return _cmd_pick()
+	if command == 'edit':
+		return _cmd_edit(argv[1:])
 	if command in ('glue', 'install', 'uninstall'):
 		return completion_command(argv[1:] if command == 'glue' else argv)
 	if command in ('-V', '--version'):
 		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
 		return 0
-	print('usage: mssh-complete query | rebuild | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
+	print('usage: mssh-complete query | pick | edit TEXT | rebuild | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
 	return 2
 
 if __name__ == '__main__':
