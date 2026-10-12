@@ -628,6 +628,10 @@ INDEX_NAME = 'complete-index.v1.nsv'
 class IndexCorrupt(Exception):
 	'''The index file is not a complete index this version can read.'''
 
+def _has_control(text):
+	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
+	return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+
 def safe_field(text):
 	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
 	return '\0' not in text and '\n' not in text
@@ -1765,12 +1769,16 @@ class Engine(object):
 
 	def suggest(self, request, deadline=None):
 		'''
-		The grey suggestion for a line with the cursor at its end, or None.
+		The grey suggestion for a line with the cursor at its end, or None (never one with a control character).
 
 		The current word's most likely value (when its share of the scores reaches T_WORD), then,
 		when each following positional slot's top value reaches T_LINE, those slots: the hosts and
 		the first command. Options are never added. The suggestion always extends the typed text.
 		'''
+		ghost = self._suggest(request, deadline)
+		return None if ghost is None or _has_control(ghost.text) else ghost
+
+	def _suggest(self, request, deadline):
 		if request.after.strip():
 			return None
 		tokens = lex(request.before)
@@ -1988,7 +1996,7 @@ class Engine(object):
 					continue
 				if not context.open_quote and not bash_quotes:
 					rest = _shell_escape(request.shell, rest, _literal_word(context))
-			if '\t' in rest or '\n' in rest:
+			if _has_control(rest):
 				continue
 			seen.add(full)
 			text = full[len(base):len(prefix)] + rest
@@ -2745,7 +2753,7 @@ def picker_items(request, engine, history_lines, now=None):
 			continue
 		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
 		text = ' '.join([name] + parts)
-		if not safe_field(text) or '\t' in text or _sets_password(lex(fields[2]), engine.spec):
+		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		if text in seen:
 			seen[text][1] += 1
@@ -2761,7 +2769,7 @@ def picker_items(request, engine, history_lines, now=None):
 	for line in shell_lines:
 		line = line.strip()
 		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _sets_password(tokens[1:], engine.spec):
+		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
 			seen[line] = [len(entries), 1]
 			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
@@ -4503,7 +4511,7 @@ def editor_completions(engine, before):
 			names = []
 		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
 		for name in names:
-			if not name.startswith(start):
+			if not name.startswith(start) or _has_control(name):
 				continue
 			is_dir = os.path.isdir(os.path.join(listed, name))
 			if not is_dir and 'files' not in response.directives:
