@@ -4,6 +4,7 @@ SP2 in real shells: grey suggestions, the Ctrl-R picker and the plain-bash mssh 
 Every shell gets a private HOME holding an mssh history where one invocation clearly dominates,
 so the engine's suggestion for "mssh gp" is the whole line u[01-16] "nvidia-smi".
 '''
+import os
 import re
 import subprocess
 import time
@@ -240,6 +241,18 @@ def test_editor_shows_and_accepts_the_suggestion(home):
 		session.send('mssh gp')
 		assert '\x1b[38;5;244mu[01-16] "nvidia-smi"' in session.read_until(b'nvidia-smi', 10)
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+	finally:
+		session.close()
+
+
+def test_editor_marks_an_unknown_host_and_says_why(home):
+	env, home = home
+	# the prober found gpu017 does not exist
+	mc.write_host_states(os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3'), {'gpu017': mc.HostState('invalid', time.time())})
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
 	finally:
 		session.close()
 

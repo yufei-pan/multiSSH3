@@ -1959,6 +1959,7 @@ def spawn_probe(directory):
 #%% ------------ Diagnostics ----------------
 DIAGNOSTIC_KINDS = ('unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
 MAX_MESSAGE = 160
+WARNING_ASKS = (0.3, 1.0, 3.0)  # seconds after an answer with the prober still working when a frontend asks again
 
 class Diagnostic(object):
 	'''A warning about part of an mssh line: line[start:end] is marked, message says why.'''
@@ -3745,17 +3746,23 @@ class LineEditor(object):
 	suggest(before) -> Ghost or None; complete(before) -> (candidate texts, word) where the texts
 	replace word at the end of before; pick(text, cursor, slot_only) -> (text, cursor) or None.
 	'''
-	def __init__(self, text, suggest=None, complete=None, pick=None):
+	def __init__(self, text, suggest=None, complete=None, pick=None, diagnose=None):
 		self.text = text
 		self.cursor = len(text)
 		self.prefix = len(text)
 		self.suggest = suggest
 		self.complete = complete
 		self.pick = pick
+		self.diagnose = diagnose
 		self.ghost = ''
 		self._ghost_for = None
 		# more typed keys are waiting (set by run): no suggestion is asked for until they are handled
 		self.busy = False
+		# warnings: spans of the text to underline, the line shown under it, when to ask again (monotonic)
+		self.marks = []
+		self.reason = ''
+		self._warned_for = None
+		self._asks = []
 
 	def refresh(self):
 		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
@@ -3878,7 +3885,50 @@ class LineEditor(object):
 		else:
 			return 'pass', raw
 		self.refresh()
+		self.refresh_warnings()
 		return None
+
+	def refresh_warnings(self, again=False):
+		'''
+		Ask for warnings about the line, unless more keys wait or the answer is for this line
+		already. While the prober still owes answers (pending), ask again WARNING_ASKS seconds
+		after the answer to a key; again: this is one of those asks (the schedule goes on).
+		'''
+		if self.diagnose is None or self.busy:
+			return
+		if not again and self._warned_for == (self.text, self.cursor):
+			return
+		try:
+			found, pending = self.diagnose(self.text, self.cursor)
+		except Exception as e:
+			_debug('warnings failed: {!r}'.format(e))
+			found, pending = [], False
+		self.marks = [(item.start, item.end) for item in found if 0 <= item.start < item.end <= len(self.text)]
+		self.reason = reason_line(found)
+		self._warned_for = (self.text, self.cursor)
+		if not pending:
+			self._asks = []
+		elif not again:
+			now = time.monotonic()
+			self._asks = [now + delay for delay in WARNING_ASKS]
+
+	def _wait(self):
+		'''Seconds until warnings are asked for again, or None (wait for a key).'''
+		return max(self._asks[0] - time.monotonic(), 0.0) if self._asks else None
+
+	def _marked_text(self):
+		'''The text with the warned spans underlined (in red unless NO_COLOR is set).'''
+		on = '\x1b[4m' if os.environ.get('NO_COLOR') else '\x1b[4;31m'
+		out = []
+		position = 0
+		for start, end in sorted(self.marks):
+			start = max(start, position)
+			if start >= end:
+				continue
+			out.append(self.text[position:start] + on + self.text[start:end] + '\x1b[0m')
+			position = end
+		out.append(self.text[position:])
+		return ''.join(out)
 
 	def _tab(self):
 		if self.complete is None:
@@ -3913,19 +3963,27 @@ class LineEditor(object):
 		return end_row + 1, cursor_row, cursor_column, end_column
 
 	def draw(self, term, prompt, style):
-		'''Draw the prompt's last line, the text and the grey suggestion; leave the cursor at the text's cursor.'''
+		'''
+		Draw the prompt's last line, the text (warned spans underlined), the grey suggestion and the
+		warning's reason on the row below; leave the cursor at the text's cursor.
+		'''
 		width = term.size()[1]
 		rows, cursor_row, cursor_column, end_column = self.layout(prompt, width)
 		ghost = (style + self.ghost + '\x1b[0m') if (style and self.ghost) else ''
+		reason = fit(_printable(self.reason), width - 1) if self.reason else ''
 		out = []
 		if getattr(self, '_row', 0):
 			out.append('\x1b[{}A'.format(self._row))
-		out.append('\r' + prompt + self.text + ghost + '\x1b[J')
+		out.append('\r' + prompt + self._marked_text() + ghost)
 		end_row = rows - 1
 		if end_column == width:
 			# the terminal waits to wrap until the next character: wrap now so moves are exact
-			out.append('\r\n')
+			out.append('\r\n' + reason)
 			end_row += 1
+		elif reason:
+			out.append('\x1b[K\r\n' + reason)
+			end_row += 1
+		out.append('\x1b[J')
 		if end_row > cursor_row:
 			out.append('\x1b[{}A'.format(end_row - cursor_row))
 		out.append('\r')
@@ -3949,9 +4007,17 @@ class LineEditor(object):
 		'''
 		self._row = 0
 		self.refresh()
+		self.refresh_warnings()
 		self.draw(term, prompt, style)
 		while True:
-			name, raw = term.read_key()
+			key = term.read_key(self._wait())
+			if key is None:
+				# the prober may have answered by now
+				self._asks.pop(0)
+				self.refresh_warnings(again=True)
+				self.draw(term, prompt, style)
+				continue
+			name, raw = key
 			self.busy = term.has_input()
 			outcome = self.handle(name, raw)
 			if outcome is not None:
@@ -5484,7 +5550,10 @@ def _cmd_edit(args):
 			return None
 		return apply_pick(request, picker, word, parse_context(request.before, request.after, engine.spec))
 
-	editor = LineEditor(options.text, suggest, complete, pick)
+	def diagnose(text, cursor):
+		return engine.diagnose(Request('bash', text[:cursor], text[cursor:], ''))
+
+	editor = LineEditor(options.text, suggest, complete, pick, diagnose)
 	try:
 		with term:
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))

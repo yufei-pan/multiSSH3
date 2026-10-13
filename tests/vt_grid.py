@@ -141,11 +141,13 @@ class FakeTerminal(object):
 	'''
 	What the picker and the editor need from a Terminal, drawing into a Grid. Keys come in scripted
 	bursts (what the operator typed at once), one key per read; queue holds the burst's unread keys.
+	A burst of None is the operator waiting: a read with a timeout returns None (timeouts records them).
 	'''
 	def __init__(self, bursts, rows=24, columns=80, grid=None):
 		self.grid = grid or Grid(rows, columns)
 		self.bursts = list(bursts)
 		self.queue = []
+		self.timeouts = []
 
 	def size(self):
 		return self.grid.rows, self.grid.columns
@@ -159,6 +161,11 @@ class FakeTerminal(object):
 			if not self.bursts:
 				raise AssertionError('the program read more keys than the test scripted')
 			burst = self.bursts.pop(0)
+			if burst is None:
+				if timeout is None:
+					raise AssertionError('the program waits for a key with no timeout while the test waits')
+				self.timeouts.append(timeout)
+				return None
 			self.queue = mc.decode_keys(burst.encode('utf-8') if isinstance(burst, str) else burst)
 		return self.queue.pop(0)
 
