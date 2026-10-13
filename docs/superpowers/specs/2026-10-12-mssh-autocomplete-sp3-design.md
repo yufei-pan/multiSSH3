@@ -237,3 +237,20 @@ To verify first while planning: `zle -M` set from a line-pre-redraw hook stays v
 ## Release
 
 multiSSH3 6.30 (`mssh_complete` 0.3); `mssh --completion install` again picks up the new glue (glue from 6.29 keeps working without warnings). cas-toolbox's pin is bumped in a Monday roll-up.
+
+## Deviations found while implementing
+
+Implementing and testing SP3 (unit tests, real bash, zsh, fish and ble.sh in the Docker matrix, a replay of real history) changed these details of the design above.
+
+| Area | The design said | Implemented | Why |
+|---|---|---|---|
+| Reason line | Each shell composes "first warning (+N more)" from the `W` records | The response also carries the composed line as an `R` record | zsh, ble.sh and fish show the same text without three copies of the logic; the mark is `⚠` or `!` by the engine's locale, which is the shell's |
+| zsh queries | `diag=1` in the grey-text query when one is sent | zsh asks with its own `diag=1` query, only when the finished words of the line change | warnings then work the same with zsh's own widgets and with zsh-autosuggestions, and typing inside a word costs nothing |
+| fish | Reason printed after space on every fish 3.3+ | fish 4 only; fish 3 keeps its space key and shows warnings in the picker | fish 3 inserts nothing for `self-insert` in a binding that also runs a function, so taking space broke typing |
+| ble.sh reason line | `ble/edit/info/set-default` | set as the default and drawn at once, as `ble/edit/info/immediate-show` draws | a deferred default only appears at ble.sh's next panel render |
+| Flag defaults | (not specified) | the index records what mssh's flags set and their defaults (config rows `flag_sets`, `flag_defaults`) and the `OPTION_NO_EFFECT` entries (section `no_effect`) | skipping (`-su`) and "on by default" (`--ipmi`) follow the mssh config without importing mssh on the keystroke path |
+| Ping expiry | `MSSH_COMPLETE_PING_TTL`, else mssh's default expiry | also `-uhe` on the line | it is mssh's unreachable host expiry for that run |
+| IPv4 ranges | (not specified) | parts in mssh's IPv4 range syntax (`127.0.0.1-20`, `10.0.[1-2].x`) get no warning | they hold only IP addresses; replaying real history flagged `127.0.0.1-20` before this |
+| Probe queue | Queries append hosts | hosts already waiting are left out | a query for a long range repeats on every keystroke |
+| Ranges past the member limit | Checked up to the limit | the first `RANGE_MEMBERS_LIMIT` members are checked, the total is counted without expanding | `expand_ranges` gives up on a range over its limit |
+| Shell tests | (not specified) | the harness holds the prober's lock (tests write host states themselves) and gives the terminal a size | no DNS or ping from tests; ble.sh sizes its info panel from the terminal |

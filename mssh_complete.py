@@ -16,7 +16,7 @@ import sys
 import time
 from bisect import bisect_left
 
-version = '0.2'
+version = '0.3'
 __version__ = version
 PROTOCOL = 'MSSHC1'
 MSSH_NAMES = ('mssh', 'mssh3', 'multissh', 'multissh3', 'multiSSH3')
@@ -2010,6 +2010,28 @@ def _is_ip_address(name):
 		return True
 	return ':' in name
 
+def _ipv4_range(name):
+	'''
+	Whether name is in mssh's IPv4 range syntax (an a-b range, x, * or ? in an octet, an octet in
+	[ ]) without being one address: its members are all IP addresses.
+	'''
+	parts = name.split('.')
+	if len(parts) != 4:
+		return False
+	plain = True
+	for part in parts:
+		if part.startswith('[') and part.endswith(']'):
+			part = part[1:-1]
+			plain = False
+		low, sep, high = part.partition('-')
+		for end in ((low, high) if sep else (low,)):
+			if end in ('x', '*', '?'):
+				plain = False
+			elif not (_is_digits(end) and int(end) <= 255):
+				return False
+		plain = plain and not sep
+	return not plain
+
 def _range_count(text):
 	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
 	start = text.find('[')
@@ -2316,13 +2338,15 @@ class Engine(object):
 		'''What the prober learned (host -> HostState), from the runtime directory.'''
 		return read_host_states(self.directory) if self.directory else {}
 
-	def diagnose(self, request, probe=True, now=None):
+	def diagnose(self, request, probe=True, now=None, states=None):
 		'''
 		Warnings for the words of the request's line (before + after) already typed, most
 		important first, and whether the prober still owes answers for hosts on the line.
 
 		Args:
 			probe (bool): queue those hosts and start the prober (needs self.directory)
+			states: what is known about hosts (anything with get(host) -> HostState or None), instead
+				of what the prober wrote (the replay passes its own)
 
 		Returns:
 			tuple: (list of Diagnostic, pending)
@@ -2336,7 +2360,7 @@ class Engine(object):
 		cursor = len(request.before)
 		words = tokens[start + 1:]
 		roles = assign_roles(words, self.spec)
-		states = self.host_states()
+		states = self.host_states() if states is None else states
 		unavailable = read_unavailable(self.directory) if self.directory else frozenset()
 		reach = (unavailable,) + self._line_settings(words, roles)
 		wanted = []
@@ -2374,7 +2398,8 @@ class Engine(object):
 		'''
 		found = []
 		for name, (start, end) in _host_parts(token):
-			if not name:
+			if not name or _ipv4_range(name):
+				# IP addresses only: nothing to say about them
 				continue
 			members = self._host_members(name)
 			if members is None:
@@ -2536,13 +2561,13 @@ class Engine(object):
 			state = states.get(candidate)
 			return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
 		stripped = _strip_zeros(name)
-		same = [candidate for candidate in self.hosts.names if _strip_zeros(candidate) == stripped and possible(candidate)]
+		same = [candidate for candidate in self.hosts.names if candidate != name and _strip_zeros(candidate) == stripped and possible(candidate)]
 		if same:
 			return same[0] if len(same) == 1 else None
 		if len(name) < 4:
 			return None
 		close = [candidate for candidate in self.hosts.names
-			if abs(len(candidate) - len(name)) <= 1 and possible(candidate) and _one_edit(name, candidate)]
+			if abs(len(candidate) - len(name)) <= 1 and _one_edit(name, candidate) and possible(candidate)]
 		return close[0] if len(close) == 1 else None
 
 	def _range_diagnostic(self, name, members, verdicts, total, span, states, now, wanted):
@@ -5658,6 +5683,59 @@ def format_report(totals):
 				float(total['divergent']) / (total['shown'] or 1)))
 	return '\n'.join(lines)
 
+def diagnostics_replay(lines, spec, validity, hosts=None, now=None):
+	'''
+	Replay history lines through the warnings. validity(name) -> 'valid', 'invalid' or 'unsure'
+	stands in for the prober (asked once per host); there is no ping and no unavailable list.
+
+	Returns:
+		dict: lines (replayed), warned (kind -> lines with such a warning), unknown (host -> {'lines':
+			lines naming it, 'meant': the host suggested or None}), checked (verdict -> hosts)
+	'''
+	now = time.time() if now is None else now
+	engine = Engine(spec, [], hosts)
+	verdicts = {}
+
+	class Answers(object):
+		'''host -> HostState, as the prober would have found it: validity(name), could not ping.'''
+		def get(self, name, default=None):
+			if name not in verdicts:
+				verdicts[name] = validity(name)
+			return HostState(verdicts[name], now, 'none', now)
+
+	answers = Answers()
+	report = {'lines': 0, 'warned': {kind: 0 for kind in DIAGNOSTIC_KINDS}, 'unknown': {}, 'checked': {}}
+	for line in lines:
+		fields = line.rstrip('\r\n').split('\t')
+		if len(fields) != 5:
+			continue
+		text = ' '.join(['mssh'] + [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']) + ' '
+		found, _ = engine.diagnose(Request('bash', text, '', ''), probe=False, now=now, states=answers)
+		report['lines'] += 1
+		for kind in set(item.kind for item in found):
+			report['warned'][kind] += 1
+		for item in found:
+			if item.kind == 'unknown':
+				name = item.message.split(':', 1)[0]
+				entry = report['unknown'].setdefault(name, {'lines': 0, 'meant': engine._did_you_mean(name, answers, now)})
+				entry['lines'] += 1
+	for verdict in verdicts.values():
+		report['checked'][verdict] = report['checked'].get(verdict, 0) + 1
+	return report
+
+def format_diagnostics_report(report):
+	'''The diagnostics replay as text: what was checked, which lines would warn, the hosts mssh would reject.'''
+	checked = report['checked']
+	out = ['warnings over {} history lines (DNS, no ping)'.format(report['lines']),
+		'  hosts checked: {} (valid {}, unsure {}, invalid {})'.format(sum(checked.values()), checked.get('valid', 0), checked.get('unsure', 0), checked.get('invalid', 0)),
+		'  lines warned: ' + ', '.join('{} {}'.format(kind, report['warned'][kind]) for kind in DIAGNOSTIC_KINDS)]
+	if report['unknown']:
+		out.append('  hosts mssh would reject:')
+		for name, entry in sorted(report['unknown'].items(), key=lambda item: (-item[1]['lines'], item[0])):
+			meant = '  (did you mean {}?)'.format(entry['meant']) if entry['meant'] else ''
+			out.append('    {}  {} line{}{}'.format(name, entry['lines'], '' if entry['lines'] == 1 else 's', meant))
+	return '\n'.join(out) + '\n'
+
 def synthetic_history(seed=1, entries=1500, start=1700000000):
 	'''
 	A deterministic ~/.mssh_history with known structure: host groups each with their own commands,
@@ -5906,6 +5984,7 @@ def _cmd_eval(args):
 	parser.add_argument('--since', type=int, default=0, help='only replay entries from this unix time on')
 	parser.add_argument('--limit', type=int, default=300, help='replay at most this many of the newest entries')
 	parser.add_argument('--synthetic', action='store_true', help='replay a generated history instead')
+	parser.add_argument('--diagnostics', action='store_true', help='replay the warnings instead, looking hosts up in DNS (no ping): lists the hosts mssh would reject')
 	options = parser.parse_args(args)
 	mssh = _import_mssh()
 	spec = spec_from_parser(mssh.get_parser())
@@ -5913,8 +5992,18 @@ def _cmd_eval(args):
 		lines = synthetic_history()
 	else:
 		lines, _, _ = read_history(os.path.expanduser(options.history_file or mssh.DEFAULT_HISTORY_FILE))
+	if options.diagnostics:
+		lines = [line for line in lines if _entry_time(line) >= options.since][-options.limit:]
+		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
+		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
+		return 0
 	print(format_report(evaluate(lines, spec, options.since, options.limit)))
 	return 0
+
+def _entry_time(line):
+	'''The unix time an mssh history line starts with, 0 when it has none.'''
+	head = line.split('\t', 1)[0]
+	return int(head) if _is_digits(head) else 0
 
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv

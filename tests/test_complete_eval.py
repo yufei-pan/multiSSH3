@@ -64,3 +64,54 @@ def test_ghost_suggestions_are_rarely_wrong_and_save_more_than_tab():
 def test_report_has_a_ghost_table():
 	report = mc.format_report(mc.evaluate(mc.synthetic_history(entries=300), SPEC, limit=50))
 	assert 'shown' in report and '\nghost ' in report
+
+
+# the hosts synthetic history names: the rest does not exist
+SYNTHETIC_HOSTS = ['gpu{:02d}'.format(number) for number in range(1, 17)] + ['storage1', 'storage2', 'storage3', 'storage4', 'login1', 'login2', 'us_east']
+
+
+def synthetic_table(tmp_path):
+	path = str(tmp_path / 'index.nsv')
+	names = sorted(SYNTHETIC_HOSTS)
+	mc.write_nsv(path, {}, [('host_names', [names]), ('host_meta', [[str(mc.SRC_HISTORY), ''] for _ in names])])
+	return mc.HostTable(mc.NsvIndex.load(path))
+
+
+def validity(name):
+	return 'valid' if name in SYNTHETIC_HOSTS else 'invalid'
+
+
+def test_clean_synthetic_history_gets_no_warning(tmp_path):
+	report = mc.diagnostics_replay(mc.synthetic_history(entries=300), SPEC, validity, synthetic_table(tmp_path))
+	assert report['lines'] == 300 and report['warned'] == {kind: 0 for kind in mc.DIAGNOSTIC_KINDS}
+
+
+# typos and padding mistakes an operator makes, and the host meant
+MISTAKES = {
+	'gpu[01-16]': 'gpu[1-16]', 'storage[1-4]': 'storgae[1-4]', 'login[1-2]': 'login[1-3]', 'us_east': 'us_eats',
+}
+
+
+def with_mistake(line):
+	import shlex
+	fields = line.split('\t')
+	hosts = shlex.split(fields[3])[0]
+	mistaken = MISTAKES.get(hosts) or 'gpu0' + hosts[3:]
+	return '\t'.join(fields[:3] + [shlex.quote(mistaken)] + fields[4:])
+
+
+def test_mistakes_in_synthetic_history_are_caught(tmp_path):
+	lines = [with_mistake(line) for line in mc.synthetic_history(entries=300)]
+	report = mc.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path))
+	# every line holds one mistake, and every one is caught
+	assert report['warned']['unknown'] + report['warned']['range'] == 300
+	# a single host is meant to be the one it is a typo of
+	assert {name: entry['meant'] for name, entry in report['unknown'].items()} == {
+		name: ('us_east' if name == 'us_eats' else 'gpu' + name[4:]) for name in report['unknown']}
+
+
+def test_the_diagnostics_report(tmp_path):
+	lines = [with_mistake(line) for line in mc.synthetic_history(entries=100)]
+	text = mc.format_diagnostics_report(mc.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path)))
+	assert text.startswith('warnings over 100 history lines (DNS, no ping)\n')
+	assert '  hosts mssh would reject:\n' in text and 'did you mean' in text

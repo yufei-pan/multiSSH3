@@ -145,6 +145,11 @@ def test_a_huge_range_is_checked_up_to_the_member_limit(engine, monkeypatch):
 		'host[1-100000]', 'range', 'host[1-100000]: 1 of 100000 checked, 1 unknown so far')], True)
 
 
+def test_ipv4_ranges_hold_only_addresses(engine):
+	# mssh's IPv4 range syntax: ranges, x, * or ? in an octet (found replaying real history)
+	assert warnings(engine, 'mssh 127.0.0.1-20,10.0.[1-2].x,10.1.1.* uptime') == ([], False)
+
+
 def test_lines_that_do_not_run_mssh_get_nothing(engine):
 	seed(engine, gpu017='invalid')
 	assert warnings(engine, 'ssh gpu017 uptime') == ([], False)

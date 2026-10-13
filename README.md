@@ -390,12 +390,26 @@ While you type an mssh line, the most likely rest of it shows in grey after the 
 
 Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations. Type to filter, ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
 
+### Warnings before Enter
+
+While you type an mssh line, words already typed that mssh would trip over are marked, and one line under the prompt says why. Nothing is ever blocked: Enter runs what you typed.
+
+- **Unknown host:** a name mssh would reject (no IP, alias or hosts-file entry, not in DNS, not mapped by your ssh config), with the host you probably meant: `gpu017: unknown host — did you mean gpu17?`
+- **Range surprises:** a range or alias with members mssh would reject: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …) — did you mean node[01-16]?`
+- **Unreachable host:** one that failed in your recent mssh runs (`will be skipped` with `-su`), or that answered ping recently and stopped.
+- **Conflicting options:** two options mssh refuses together, an option given twice, or one that does nothing on this line (`-iu does nothing: only used with --ipmi`).
+
+zsh, bash with ble.sh and the plain-bash line editor mark the words and show the reason; fish 4 prints the reason under the line after a space; fish 3 and plain bash without the editor list the warnings at the top of the Ctrl-R menu.
+
+Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (which only reads your ssh config) and ping. It never connects or logs in to a host, so it cannot trip fail2ban; it runs at low priority, as many checks at once as mssh's own `max_connections` allows. What it learns lives in mssh's runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or the temp dir) and is gone after a reboot. `mssh-complete eval --diagnostics` replays your history and lists the hosts mssh would reject.
+
 | Environment variable | Effect |
 | --- | --- |
 | `MSSH_COMPLETE_TIMEOUT` | Seconds the shell waits for an answer (default 0.3) |
 | `MSSH_COMPLETE_GHOST_TIMEOUT` | ble.sh only: milliseconds a grey suggestion may take (default 300) |
 | `MSSH_COMPLETE_SHELL_HISTORY` | Lines of shell history sent along (default 1000) |
 | `MSSH_COMPLETE_EDITOR` | `1` turns on the plain-bash mssh line editor (`install bash editor` sets it) |
+| `MSSH_COMPLETE_PING_TTL` | Seconds a host that answered ping is expected to keep answering (default: mssh's unreachable host expiry, 600) |
 | `MSSH_COMPLETE_DEBUG` | `1` logs errors to `complete.log` in the cache directory |
 
 > Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.

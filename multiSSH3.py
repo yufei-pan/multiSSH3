@@ -35,7 +35,7 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.29'
+version = '6.30'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-10-12'
