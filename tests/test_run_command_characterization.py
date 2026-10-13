@@ -10,6 +10,7 @@ import errno
 import io
 import json
 import os
+import shlex
 import threading
 from pathlib import Path
 
@@ -219,3 +220,47 @@ def test_command_formatting_error_is_recorded(monkeypatch):
 
 	assert host.returncode == -1
 	assert host.output[0] == "Error occurred while formatting the command : None!"
+
+
+# spaces, a quote and % in each: the shell-quoted form differs from the password itself
+SSH_SECRET = "Hunter2 it's 100%"
+BMC_SECRET = "Bmc s3cret's 5%"
+
+PASSWORD_SCENARIOS = {
+	"sshpass": dict(host=dict(name="node1", command="uptime"), passwds=SSH_SECRET, bins=bins("ssh", "sshpass"), debug=True,
+		results=[OK], shown="Running command: /bin/sshpass -p *** /bin/ssh"),
+	"sshpass_scp": dict(host=dict(name="node1", command="/dest/", files=["/src/a"], scp=True), passwds=SSH_SECRET,
+		bins=bins("ssh", "scp", "sshpass"), results=[OK], shown="Running command: /bin/sshpass -p *** /bin/scp"),
+	"ipmitool_via_sh": dict(host=dict(name="node1", command="power status", ipmi=True), ipmi=[ipmi(password=BMC_SECRET)],
+		bins=bins("sh", "ipmitool", "ssh"), debug=True, results=[OK], shown="Running command: /bin/sh -c ipmitool -H node1 -U admin -P *** "),
+	"ipmitool_direct": dict(host=dict(name="node1", command="power status", ipmi=True), ipmi=[ipmi(password=BMC_SECRET)],
+		bins=bins("ipmitool", "ssh"), results=[OK], shown="Running command: /bin/ipmitool -H node1 -U admin -P *** "),
+	"redfish_via_sh": dict(host=dict(name="node1", command="Systems", ipmi=True), ipmi=[ipmi(ipmi_method="redfish", password=BMC_SECRET)],
+		bins=bins("sh", "redfishtool", "ssh"), results=[OK], shown="-r node1 -u admin -p *** "),
+	"redfish_direct": dict(host=dict(name="node1", command="Systems", ipmi=True), ipmi=[ipmi(ipmi_method="redfish", password=BMC_SECRET)],
+		bins=bins("redfishtool", "ssh"), results=[OK], shown="-r node1 -u admin -p *** "),
+	"ssh_ipmitool": dict(host=dict(name="node1", command="", ipmi=True), passwds=SSH_SECRET,
+		ipmi=[ipmi(ipmi_method="ssh_ipmitool", username="bmc", password=BMC_SECRET)], bins=bins("ssh", "sshpass"), debug=True,
+		results=[OK], shown="Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided."),
+	"ipmitool_missing_locally": dict(host=dict(name="node1", command="power on", ipmi=True), passwds=SSH_SECRET,
+		ipmi=[ipmi(password=BMC_SECRET)], bins=bins("sh", "ssh", "sshpass"), debug=True, results=[OK],
+		shown="Running command: /bin/sshpass -p *** /bin/ssh"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PASSWORD_SCENARIOS))
+def test_tui_and_debug_lines_never_show_a_password(monkeypatch, name):
+	scenario = PASSWORD_SCENARIOS[name]
+	got = run_scenario(monkeypatch, scenario)
+	shown = got["output"] + got["stderr"]
+	assert not [line for line in shown if "Hunter2" in line or "s3cret" in line]
+	assert [line for line in shown if scenario["shown"] in line]
+	# the command run is unchanged: it still gets the password
+	assert [arg for argv in got["argvs"] for arg in argv if SSH_SECRET in arg or BMC_SECRET in arg or shlex.quote(BMC_SECRET) in arg]
+
+
+def test_a_configured_password_is_hidden_after_any_dash_p(monkeypatch):
+	# passwords the run did not pass in, but the config holds: ssh's own -p (a port) stays
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", SSH_SECRET)
+	line = multiSSH3._shown_command(["/bin/sshpass", "-p", SSH_SECRET, "/bin/ssh", "-p", "2222", "--", "node1", "uptime"])
+	assert line == "/bin/sshpass -p *** /bin/ssh -p 2222 -- node1 uptime"

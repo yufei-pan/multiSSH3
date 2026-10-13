@@ -2326,9 +2326,10 @@ def _build_command(host, passwds, ipmi_definitions_list):
 						host.stderr.append(f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
 				username = ipmi_definition.get('username',username)
 				if passwds:
-					host.output.append(f'Warning: -p SSH_PASSWORD {passwds} is provided! Using the password from the ipmi definition if provided: {ipmi_definition.get("password")}')
+					# not the passwords themselves: the TUI shows this line
+					host.output.append('Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 					if __DEBUG_MODE:
-						host.stderr.append(f'Warning: -p SSH_PASSWORD  {passwds} is provided! Using the password from the ipmi definition if provided: {ipmi_definition.get("password")}')
+						host.stderr.append('Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 				passwds = ipmi_definition.get('password',passwds)
 				if ipmi_definition.get('interface_ip_prefix') and ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
 					host.output.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
@@ -2492,7 +2493,31 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		return attempt('stop')
 	return attempt('run', formatedCMD)
 
-def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
+def _shown_command(argv, passwords=()):
+	'''
+	argv as the line the TUI and --debug show, each password in it shown as ***.
+
+	A password is the word after -p or -P (sshpass, ipmitool, redfishtool, also inside the sh -c line
+	they run in) that is one of passwords or a configured password. Other words stay, ssh's -p port too.
+	'''
+	known = list(passwords) + [DEFAULT_PASSWORD, DEFAULT_IPMI_PASSWORD]
+	known += [definition.get('password') for definition in DEFAULT_IPMI_DEFINITIONS if isinstance(definition, dict)]
+	# longest first, so a password inside another one does not leave the rest of that one
+	secrets = sorted({str(password) for password in known if password is not None and str(password)}, key=len, reverse=True)
+	words = [str(word) for word in argv]
+	for index, word in enumerate(words):
+		if index and words[index - 1] in ('-p', '-P') and word in secrets:
+			words[index] = '***'
+			continue
+		# '-P password' as one argument, or inside an sh -c line, where it is shell-quoted
+		for secret in secrets:
+			for form in (shlex.quote(secret), secret):
+				for flag in ('-p ', '-P '):
+					word = word.replace(flag + form, flag + '***')
+		words[index] = word
+	return ' '.join(words)
+
+def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=()):
 	'''
 	Run one built command, retrying (within retry_limit) while too many files are open.
 
@@ -2502,6 +2527,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
 		timeout (int): Seconds without output before the command is stopped, 0 for no limit
 		retry_limit (int): Retries left
+		passwords (tuple): The passwords in formatedCMD, shown as *** (configured ones are anyway)
 
 	Returns:
 		tuple: (stop, retry_limit, attempt_line_starts). stop is True when the retries ran out
@@ -2515,9 +2541,10 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 		proc = None
 		with sem:
 			try:
-				host.output.append('Running command: '+' '.join(formatedCMD))
+				shown = 'Running command: ' + _shown_command(formatedCMD, passwords)
+				host.output.append(shown)
 				if __DEBUG_MODE:
-					host.stderr.append('Running command: '+' '.join(formatedCMD))
+					host.stderr.append(shown)
 				#host.stdout = []
 				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
 				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
@@ -2669,7 +2696,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		if action == 'rebuild':
 			retry_limit -= 1
 			continue
-		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
+		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit, (passwds, ipmi_definition.get('password')))
 		if stop:
 			return
 		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
