@@ -3091,6 +3091,22 @@ next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fi
 attempt's state into the retry decisions and the next attempt.
 '''
 
+def _split_extra_args(text):
+	'''
+	Split the -ea string into arguments as a shell would: -ea "-o ProxyCommand='ssh -W %h:%p bastion'"
+	is two arguments. On Windows a backslash is a path separator, not an escape: C:\\keys\\id stays.
+	An unclosed quote splits on spaces, as before quotes were understood.
+	'''
+	lexer = shlex.shlex(text, posix=True)
+	lexer.whitespace_split = True
+	lexer.commenters = ''
+	if os.name == 'nt':
+		lexer.escape = ''
+	try:
+		return list(lexer)
+	except ValueError:
+		return text.split()
+
 def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, rsync_xattrs=True):
 	'''
 	Build the command line for one attempt to run host.command, without running it.
@@ -3171,12 +3187,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip) if host.ip else host.address,case_sensitive=False)
 		formatedCMD = []
 		if host.extraargs and isinstance(host.extraargs, str):
-			try:
-				# as a shell splits them: -ea "-o ProxyCommand='ssh -W %h:%p bastion'" is two arguments
-				extraargs = shlex.split(host.extraargs)
-			except ValueError:
-				# an unclosed quote: split on spaces as before
-				extraargs = host.extraargs.split()
+			extraargs = _split_extra_args(host.extraargs)
 		elif host.extraargs and isinstance(host.extraargs, list):
 			extraargs = [str(arg) for arg in host.extraargs]
 		else:
