@@ -6,10 +6,13 @@ SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 NOW = 1790000000
 # a newline would run what follows it when Enter is pressed; ESC sequences drive the terminal
 EVIL = ['x\nreboot', 'y\x1b]0;owned\x07', 'z\rw', 'v\x9b2J']
+# a byte 0x9b that is not UTF-8 (text written in another encoding) is read as U+DC9B
+# (surrogateescape) and written back as that byte: CSI on a terminal that takes 8-bit controls
+RAW_CSI = 'node\udc9b2Jx'
 
 
 def control(text):
-	return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+	return any(ord(char) < 32 or 127 <= ord(char) < 160 or 0xdc80 <= ord(char) < 0xdca0 for char in text)
 
 
 def line(ts, options, hosts, command):
@@ -39,6 +42,23 @@ def test_candidates_and_grey_text():
 			assert ghost is None or not control(ghost.text)
 
 
+def test_raw_c1_bytes_are_control_characters():
+	assert mc._has_control(RAW_CSI) and mc._printable(RAW_CSI) == 'node?2Jx'
+	# other bytes that are not UTF-8 are no control: é written in Latin-1 stays
+	assert not mc._has_control('caf\udce9') and mc._printable('caf\udce9') == 'caf\udce9'
+
+
+def test_raw_c1_bytes_from_history_never_reach_the_shell():
+	history = [line(NOW - number, '-su', RAW_CSI, '"uptime"') for number in range(5)]
+	for shell in ('bash', 'zsh', 'fish'):
+		for before, flags in (('mssh no', {}), ('mssh no', {'ghost': '1'}), ('mssh ', {'ghost': '1'}), ('mssh no', {'insert': '1'})):
+			response = engine(history).query(mc.Request(shell, before, '', '' if before.endswith(' ') else 'no', flags=flags))
+			assert b'\x9b' not in mc.format_response(response)
+	request = mc.Request('bash', 'mssh ', '', '', history=['mssh {} w'.format(RAW_CSI), 'mssh node1 w'])
+	_, _, items, _ = mc.picker_items(request, engine(history), history)
+	assert [item.text for item in items] == ['mssh node1 w']
+
+
 def test_picker_history():
 	history = [line(NOW, '-su', 'node1', '"echo \x1b[2J"'), line(NOW, '-su', 'node1', 'uptime')]
 	shell = ['mssh node1 printf "\x1b]0;owned\x07"', 'mssh node1 w']
@@ -61,6 +81,9 @@ def test_descriptions_sent_to_the_shell_hold_no_control_character():
 	response = mc.Response(None)
 	response.candidates = [mc.Candidate('node1', 'a\x1b]0;owned\x07b', 'hosts', 1.0)]
 	assert '\x1b' not in mc.format_response(response, nul=False).decode()
+	# nor warnings about a host typed with a raw C1 byte, which the shell prints under the prompt
+	response.diagnostics = [mc.Diagnostic(5, 13, 'unknown', RAW_CSI + ': unknown host')]
+	assert b'\x9b' not in mc.format_response(response)
 
 
 def test_checking_for_control_characters_scans_at_c_speed():

@@ -1,3 +1,5 @@
+import pytest
+
 import multiSSH3
 import mssh_complete as mc
 
@@ -115,3 +117,20 @@ def test_the_diagnostics_report(tmp_path):
 	text = mc.format_diagnostics_report(mc.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path)))
 	assert text.startswith('warnings over 100 history lines (DNS, no ping)\n')
 	assert '  hosts mssh would reject:\n' in text and 'did you mean' in text
+
+
+@pytest.mark.parametrize('limit', [0, -3])
+def test_eval_limit_of_zero_or_less_replays_nothing(tmp_path, monkeypatch, capsys, limit):
+	# with --diagnostics every host replayed costs a DNS lookup and ssh -G: --limit 0 must not mean all
+	path = tmp_path / 'history'
+	path.write_text(''.join(line + '\n' for line in mc.synthetic_history(entries=20)))
+	asked = []
+	monkeypatch.setattr(multiSSH3, 'host_validity', lambda name: asked.append(name) or 'valid')
+	monkeypatch.setattr(mc, '_import_mssh', lambda: multiSSH3)
+	monkeypatch.setattr(mc, 'engine_for', lambda request: mc.Engine(SPEC, []))
+	assert mc._cmd_eval(['--diagnostics', '--limit', str(limit), str(path)]) == 0
+	assert capsys.readouterr().out.startswith('warnings over 0 history lines') and asked == []
+	assert mc._cmd_eval(['--diagnostics', '--limit', '5', str(path)]) == 0
+	assert capsys.readouterr().out.startswith('warnings over 5 history lines') and asked
+	# as the replay of typing reads it
+	assert mc.evaluate(mc.synthetic_history(entries=20), SPEC, limit=limit, policies=('bash',)) == {}

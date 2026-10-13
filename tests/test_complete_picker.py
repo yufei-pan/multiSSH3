@@ -170,6 +170,16 @@ def test_a_choice_inside_an_open_quote_closes_it():
 	assert line == 'mssh gpu[01-16] "nvidia-smi" ' and cursor == len(line)
 
 
+def test_a_choice_inside_an_ansi_c_quote_keeps_the_command():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	history = [line(NOW - number, '-su', 'node1', '\'printf "%s\\n" x\'') for number in range(3)] + [line(NOW - 10, '-su', 'node1', '"printf ok"')]
+	req = request("mssh node1 $'pri")
+	slot, title, items, word = mc.picker_items(req, engine(history), history, NOW)
+	assert [item.text for item in slot] == ['printf ok']
+	line_after, _ = mc.apply_pick(req, mc.Picker(slot, items, title), word, mc.parse_context(req.before, req.after, SPEC))
+	assert line_after == "mssh node1 $'printf ok' "
+
+
 def test_history_tab_never_offers_passwords():
 	history = HISTORY + [line(NOW, '-su -p=hunter2', 'gpu[01-16]', '"nvidia-smi"'), line(NOW, '-su --ipmi_password=s3cret', 'bmc1', '"power status"')]
 	shell = ['mssh -p hunter2 storage1 uptime', 'mssh --password=hunter2 storage1 w', 'mssh storage1 df']

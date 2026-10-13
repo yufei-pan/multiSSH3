@@ -718,14 +718,25 @@ INDEX_NAME = 'complete-index.v1.nsv'
 class IndexCorrupt(Exception):
 	'''The index file is not a complete index this version can read.'''
 
+def _is_control(char):
+	'''
+	Whether char is a control character: C0, DEL, C1, or a byte 0x80-0x9f that was not UTF-8
+	(surrogateescape reads it as U+DC80-U+DC9F and writes the byte back: a C1 control, such as CSI,
+	on a terminal that takes 8-bit controls). Other bytes that are not UTF-8 are no control.
+	'''
+	code = ord(char)
+	return code < 32 or 127 <= code < 160 or 0xdc80 <= code < 0xdca0
+
 def _has_control(text):
-	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
+	'''Whether text holds a control character (_is_control): such text never goes on a command line or the screen.'''
 	# nearly all text is printable, which one scan in C settles (the picker checks every history line)
-	return not text.isprintable() and any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+	return not text.isprintable() and any(_is_control(char) for char in text)
 
 def _printable(text):
-	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
-	return ''.join('?' if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in text)
+	'''text with each control character (_is_control) shown as ?: safe to draw.'''
+	if text.isprintable():
+		return text
+	return ''.join('?' if _is_control(char) else char for char in text)
 
 def safe_field(text):
 	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
@@ -1253,6 +1264,56 @@ def _debug(message):
 		pass
 
 #%% ------------ Index sources ----------------
+def _ssh_config_words(line):
+	'''
+	The keyword (lower case) and arguments of an ssh config line, split as ssh splits them.
+
+	The keyword ends at blanks or one "="; arguments are split at blanks, may be quoted with " or '
+	and escape a quote, a backslash or (unquoted) a space with a backslash; an argument starting
+	with # starts a comment. Returns ('', []) for an empty or comment line, and for a line ssh
+	rejects (an unterminated quote).
+	'''
+	line = line.lstrip(' \t').rstrip(' \t\r\n\f')
+	end = 0
+	while end < len(line) and line[end] not in ' \t=':
+		end += 1
+	keyword = line[:end].lower()
+	if not keyword or keyword.startswith('#'):
+		return '', []
+	# one "=" may stand between the keyword and the arguments, blanks around it or not
+	rest = line[end:].lstrip(' \t')
+	if rest.startswith('='):
+		rest = rest[1:]
+	args = []
+	index = 0
+	while index < len(rest):
+		if rest[index] in ' \t':
+			index += 1
+			continue
+		if rest[index] == '#':
+			break
+		arg = []
+		quote = ''
+		while index < len(rest):
+			char = rest[index]
+			if char == '\\' and index + 1 < len(rest) and (rest[index + 1] in '\'"\\' or (not quote and rest[index + 1] == ' ')):
+				arg.append(rest[index + 1])
+				index += 2
+				continue
+			if not quote and char in ' \t':
+				break
+			if not quote and char in '"\'':
+				quote = char
+			elif char == quote:
+				quote = ''
+			else:
+				arg.append(char)
+			index += 1
+		if quote:
+			return '', []
+		args.append(''.join(arg))
+	return keyword, args
+
 def read_ssh_config(path, base_dir, names, users, read):
 	'''
 	Add the Host names (no patterns) and User values of an ssh config file and the files it Includes.
@@ -1274,22 +1335,16 @@ def read_ssh_config(path, base_dir, names, users, read):
 	read.append(path)
 	with f:
 		for line in f:
-			line = line.strip()
-			if not line or line.startswith('#'):
-				continue
-			key, _, value = line.replace('=', ' ', 1).partition(' ')
-			key = key.lower()
-			value = value.strip()
+			key, args = _ssh_config_words(line)
 			if key == 'host':
-				for pattern in value.split():
-					pattern = pattern.strip('"')
+				for pattern in args:
 					if pattern and not any(char in pattern for char in '*?!'):
 						names.add(pattern)
-			elif key == 'user' and value:
-				users.add(value.strip('"'))
+			elif key == 'user' and args and args[0]:
+				users.add(args[0])
 			elif key == 'include':
-				for pattern in value.split():
-					pattern = os.path.expanduser(pattern.strip('"'))
+				for pattern in args:
+					pattern = os.path.expanduser(pattern)
 					if not os.path.isabs(pattern):
 						pattern = os.path.join(base_dir, pattern)
 					for included in sorted(glob.glob(pattern)):
@@ -2585,6 +2640,10 @@ def _shell_escape(shell, text, strict=False):
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
 
+# what an open quote cannot hold as it is: in "..." \ $ ` and " are read, in $'...' a \ starts an escape,
+# and ' ends the other two
+_QUOTE_SPECIAL = {'"': '"\\$`', "'": "'", "$'": "'\\"}
+
 def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
@@ -2990,8 +3049,7 @@ class Engine(object):
 		rest = top[len(typed):]
 		if context.open_quote:
 			closing = '"' if context.open_quote == '"' else "'"
-			unsafe = '"\\$`' if closing == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 				return None
 			if context.slot == SLOT_COMMAND:
 				rest += closing
@@ -3024,8 +3082,7 @@ class Engine(object):
 			return None
 		rest = common[len(typed):]
 		if context.open_quote:
-			unsafe = '"\\$`' if context.open_quote == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 				return None
 		else:
 			rest = _shell_escape(shell, rest, _literal_word(context))
@@ -3178,9 +3235,7 @@ class Engine(object):
 				continue
 			rest = full[len(prefix):]
 			if literal:
-				if context.open_quote == '"' and any(char in rest for char in '"\\$`'):
-					continue
-				if context.open_quote in ("'", "$'") and "'" in rest:
+				if context.open_quote and any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 					continue
 				if not context.open_quote and not bash_quotes:
 					rest = _shell_escape(request.shell, rest, _literal_word(context))
@@ -6027,6 +6082,10 @@ def slot_cases(entry):
 			cases.append(('value', others + name + ' ', rest, value, False, ahead))
 	return cases
 
+def _newest(items, limit):
+	'''The last limit items (the newest of a history), none when limit is 0 or less.'''
+	return items[-limit:] if limit > 0 else []
+
 def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost')):
 	'''
 	Replay history lines in time order: each entry is typed with only the entries before it known.
@@ -6042,7 +6101,7 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 			results plus 'cases'
 	'''
 	entries = sorted((entry for entry in (parse_history_line(line, spec) for line in lines) if entry is not None), key=lambda entry: entry.ts)
-	replay = [number for number, entry in enumerate(entries) if entry.ts >= since][-limit:] if limit else []
+	replay = _newest([number for number, entry in enumerate(entries) if entry.ts >= since], limit)
 	first = replay[0] if replay else len(entries)
 	memory = MemoryKnowledge()
 	reference = entries[-1].ts if entries else 0
@@ -6277,7 +6336,7 @@ def editor_completions(engine, before):
 			names = sorted(os.listdir(listed))
 		except OSError:
 			names = []
-		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
+		unsafe = _QUOTE_SPECIAL.get(context.open_quote, '')
 		for name in names:
 			if not name.startswith(start) or _has_control(name):
 				continue
@@ -6413,7 +6472,7 @@ def _cmd_eval(args):
 	else:
 		lines, _, _ = read_history(os.path.expanduser(options.history_file or mssh.DEFAULT_HISTORY_FILE))
 	if options.diagnostics:
-		lines = [line for line in lines if _entry_time(line) >= options.since][-options.limit:]
+		lines = _newest([line for line in lines if _entry_time(line) >= options.since], options.limit)
 		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
 		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
 		return 0

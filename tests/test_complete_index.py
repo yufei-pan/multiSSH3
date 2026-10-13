@@ -87,6 +87,28 @@ def test_alias_members_keep_their_users(home):
 	assert hosts.alias_member_users(hosts.alias_index('racks')) == ['', '', '']
 
 
+def test_ssh_config_lines_are_split_as_ssh_splits_them(tmp_path):
+	# what ssh -G (OpenSSH 10.0) makes of each line: a keyword in any case, ended by blanks (tabs
+	# too) or one "=", arguments in "..." or '...', a # that starts an argument starts a comment
+	(tmp_path / 'tabbed.conf').write_text('\tUser\tcarol\n')
+	config = tmp_path / 'config'
+	config.write_text(
+		'Host\tgpu-tab\n'
+		'  HostName 10.0.0.1\n'
+		'Host=gpu-eq\n'
+		'HOST \t= gpu-e "gpu-dq" \'gpu-sq\'\n'
+		'\tUser\tbob\n'
+		'Host gpu-d # gpu-comment\n'
+		'Host gpu-j#k\n'
+		'Host "gpu-open\n'
+		'user=al=ice\n'
+		'Include\ttabbed.conf\n')
+	names, users = set(), set()
+	mc.read_ssh_config(str(config), str(tmp_path), names, users, [])
+	assert names == {'gpu-tab', 'gpu-eq', 'gpu-e', 'gpu-dq', 'gpu-sq', 'gpu-d', 'gpu-j#k'}
+	assert users == {'bob', 'al=ice', 'carol'}
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
