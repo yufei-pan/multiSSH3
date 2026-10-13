@@ -4707,6 +4707,20 @@ _mssh() {
 	return 0
 }
 
+_mssh_complete_register() {
+	# precmd: TAB for the mssh names without a completion, once compinit has run (it defines compdef
+	# and _comps; a stand-in compdef that queues calls for later is left alone). compinit can run
+	# after this file, later in the rc file or after the first prompt (zinit turbo, zsh-defer), and
+	# one loading its dump file forgets what was registered before it. A completion set for an mssh
+	# name by hand stays.
+	emulate -L zsh
+	(( $+functions[compdef] )) && [[ ${(t)_comps} == association* ]] || return 0
+	local name
+	for name in mssh mssh3 multissh multissh3 multiSSH3; do
+		(( $+_comps[$name] )) || compdef _mssh $name
+	done
+}
+
 (( $+functions[compdef] )) && compdef _mssh mssh mssh3 multissh multissh3 multiSSH3
 
 # ---- grey suggestions and the Ctrl-R picker (SP2) ----
@@ -5111,6 +5125,7 @@ _mssh_complete_zas_strategy() {
 
 if [[ -o interactive ]]; then
 	autoload -Uz add-zsh-hook
+	add-zsh-hook precmd _mssh_complete_register
 	add-zsh-hook precmd _mssh_complete_setup
 fi
 '''

@@ -119,17 +119,18 @@ complete -F _fakefile fakefile
 
 ZSH_TEST_RC = r'''
 PS1='@@READY@@ '
-autoload -Uz compinit && compinit -u -D
+{compinit}
 {pre}
 _mssh_test_print() {{ print -r -- "@@LINE[$BUFFER]@@" }}
 zle -N _mssh_test_print
 bindkey '^X^P' _mssh_test_print
 # a command with its own completion, for delegation tests
 _fakecmd() {{ compadd alpha beta }}
-compdef _fakecmd fakecmd
+(( $+functions[compdef] )) && compdef _fakecmd fakecmd
 [[ -r {glue} ]] && source {glue} 2>/dev/null
 {extra}
 '''
+ZSH_COMPINIT = 'autoload -Uz compinit && compinit -u -D'
 
 def require_blesh():
 	'''The ble.sh script named by MSSH_TEST_BLESH; skip without it, unless MSSH_REQUIRE_SHELLS lists blesh.'''
@@ -178,9 +179,9 @@ def bash_session(home, env, glue, bash_completion=True, extra='', pre=''):
 	session.read_until(b'@@READY@@')
 	return session
 
-def zsh_session(home, env, glue, pre='', extra=''):
-	'''An interactive zsh with the glue; pre runs before the glue loads, extra after.'''
-	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue, pre=pre, extra=extra))
+def zsh_session(home, env, glue, pre='', extra='', compinit=ZSH_COMPINIT):
+	'''An interactive zsh with the glue; compinit (zsh's completion system) and pre run before the glue loads, extra after.'''
+	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue, pre=pre, extra=extra, compinit=compinit))
 	session = Session([require_shell('zsh'), '-i'], dict(env, ZDOTDIR=str(home)), cwd=home)
 	session.read_until(b'@@READY@@')
 	return session
