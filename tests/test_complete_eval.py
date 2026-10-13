@@ -35,6 +35,37 @@ def test_simulate_slot_counts_keys():
 	assert (result['keys'], result['chars'], result['rank']) == (3, 3, 0)
 
 
+def test_an_alias_of_the_option_typed_is_no_miss():
+	# the history spells it --skip_unreachable, the replayed entry -su: the engine offering the long
+	# string first offers what the operator meant
+	lines = ['{}\t/x/multiSSH3.py\t--skip_unreachable\tzz-a.invalid\t"uptime"'.format(1700000000 + number) for number in range(5)]
+	lines.append('1700000100\t/x/multiSSH3.py\t-su\tzz-a.invalid\t"uptime"')
+	for policy in ('bash', 'ranked'):
+		total = mc.evaluate(lines, SPEC, limit=1, policies=(policy,))[(policy, 'option')]
+		assert (total['cases'], total['top1'], total['mrr'], total['divergent']) == (1, 1, 1.0, 0), policy
+	# one TAB gives --skip_unreachable where typing -su takes two keys
+	ranked = mc.evaluate(lines, SPEC, limit=1, policies=('ranked',))[('ranked', 'option')]
+	assert (ranked['keys'], ranked['chars']) == (1, 2)
+
+
+def test_an_option_of_another_action_with_the_same_dest_is_a_miss():
+	# -nsu sets the dest -su sets, to the opposite: offering it is no hit
+	lines = ['{}\t/x/multiSSH3.py\t-nsu\tzz-a.invalid\t"uptime"'.format(1700000000 + number) for number in range(5)]
+	lines.append('1700000100\t/x/multiSSH3.py\t-su\tzz-a.invalid\t"uptime"')
+	total = mc.evaluate(lines, SPEC, limit=1, policies=('ranked',))[('ranked', 'option')]
+	assert total['top1'] == 0 and total['divergent'] == 1
+
+
+def test_a_value_attached_to_its_option_is_replayed_apart_from_it():
+	# -uroot is -u root to argparse: the option slot is -u, its value root
+	entry = mc.parse_history_line('1700000000\t/x/multiSSH3.py\t-uroot -t30 --max_connections=8\tzz-a.invalid\t"uptime"', SPEC)
+	assert entry.option_texts == ['-u', '-t', '--max_connections']
+	cases = mc.slot_cases(entry)
+	assert ('option', 'mssh -t=30 --max_connections=8 -', ' zz-a.invalid "uptime"', 'u', False, '') in cases
+	assert ('value', 'mssh -t=30 --max_connections=8 -u ', ' zz-a.invalid "uptime"', 'root', False, ' zz-a.invalid "uptime"') in cases
+	assert cases[0][1] == 'mssh -u=root -t=30 --max_connections=8 '
+
+
 def test_since_skips_older_entries():
 	lines = mc.synthetic_history(entries=100)
 	cutoff = mc.parse_history_line(lines[90], SPEC).ts
