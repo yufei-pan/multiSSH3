@@ -3032,7 +3032,8 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		window.move(keep_top_n_lines,0)
 		window.deleteln()
 		y = maxY - 1
-	line = line.replace('\n', ' ').replace('\r', ' ')
+	# curses draws the other control characters as ^A, ^[ ... but refuses a NUL (ValueError): show it as ^@
+	line = line.replace('\n', ' ').replace('\r', ' ').replace('\0', '^@')
 	if parse_ansi_colors:
 		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
 	else:
@@ -3395,22 +3396,20 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
 				if host.lineNumToPrintSet:
-					try:
-						# visible range is from len(host.output) - host_window_height + 1 to len(host.output)
-						visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
-						lineNumToPrintSet = host.lineNumToPrintSet.copy()
-						host.lineNumToPrintSet = set()
-						for lineNumToReprint in sorted(lineNumToPrintSet):
-							# if the line is visible, we will reprint it
-							if visibleLowerBound <= lineNumToReprint <= len(host.output):
+					# visible range is from len(host.output) - host_window_height + 1 to len(host.output) - 1
+					visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
+					lineNumToPrintSet = host.lineNumToPrintSet.copy()
+					host.lineNumToPrintSet = set()
+					for lineNumToReprint in sorted(lineNumToPrintSet):
+						# if the line is visible, we will reprint it
+						if visibleLowerBound <= lineNumToReprint < len(host.output):
+							# each line on its own: one line curses cannot draw must not leave the lines after it blank
+							try:
 								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 								hostWindowUpdated = True
-					except Exception:
-						# import traceback
-						# print(str(e).strip())
-						# print(traceback.format_exc().strip())
-						if org_dim != stdscr.getmaxyx():
-							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
+							except Exception:
+								if org_dim != stdscr.getmaxyx():
+									return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
 				if host.lastPrintedUpdateTime != host.lastUpdateTime and host.output_buffer.tell() > 0:
 					# this means there is still output in the buffer, we will print it
 					# we will print the output in the window

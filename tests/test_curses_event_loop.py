@@ -450,3 +450,94 @@ def test_generate_display_escape_with_input_clears_line(stub_curses_harness, fak
 	assert multiSSH3.__keyPressesIn == [[]]
 	assert result is not None
 	assert result[1] == 0
+
+
+def _rendered_text(harness):
+	return [
+		arg
+		for window in harness.windows
+		for method, args, kwargs in window.calls
+		for arg in args
+		if method == "addnstr" and isinstance(arg, str)
+	]
+
+
+def _reject_text_like_curses(monkeypatch, harness, bad=lambda text: "\0" in text):
+	"""Make the stub windows raise for text real curses cannot draw (addnstr rejects a NUL)."""
+	window_class = type(harness.window)
+	record = window_class.addnstr
+
+	def addnstr(self, *args, **kwargs):
+		if any(isinstance(arg, str) and bad(arg) for arg in args):
+			raise ValueError("embedded null character")
+		return record(self, *args, **kwargs)
+
+	monkeypatch.setattr(window_class, "addnstr", addnstr)
+
+
+def _finish_after_one_redraw(harness, host, monkeypatch):
+	def finish_without_input():
+		host.returncode = 0
+		return -1
+
+	monkeypatch.setattr(harness.window, "getch", finish_without_input)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+
+def test_generate_display_shows_nul_in_output_and_keeps_later_lines(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output = ["before", "a\0b", "after"]
+	host.lineNumToPrintSet = {0, 1, 2}
+	_reject_text_like_curses(monkeypatch, stub_curses_harness)
+	_finish_after_one_redraw(stub_curses_harness, host, monkeypatch)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+	rendered = _rendered_text(stub_curses_harness)
+
+	assert result is None
+	assert "a^@b" in rendered  # NUL shown the way curses shows the other control characters (^A, ^[)
+	assert "after" in rendered
+
+
+def test_generate_display_one_line_failing_to_draw_keeps_the_others(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output = ["before", "cannot-draw", "after"]
+	host.lineNumToPrintSet = {0, 1, 2}
+	_reject_text_like_curses(monkeypatch, stub_curses_harness, bad=lambda text: text == "cannot-draw")
+	_finish_after_one_redraw(stub_curses_harness, host, monkeypatch)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+	rendered = _rendered_text(stub_curses_harness)
+
+	assert result is None
+	assert "before" in rendered
+	assert "after" in rendered
+
+
+def test_generate_display_shows_nul_in_unfinished_output_line(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output_buffer.write(b"part\0ial")  # printf 'part\0ial'; sleep 60: no newline yet
+	_reject_text_like_curses(monkeypatch, stub_curses_harness)
+	_finish_after_one_redraw(stub_curses_harness, host, monkeypatch)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+
+	assert result is None  # not "Error: embedded null character"
+	assert "part^@ial" in _rendered_text(stub_curses_harness)
+
+
+def test_generate_display_shows_typed_nul_in_input_line(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [["a", "\0", "b"]])  # Ctrl-@ types a NUL
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	_reject_text_like_curses(monkeypatch, stub_curses_harness)
+	stub_curses_harness.inject_keys([-1, 12])  # one redraw, then Ctrl-R
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window, [host], curserPosition=3, min_char_len=10, min_line_len=2
+	)
+
+	assert result[6] == "Refresh requested"  # not "Error: embedded null character"
+	assert any("a^@b" in text for text in _rendered_text(stub_curses_harness))
