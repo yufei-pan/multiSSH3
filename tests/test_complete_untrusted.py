@@ -61,3 +61,17 @@ def test_descriptions_sent_to_the_shell_hold_no_control_character():
 	response = mc.Response(None)
 	response.candidates = [mc.Candidate('node1', 'a\x1b]0;owned\x07b', 'hosts', 1.0)]
 	assert '\x1b' not in mc.format_response(response, nul=False).decode()
+
+
+def test_checking_for_control_characters_scans_at_c_speed():
+	# the picker checks every history line each time it opens: 20,000 lines took ~130 ms in a Python loop
+	import timeit
+	text = 'mssh -su gpu[01-16] "nvidia-smi -q -d TEMPERATURE" ' * 40
+	ours = min(timeit.repeat(lambda: mc._has_control(text), number=200, repeat=5))
+	scan = min(timeit.repeat(lambda: text.isprintable(), number=200, repeat=5))
+	assert ours < 10 * scan
+
+
+def test_text_that_is_not_printable_for_other_reasons_is_not_control():
+	assert not mc._has_control('no\xa0break') and not mc._has_control('line separator')
+	assert mc._has_control('csi\x9b') and mc._has_control('tab\there') and mc._has_control('del\x7f')

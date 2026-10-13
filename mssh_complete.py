@@ -659,7 +659,8 @@ class IndexCorrupt(Exception):
 
 def _has_control(text):
 	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
-	return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+	# nearly all text is printable, which one scan in C settles (the picker checks every history line)
+	return not text.isprintable() and any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
 
 def _printable(text):
 	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
@@ -3626,12 +3627,11 @@ def picker_items(request, engine, history_lines, now=None):
 			continue
 		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
 		text = ' '.join([name] + parts)
-		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
-			continue
 		if text in seen:
+			# the same text passed the checks already: count it without parsing it again
 			seen[text][1] += 1
 			continue
-		if len(entries) >= HISTORY_LIMIT:
+		if len(entries) >= HISTORY_LIMIT or not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		overlap = len(features & set(entry.features())) if entry is not None else 0
@@ -3640,9 +3640,13 @@ def picker_items(request, engine, history_lines, now=None):
 		entries.append([overlap, ts, text])
 	shell_lines = request.history[::-1] if request.shell != 'fish' else request.history
 	for line in shell_lines:
+		if len(entries) >= HISTORY_LIMIT:
+			break
 		line = line.strip()
+		if line in seen:
+			continue
 		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
+		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
 			seen[line] = [len(entries), 1]
 			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))

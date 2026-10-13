@@ -267,3 +267,21 @@ def test_picker_warnings_come_from_the_line(tmp_path, monkeypatch):
 	warned.directory = str(tmp_path)
 	mc.write_host_states(str(tmp_path), {'gpu017': mc.HostState('invalid', NOW)})
 	assert mc.picker_warnings(warned, mc.Request('bash', 'mssh gpu017 ', '', '')) == ['gpu017: unknown host']
+
+
+def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
+	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed
+	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 10)
+	lex = mc.lex
+
+	def parses(count):
+		history = [line(NOW - number, '-su', 'node{}'.format(number), 'uptime') for number in range(count)]
+		shell = ['mssh -su host{} date'.format(number) for number in range(count)]
+		built = engine()
+		parsed = []
+		monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))
+		_, _, items, _ = mc.picker_items(request('mssh ', history=shell), built, history)
+		monkeypatch.setattr(mc, 'lex', lex)
+		assert len(items) == 10
+		return len(parsed)
+	assert parses(2000) == parses(20)
