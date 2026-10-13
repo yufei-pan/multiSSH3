@@ -610,6 +610,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-j, --json` | _`DEFAULT_JSON_OUTPUT`_
 - Output in json format.
 - Will also respect `-R, -eo, --error_only` and `-Q, -no, --quiet, --no_output` options.
+- Every host has its own entry, also when hosts return the same output. ( The default output shows such hosts once, as `node[1-3]`; json and greppable output merged them too in 6.05 to 6.31. )
 
 ### `-w, --success_hosts` | _`DEFAULT_SUCCESS_HOSTS`_
 - By default, a summary of failed hosts is printed.
@@ -621,6 +622,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Output in greppable table.
 - Each line contains: Hostname / Resolved Name / Return Code / Output Type/ Output
 - Note a host can have multiple lines if the output contains multiple lines.
+- Every host has its own lines, also when hosts return the same output, so grepping for a host finds them.
 - Useful in a script if we are piping the output to a log file for later grepping.
 
 ### `-x, -su, --skip_unreachable` | _`DEFAULT_SKIP_UNREACHABLE`_
