@@ -95,8 +95,35 @@ def test_hosts_with_fresh_answers_are_not_queued(engine):
 
 
 def test_without_probe_nothing_is_queued(engine):
-	assert warnings(engine, 'mssh login1 uptime', probe=False) == ([], True)
+	# nor pending: the prober was not asked
+	assert warnings(engine, 'mssh login1 uptime', probe=False) == ([], False)
 	assert mc.take_probe_queue(engine.directory) == [] and engine.started == []
+
+
+def test_without_a_runtime_directory_nothing_is_pending(engine, monkeypatch):
+	# no prober can be asked: asking again could only bring the same answer
+	monkeypatch.setattr(mc.time, 'time', lambda: NOW)
+	engine.directory = None
+	assert warnings(engine, 'mssh login1 uptime') == ([], False)
+	response = engine.query(mc.Request('bash', 'mssh login1 uptime', '', '', flags={'diag': '1'}))
+	assert 'pending' not in response.directives and engine.started == []
+
+
+def test_hosts_that_cannot_be_queued_are_not_pending(engine, monkeypatch):
+	# a name with a control character is never queued
+	assert warnings(engine, "mssh $'gpu\\x01x' uptime") == ([], False)
+	def full(directory, hosts):
+		raise OSError(28, 'No space left on device')
+	monkeypatch.setattr(mc, 'queue_probes', full)
+	assert warnings(engine, 'mssh login1 uptime') == ([], False)
+
+
+def test_hosts_left_to_a_prober_already_running_are_pending(engine, monkeypatch):
+	# the running prober holds the lock and takes the queue; a host still waiting in it stays pending
+	monkeypatch.setattr(mc, 'spawn_probe', lambda directory: False)
+	assert warnings(engine, 'mssh login1 uptime') == ([], True)
+	assert warnings(engine, 'mssh login1 uptime') == ([], True)
+	assert mc.take_probe_queue(engine.directory) == ['login1']
 
 
 @pytest.mark.parametrize('typed, meant', [
@@ -156,8 +183,10 @@ def test_a_range_mssh_completion_cannot_expand_says_nothing(engine):
 def test_a_huge_range_is_checked_up_to_the_member_limit(engine, monkeypatch):
 	monkeypatch.setattr(mc, 'RANGE_MEMBERS_LIMIT', 4)
 	seed(engine, host1='invalid')
-	assert warnings(engine, 'mssh host[1-100000] uptime', probe=False) == ([(
+	# pending: the members up to the limit without an answer wait in the probe queue
+	assert warnings(engine, 'mssh host[1-100000] uptime') == ([(
 		'host[1-100000]', 'range', 'host[1-100000]: 1 of 100000 checked, 1 unknown so far')], True)
+	assert sorted(mc.take_probe_queue(engine.directory)) == ['host2', 'host3', 'host4']
 
 
 @pytest.mark.parametrize('text', [

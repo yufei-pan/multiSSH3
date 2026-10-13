@@ -2421,7 +2421,9 @@ class Engine(object):
 	def diagnose(self, request, probe=True, now=None, states=None):
 		'''
 		Warnings for the words of the request's line (before + after) already typed, most
-		important first, and whether the prober still owes answers for hosts on the line.
+		important first, and whether the prober still owes answers for hosts on the line: hosts
+		without fresh answers that this call left in the probe queue (never without probe, without
+		self.directory, or when the queue cannot be written).
 
 		Args:
 			probe (bool): queue those hosts and start the prober (needs self.directory)
@@ -2461,15 +2463,19 @@ class Engine(object):
 			if role == ROLE_HOSTS:
 				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
 		found.extend(self._option_diagnostics(options))
-		wanted = _unique(wanted)
+		wanted = [host for host in _unique(wanted) if _queueable(host)]
+		# pending only once the hosts wait in the queue: then a prober takes them, the one running or
+		# one a later query starts (asking again is such a query)
+		pending = False
 		if probe and wanted and self.directory:
 			try:
 				queue_probes(self.directory, wanted)
+				pending = True
 				spawn_probe(self.directory)
 			except OSError as e:
 				_debug('cannot queue hosts: {!r}'.format(e))
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
-		return found, bool(wanted)
+		return found, pending
 
 	def _host_diagnostics(self, token, states, now, wanted, reach):
 		'''
