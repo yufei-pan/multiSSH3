@@ -989,7 +989,11 @@ def format_commands(commands):
 
 def get_terminal_size():
 	'''
-	Get the terminal size
+	Get the terminal size: stdout's terminal, else stdin's (mssh ... | less), else COLUMNS / LINES, else 120x30.
+
+	A terminal that reports 0 columns or rows does not know its size (a pty nobody set one on: script
+	without a terminal, some CI runners). As shutil.get_terminal_size does, what it does not know comes
+	from COLUMNS / LINES or the fallback.
 
 	@params:
 		None
@@ -998,8 +1002,7 @@ def get_terminal_size():
 		(int,int): the number of columns and rows of the terminal
 	'''
 	try:
-		import os
-		_tsize = os.get_terminal_size()
+		columns, rows = os.get_terminal_size()
 	except Exception:
 		try:
 			import fcntl
@@ -1007,11 +1010,19 @@ def get_terminal_size():
 			import termios
 			packed = fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0))
 			rows, columns = struct.unpack('HHHH', packed)[:2]
-			_tsize = (columns, rows)
 		except Exception:
-			import shutil
-			_tsize = shutil.get_terminal_size(fallback=(120, 30))
-	return _tsize
+			columns = rows = 0
+	def from_environment(name, fallback):
+		try:
+			value = int(os.environ.get(name, ''))
+		except ValueError:
+			return fallback
+		return value if value > 0 else fallback
+	if columns <= 0:
+		columns = from_environment('COLUMNS', 120)
+	if rows <= 0:
+		rows = from_environment('LINES', 30)
+	return os.terminal_size((columns, rows))
 
 @cache_decorator
 def get_terminal_color_capability():
