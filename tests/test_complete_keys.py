@@ -13,7 +13,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, bash_session, blesh_session, build_index, fish_session, make_home,
-	require_shell, zsh_session)
+	require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
 	'1790000100\t/x/multiSSH3.py\t-su -u=root\tstorage1\t"df -h /data"',
@@ -666,11 +666,15 @@ def fish_major():
 	return int(re.search(r'(\d+)\.', output).group(1))
 
 
-def test_fish_says_why_a_host_is_unknown_once(home):
+@pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
+def test_fish_says_why_a_host_is_unknown_once(home, tmp_path, timeout):
 	if fish_major() < 4:
 		pytest.skip('fish 3 keeps its space key (self-insert does nothing next to a function): warnings only in the picker')
 	env, home = home
 	known(env, gpu017='invalid')
+	if timeout == 'no timeout':
+		# macOS has no coreutils timeout(1)
+		env = without_command(env, 'timeout', tmp_path / 'bin')
 	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE))
 	try:
 		session.send('mssh gpu017 ')
@@ -678,6 +682,30 @@ def test_fish_says_why_a_host_is_unknown_once(home):
 		# the space was typed, and the same warning is not printed again at the next one
 		assert printed(session, 'uptime ') == 'mssh gpu017 uptime '
 		assert plain(session.output.decode('utf-8', 'replace')).count('gpu017: unknown host') == 1
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
+def test_fish_space_waits_for_a_slow_engine_only_until_the_time_limit(home, tmp_path, timeout):
+	if fish_major() < 4:
+		pytest.skip('fish 3 keeps its space key: no check at a space')
+	env, home = home
+	slow = home / 'slow-engine'
+	slow.write_text('#!/bin/sh\nsleep 5\n')
+	slow.chmod(0o755)
+	env = dict(env, MSSH_COMPLETE_TIMEOUT='0.3')
+	if timeout == 'no timeout':
+		env = without_command(env, 'timeout', tmp_path / 'bin')
+	session = fish_session(home, env, mc.render_glue('fish-keys', [str(slow)]))
+	try:
+		start = len(session.output)
+		started = time.monotonic()
+		assert printed(session, 'mssh h ', wait=0) == 'mssh h '
+		assert time.monotonic() - started < 3
+		# and fish printed nothing of its own: no error, no report of the engine stopped in the background
+		shown = plain(session.output[start:].decode('utf-8', 'replace')).lower()
+		assert [message for message in ('job', 'signal', 'error', 'command', 'fish:') if message in shown] == []
 	finally:
 		session.close()
 

@@ -6,8 +6,8 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, bash_session, build_index, fish_complete, make_home,
-	require_shell, zsh_session)
+from complete_shell_harness import (ENGINE, bash_session, build_index, fish_complete, fish_session, make_home,
+	require_shell, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -97,14 +97,92 @@ def test_zsh_gives_up_on_a_slow_engine(setup):
 		session.close()
 
 
-def test_fish_completes(setup):
+@pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
+def test_fish_completes(setup, tmp_path, timeout):
+	# with coreutils' timeout(1) and without it (macOS): the glue keeps its time limit either way
+	require_shell('fish')
 	env, home = setup
+	if timeout == 'no timeout':
+		env = without_command(env, 'timeout', tmp_path / 'bin')
 	glue = glue_file(home, 'fish')
 	assert fish_complete(env, glue, 'mssh gp') == [('gpu[01-16]', 'used before')]
 	assert fish_complete(env, glue, 'mssh gpu[01-16] "nvid')[0] == ('nvidia-smi', '')
 	assert fish_complete(env, glue, 'mssh -u r') == [('root', 'used before')]
 	assert fish_complete(env, glue, 'mssh h fakecmd al') == [('alpha', '')]
 	assert fish_complete(env, glue, 'mssh h "date; fakecmd al') == [('date; fakecmd alpha', '')]
+
+
+# engines that give no answer: the glue must fall back to file names, on time and quietly
+NO_ANSWER = {
+	'slow': '#!/bin/sh\nsleep 5\n',
+	'failing': '#!/bin/sh\nexit 1\n',
+	'missing': None,
+	'without its interpreter': '#!/nonexistent/python3\n',
+}
+
+
+def no_answer_engine(home, kind):
+	path = home / 'engine'
+	if NO_ANSWER[kind] is not None:
+		path.write_text(NO_ANSWER[kind])
+		path.chmod(0o755)
+	return [str(path)]
+
+
+@pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
+@pytest.mark.parametrize('engine', sorted(NO_ANSWER))
+def test_fish_falls_back_to_file_names_without_an_answer(setup, tmp_path, engine, timeout):
+	# as bash does (-o default): fish's own file names, within the time limit, and nothing printed
+	require_shell('fish')
+	env, home = setup
+	env = dict(env, MSSH_COMPLETE_TIMEOUT='0.3')
+	if timeout == 'no timeout':
+		env = without_command(env, 'timeout', tmp_path / 'bin')
+	(home / 'zzfile_unique').write_text('')
+	glue = glue_file(home, 'fish', no_answer_engine(home, engine))
+	started = time.monotonic()
+	assert fish_complete(env, glue, 'mssh h zzf', cwd=home) == [('zzfile_unique', '')]
+	assert time.monotonic() - started < 3
+
+
+# what fish prints when a command fails to start or a background job ends
+FISH_MESSAGES = ('job', 'signal', 'error', 'unknown command', 'expanded command', 'fish:')
+
+
+@pytest.mark.parametrize('engine', ['answering', 'slow'])
+def test_fish_without_timeout_shows_nothing_but_the_completion(setup, tmp_path, engine):
+	# without timeout(1) the glue keeps the time limit with a timer of its own: on screen, only the
+	# completion, whether the engine answers or is stopped (TAB, and on fish 4 the check at each space)
+	require_shell('fish')
+	env, home = setup
+	env = without_command(env, 'timeout', tmp_path / 'bin')
+	(home / 'zzfile_unique').write_text('')
+	# more shell history than a pipe holds: the slow engine never reads it, and fish must not wait to write it
+	history = home / '.local' / 'share' / 'fish'
+	history.mkdir(parents=True)
+	(history / 'fish_history').write_text(''.join('- cmd: echo {} {}\n  when: {}\n'.format(number, 'x' * 300, 1790000000 + number) for number in range(1000)))
+	if engine == 'answering':
+		command, typed, expected = ENGINE, 'mssh gp', 'mssh gpu\\[01-16\\] '
+	else:
+		command, typed, expected = no_answer_engine(home, 'slow'), 'mssh h zzf', 'mssh h zzfile_unique '
+		env['MSSH_COMPLETE_TIMEOUT'] = '0.3'
+	# fish completes only commands that exist
+	pre = 'function mssh; end\nsource {}'.format(glue_file(home, 'fish', command))
+	session = fish_session(home, env, mc.render_glue('fish-keys', command), pre=pre)
+	try:
+		start = len(session.output)
+		started = time.monotonic()
+		assert session.line_after(typed) == expected
+		if engine == 'slow':
+			assert time.monotonic() - started < 3
+		# fish reports ended background jobs before its next prompt
+		session.send('\r')
+		session.read_until(b'@@READY@@')
+		session.read_until(b'@@never@@', 1.0)
+		shown = session.output[start:].decode('utf-8', 'replace').lower()
+		assert [message for message in FISH_MESSAGES if message in shown] == []
+	finally:
+		session.close()
 
 
 def _interactive_output(shell, env, home):

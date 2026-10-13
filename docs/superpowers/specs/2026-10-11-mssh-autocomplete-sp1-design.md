@@ -295,6 +295,8 @@ Not indexed. Each request carries the shell's in-memory tail (default 1000 entri
 - Requires fish ≥ 3.0. fish 2.3.1 (CentOS 7 EPEL) lacks what the glue needs (`string split` produced nothing, no `string unescape`, `history` options rejected and plain `history` empty inside a completion function), so on fish < 3.0 the glue file returns before registering anything. Verified working on 3.3.1 and 4.0.2.
 - Delegation: `complete -C "<remote command line>"`.
 - fish's built-in autosuggestions consume these completions automatically.
+- Deadline: fish has no `read -t`, and a command substitution waits for every writer of its pipe. The engine runs under coreutils `timeout` when it is on `PATH`. Without it (macOS), a small POSIX `sh` script reads the request whole into a private `mktemp` file (so fish never waits to write it), runs the engine in the background on that file with its answer going to a second one, plus a `sleep` timer; it prints the answer when the engine ends, or stops the engine, removes the files and exits at the deadline, so fish waits no longer even for an engine that ignores the signal or never reads its input. The engine goes through `timeout` or `sh` because fish prints its own errors for a command it cannot start (missing engine, missing interpreter) on the terminal, whatever the redirections; background jobs of fish's own were tried and left jobs and temporary files behind when Ctrl-C interrupted the wait.
+- No answer (timeout, failure, missing engine, malformed answer): the glue offers file names itself (`__fish_complete_path`), as bash's `-o default` does; the registration's `-f` keeps fish from adding them to real answers.
 
 ### Engine invocation from glue
 
