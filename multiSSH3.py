@@ -113,7 +113,8 @@ DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
-DEFAULT_HOST_FILE = '/etc/hosts'
+_SYSTEM_HOST_FILE = '/etc/hosts'
+DEFAULT_HOST_FILE = _SYSTEM_HOST_FILE
 DEFAULT_ENCODING = 'utf-8'
 DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
 SSH_STRICT_HOST_KEY_CHECKING = False
@@ -349,6 +350,22 @@ def _load_etc_hosts():
 			if not _etc_hosts:
 				_etc_hosts.update(read_hosts_file(DEFAULT_HOST_FILE))
 	return _etc_hosts
+
+def _host_file_warning():
+	'''
+	Why the hosts file the operator chose (--host_file) gives mssh no host names, or None when it does.
+
+	The system's own /etc/hosts is not checked: a system without one is not the operator's mistake.
+	'''
+	path = DEFAULT_HOST_FILE
+	if not path or path == _SYSTEM_HOST_FILE or _load_etc_hosts():
+		return None
+	if not os.path.exists(path):
+		return f'Warning: --host_file {path} does not exist'
+	if os.path.isdir(path) or not os.access(path, os.R_OK):
+		return f'Warning: --host_file {path} cannot be read'
+	return (f'Warning: --host_file {path} has no address lines, so it gives no host names. It is a hosts file like '
+		f'{_SYSTEM_HOST_FILE} (an IP address, then names, per line), not a list of hosts to run on.')
 
 def getIP(hostname: str,local=False):
 	'''
@@ -5051,7 +5068,7 @@ def get_parser():
 	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
-	parser.add_argument('--host_file', type=str,help=f'File containing list of hosts to run the command on, one host per line. Default:{DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
+	parser.add_argument('--host_file', type=str,help=f'The hosts file mssh looks host names up in before DNS, in the format of {_SYSTEM_HOST_FILE} (an IP address, then names, per line). Not a list of hosts to run on. Default: {DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
 	parser.add_argument('--completion', nargs='+', metavar='ARG', help='Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL] [editor]" / "uninstall [SHELL]" it for the current user ("editor": the plain-bash mssh line editor)')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
@@ -5289,6 +5306,10 @@ def main(args = None):
 	if args.no_output:
 		__global_suppress_printout = True
 	if not __global_suppress_printout:
+		# before the echo, whose host lookups may already fail because of it
+		host_file_warning = _host_file_warning()
+		if host_file_warning:
+			eprint(host_file_warning)
 		cmdStr = getStrCommand(**vars(args))
 		eprint('> ' + cmdStr)
 		# read from the current directory before 6.27

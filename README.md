@@ -695,6 +695,13 @@ Host *
   ControlPersist 3600
 ```
 
+### `--host_file HOST_FILE` | _`DEFAULT_HOST_FILE`_
+- The hosts file mssh looks host names up in before DNS ( see Hostname Resolution Logic ). Default: `/etc/hosts`.
+- In the format of `/etc/hosts`: an IP address, then its names, per line. Text after `#` is a comment, and lines that do not start with an IP address are skipped.
+- A name listed more than once gets its first IPv4 address, else its first IPv6 address.
+- It is not a list of hosts to run on. mssh warns when the file does not exist or has no address lines.
+- mssh uses these addresses for `#IP#`, `-pre` and to check host names. ssh is still given the host name ( or the `-pre` address ), so it must find the name on its own ( DNS, `/etc/hosts`, `~/.ssh/config` ).
+
 ### `-V, --version` | False
 - Print the version of multiSSH3 and exit.
 - Will also print the found system binary for calling when setting up connections.

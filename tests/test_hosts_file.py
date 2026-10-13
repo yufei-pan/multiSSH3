@@ -115,6 +115,46 @@ def no_dns(monkeypatch, tmp_path):
 	multiSSH3.getIP.cache_clear()
 
 
+def run_main(argv, monkeypatch, capsys):
+	'''main(argv) with run_command_on_hosts replaced: what it was called with, and stderr.'''
+	runs = []
+	monkeypatch.setattr(multiSSH3, 'run_command_on_hosts', lambda **kwargs: runs.append(kwargs) or [])
+	with pytest.raises(SystemExit):
+		multiSSH3.main(argv)
+	return runs, capsys.readouterr().err
+
+
+def test_a_host_file_listing_host_names_is_pointed_out(no_dns, tmp_path, monkeypatch, capsys):
+	# one name per line is not a hosts file: mssh resolves nothing from it, and here takes uptime for the host
+	nodes = tmp_path / 'nodes.txt'
+	nodes.write_text('node5\nnode6\n')
+	_, err = run_main(['--host_file', str(nodes), '-C', '--no_history', 'uptime'], monkeypatch, capsys)
+	assert 'Warning: --host_file {} has no address lines'.format(nodes) in err
+	assert 'not a list of hosts' in err
+	assert err.index('Warning: --host_file') < err.index("'uptime' is not a valid hostname")  # the cause comes first
+
+
+def test_a_host_file_that_does_not_exist_is_pointed_out(no_dns, tmp_path, monkeypatch, capsys):
+	_, err = run_main(['--host_file', str(tmp_path / 'missing'), '-C', '--no_history', '10.0.0.1', 'uptime'], monkeypatch, capsys)
+	assert 'Warning: --host_file {} does not exist'.format(tmp_path / 'missing') in err
+
+
+def test_a_host_file_with_addresses_says_nothing(no_dns, tmp_path, monkeypatch, capsys):
+	hosts = tmp_path / 'hosts'
+	hosts.write_text('# lab\n10.0.0.5 node5\n')
+	runs, err = run_main(['--host_file', str(hosts), '-C', '--no_history', 'node5', 'uptime'], monkeypatch, capsys)
+	assert '--host_file' not in err and 'Error' not in err
+	assert runs and runs[0]['hosts'] == 'node5'
+
+
+def test_the_system_hosts_file_is_not_checked(no_dns, monkeypatch, capsys):
+	# a system without /etc/hosts is not the operator's mistake
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_HOST_FILE', '/etc/hosts')
+	monkeypatch.setattr(multiSSH3, 'read_hosts_file', lambda path: {})
+	_, err = run_main(['-C', '--no_history', '10.0.0.1', 'uptime'], monkeypatch, capsys)
+	assert 'host_file' not in err
+
+
 def run_on_hosts(hosts, **kwargs):
 	'''run_command_on_hosts as main() calls it, with no host started.'''
 	return multiSSH3.run_command_on_hosts(hosts=hosts, commands=['echo #IP#'], no_watch=True, no_history=True,
