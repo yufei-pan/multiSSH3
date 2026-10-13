@@ -3006,8 +3006,9 @@ def _clean(text):
 def format_response(response, nul=True):
 	'''
 	The response text: MSSHC1, a D line of directives, C lines (text\\tdescription\\tgroup, then
-	\\traw when bash escaping changed the text), an X line for delegation, then E, and a NUL unless
-	nul is False.
+	\\traw when bash escaping changed the text), a G line (grey text), W lines (warnings:
+	start\\tend\\tkind\\tmessage) and an R line (the reason line shown under the prompt), an X line
+	for delegation, then E, and a NUL unless nul is False.
 	'''
 	lines = [PROTOCOL]
 	if response.directives:
@@ -3020,6 +3021,9 @@ def format_response(response, nul=True):
 		lines.append('G {}\t{}'.format(response.ghost.kind, response.ghost.text))
 	for item in response.diagnostics:
 		lines.append('W {}\t{}\t{}\t{}'.format(item.start, item.end, item.kind, _clean(item.message)[:MAX_MESSAGE]))
+	if response.diagnostics:
+		# the line shells show under the prompt, the same everywhere
+		lines.append('R ' + _clean(reason_line(response.diagnostics)))
 	if response.delegate is not None:
 		index, prefix, words = response.delegate
 		fields = [str(index), prefix] + list(words)
@@ -4751,11 +4755,134 @@ _mssh_complete_ghost_setup() {
 	done
 }
 
+_mssh_complete_warn_clear() {
+	# drop our marks (others' highlights stay) and the reason line (inside a widget)
+	local mark
+	for mark in "${_mssh_complete_warn_marks[@]}"; do
+		region_highlight=("${(@)region_highlight:#${(b)mark}}")
+	done
+	_mssh_complete_warn_marks=()
+	if [[ -n $_mssh_complete_warn_reason ]]; then
+		_mssh_complete_warn_reason=
+		zle -M ''
+	fi
+}
+
+_mssh_complete_warn_cancel() {
+	# forget the pending query for warnings
+	[[ -n $_mssh_complete_warn_fd ]] || return 0
+	zle -F $_mssh_complete_warn_fd 2>/dev/null
+	exec {_mssh_complete_warn_fd}<&- 2>/dev/null
+	_mssh_complete_warn_fd=
+}
+
+_mssh_complete_warn_ask() {
+	# ask for warnings about the line, after $1 hundredths of a second
+	_mssh_complete_warn_asked=$BUFFER$'\0'$CURSOR
+	exec {_mssh_complete_warn_fd}< <(
+		(( $1 > 0 )) && zselect -t $1
+		_mssh_complete_request 'diag=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine query 2>/dev/null)
+	zle -F $_mssh_complete_warn_fd _mssh_complete_warn_ready
+}
+
+_mssh_complete_warn_redraw() {
+	# line-pre-redraw hook: ask for warnings when a finished word changed, keep the reason line shown
+	emulate -L zsh
+	setopt extended_glob
+	# the line without the word at the cursor, which is still being typed
+	local key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
+	if [[ $key == "$_mssh_complete_warn_key" ]]; then
+		[[ -n $_mssh_complete_warn_reason ]] && zle -M -- "$_mssh_complete_warn_reason"
+		return 0
+	fi
+	_mssh_complete_warn_key=$key
+	_mssh_complete_warn_cancel
+	if ! _mssh_complete_is_mssh "$BUFFER"; then
+		_mssh_complete_warn_clear
+		return 0
+	fi
+	# while the prober works, ask again 0.3, 1 and 3 seconds after this answer
+	_mssh_complete_warn_delays=(30 70 200)
+	_mssh_complete_warn_ask 0
+}
+
+_mssh_complete_warn_ready() {
+	# zle -F handler: the engine answered the query for warnings
+	emulate -L zsh
+	local fd=$1 resp= chunk line reason= pending=0
+	local -a marks fields
+	while sysread -i $fd chunk 2>/dev/null; do
+		resp+=$chunk
+	done
+	zle -F $fd
+	exec {fd}<&-
+	_mssh_complete_warn_fd=
+	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for line in "${(@f)resp}"; do
+		case $line in
+			('W '*)
+				fields=("${(@ps:\t:)${line#W }}")
+				marks+=("${fields[1]} ${fields[2]}") ;;
+			('R '*) reason=${line#R } ;;
+			('D '*) [[ " ${line#D } " == *' pending '* ]] && pending=1 ;;
+		esac
+	done
+	zle _mssh_complete_warn_answer -- "$pending" "$reason" "${marks[@]}"
+	return 0
+}
+
+_mssh_complete_warn_answer() {
+	# widget: show the warnings if the line is still the one asked about
+	emulate -L zsh
+	[[ $BUFFER$'\0'$CURSOR == "$_mssh_complete_warn_asked" ]] || return 0
+	local pending=$1 reason=$2 mark style=underline,fg=red
+	shift 2
+	[[ -n ${NO_COLOR-} ]] && style=underline
+	_mssh_complete_warn_clear
+	for mark in "$@"; do
+		_mssh_complete_warn_marks+=("$mark $style")
+	done
+	region_highlight+=("${_mssh_complete_warn_marks[@]}")
+	if [[ -n $reason ]]; then
+		_mssh_complete_warn_reason=$reason
+		zle -M -- "$reason"
+	fi
+	if (( pending && $#_mssh_complete_warn_delays )); then
+		_mssh_complete_warn_ask $_mssh_complete_warn_delays[1]
+		shift _mssh_complete_warn_delays
+	fi
+	zle -R
+}
+
+_mssh_complete_warn_finish() {
+	# line-finish hook: no warnings left on a line that was accepted
+	emulate -L zsh
+	_mssh_complete_warn_cancel
+	_mssh_complete_warn_clear
+	_mssh_complete_warn_key=
+}
+
+_mssh_complete_warn_setup() {
+	# warnings under the line (zsh 5.3 and later), with grey text from either source
+	emulate -L zsh
+	autoload -Uz is-at-least add-zle-hook-widget
+	is-at-least 5.3 || return 0
+	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
+	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason=
+	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
+	zle -N _mssh_complete_warn_answer
+	zle -N _mssh_complete_warn_redraw
+	zle -N _mssh_complete_warn_finish
+	add-zle-hook-widget line-pre-redraw _mssh_complete_warn_redraw
+	add-zle-hook-widget line-finish _mssh_complete_warn_finish
+}
+
 _mssh_complete_setup() {
 	# precmd, once, at the first prompt (plugins loaded after the mssh block are there by then):
-	# Ctrl-R, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
+	# Ctrl-R, warnings, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
 	add-zsh-hook -d precmd _mssh_complete_setup
 	_mssh_complete_take_ctrl_r
+	_mssh_complete_warn_setup
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
 		_mssh_complete_zas_strategy
 	else

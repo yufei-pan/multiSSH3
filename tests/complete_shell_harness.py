@@ -25,11 +25,18 @@ def require_shell(name):
 	return path
 
 def make_home(tmp_path, history_lines=()):
-	'''A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).'''
+	'''
+	A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).
+
+	The prober's lock is taken, so no prober runs (no DNS, no ping): tests that want answers about
+	hosts write host-state.tsv themselves.
+	'''
 	home = tmp_path / 'home'
 	runtime = tmp_path / 'runtime'
 	home.mkdir()
 	runtime.mkdir(mode=0o700)
+	(runtime / 'multiSSH3').mkdir(mode=0o700)
+	(runtime / 'multiSSH3' / 'probe.lock').write_text('')
 	(home / '.mssh_history').write_text(''.join(line + '\n' for line in history_lines))
 	env = {
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),

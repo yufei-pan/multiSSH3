@@ -157,6 +157,9 @@ def test_diag_requests_answer_with_w_records(engine, monkeypatch):
 	text = mc.format_response(response, nul=False).decode()
 	assert 'W 5\t11\tunknown\tgpu017: unknown host — did you mean gpu17?\n' in text
 	assert 'D pending\n' in text
+	# the reason line every shell shows under the prompt
+	assert 'R ⚠ gpu017: unknown host — did you mean gpu17?\n' in text
+	assert '\nR ' not in mc.format_response(mc.Response(None), nul=False).decode()
 
 
 def unavailable(engine, *hosts, boot='boot-a', left=300):

@@ -439,6 +439,82 @@ def test_zsh_hands_grey_text_to_zsh_autosuggestions_loaded_later(home):
 		session.close()
 
 
+def runtime(env):
+	return os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3')
+
+
+def known(env, **validities):
+	"""Host states as the prober would write them (no prober runs in these tests: make_home)."""
+	mc.write_host_states(runtime(env), {host: mc.HostState(validity, time.time()) for host, validity in validities.items()})
+
+
+def rendered(session):
+	"""The terminal after everything the session printed."""
+	from vt_grid import Grid
+	grid = Grid(24, 80)
+	grid.feed(session.output.decode('utf-8', 'replace'))
+	return grid
+
+
+def screen(session):
+	return rendered(session).lines()
+
+
+def underlined(session, text):
+	"""Whether text is on screen with every character underlined."""
+	grid = rendered(session)
+	for row, line in enumerate(grid.lines()):
+		column = line.find(text)
+		if column >= 0:
+			styles = grid.styles(row)[column:column + len(text)]
+			return all('4' in style.split(';') for style in styles)
+	return False
+
+
+@pytest.mark.parametrize('zas', [False, True], ids=['own', 'zsh-autosuggestions'])
+def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home, zas)
+	try:
+		session.send('mssh gpu017 ')
+		output = session.read_until('unknown host'.encode(), 10)
+		assert '⚠ gpu017: unknown host' in plain(output)
+		# the host is underlined
+		assert underlined(session, 'gpu017')
+	finally:
+		session.close()
+
+
+def test_zsh_warning_appears_when_the_prober_answers(home):
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu099 ')
+		time.sleep(0.2)
+		known(env, gpu099='invalid')
+		# no key pressed: the glue asks again while the prober works
+		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 10)
+	finally:
+		session.close()
+
+
+def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
+	env, home = home
+	known(env, gpu017='invalid', gpu17='valid')
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu017 ')
+		assert 'unknown host' in session.read_until('unknown host'.encode(), 10)
+		session.send('\x7f' * 7 + 'gpu17 ')
+		session.read_until(b'gpu17 ', 10)
+		time.sleep(1)
+		session.read_until(b'@@never@@', 0.5)
+		assert not [row for row in screen(session) if 'unknown host' in row]
+	finally:
+		session.close()
+
+
 def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 	env, home = make_home(tmp_path, ["17900000{:02d}\t/x/multiSSH3.py\t-su -f='my file.txt'\tnode1\t/tmp".format(number) for number in range(6)])
 	build_index(env)
