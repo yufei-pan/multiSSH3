@@ -245,6 +245,23 @@ def test_editor_space_keeps_the_last_argument(home):
 		session.close()
 
 
+def test_editor_space_keeps_magic_space_when_the_glue_loads_again(home):
+	env, home = home
+	# magic-space from the inputrc: `source ~/.bashrc` loads the glue again but does not read the inputrc again
+	(home / '.inputrc').write_text('Space: magic-space\n')
+	session = editor_session(env, home)
+	try:
+		for _ in range(2):
+			session.send('. {}\r'.format(home / 'glue.bash'))
+			session.read_until(b'@@READY@@', 10)
+		session.send('echo hi\r')
+		session.read_until(b'@@READY@@', 10)
+		# space after !! expands it, as magic-space does
+		assert printed(session, 'echo !! ') == 'echo echo hi '
+	finally:
+		session.close()
+
+
 def test_editor_shows_and_accepts_the_suggestion(home):
 	env, home = home
 	session = editor_session(env, home)

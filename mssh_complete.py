@@ -4635,7 +4635,12 @@ elif [[ $- == *i* ]]; then
 		# from bash 4.4 on (bash 4.2 redraws a wrapped line wrongly after every bind -x command)
 		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]] && (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 			previous=$(bind -m emacs -p 2>/dev/null | grep -F '" ": ' || :)
-			_mssh_complete_space_previous=${previous#'" ": '}
+			previous=${previous#'" ": '}
+			# space is ours already when the rc file is sourced again: keep the binding it had before
+			if [[ -z $previous && $(bind -m emacs -s 2>/dev/null) == *'" ": "\C-x\C-t\C-x\C-y"'* ]]; then
+				previous=${_mssh_complete_space_previous:-self-insert}
+			fi
+			_mssh_complete_space_previous=$previous
 			case $_mssh_complete_space_previous in
 				self-insert|magic-space)
 					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space "$_"'
