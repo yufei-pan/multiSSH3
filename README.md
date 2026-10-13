@@ -477,7 +477,7 @@ mssh -q -- web1 grep -r TODO /srv
 
 ### `-p, --password PASSWORD` | _`DEFAULT_PASSWORD`_
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
-- Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed. mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
+- Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed (an IPMI password, `-ip`, is not). mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
 - mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. Like a password typed on the command line, they reach `sshpass` and `ipmitool` as arguments, where other local users can briefly see them in `ps`.
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
@@ -588,6 +588,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The password to use to connect to the hosts via ipmi.
 - This will be used when `--ipmi` is specified.
 - If this is not specified, `DEFAULT_PASSWORD` will be used in ipmi mode.
+- Unlike `-p`, it is neither echoed in the `> mssh ...` line nor recorded in the history file: give it again when you replay a history line.
 
 ### `-S, -q, -nw, --no_watch` | _`DEFAULT_NO_WATCH`_
 - Disable the curses terminal display and only print the output.
@@ -730,6 +731,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The file to store command history.
 - By default, mssh store command history in `~/.mssh_history`.
 - The history file is a TSV ( tab separated values ) file with each line containing: timestamp, mssh_path, options, hosts, commands.
+- A line records the command so that replaying it (the Ctrl-R picker, `mssh-complete`) runs it the same way: the hosts as typed and every option that changes what runs, where, or what is shown; a flag when it is on, an option with a value when the value is not the default (the config files' `DEFAULT_*`). `-T`, `-uk` (or `-k` with a folder), `--script` and `-s PATH` are recorded as the timeout, key file and options they chose, `--config_file` with its absolute path. Not recorded: `-ip`, and `--generate_config_file`, `--store_config_file` and `--add_control_master_config`, which do something besides the run. The `> mssh ...` line mssh prints at start lists the same options.
 
 ### `--script` | False
 - Script mode, syntatic sugar for `-SCRIPT` or `--no_watch --skip_unreachable --no_env --no_history --greppable --error_only`.
