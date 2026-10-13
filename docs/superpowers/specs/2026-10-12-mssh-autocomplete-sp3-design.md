@@ -147,7 +147,7 @@ Order: unknown host, range, unreachable, options; within a kind, leftmost first.
 
 All in the runtime directory (see Runtime storage), each starting with a `#boot_id,<id>` line; a file from another boot, a corrupt or foreign file is ignored and rewritten:
 
-- `host-state.tsv`: `host\tvalidity\tchecked_at\tping\tpinged_at\tanswered_at` (times in wall-clock seconds; `validity` is `valid`, `invalid` or `unsure`; `ping` is `answer`, `silent` or empty).
+- `host-state.tsv`: `host\tvalidity\tchecked_at\tping\tpinged_at\tanswered_at` (times in wall-clock seconds; `validity` is `valid`, `invalid` or `unsure`; `ping` is `answer`, `silent`, `none` when it could not ping (no `ping` command, no permission, a name ping cannot resolve, out of time), or empty when not pinged).
 - `probe-queue`: hosts queries asked about, one per line, newest last.
 - `probe.lock`: the prober's lock (as `complete-index.lock`).
 
