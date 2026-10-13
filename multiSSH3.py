@@ -990,11 +990,6 @@ _encoding = DEFAULT_ENCODING
 __returnZero = DEFAULT_RETURN_ZERO
 __running_threads = set()
 __running_procs = set()
-__control_master_string = '''Host *
-  ControlMaster auto
-  ControlPath /run/user/%i/ssh_sockets_%C
-  ControlPersist 3600
-'''
 __curses_available = False
 __resource_lib_available = False
 try:
@@ -6563,28 +6558,158 @@ def process_keys(args):
 				eprint(f"Warning: Identity file {args.identity_file!r} not found. Passing to ssh anyway. Proceed with caution.")
 	return args
 
+# The block --add_control_master_config keeps in ~/.ssh/config, for every ssh the user runs.
+# ssh exits with 255 and runs nothing when the directory of its ControlPath is missing, so each
+# place is used only when a Match exec check finds it usable: logind's /run/user/<uid> (gone
+# without a login session: su, sudo, cron, containers), else /dev/shm/multiSSH3-<uid>, steps 2 and
+# 3 of runtime_dir, made 0700 by the check when missing. That one must be ours and writable by us
+# alone: ssh trusts whatever listens where it looks for its master and hands it the terminal.
+# With neither, no ControlPath is set and ssh connects without sharing. Not ~/.ssh: unix sockets
+# may not work on an NFS, GPFS or Lustre home. The checks run in /bin/sh whatever the login shell
+# (csh, fish) and find the uid themselves: OpenSSH 7.4 (RHEL 7) has no %i in Match exec, and an
+# unknown token there stops every ssh. Ends in "Host *" so lines added after it stay global.
+_CONTROL_MASTER_BLOCK = '''# Added by multiSSH3.py to speed up subsequent connections (mssh --add_control_master_config).
+# ssh keeps one connection per host open for an hour after its last use and shares it. Its socket
+# goes in {run_user}/<uid> while you have a login session, else in {shm}/multiSSH3-<uid> when that
+# is a directory only you can write to (su, sudo, cron, containers); with neither, ssh does not share.
+Match exec "/bin/sh -c 'u=$(id -u) || exit 1; test -O {run_user}/$u -a -w {run_user}/$u'"
+  ControlPath {run_user}/%i/ssh_sockets_%C
+Match exec "/bin/sh -c 'u=$(id -u) || exit 1; test -O {run_user}/$u -a -w {run_user}/$u && exit 1; d={shm}/multiSSH3-$u; test -d $d || mkdir -m 700 $d 2>/dev/null; test -O $d || exit 1; case $(ls -ld $d) in drwx?-??-*) ;; *) exit 1;; esac'"
+  ControlPath {shm}/multiSSH3-%i/ssh_sockets_%C
+Host *
+  ControlMaster auto
+  ControlPersist 3600
+# End of the block added by multiSSH3.py
+'''
+# what --add_control_master_config wrote up to 6.31 (the comment only when it appended to a config)
+_OLD_CONTROL_MASTER_COMMENT = b'# Added by multiSSH3.py to speed up subsequent connections'
+_OLD_CONTROL_MASTER_LINES = [b'Host *', b'ControlMaster auto', b'ControlPath /run/user/%i/ssh_sockets_%C', b'ControlPersist 3600']
+
+def _control_master_block():
+	'''The ControlMaster block for ~/.ssh/config, its places those of runtime_dir.'''
+	return _CONTROL_MASTER_BLOCK.format(run_user=_RUN_USER_ROOT, shm=_SHM_DIR)
+
+def _find_lines(stripped, wanted, start=0):
+	'''Index of the first run of lines equal to wanted in stripped, from start, or -1.'''
+	for index in range(start, len(stripped) - len(wanted) + 1):
+		if stripped[index:index + len(wanted)] == wanted:
+			return index
+	return -1
+
+def _with_control_master_block(content):
+	'''
+	The ssh config content (bytes) with mssh's ControlMaster block in it.
+
+	The block mssh wrote up to 6.31 is replaced by the current one, a second copy dropped; without
+	it, the block is added at the end unless it is there already. Lines compare without the
+	whitespace around them, and every other byte stays as it was.
+
+	Returns:
+		tuple: (the new content, 'replaced', 'added' or 'unchanged')
+	'''
+	newline = b'\r\n' if b'\r\n' in content else b'\n'
+	block = newline.join(_control_master_block().encode().splitlines()) + newline
+	lines = content.splitlines(True)
+	stripped = [line.strip() for line in lines]
+	has_block = _find_lines(stripped, [line.strip() for line in block.splitlines()]) >= 0
+	spans = []
+	index = _find_lines(stripped, _OLD_CONTROL_MASTER_LINES)
+	while index >= 0:
+		start = index - 1 if index and stripped[index - 1] == _OLD_CONTROL_MASTER_COMMENT else index
+		spans.append((start, index + len(_OLD_CONTROL_MASTER_LINES)))
+		index = _find_lines(stripped, _OLD_CONTROL_MASTER_LINES, spans[-1][1])
+	if spans:
+		pieces = []
+		position = 0
+		for start, end in spans:
+			pieces.extend(lines[position:start])
+			if not has_block:
+				pieces.append(block)
+				has_block = True
+			position = end
+		pieces.extend(lines[position:])
+		return b''.join(pieces), 'replaced'
+	if has_block:
+		return content, 'unchanged'
+	if content and not content.endswith(b'\n'):
+		content += newline
+	if content:
+		# a blank line between the user's config and the block, as before
+		content += newline
+	return content + block, 'added'
+
+def _old_control_paths(content):
+	'''Line numbers of the old block's ControlPath left in content (a copy of it someone changed).'''
+	stripped = [line.strip() for line in content.splitlines()]
+	block_lines = [line.strip() for line in _control_master_block().encode().splitlines()]
+	# the current block's first Match has the same line, with the real /run/user
+	start = _find_lines(stripped, block_lines)
+	ours = range(start, start + len(block_lines)) if start >= 0 else ()
+	return [index + 1 for index, line in enumerate(stripped) if line == _OLD_CONTROL_MASTER_LINES[2] and index not in ours]
+
+def _write_ssh_config(path, content, new_mode=0o644):
+	'''
+	Write content to the ssh config at path, never leaving it half written.
+
+	A symlink (into a dotfiles repository) is written through. The file is replaced by a
+	temporary copy with its mode, owner and group, so a full disk or quota keeps the old one.
+	A config owned by another user (sudo keeping HOME) is only replaced if we can keep its
+	owner: ssh refuses a config that belongs to someone else.
+	'''
+	target = os.path.realpath(path)
+	try:
+		st = os.stat(target)
+	except FileNotFoundError:
+		st = None
+	mode = stat.S_IMODE(st.st_mode) if st is not None else new_mode
+	temporary = '{}.{}.tmp'.format(target, uuid4().hex)
+	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), mode)
+	try:
+		with os.fdopen(fd, 'wb') as f:
+			if hasattr(os, 'fchmod'):
+				# O_CREAT's mode is reduced by the umask, set it exactly
+				os.fchmod(f.fileno(), mode)
+			if st is not None and hasattr(os, 'chown'):
+				try:
+					os.chown(temporary, st.st_uid, st.st_gid)
+				except OSError:
+					if st.st_uid != os.getuid():
+						raise
+					# ours: only the group could not be kept
+			f.write(content)
+			f.flush()
+			os.fsync(f.fileno())
+		os.replace(temporary, target)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
 def process_control_master_config(args):
-	global __control_master_string
 	if args.add_control_master_config:
 		try:
 			if not os.path.exists(os.path.expanduser('~/.ssh')):
 				os.makedirs(os.path.expanduser('~/.ssh'),mode=0o700)
 			ssh_config_file = os.path.expanduser('~/.ssh/config')
-			if not os.path.exists(ssh_config_file):
-				with open(ssh_config_file,'w') as f:
-					f.write(__control_master_string)
-				os.chmod(ssh_config_file,0o644)
+			try:
+				with open(ssh_config_file,'rb') as f:
+					content = f.read()
+			except FileNotFoundError:
+				content = b''
+			new_content, change = _with_control_master_block(content)
+			if change == 'unchanged':
+				eprint("ControlMaster configuration already in ~/.ssh/config, nothing changed.")
 			else:
-				with open(ssh_config_file,'r') as f:
-					ssh_config_content = f.readlines()
-				if set(map(str.strip,ssh_config_content)).issuperset(set(map(str.strip,__control_master_string.splitlines()))):
-					eprint("ControlMaster configuration already exists in ~/.ssh/config, skipping adding:")
-					eprint(__control_master_string)
+				_write_ssh_config(ssh_config_file, new_content)
+				if change == 'replaced':
+					eprint("Replaced the ControlMaster configuration mssh added to ~/.ssh/config before (ssh failed without /run/user/<uid>) with:")
 				else:
-					with open(ssh_config_file,'a') as f:
-						f.write('\n# Added by multiSSH3.py to speed up subsequent connections\n')
-						f.write(__control_master_string)
-					eprint("ControlMaster configuration added to ~/.ssh/config.")
+					eprint("ControlMaster configuration added to ~/.ssh/config:")
+				eprint(_control_master_block())
+			for number in _old_control_paths(new_content):
+				eprint("Warning: ~/.ssh/config line {} still has mssh's old {!r}, in a block changed since mssh added it, so left alone: with it every ssh fails where /run/user/<uid> is missing (su, sudo, cron, containers). Remove that block; mssh's new one is in place.".format(number, _OLD_CONTROL_MASTER_LINES[2].decode()))
 		except Exception as e:
 			eprint(f"Error adding ControlMaster configuration: {e}")
 			import traceback
