@@ -54,6 +54,17 @@ def plain(text):
 	return re.sub(r'\x1b(\[[0-9;?<=>]*[ -/]*[@-~]|[()][A-Z0-9]|[=>78])', '', text).replace('\r', '')
 
 
+def read_until_shown(session, text, timeout=10.0):
+	'''Read until text is on screen, whatever the shell drew between its characters; return what was read.'''
+	start = len(session.output)
+	end = time.monotonic() + timeout
+	while True:
+		shown = plain(session.output[start:].decode('utf-8', 'replace'))
+		if text in shown or time.monotonic() >= end:
+			return shown
+		session.read_until(b'@@never@@', 0.1)
+
+
 def words(line):
 	'''The words a line means, whatever quoting was chosen.'''
 	return None if line is None else [token.text for token in mc.lex(line)]
@@ -149,7 +160,7 @@ def test_bash_ctrl_r_keeps_the_last_argument(home):
 		session.send('true lastarg\r')
 		time.sleep(0.3)
 		session.send('mssh x\x12')
-		session.read_until(b'hosts', 10)
+		session.read_until(b'type to filter', 10)
 		session.send('\x1b')
 		time.sleep(0.3)
 		session.send('\x15echo "[$_]"\r')
@@ -214,7 +225,7 @@ def test_editor_runs_pasted_lines_in_order(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh host1 uptime\rmssh host2 uptime\r')
-		output = session.read_until(b'@@RAN[host2', 15) + session.read_until(b']@@', 5)
+		output = session.read_until(b'@@RAN[host2 uptime]@@', 15)
 		assert '@@RAN[host1 uptime]@@' in output and '@@RAN[host2 uptime]@@' in output
 		assert output.index('@@RAN[host1 uptime]@@') < output.index('@@RAN[host2 uptime]@@')
 		assert 'not found' not in output
@@ -264,7 +275,7 @@ def test_editor_enter_runs_what_was_typed(home):
 		session.send('mssh gp')
 		session.read_until(b'nvidia-smi', 10)
 		session.send('\r')
-		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[', 10) + session.read_until(b']@@', 10)
+		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@', 10)
 	finally:
 		session.close()
 
@@ -351,7 +362,7 @@ def test_editor_without_colours_still_edits(home):
 		session.send('mssh gp')
 		time.sleep(0.5)
 		session.send('u\r')
-		output = session.read_until(b'@@RAN[', 10) + session.read_until(b']@@', 10)
+		output = session.read_until(b'@@RAN[gpu]@@', 10)
 		assert '@@RAN[gpu]@@' in output
 		assert '\x1b[38;5;244m' not in output and '\x1b[2m' not in output
 	finally:
@@ -422,7 +433,7 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		session.send('\x15\x12aa')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'echo aa1' in plain(session.read_until(b'aa1', 10))
+		assert 'echo aa1' in read_until_shown(session, 'echo aa1')
 		session.send('\x07')
 	finally:
 		session.close()
