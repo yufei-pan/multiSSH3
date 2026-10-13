@@ -431,6 +431,7 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
+- A `~` at the start of the path means `$HOME`, as for the rest of mssh, also where `$HOME` is not your home directory in the passwd file ( `sudo -E`, containers ): ssh is given the key file mssh found there. The history file keeps the `~`.
 - This option implies `--use_key`.
 - If this option is not specified but `--use_key` is specified, it will search for identity files in `DEFAULT_IDENTITY_FILE`.
 - If no value is specified, it will search `DEFAULT_SSH_KEY_SEARCH_PATH`.

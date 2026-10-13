@@ -859,7 +859,7 @@
     "-o StrictHostKeyChecking=no",
     "-o UserKnownHostsFile=/dev/null",
     "-i",
-    "~/.ssh/id_x",
+    "/home/tester/.ssh/id_x",
     "-p",
     "2222",
     "--",
@@ -870,7 +870,7 @@
   "command": "echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
   "name": "alice@node1",
   "output": [
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_x -p 2222 -- alice@node1 echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/tester/.ssh/id_x -p 2222 -- alice@node1 echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
    "ok",
    "Command finished with return code 0"
   ],

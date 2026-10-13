@@ -718,7 +718,8 @@ class Host:
 		# also store a globally unique integer i from 0
 		self.i = i if i != -1 else _get_i()
 		self.uuid = uuid if uuid is not ... else uuid4()
-		self.identity_file = identity_file
+		# the key file mssh found: ssh expands a ~ from the passwd entry, not $HOME (sudo -E, containers)
+		self.identity_file = os.path.expanduser(identity_file) if identity_file else identity_file
 		self.ip = ip if ip else getIP(name)
 		self.current_color_pair = [-1, -1, 1]
 		self.output_buffer = io.BytesIO()
