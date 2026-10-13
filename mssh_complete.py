@@ -3445,8 +3445,21 @@ def _age(seconds):
 	return 'now'
 
 def _unicode_terminal():
-	import locale
-	return (locale.getpreferredencoding(False) or '').lower().replace('-', '') == 'utf8'
+	'''
+	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG. Python's own encoding says
+	UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
+	always runs in UTF-8 mode.
+	'''
+	def utf8(name):
+		return 'utf8' in (name or '').lower().replace('-', '')
+	environ = os.environ
+	if environ.get('LC_ALL'):
+		return utf8(environ['LC_ALL'])
+	ctype = environ.get('LC_CTYPE')
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not utf8(environ.get('LANG')):
+		# what Python sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
+		return False
+	return utf8(ctype or environ.get('LANG'))
 
 class Picker(object):
 	'''
