@@ -4917,6 +4917,22 @@ def _positive_int(value):
 	return parsed
 
 
+# Option combinations main() ignores, for the warnings mssh-complete shows while a line is typed
+# (it reads them through its index). Each entry is (option, kind, others, why):
+#   'with': the option does nothing when one of others is on the line
+#   'without': the option does nothing unless one of others is on the line or on by default
+# tests/test_option_no_effect.py proves every entry.
+_IPMI_OR_STORED = ('--ipmi', '--store_config_file', '--generate_config_file')
+OPTION_NO_EFFECT = (
+	('--no_skip_unreachable', 'with', ('--script',), '--script skips unreachable hosts anyway'),
+	('--ipmi_interface_ip_prefix', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
+	('--ipmi_username', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
+	('--ipmi_password', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
+	('--ipmi_args', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
+	('--ipmi_method', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
+	('--ipmi_retry_lockout_time', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
+)
+
 def get_parser():
 	parser = argparse.ArgumentParser(
 		description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
