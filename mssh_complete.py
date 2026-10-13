@@ -2312,6 +2312,10 @@ def _shell_escape(shell, text, strict=False):
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
 
+# what an open quote cannot hold as it is: in "..." \ $ ` and " are read, in $'...' a \ starts an escape,
+# and ' ends the other two
+_QUOTE_SPECIAL = {'"': '"\\$`', "'": "'", "$'": "'\\"}
+
 def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
@@ -2681,8 +2685,7 @@ class Engine(object):
 		rest = top[len(typed):]
 		if context.open_quote:
 			closing = '"' if context.open_quote == '"' else "'"
-			unsafe = '"\\$`' if closing == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 				return None
 			if context.slot == SLOT_COMMAND:
 				rest += closing
@@ -2715,8 +2718,7 @@ class Engine(object):
 			return None
 		rest = common[len(typed):]
 		if context.open_quote:
-			unsafe = '"\\$`' if context.open_quote == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 				return None
 		else:
 			rest = _shell_escape(shell, rest, _literal_word(context))
@@ -2869,9 +2871,7 @@ class Engine(object):
 				continue
 			rest = full[len(prefix):]
 			if literal:
-				if context.open_quote == '"' and any(char in rest for char in '"\\$`'):
-					continue
-				if context.open_quote in ("'", "$'") and "'" in rest:
+				if context.open_quote and any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 					continue
 				if not context.open_quote and not bash_quotes:
 					rest = _shell_escape(request.shell, rest, _literal_word(context))
@@ -5943,7 +5943,7 @@ def editor_completions(engine, before):
 			names = sorted(os.listdir(listed))
 		except OSError:
 			names = []
-		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
+		unsafe = _QUOTE_SPECIAL.get(context.open_quote, '')
 		for name in names:
 			if not name.startswith(start) or _has_control(name):
 				continue

@@ -44,6 +44,19 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion):
 		session.close()
 
 
+def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
+	# in $'...' a backslash starts an escape: zzfmt "%s\n" x must not be offered there as it is
+	# (zzfmt: a name no local command starts with, as the first word is also completed as a command)
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\tnode1\t\'zzfmt "%s\\n" x\'', '1790000100\t/x/multiSSH3.py\t-su\tnode1\t"zzfmt ok"'])
+	build_index(env)
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after("mssh node1 'zzf") == "mssh node1 'zzfmt "
+		assert session.line_after("mssh node1 $'zzf") == "mssh node1 $'zzfmt ok' "
+	finally:
+		session.close()
+
+
 def test_bash_cursor_in_the_middle_of_a_line_with_multibyte_text(setup):
 	# bash 4.2 counts COMP_POINT in bytes: the glue must cut the line in bytes there
 	env, home = setup

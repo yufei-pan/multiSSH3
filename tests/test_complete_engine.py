@@ -116,6 +116,15 @@ def test_bash_drops_candidates_that_would_break_the_quote():
 	assert texts(query('mssh h "ech', word='ech', knowledges=[knowledge])) == ['echo y']
 
 
+def test_bash_drops_candidates_an_ansi_c_quote_would_change():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	knowledge = memory([line(NOW, '-su', 'h', '\'printf "%s\\n" x\''), line(NOW, '-su', 'h', '"printf ok"')])
+	assert texts(query("mssh h 'pri", word='pri', knowledges=[knowledge])) == ['printf "%s\\n" x', 'printf ok']
+	assert texts(query("mssh h $'pri", word='pri', knowledges=[knowledge])) == ['printf ok']
+	# and the picker, which inserts the text itself
+	assert texts(query("mssh h $'pri", word='pri', knowledges=[knowledge], flags={'insert': '1'})) == ['printf ok']
+
+
 def test_word_that_does_not_end_the_parsed_text_gets_nothing():
 	assert texts(query('mssh login1 up', word='zz')) == []
 

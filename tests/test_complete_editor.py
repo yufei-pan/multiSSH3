@@ -170,6 +170,15 @@ def test_editor_file_names_follow_bash(tmp_path, monkeypatch):
 	assert texts('mssh -f ~/my') == ['~/my\\ file.txt']
 
 
+def test_editor_tab_inside_an_ansi_c_quote_keeps_the_command():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	memory = mc.MemoryKnowledge()
+	memory.add_history(['1790000000\t/x/multiSSH3.py\t-su\tnode1\t\'printf "%s\\n" x\'', '1790000000\t/x/multiSSH3.py\t-su\tnode1\t"printf ok"'], spec, 1790000000)
+	engine = mc.Engine(spec, [memory])
+	assert mc.editor_completions(engine, "mssh node1 $'pri") == (["$'printf ok"], "$'pri")
+
+
 def test_tab_with_nothing_to_insert_opens_the_slot_menu():
 	opened = []
 

@@ -78,6 +78,17 @@ def test_inside_an_open_quote_the_suggestion_closes_it():
 	assert ghost.text == 'idia-smi"'
 
 
+def test_inside_an_ansi_c_quote_backslashes_are_never_suggested():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	history = [line(NOW - number, '-su', 'node1', '\'printf "%s\\n" x\'') for number in range(5)]
+	assert suggest("mssh node1 'pri", history=history).text == 'ntf "%s\\n" x\''
+	assert suggest("mssh node1 $'pri", history=history) is None
+	# nor the start two such commands share
+	history = [line(NOW - number, '-su', 'node1', '\'printf "%s\\n" {}\''.format(name)) for number in range(3) for name in 'ab']
+	assert suggest("mssh node1 'pri", history=history).text == 'ntf "%s\\n" '
+	assert suggest("mssh node1 $'pri", history=history) is None
+
+
 def test_unquoted_command_words_are_escaped():
 	ghost = suggest('mssh storage1 cat /da', history=[line(NOW - number, '-su', 'storage1', '"cat /data|wc"') for number in range(5)])
 	assert ghost.text == 'ta\\|wc'
