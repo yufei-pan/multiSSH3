@@ -219,6 +219,20 @@ def test_file_sync_does_not_take_the_hosts_as_a_path(replay_env, capsys):
 	assert recorded[-1] != '-fs'
 
 
+def test_replaying_a_found_key_warns_of_nothing(replay_env, capsys):
+	# -uk records the key it found as -k='~/.ssh/id_ed25519': the replay must find it there too
+	_run_main(_case_argv(['-uk'], '127.0.0.1', ['true'], replay_env), capsys)
+	line = (replay_env / 'history').read_text().splitlines()[-1]
+	argv = _history_argv(line)
+	assert '-k=~/.ssh/id_ed25519' in argv
+
+	capsys.readouterr()
+	args = multiSSH3.process_keys(multiSSH3.get_parser().parse_args(argv))
+
+	assert args.identity_file == '~/.ssh/id_ed25519'
+	assert 'not found' not in capsys.readouterr().err
+
+
 def test_library_run_records_the_timeout_the_cli_would_not_use(tmp_path):
 	# run_command_on_hosts defaults to DEFAULT_TIMEOUT, the CLI to DEFAULT_CLI_TIMEOUT
 	path = tmp_path / 'history'

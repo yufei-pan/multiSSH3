@@ -5148,7 +5148,7 @@ def process_keys(args):
 		else:
 			if os.path.isdir(os.path.expanduser(args.identity_file)):
 				args.identity_file = find_ssh_key_file(args.identity_file)
-			elif not os.path.exists(args.identity_file):
+			elif not os.path.exists(os.path.expanduser(args.identity_file)):
 				eprint(f"Warning: Identity file {args.identity_file!r} not found. Passing to ssh anyway. Proceed with caution.")
 	return args
 
