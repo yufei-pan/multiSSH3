@@ -1400,6 +1400,7 @@ def _import_mssh():
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
 RANGE_MEMBERS_LIMIT = 4096   # a range typed before adds its members as hosts up to this many
+RANGE_COUNT_LIMIT = 16384    # a range whose names may repeat is expanded to count its hosts up to this many names
 
 def serialize_knowledge(memory):
 	'''
@@ -2237,26 +2238,74 @@ def _ipv4_members(name, limit=None):
 	limit = RANGE_MEMBERS_LIMIT if limit is None else limit
 	return ['.'.join(address) for address in itertools.islice(itertools.product(*octets), limit)], total
 
+def _range_size(text):
+	'''
+	(how many names expand_ranges makes of text, repeats included, whether a name may come more
+	than once), or None when it cannot expand text (letters, hex, a [ inside [ ]).
+
+	No name comes twice when each [ ] holds one value or one a-b range, and each range but the
+	last makes values of one width or is followed by a character that is not a digit: a name then
+	splits into its values one way only. node[1-16], n[1-9][1-16] and rack[1-12]-n[1-64] cannot
+	repeat; n[1-11][1-11] makes n111 twice (1 then 11, 11 then 1), and [1-2,2-3] makes 2 twice.
+	'''
+	count = 1
+	repeats = False
+	# whether the value of the [ ] before may run on into the next [ ]'s
+	runs_on = False
+	position = 0
+	while True:
+		start = text.find('[', position)
+		end = text.find(']', start + 1)
+		if start < 0 or end < 0:
+			return count, repeats
+		repeats = repeats or runs_on
+		parts = text[start + 1:end].split(',')
+		size = 0
+		widths = set()
+		for part in parts:
+			low, sep, high = part.strip().partition('-')
+			if sep and _is_digits(low) and _is_digits(high):
+				first, last = int(low), int(high)
+				if last >= first:
+					size += last - first + 1
+					# zero padded to the shorter bound's width, longer numbers as they are
+					width = min(len(low), len(high))
+					widths.update((max(width, len(str(first))), max(width, len(str(last)))))
+			elif not sep and part.strip() and '[' not in part:
+				size += 1
+				widths.add(len(part.strip()))
+			else:
+				return None
+		count *= size
+		repeats = repeats or len(parts) > 1
+		following = text[end + 1:end + 2]
+		runs_on = len(widths) > 1 and (following == '[' or _is_digits(following))
+		position = end + 1
+
 def _range_count(text):
-	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
-	start = text.find('[')
-	end = text.find(']', start + 1)
-	if start < 0 or end < 0:
-		return 1
-	count = 0
-	for part in text[start + 1:end].split(','):
-		low, sep, high = part.strip().partition('-')
-		if sep and _is_digits(low) and _is_digits(high):
-			count += max(int(high) - int(low) + 1, 0)
-		elif not sep and part.strip():
-			count += 1
-		else:
-			return None
-	rest = _range_count(text[end + 1:])
-	return None if rest is None else count * rest
+	'''
+	How many hosts expand_ranges makes of text: each name once, as mssh keeps it. None when it
+	cannot expand text, or when its names may repeat (_range_size) and there are more than
+	RANGE_COUNT_LIMIT of them: those are counted by expanding them, any other range without.
+	'''
+	size = _range_size(text)
+	if size is None:
+		return None
+	count, repeats = size
+	if not repeats:
+		return count
+	return len(set(_range_names(text))) if count <= RANGE_COUNT_LIMIT else None
 
 def _iter_range(text):
-	'''The names expand_ranges makes of text, one at a time (text must be one _range_count can count).'''
+	'''The names expand_ranges makes of text, one at a time, each once (text must be one _range_count can count).'''
+	names = _range_names(text)
+	if not _range_size(text)[1]:
+		return names
+	seen = set()
+	return (name for name in names if not (name in seen or seen.add(name)))
+
+def _range_names(text):
+	'''The names expand_ranges makes of text, one at a time, repeats included.'''
 	start = text.find('[')
 	end = text.find(']', start + 1)
 	if start < 0 or end < 0:
@@ -2271,7 +2320,7 @@ def _iter_range(text):
 		else:
 			values = [part.strip()]
 		for value in values:
-			for name in _iter_range(head + value + tail):
+			for name in _range_names(head + value + tail):
 				yield name
 
 def _padded_range(name):
@@ -2546,7 +2595,9 @@ class Engine(object):
 	def diagnose(self, request, probe=True, now=None, states=None):
 		'''
 		Warnings for the words of the request's line (before + after) already typed, most
-		important first, and whether the prober still owes answers for hosts on the line.
+		important first, and whether the prober still owes answers for hosts on the line: hosts
+		without fresh answers that this call left in the probe queue (never without probe, without
+		self.directory, or when the queue cannot be written).
 
 		Args:
 			probe (bool): queue those hosts and start the prober (needs self.directory)
@@ -2586,15 +2637,19 @@ class Engine(object):
 			if role == ROLE_HOSTS:
 				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
 		found.extend(self._option_diagnostics(options))
-		wanted = _unique(wanted)
+		wanted = [host for host in _unique(wanted) if _queueable(host)]
+		# pending only once the hosts wait in the queue: then a prober takes them, the one running or
+		# one a later query starts (asking again is such a query)
+		pending = False
 		if probe and wanted and self.directory:
 			try:
 				queue_probes(self.directory, wanted)
+				pending = True
 				spawn_probe(self.directory)
 			except OSError as e:
 				_debug('cannot queue hosts: {!r}'.format(e))
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
-		return found, bool(wanted)
+		return found, pending
 
 	def _host_diagnostics(self, token, states, now, wanted, reach):
 		'''
@@ -2634,14 +2689,16 @@ class Engine(object):
 	def _host_members(self, name):
 		'''
 		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
-		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
-		The members of an IPv4 range are addresses: they are only pinged, never unknown.
+		one host; () for a range that cannot be expanded or counted here (letters, hex, _range_count):
+		nothing is said about it. The members of an IPv4 range are addresses: they are only pinged,
+		never unknown. A host is a member once, as mssh checks it once: a range can make a name twice
+		(n[1-11][1-11]), an alias can list one for two users (a@node1,b@node1).
 		'''
 		if _ipv4_range(name):
 			return _ipv4_members(name)
 		number = self.hosts.alias_index(name)
 		if number is not None:
-			members = self.hosts.alias_members(number)
+			members = _unique(self.hosts.alias_members(number))
 			return members, len(members)
 		if '[' not in name:
 			return None

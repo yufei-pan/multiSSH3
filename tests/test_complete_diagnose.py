@@ -96,8 +96,35 @@ def test_hosts_with_fresh_answers_are_not_queued(engine):
 
 
 def test_without_probe_nothing_is_queued(engine):
-	assert warnings(engine, 'mssh login1 uptime', probe=False) == ([], True)
+	# nor pending: the prober was not asked
+	assert warnings(engine, 'mssh login1 uptime', probe=False) == ([], False)
 	assert mc.take_probe_queue(engine.directory) == [] and engine.started == []
+
+
+def test_without_a_runtime_directory_nothing_is_pending(engine, monkeypatch):
+	# no prober can be asked: asking again could only bring the same answer
+	monkeypatch.setattr(mc.time, 'time', lambda: NOW)
+	engine.directory = None
+	assert warnings(engine, 'mssh login1 uptime') == ([], False)
+	response = engine.query(mc.Request('bash', 'mssh login1 uptime', '', '', flags={'diag': '1'}))
+	assert 'pending' not in response.directives and engine.started == []
+
+
+def test_hosts_that_cannot_be_queued_are_not_pending(engine, monkeypatch):
+	# a name with a control character is never queued
+	assert warnings(engine, "mssh $'gpu\\x01x' uptime") == ([], False)
+	def full(directory, hosts):
+		raise OSError(28, 'No space left on device')
+	monkeypatch.setattr(mc, 'queue_probes', full)
+	assert warnings(engine, 'mssh login1 uptime') == ([], False)
+
+
+def test_hosts_left_to_a_prober_already_running_are_pending(engine, monkeypatch):
+	# the running prober holds the lock and takes the queue; a host still waiting in it stays pending
+	monkeypatch.setattr(mc, 'spawn_probe', lambda directory: False)
+	assert warnings(engine, 'mssh login1 uptime') == ([], True)
+	assert warnings(engine, 'mssh login1 uptime') == ([], True)
+	assert mc.take_probe_queue(engine.directory) == ['login1']
 
 
 @pytest.mark.parametrize('typed, meant', [
@@ -157,8 +184,64 @@ def test_a_range_mssh_completion_cannot_expand_says_nothing(engine):
 def test_a_huge_range_is_checked_up_to_the_member_limit(engine, monkeypatch):
 	monkeypatch.setattr(mc, 'RANGE_MEMBERS_LIMIT', 4)
 	seed(engine, host1='invalid')
-	assert warnings(engine, 'mssh host[1-100000] uptime', probe=False) == ([(
+	# pending: the members up to the limit without an answer wait in the probe queue
+	assert warnings(engine, 'mssh host[1-100000] uptime') == ([(
 		'host[1-100000]', 'range', 'host[1-100000]: 1 of 100000 checked, 1 unknown so far')], True)
+	assert sorted(mc.take_probe_queue(engine.directory)) == ['host2', 'host3', 'host4']
+
+
+@pytest.mark.parametrize('text', [
+	'node[1-16]', 'node[01-3]', 'rack[1-4]-n[01-12]', 'n[1-9][1-12]', 'n[8-12]x[1-3]', 'n[1-2,01-02]',
+	# names made twice: mssh's expansion is a set
+	'n[1-11][1-11]', 'n[1-11][0-10]', 'node[1-2,1-2]', 'n[1-3,2-4,7]',
+])
+def test_range_members_are_the_names_mssh_makes(text):
+	expanded = getattr(multiSSH3, '__expand_hostname')(text, validate=False)
+	members = list(mc._iter_range(text))
+	assert len(members) == len(set(members)) and set(members) == expanded
+	assert mc._range_count(text) == len(expanded)
+
+
+def test_a_host_a_range_makes_twice_counts_once(engine):
+	# n[1-11][1-11] makes n111 from 1 and 11, and from 11 and 1: mssh runs on 120 hosts, n111 once
+	names = {'n{}{}'.format(first, second) for first in range(1, 12) for second in range(1, 12)}
+	seed(engine, **dict({name: 'valid' for name in names}, n111='invalid'))
+	assert warnings(engine, 'mssh n[1-11][1-11] uptime')[0] == [(
+		'n[1-11][1-11]', 'range', 'n[1-11][1-11]: 1 of 120 hosts unknown (n111)')]
+
+
+def test_a_host_an_alias_lists_twice_counts_once(engine, tmp_path):
+	# an alias of a@ghost1,b@ghost1 lists ghost1 for each user; mssh checks the name once
+	(tmp_path / 'pair').mkdir()
+	engine.hosts = mc.HostTable(index(tmp_path / 'pair', {'ghost1': mc.SRC_ALIAS, 'node01': HOSTS_FILE}, {'pair': ['ghost1', 'node01', 'ghost1']}))
+	seed(engine, ghost1='invalid')
+	assert warnings(engine, 'mssh pair uptime')[0] == [('pair', 'range', 'pair: 1 of 2 hosts unknown (ghost1)')]
+
+
+def test_a_range_whose_names_cannot_repeat_is_counted_without_expanding_it(monkeypatch):
+	def expand(text):
+		raise AssertionError('expanded ' + text)
+	monkeypatch.setattr(mc, '_range_names', expand)
+	# one width before the next range, or a separator that is not a digit: each name splits one way
+	assert mc._range_count('n[1-9][1-100000]') == 900000
+	assert mc._range_count('rack[1-1000]-node[1-1000]') == 1000000
+	assert mc._range_count('node[1-100000]') == 100000
+
+
+def test_a_range_whose_names_may_repeat_is_counted_up_to_a_limit(engine, monkeypatch):
+	# counting n[1-11][1-11]'s hosts expands its 121 names; past RANGE_COUNT_LIMIT nothing is said
+	monkeypatch.setattr(mc, 'RANGE_COUNT_LIMIT', 121)
+	assert mc._range_count('n[1-11][1-11]') == 120
+	monkeypatch.setattr(mc, 'RANGE_COUNT_LIMIT', 120)
+	assert mc._range_count('n[1-11][1-11]') is None
+	seed(engine, n111='invalid')
+	assert warnings(engine, 'mssh n[1-11][1-11] uptime')[0] == []
+
+
+def test_a_bracket_inside_a_range_says_nothing_about_it(engine):
+	# mssh makes one name of it (a[bc[1-2]]); expanding it here used to fail and drop every warning of the line
+	seed(engine, gpu017='invalid')
+	assert warnings(engine, 'mssh gpu017,a[[b]c[1-2]] uptime')[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
 
 
 def test_ipv4_ranges_hold_only_addresses(engine):
