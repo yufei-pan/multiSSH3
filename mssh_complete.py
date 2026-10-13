@@ -5748,6 +5748,10 @@ def slot_cases(entry):
 			cases.append(('value', others + name + ' ', rest, value, False, ahead))
 	return cases
 
+def _newest(items, limit):
+	'''The last limit items (the newest of a history), none when limit is 0 or less.'''
+	return items[-limit:] if limit > 0 else []
+
 def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost')):
 	'''
 	Replay history lines in time order: each entry is typed with only the entries before it known.
@@ -5763,7 +5767,7 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 			results plus 'cases'
 	'''
 	entries = sorted((entry for entry in (parse_history_line(line, spec) for line in lines) if entry is not None), key=lambda entry: entry.ts)
-	replay = [number for number, entry in enumerate(entries) if entry.ts >= since][-limit:] if limit else []
+	replay = _newest([number for number, entry in enumerate(entries) if entry.ts >= since], limit)
 	first = replay[0] if replay else len(entries)
 	memory = MemoryKnowledge()
 	reference = entries[-1].ts if entries else 0
@@ -6131,7 +6135,7 @@ def _cmd_eval(args):
 	else:
 		lines, _, _ = read_history(os.path.expanduser(options.history_file or mssh.DEFAULT_HISTORY_FILE))
 	if options.diagnostics:
-		lines = [line for line in lines if _entry_time(line) >= options.since][-options.limit:]
+		lines = _newest([line for line in lines if _entry_time(line) >= options.since], options.limit)
 		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
 		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
 		return 0
