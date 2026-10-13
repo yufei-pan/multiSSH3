@@ -460,6 +460,7 @@ mssh -ea="--delete" -f ./data/ allServers /tmp/data/
 - rsync writes each file under a temporary name and renames it into place once it is complete, so a running program can be replaced and nobody reads a half-written file.
 - rsync connects with the same ssh program and options as mssh's other commands, `-k` identity file included. A host given as an IPv6 address is written in brackets for rsync and scp (`root@[fd00::5]:/dest/`).
 - As with rsync, a directory given with a trailing slash (`./data/`) copies its contents into the destination, one without (`./data`) copies the directory itself into it.
+- A source that is a symbolic link to a file is copied as that file, under the link's name, as scp does (rsync's `--copy-links`). Links inside a directory stay links, so a link is copied as a link, with a warning before the copy, when it points to a directory or to nothing, or when a directory is copied in the same run (`--copy-links` would follow the links inside it too).
 - A host where rsync could not run (rsync is not installed there or could not start, an rsync turned down mssh's options as macOS's rsync 2.6.9 does, or ssh failed to connect) is retried with scp, laying the files out as rsync would have: scp copies the entries of a `./data/` directory, and a lone directory goes inside the destination directory (scp fails if that directory does not exist, instead of creating it). Not retried: an empty `./data/` (scp has nothing to copy), a `./data/` with more entries than scp's command line holds (about 1 MB of names) and, in gather mode, a remote `dir/` source going into a local directory that exists or with other sources (scp would copy the directory itself into it).
 - rsync keeps extended attributes (`-X`). Where the destination cannot keep them (NFSv3, vfat, ...), rsync copies the files and fails with 23; mssh then runs rsync once more without `-X`, a quick pass that ends with the copy's own result, and warns that the attributes were not copied.
 - Any other rsync failure, such as 23 (some files were not transferred) or 24 (some files vanished), is the host's result, with rsync's return code.
@@ -468,6 +469,7 @@ mssh -ea="--delete" -f ./data/ allServers /tmp/data/
 - Operate in file sync mode, sync path in `<COMMANDS>` from this machine to `<HOSTS>`.
 - Treat `--file <FILE>` and `<COMMANDS>` both as source and source
 - Destination path will be inferred from source path ( Absolute Path ).
+- Each path is copied on its own, so a path that is a symbolic link to a file is copied as that file (see `-f`): a link such as `/etc/localtime` becomes a plain copy of the file it points to.
 - `-fs` can also be followed by a path, a syntaxic sugar for specifying the path after the option.
 - Example:
 ```bash
@@ -487,6 +489,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Gather files from the hosts instead of sending files to the hosts.
 - Will send remote files specified in `<FILE>` to local path specified in `<COMMANDS>`.
 - Likely you will need to combine with the [Command String Replacement](#command-string-replacement) feature to let each host transfer to a different local path.
+- A source that rsync brings back as a symbolic link (it is one on the host, as `/etc/os-release` is on Debian) would point into this machine, or nowhere: mssh copies it again as the file it points to (`--copy-links`), as on push. A link to a directory, or one that points to nothing on the host, stays the link, with a warning (and, for a link to nothing, rsync's exit code 23). Not for a `dir/` or glob source, nor when the local destination is itself a link.
 
 ### `-t, --timeout TIMEOUT` | _`DEFAULT_CLI_TIMEOUT`_
 - Timeout for each command in seconds.

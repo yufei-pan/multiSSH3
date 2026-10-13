@@ -1,4 +1,5 @@
 import io
+import os
 import errno
 import threading
 
@@ -446,6 +447,191 @@ def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, mo
 	rsh = calls[0][calls[0].index("--rsh") + 1]
 	assert _rsync_split(rsh) == ["/opt/open ssh/bin/ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
 		"-i", identity_file]
+
+
+@pytest.fixture
+def linked_tree(tmp_path):
+	'''A config that is a relative link to a file, a link to a directory, a dangling link and a directory.'''
+	(tmp_path / "srv").mkdir()
+	(tmp_path / "srv" / "app.conf").write_text("new")
+	(tmp_path / "etc").mkdir()
+	(tmp_path / "etc" / "app.conf").symlink_to("../srv/app.conf")
+	(tmp_path / "etc" / "plain.conf").write_text("plain")
+	(tmp_path / "app-2").mkdir()
+	(tmp_path / "current").symlink_to("app-2")
+	(tmp_path / "gone").symlink_to("nowhere")
+	(tmp_path / "dir").mkdir()
+	(tmp_path / "dir" / "inner").symlink_to("../srv/app.conf")
+	return tmp_path
+
+
+@pytest.mark.parametrize("names", [["etc/app.conf"], ["etc/app.conf", "etc/plain.conf"]], ids=["link", "link_and_file"])
+def test_rsync_copies_the_file_a_linked_source_points_to(fake_host, monkeypatch, linked_tree, names):
+	# rsync -l replaced the host's /etc/app.conf with a link to ../srv/app.conf, which points nowhere there
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], [str(linked_tree / name) for name in names])
+
+	assert "--copy-links" in calls[0]
+	assert calls[0][-len(names) - 1:-1] == [str(linked_tree / name) for name in names]
+
+
+@pytest.mark.parametrize("names", [
+	["etc/plain.conf"],
+	["dir"],  # --copy-links would follow the links inside it too
+	["current"],  # a link to a directory: --copy-links would also follow every link inside it
+	["gone"],  # points nowhere: copied as the link it is
+	["etc/app.conf", "dir"],
+	["current/"],  # the trailing slash already copies the directory's contents
+], ids=["file", "directory", "link_to_directory", "dangling_link", "link_with_directory", "link_to_directory_contents"])
+def test_rsync_keeps_these_links_as_links(fake_host, monkeypatch, linked_tree, names):
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], [str(linked_tree) + "/" + name for name in names])
+
+	assert "--copy-links" not in calls[0]
+
+
+def test_rsync_reports_a_dangling_link_among_linked_files(linked_tree):
+	# with --copy-links rsync says "symlink has no referent" for it, as scp fails on it: no warning
+	assert multiSSH3._rsync_link_sources([str(linked_tree / "etc/app.conf"), str(linked_tree / "gone")]) == (True, [])
+
+
+def test_rsync_link_sources_name_the_links_copied_as_links(linked_tree):
+	copy_links, kept = multiSSH3._rsync_link_sources([str(linked_tree / "etc/app.conf"), str(linked_tree / "dir"),
+		str(linked_tree / "current"), str(linked_tree / "gone")])
+
+	assert copy_links is False
+	assert [(path[len(str(linked_tree)) + 1:], target) for path, target, _ in kept] == [
+		("etc/app.conf", "../srv/app.conf"), ("current", "app-2"), ("gone", "nowhere")]
+
+
+def _gather_with_rsync(fake_host, monkeypatch, files, destination, results, make_links=(), second_run_copies=None):
+	'''Gather files from mock-a with fake rsync runs; the first run leaves the given local links behind
+	as rsync -l does for a source that is a link on the host, the second one copies files to the
+	second_run_copies paths (default: where each link was). Return the host, each run's argv and
+	whether each link still existed when the next run started.'''
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	results = list(results)
+	calls = []
+	links_before_run = []
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		links_before_run.append([os.path.islink(path) for path, _ in make_links])
+		if len(calls) == 1:
+			for path, target in make_links:
+				os.symlink(target, path)
+		elif len(calls) == 2 and not results[0].returncode:
+			for path in ([path for path, _ in make_links] if second_run_copies is None else second_run_copies):
+				with open(path, "w") as copy:
+					copy.write("what the link points to")
+		return results.pop(0)
+
+	_patch_popen(monkeypatch, fake_popen)
+	host = fake_host("mock-a", destination, files=files, gatherMode=True)
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+	return host, calls, links_before_run
+
+
+@pytest.mark.parametrize("files,destination,copy", [
+	(["/etc/os-release"], "{tmp}/g/", "{tmp}/g/os-release"),
+	(["/etc/os-release"], "{tmp}/existing", "{tmp}/existing/os-release"),
+	(["/etc/os-release"], "{tmp}/one_file", "{tmp}/one_file"),
+	(["/etc/os-release", "/etc/hostname"], "{tmp}/g", "{tmp}/g/os-release"),
+], ids=["into_directory", "into_existing_directory", "to_a_new_name", "with_another_file"])
+def test_gathered_link_is_copied_again_as_what_it_points_to(fake_host, monkeypatch, tmp_path, files, destination, copy):
+	# rsync brought /etc/os-release back as a link to ../usr/lib/os-release, which points into this machine
+	(tmp_path / "existing").mkdir()
+	(tmp_path / "g").mkdir()
+	destination, copy = destination.format(tmp=tmp_path), copy.format(tmp=tmp_path)
+	host, calls, links_before_run = _gather_with_rsync(fake_host, monkeypatch, files, destination,
+		[FakeProc(stdout=b"os-release -> ../usr/lib/os-release\n"), FakeProc(stdout=b"os-release\n")],
+		make_links=[(copy, "../usr/lib/os-release")])
+
+	assert len(calls) == 2
+	assert "--copy-links" not in calls[0]
+	# --no-recursive: a link to a directory is skipped, --copy-links would follow every link inside it
+	assert "--copy-links" in calls[1] and "--no-recursive" in calls[1]
+	assert calls[1][-2:] == ["mock-a:/etc/os-release", destination]
+	assert links_before_run[1] == [False]  # removed first: rsync -L would follow it here
+	# without -X: no retry follows, which would find the links that are put back (see run_command)
+	assert [arg for arg in calls[1][:calls[1].index("--")] if arg not in ("--copy-links", "--no-recursive")] == (
+		[calls[0][0], "-ahl"] + calls[0][2:calls[0].index("--")])
+	assert not os.path.islink(copy)
+	assert host.returncode == 0
+	assert host.stdout == ["os-release"]
+	assert any("/etc/os-release" in line and "link" in line for line in host.output)
+
+
+def test_gathered_link_into_a_linked_destination_stays_a_link(fake_host, monkeypatch, tmp_path):
+	# rsync writes through a destination that is a link; following links there could write anywhere
+	(tmp_path / "real").mkdir()
+	(tmp_path / "via").symlink_to("real")
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path / "via"),
+		[FakeProc()], make_links=[(str(tmp_path / "real" / "os-release"), "../usr/lib/os-release")])
+
+	assert len(calls) == 1
+	assert host.returncode == 0
+
+
+@pytest.mark.parametrize("source", ["/etc/", "/etc/*.conf"], ids=["contents", "glob"])
+def test_gather_without_a_single_copy_per_source_is_not_rerun(fake_host, monkeypatch, tmp_path, source):
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, [source], str(tmp_path) + "/",
+		[FakeProc()], make_links=[(str(tmp_path / "app.conf"), "../srv/app.conf")])
+
+	assert len(calls) == 1
+
+
+def test_failed_gather_rerun_is_not_retried_with_scp(fake_host, monkeypatch, tmp_path):
+	# scp would copy every source again into a destination that may hold links rsync made
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)], make_links=[(str(tmp_path / "os-release"), "x")])
+
+	assert [argv[0] for argv in calls] == ["rsync", "rsync"]
+	assert host.returncode == 12
+
+
+def test_gathered_link_to_a_directory_is_put_back_as_the_link(fake_host, monkeypatch, tmp_path):
+	# copied as a directory, the next gather failed: rsync cannot replace a directory with the link
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/srv/current", "/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stdout=b"skipping directory current\nos-release\n")],
+		make_links=[(str(tmp_path / "current"), "app-2"), (str(tmp_path / "os-release"), "../usr/lib/os-release")],
+		second_run_copies=[str(tmp_path / "os-release")])
+
+	assert len(calls) == 2
+	assert os.readlink(str(tmp_path / "current")) == "app-2"
+	assert host.returncode == 0
+	assert host.stderr == ["Warning: /srv/current is a symbolic link to a directory on the host, copied as the link (-> app-2)."]
+
+
+def test_gathered_link_to_nothing_on_the_host_ends_with_rsyncs_error(fake_host, monkeypatch, tmp_path):
+	dangling = (b'rsync: [sender] link_stat "/etc/broken" failed: No such file or directory (2)\n'
+		b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n")
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/broken"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stderr=dangling, returncode=23)], make_links=[(str(tmp_path / "broken"), "/nonexistent")])
+
+	assert len(calls) == 2
+	assert host.returncode == 23
+	assert any("link_stat" in line for line in host.stderr)
+	# rsync's error alone does not say the source is a link; the link rsync copied first is put back
+	assert host.stderr[-1].startswith("Warning: /etc/broken is a symbolic link on the host") and "-> /nonexistent" in host.stderr[-1]
+	assert os.readlink(str(tmp_path / "broken")) == "/nonexistent"
+
+
+def test_gathered_links_are_put_back_after_a_failed_second_copy(fake_host, monkeypatch, tmp_path):
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stderr=b"ssh: connect to host mock-a port 22: Connection refused\n", returncode=255)],
+		make_links=[(str(tmp_path / "os-release"), "../usr/lib/os-release")])
+
+	assert host.returncode == 255
+	assert os.readlink(str(tmp_path / "os-release")) == "../usr/lib/os-release"
+	assert host.stderr[0].startswith("ssh: connect to host")  # the connect error stays first
+
+
+def test_gathered_link_copied_again_has_no_note_when_it_works(fake_host, monkeypatch, tmp_path):
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc()], make_links=[(str(tmp_path / "os-release"), "x")])
+
+	assert len(calls) == 2
+	assert host.stderr == []
 
 
 def test_run_command_ipmitool_local(fake_host, monkeypatch):

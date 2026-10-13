@@ -2341,6 +2341,85 @@ def _scp_sources_like_rsync(files, destination):
 		destination = destination.rstrip('/') + '/.'
 	return sources, destination
 
+def _rsync_link_sources(files):
+	'''
+	Return (copy_links, kept) for the local sources of an rsync copy that are symbolic links.
+
+	A source that is a link to a file is meant as that file (as cp and scp read it), but rsync -l
+	copies the link, which points elsewhere or nowhere on the host. copy_links is True when rsync
+	should copy what the links point to (--copy-links): some source is a link to a file and no
+	source is a directory, whose links --copy-links would follow too (rsync then reports a link that
+	points nowhere, as scp does). Otherwise kept holds (source, link target, why) for each link
+	rsync copies as a link, why being a key of _KEPT_LINK_WARNINGS: one to a directory, one that
+	points nowhere, and one copied together with a directory.
+	'''
+	links = []
+	with_directory = False
+	for path in files:
+		# a trailing slash makes the system follow a link: the source is the directory's contents
+		is_link = not path.endswith(('/', os.sep)) and os.path.islink(path)
+		is_directory = os.path.isdir(path)
+		with_directory = with_directory or is_directory
+		if is_link:
+			links.append((path, is_directory, os.path.exists(path)))
+	copy_links = not with_directory and any(exists for _, _, exists in links)
+	kept = []
+	for path, is_directory, exists in links:
+		if copy_links:
+			break
+		try:
+			target = os.readlink(path)
+		except OSError:
+			target = '?'
+		kept.append((path, target, 'directory' if is_directory else 'nothing' if not exists else 'with_directory'))
+	return copy_links, kept
+
+_KEPT_LINK_WARNINGS = {
+	'directory': '{path} is a symbolic link to a directory, rsync copies the link (-> {target}), not the directory.',
+	'nothing': '{path} is a symbolic link to nothing here, rsync copies the link (-> {target}).',
+	'with_directory': '{path} is a symbolic link, rsync copies the link (-> {target}), not the file, as a directory is copied with it. Copy the link on its own to copy the file.',
+}
+
+def _gather_copy_paths(host):
+	'''
+	Return (source, local path of its copy) for each source of a gather that rsync copies to one
+	path of its own, worked out before rsync runs.
+
+	A source goes into the destination directory under its name, or becomes the destination when
+	it is alone and the destination is no directory. Left out: a source with a trailing slash (its
+	contents) or a glob, and every source when the destination is a symbolic link, which rsync
+	follows: copying again there with --copy-links could write anywhere it points.
+	'''
+	destination = host.command
+	if not destination or os.path.islink(destination.rstrip('/' + os.sep) or destination):
+		return []
+	into_directory = len(host.files) > 1 or destination.endswith(('/', os.sep)) or os.path.isdir(destination)
+	copies = []
+	for source in host.files:
+		name = source.rsplit('/', 1)[-1]
+		if name in ('', '.', '..') or glob.has_magic(source):
+			continue
+		copies.append((source, os.path.join(destination, name) if into_directory else destination))
+	return copies
+
+def _put_back_gathered_links(host, links):
+	'''
+	Put back, as the link rsync copied first, each gathered (source, copy, link target) that the copy
+	with --copy-links --no-recursive did not replace: a link to a directory, which it skips, or a link
+	it could not follow. A warning on host.stderr says which.
+	'''
+	for source, copy, target in links:
+		if os.path.lexists(copy):
+			continue
+		try:
+			os.symlink(target, copy)
+		except OSError:
+			continue
+		if any(str(line).strip() == 'skipping directory ' + source.rsplit('/', 1)[-1] for line in host.stdout):
+			host.stderr.append(f'Warning: {source} is a symbolic link to a directory on the host, copied as the link (-> {target}).')
+		else:
+			host.stderr.append(f'Warning: {source} is a symbolic link on the host (-> {target}), copying what it points to failed: copied as the link.')
+
 # bytes the entries of a dir/ may take on scp's command line: half of Linux's usual 2 MiB argument
 # limit (macOS has 1 MiB), the environment and the rest of the command line need their share
 _SCP_ARGV_BUDGET = 1 << 20
@@ -2375,7 +2454,7 @@ next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fi
 attempt's state into the retry decisions and the next attempt.
 '''
 
-def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, rsync_xattrs=True):
+def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, rsync_xattrs=True, gather_links=None):
 	'''
 	Build the command line for one attempt to run host.command, without running it.
 
@@ -2389,6 +2468,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 		ipmi_definitions_list (list): The IPMI definitions left to try, ... for the matching defaults
 		scp_like_rsync (bool): scp stands in for a failed rsync, so it copies what rsync would have
 		rsync_xattrs (bool): rsync copies extended attributes (-X)
+		gather_links (list): gather only these sources, links on the host, as what they point to
 
 	Returns:
 		_CommandAttempt: What to do next
@@ -2570,7 +2650,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				if ':' in host.address and not host.address.startswith('['):
 					remoteName = f'{username}@[{host.address}]' if username else f'[{host.address}]'
 				if host.gatherMode:
-					fileArgs = [f'{remoteName}:{file}' for file in host.files] + [host.command]
+					fileArgs = [f'{remoteName}:{file}' for file in (gather_links or host.files)] + [host.command]
 				elif useScp and scp_like_rsync:
 					sources, destination = _scp_sources_like_rsync(host.files, host.command)
 					fileArgs = sources + [f'{remoteName}:{destination}']
@@ -2581,7 +2661,19 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				else:
 					# no --inplace: rsync writes a new file and renames it over the old one, so a running
 					# binary can be replaced and no reader sees a file half written
-					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs
+					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial', '--info=name']
+					# a source that is a link to a file is copied as that file: a gather finds out after
+					# copying (see run_command), a push before (see _rsync_link_sources)
+					if host.gatherMode:
+						copy_links = bool(gather_links)
+					else:
+						copy_links = _rsync_link_sources(host.files)[0]
+					if copy_links:
+						formatedCMD.append('--copy-links')
+					if gather_links:
+						# a link to a directory is skipped, rather than its links followed (see run_command)
+						formatedCMD.append('--no-recursive')
+					formatedCMD += rsyncLocalExtraArgs + extraargs +['--']+fileArgs
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
@@ -2758,7 +2850,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 
 	Builds the command (_build_command), runs it (_execute_command) and retries on failure: the
 	next IPMI definition, rsync without -X when the destination cannot keep extended attributes, or
-	scp when rsync could not run on the host (see _rsync_failure_scp_reason). Every retry uses up one
+	scp when rsync could not run on the host (see _rsync_failure_scp_reason). A gather copies again,
+	with --copy-links, the sources that came back as symbolic links to files. Every retry uses up one
 	of retry_limit.
 
 	Args:
@@ -2775,19 +2868,28 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
 	scp_like_rsync = False
 	rsync_xattrs = True
+	gather_copies = None
+	gather_links = None
+	gather_link_copies = []
 	while True:
 		if retry_limit < 0:
 			host.output.append('Error: Retry limit reached!')
 			host.stderr.append('Error: Retry limit reached!')
 			host.returncode = 1
 			return
-		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync, rsync_xattrs)
+		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync, rsync_xattrs, gather_links)
 		if action == 'stop':
 			return
+		if action == 'run' and gather_copies is None and host.files and host.gatherMode and not useScp:
+			# where rsync puts each source, worked out before it runs
+			gather_copies = _gather_copy_paths(host)
 		if action == 'rebuild':
 			retry_limit -= 1
 			continue
 		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
+		if gather_links:
+			# the links' second copy is the host's last attempt
+			_put_back_gathered_links(host, gather_link_copies)
 		if stop:
 			return
 		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
@@ -2847,8 +2949,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			rsync_xattrs = False
 			retry_limit -= 1
 			continue
-		# rsync could not run on the host: try scp, if it can copy what rsync would have
-		elif host.files and not host.scp and not useScp and host.returncode != 0:
+		# rsync could not run on the host: try scp, if it can copy what rsync would have. Not after a
+		# gather copied links again: the destination may hold links rsync made, which scp writes through
+		elif host.files and not host.scp and not useScp and host.returncode != 0 and gather_links is None:
 			reason = _rsync_failure_scp_reason(host, attempt_line_starts)
 			if not reason:
 				return
@@ -2866,6 +2969,35 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				host.stderr = []
 			host.scp = True
 			scp_like_rsync = True
+			retry_limit -= 1
+			continue
+		# rsync -l brought a gathered source back as the link it is on the host, which points into this
+		# machine, or nowhere: copy again what a link to a file points to. --no-recursive skips a link to
+		# a directory: --copy-links would follow every link inside it, and the next gather could not
+		# replace the directory with the link. The links are removed first, rsync --copy-links would
+		# follow them here as well, and put back if not replaced. No -X: no retry then follows, which
+		# would find the links put back (the base copied no attributes for these, only links).
+		elif host.files and host.gatherMode and not useScp and host.returncode == 0 and gather_links is None and gather_copies:
+			for source, copy in gather_copies:
+				try:
+					if os.path.islink(copy):
+						target = os.readlink(copy)
+						os.unlink(copy)
+						gather_link_copies.append((source, copy, target))
+				except OSError:
+					continue
+			gather_links = [source for source, _, _ in gather_link_copies]
+			if not gather_links:
+				return
+			rsync_xattrs = False
+			host.returncode = None
+			message = f'{", ".join(gather_links)}: a symbolic link on the host, copying what it points to...'
+			host.output.append(message)
+			if __DEBUG_MODE:
+				host.stderr.append(message)
+			else:
+				host.stdout = []
+				host.stderr = []
 			retry_limit -= 1
 			continue
 		return
@@ -4788,6 +4920,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			file = []
 		else:
 			file = list(pathSet)
+		if not gather_mode and not __global_suppress_printout and 'rsync' in _binPaths and not (scp and 'scp' in _binPaths):
+			# -s copies each path on its own, -f all files together
+			for sources in ([[path] for path in commands] if file_sync else [file]):
+				for path, target, why in _rsync_link_sources(sources)[1]:
+					eprint('Warning: ' + _KEPT_LINK_WARNINGS[why].format(path=path, target=target))
 		if __DEBUG_MODE:
 			eprint(f"Files: {file!r}")
 	if oneonone:
