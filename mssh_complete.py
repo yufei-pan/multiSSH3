@@ -5328,6 +5328,73 @@ def render_glue(shell, command=None):
 	quote = _fish_quote if shell.startswith('fish') else shlex.quote
 	return _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
 
+#%% ------------ Printing to a reader that may go ----------------
+# the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`
+SIGPIPE_STATUS = 141
+
+def _discard_stdout():
+	'''
+	Point stdout, and stderr when it is the same file (2>&1), at devnull, after a write to it failed
+	(as the Python docs suggest for a reader that has gone): what is left in the buffer then goes
+	nowhere, and the flush at exit does not fail again.
+	'''
+	try:
+		stdout_fd = sys.stdout.fileno()
+		fds = [stdout_fd]
+		try:
+			if os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (a caller's own stream): nothing to redirect
+		pass
+
+def _flush_stdout():
+	'''
+	Flush stdout now, in the command rather than at exit, where a failure is out of reach ("Exception
+	ignored" and status 120; Python 3.6 and 3.13 even exited 0 when the fish glue could not be written).
+	A failure other than a reader gone (a full disk) is raised once: stdout is discarded.
+	'''
+	if sys.stdout is None:
+		return
+	try:
+		sys.stdout.flush()
+	except BrokenPipeError:
+		raise
+	except OSError:
+		_discard_stdout()
+		raise
+
+def _quiet_when_stdout_is_gone(command):
+	'''
+	command, ending as SIGPIPE ends other tools when the reader of its output exits early
+	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS.
+
+	stdout is flushed before command returns, also when it exits through argparse (--help): an output
+	that fits stdout's buffer would otherwise only fail in the flush at exit.
+	'''
+	def run(*args, **kwargs):
+		try:
+			try:
+				code = command(*args, **kwargs)
+			except SystemExit:
+				_flush_stdout()
+				raise
+			_flush_stdout()
+			return code
+		except BrokenPipeError:
+			_discard_stdout()
+			return SIGPIPE_STATUS
+	run.__name__, run.__doc__, run.__wrapped__ = command.__name__, command.__doc__, command
+	return run
+
 #%% ------------ Install ----------------
 RC_BEGIN = '# >>> mssh completion >>>'
 RC_BEGIN_CREATED = '# >>> mssh completion (created this file) >>>'
@@ -5543,6 +5610,9 @@ def completion_command(values):
 		return code
 	print('usage: mssh --completion bash|zsh|fish | install [SHELL] [editor] | uninstall [SHELL]', file=sys.stderr)
 	return 2
+
+# as main is: mssh --completion calls this directly, not through main
+completion_command = _quiet_when_stdout_is_gone(completion_command)
 
 #%% ------------ Replay evaluation ----------------
 def _tab(candidates, typed, policy, quoted, nospace):
@@ -6088,6 +6158,7 @@ def _entry_time(line):
 	head = line.split('\t', 1)[0]
 	return int(head) if _is_digits(head) else 0
 
+@_quiet_when_stdout_is_gone
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv
 	command = argv[0] if argv else ''
