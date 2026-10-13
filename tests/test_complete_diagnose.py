@@ -1,5 +1,6 @@
 '''Warnings before Enter: what the engine says about the words of an mssh line already typed.'''
 import os
+import types
 
 import pytest
 
@@ -275,6 +276,57 @@ def test_the_ping_expiry_follows_mssh_or_the_environment(skipping, monkeypatch):
 	monkeypatch.delenv('MSSH_COMPLETE_PING_TTL')
 	# -uhe on the line is mssh's expiry for this run
 	assert warnings(skipping, 'mssh -uhe 900 login1 uptime')[0][0][2] == 'login1: no answer to ping (answered 11 min ago)'
+
+
+def test_states_the_prober_drops_change_no_warning(skipping, monkeypatch):
+	'''
+	What prune_host_states leaves out changes nothing: not the warnings or the hosts asked about
+	now, nor after the prober pinged the hosts again and found them silent (it keeps when a host
+	last answered), for a ping expiry up to the horizon.
+	'''
+	import random
+	day = mc.ANSWER_KEEP
+	ages = [0, 30, 59, 61, 300, 599, 601, 3600, day - 1, day + 1, 2 * day]
+	hosts = ['node{:02d}'.format(number) for number in range(1, 17)] + ['login1', 'db1', 'nodex1', 'gpu17', 'gpu017']
+	words = 'node[01-16],login1,db1,nodex1,gpu17,gpu017 uptime '
+	lines = ['mssh ' + words] + ['mssh -uhe {} '.format(expiry) + words for expiry in (60, 600, 3600, int(day))]
+	verdicts = {'gpu017': 'invalid'}
+	fake_mssh = types.SimpleNamespace(host_validity=lambda host, timeout=2.0: verdicts.get(host, 'valid'))
+	monkeypatch.setattr(mc, 'ping_host', lambda host: 'silent')
+
+	def copied(states):
+		return {host: mc.HostState(state.validity, state.checked_at, state.ping, state.pinged_at, state.answered_at) for host, state in states.items()}
+
+	def said(states, line, now):
+		'''The warnings, and the hosts the query asks the prober about.'''
+		found, _ = skipping.diagnose(mc.Request('bash', line, '', ''), now=now, states=states)
+		return [(item.start, item.end, item.kind, item.message) for item in found], sorted(mc.take_probe_queue(skipping.directory))
+
+	rng = random.Random(7)
+	changed = 0
+	for _ in range(40):
+		states = {}
+		for host in hosts:
+			if rng.random() < 0.15:
+				continue
+			ping = rng.choice(['', 'answer', 'silent', 'none'])
+			pinged = NOW - rng.choice(ages) if ping else 0.0
+			answered = pinged if ping == 'answer' else rng.choice([0.0, pinged - rng.choice(ages)])
+			states[host] = mc.HostState(rng.choice(['valid', 'invalid', 'unsure']), NOW - rng.choice(ages), ping, pinged, answered)
+		pruned = mc.prune_host_states(states, NOW, day)
+		changed += len(pruned) < len(states)
+		for later in (0, 45, 90, 700, 3600, day / 2, day):
+			now = NOW + later
+			full, cut = copied(states), copied(pruned)
+			for line in lines:
+				assert said(full, line, now) == said(cut, line, now)
+			# the prober looks at what the line asks for, from what it has (a dropped host starts afresh)
+			for known in (full, cut):
+				mc._probe_batch(fake_mssh, [host for host in hosts if mc.needs_probe(known.get(host), now)], known, lambda: now, [True])
+			for line in lines:
+				assert said(full, line, now + 5) == said(cut, line, now + 5)
+	# the cases dropped states
+	assert changed > 20
 
 
 def test_unreachable_members_of_a_range(skipping):

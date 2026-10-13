@@ -1637,6 +1637,8 @@ PROBE_LOCK_NAME = 'probe.lock'
 VALIDITY_FRESH = 600.0  # seconds a valid / invalid answer stays fresh
 UNSURE_FRESH = 60.0     # seconds an unsure answer stays fresh
 PING_FRESH = 60.0       # seconds a ping result stays fresh (a host on the line is pinged again after)
+ANSWER_KEEP = 86400.0   # seconds the prober keeps when a host last answered ping, at least (answer_horizon)
+ANSWER_ROWS = 10000     # at most this many hosts are kept only for when they last answered, the latest (prune_host_states)
 
 def boot_id():
 	'''An identifier of the current boot, or None where the system has none.'''
@@ -1678,6 +1680,26 @@ def needs_probe(state, now):
 		return True
 	validity = state.fresh_validity(now)
 	return not validity or (validity != 'invalid' and not state.fresh_ping(now))
+
+def prune_host_states(states, now, horizon):
+	'''
+	The states worth writing down (host -> HostState, the same objects): those with a fresh validity
+	or ping, which queries use as they are, and of the rest the ANSWER_ROWS hosts that answered
+	ping latest, within horizon seconds. The prober carries a host's last answer into its next ping,
+	which is called unreachable when silent and that answer is within the ping expiry. A state left
+	out is as good as none: never answered, or longer ago than any expiry the horizon allows for.
+	'''
+	kept = {}
+	answered = []
+	for host, state in states.items():
+		if state.fresh_validity(now) or state.fresh_ping(now):
+			kept[host] = state
+		elif state.answered_at and now - state.answered_at <= horizon:
+			answered.append((-state.answered_at, host))
+	answered.sort()
+	for _, host in answered[:ANSWER_ROWS]:
+		kept[host] = states[host]
+	return kept
 
 _VALIDITIES = ('valid', 'invalid', 'unsure')
 _PINGS = ('', 'answer', 'silent', 'none')
@@ -1859,6 +1881,22 @@ def ping_host(host):
 		return 'none'
 	return {0: 'answer', 1: 'silent'}.get(code, 'none')
 
+def answer_horizon(mssh):
+	'''
+	Seconds the prober keeps when a host last answered ping: the longest ping expiry it can see
+	($MSSH_COMPLETE_PING_TTL, mssh's unreachable host expiry from the mssh config), and ANSWER_KEEP
+	at least, for -uhe on a line, which it cannot.
+	'''
+	horizon = ANSWER_KEEP
+	ttl = os.environ.get('MSSH_COMPLETE_PING_TTL', '')
+	if _is_digits(ttl):
+		horizon = max(horizon, float(ttl))
+	try:
+		horizon = max(horizon, float(mssh.DEFAULT_UNAVAILABLE_HOST_EXPIRY))
+	except (AttributeError, TypeError, ValueError):
+		pass
+	return horizon
+
 def _probe_batch(mssh, hosts, states, now, ping_available):
 	'''
 	Check and ping hosts at once, one thread each, updating states (host -> HostState).
@@ -1912,9 +1950,10 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 	'''
 	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
-	learned in host-state.tsv after each batch, until the queue is empty or limit seconds have
-	passed. Hosts left over go back into the queue. Never connects to a host itself: only DNS,
-	ssh -G (which reads the ssh config, running the commands of its Match exec lines) and ping.
+	learned in host-state.tsv after each batch (without what no query can use any more:
+	prune_host_states), until the queue is empty or limit seconds have passed. Hosts left over go
+	back into the queue. Never connects to a host itself: only DNS, ssh -G (which reads the ssh
+	config, running the commands of its Match exec lines) and ping.
 
 	Returns:
 		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
@@ -1925,6 +1964,7 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 		pass
 	mssh = _import_mssh()
 	parallel = probe_parallelism(mssh)
+	horizon = answer_horizon(mssh)
 	started = now()
 	checked = 0
 	ping_available = [True]
@@ -1942,7 +1982,7 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 			batch, todo = todo[:parallel], todo[parallel:]
 			retry = _probe_batch(mssh, batch, states, now, ping_available)
 			checked += len(batch) - len(retry)
-			write_host_states(directory, states)
+			write_host_states(directory, prune_host_states(states, now(), horizon))
 			if lock:
 				# a lock that keeps changing is not stale
 				try:
