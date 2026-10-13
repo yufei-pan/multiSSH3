@@ -805,7 +805,7 @@ def test_summary_does_not_repeat_host_name_errors(monkeypatch, tmp_path, capsys)
 
 # ssh stand-in for the signal tests: runs the command locally. `exec` keeps the pid the command records
 # the pid of mssh's child, the process that must not outlive mssh.
-_FAKE_SSH = """#!/bin/sh
+_SIGNAL_FAKE_SSH = """#!/bin/sh
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break;;
@@ -825,7 +825,7 @@ def _cli_with_fake_ssh(tmp_path):
 	bin_dir = tmp_path / "bin"
 	bin_dir.mkdir()
 	ssh = bin_dir / "ssh"
-	ssh.write_text(_FAKE_SSH)
+	ssh.write_text(_SIGNAL_FAKE_SSH)
 	ssh.chmod(0o755)
 	config_dir = tmp_path / "home" / ".config" / "multiSSH3"
 	config_dir.mkdir(parents=True)
