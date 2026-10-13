@@ -677,7 +677,7 @@ def test_blesh_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
 
 
-def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY):
+def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, **options):
 	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late).'''
 	pre = ''
 	if zas:
@@ -693,7 +693,7 @@ def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_
 	(home / '.zsh_history').write_text(shell_history)
 	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
 	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
-		pre=history if after else pre + '\n' + history, extra=pre if after else '')
+		pre=history if after else pre + '\n' + history, extra=pre if after else '', **options)
 
 
 @pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
@@ -773,6 +773,25 @@ def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
 		assert '⚠ gpu017: unknown host' in plain(output)
 		# the host is underlined
 		assert underlined(session, 'gpu017')
+	finally:
+		session.close()
+
+
+def test_zsh_suggests_warns_and_picks_without_compinit(home):
+	# only TAB needs zsh's completion system
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home, compinit='')
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		assert words(printed(session, RIGHT)) == PICKED
+		session.send('\x15mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		session.send('\x15mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
 	finally:
 		session.close()
 

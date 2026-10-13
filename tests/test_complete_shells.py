@@ -212,6 +212,42 @@ def test_fish_first_tab_answers_while_the_first_build_runs(first_build):
 	assert [text for text, _ in fish_complete(env, glue_file(home, 'fish'), 'mssh --no_wa')] == ['--no_watch']
 
 
+# compinit as rc files run it, with its dump file
+COMPINIT = 'autoload -Uz compinit && compinit -u'
+# compinit as zinit turbo and zsh-defer run it: after the first prompt
+LATE_COMPINIT = '''_mssh_test_late() { add-zsh-hook -d precmd _mssh_test_late; autoload -Uz compinit && compinit -u }
+autoload -Uz add-zsh-hook; add-zsh-hook precmd _mssh_test_late'''
+
+
+@pytest.mark.parametrize('before, after, prompts', [
+	('', COMPINIT, 1),
+	('', LATE_COMPINIT, 2),
+	(COMPINIT, COMPINIT, 1),
+], ids=['later-in-the-rc-file', 'after-the-first-prompt', 'again-from-its-dump'])
+def test_zsh_completes_whenever_compinit_runs(setup, before, after, prompts):
+	# compdef only exists once compinit ran, and a compinit that loads its dump forgets what was registered before it
+	env, home = setup
+	session = zsh_session(home, env, glue_file(home, 'zsh'), compinit=before, extra=after)
+	try:
+		for _ in range(prompts - 1):
+			session.send('true\r')
+			session.read_until(b'@@READY@@')
+		assert session.line_after('mssh gp') == 'mssh gpu\\[01-16\\] '
+	finally:
+		session.close()
+
+
+def test_zsh_keeps_a_completion_set_for_mssh_by_hand(setup):
+	env, home = setup
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra='compdef _fakecmd mssh')
+	try:
+		session.send('true\r')
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh al') == 'mssh alpha '
+	finally:
+		session.close()
+
+
 def test_fish_completes(setup):
 	env, home = setup
 	glue = glue_file(home, 'fish')
@@ -252,6 +288,21 @@ def test_new_shells_stay_silent(tmp_path, shell, damage):
 		elif damage == 'broken':
 			with open(glue, 'a') as f:
 				f.write('\n((( broken syntax\n')
+	assert _interactive_output(path, env, home) == baseline
+
+
+@pytest.mark.parametrize('compinit', ['none', 'after the block'])
+def test_new_zsh_stays_silent_whenever_compinit_runs(tmp_path, compinit):
+	path = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	rc = home / '.zshrc'
+	tail = COMPINIT + '\n' if compinit == 'after the block' else ''
+	rc.write_text('setopt nobeep\n' + tail)
+	baseline = _interactive_output(path, env, home)
+	rc.write_text('setopt nobeep\n')
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	with rc.open('a') as f:
+		f.write(tail)
 	assert _interactive_output(path, env, home) == baseline
 
 
@@ -365,6 +416,29 @@ def test_uninstall_deletes_an_rc_file_it_created(tmp_path):
 	assert (home / '.zshrc').exists()
 	mc.uninstall('zsh', home=str(home), environ=env)
 	assert not (home / '.zshrc').exists()
+
+
+@pytest.mark.parametrize('zshrc, noted', [
+	(None, True),
+	('setopt nobeep\n', True),
+	('# autoload -Uz compinit && compinit\n', True),
+	('autoload -Uz compinit\ncompinit -i\n', False),
+	('source $ZSH/oh-my-zsh.sh\n', False),
+	('zinit light zsh-users/zsh-completions\nzicompinit; zicdreplay\n', False),
+], ids=['no-zshrc', 'no-compinit', 'commented-out', 'compinit', 'oh-my-zsh', 'zinit'])
+def test_zsh_install_says_when_the_rc_file_does_not_start_completion(tmp_path, zshrc, noted):
+	# TAB needs zsh's completion system, which zsh starts only when told to
+	env, home = make_home(tmp_path)
+	rc = home / '.zshrc'
+	if zshrc is not None:
+		rc.write_text(zshrc)
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	notes = [message for message in messages if 'compinit' in message]
+	note = "TAB needs zsh's completion system, which {0} does not seem to start: if TAB does not complete mssh in a new zsh, add this line to {0}: autoload -Uz compinit && compinit".format(rc)
+	assert notes == ([note] if noted else []), messages
+	# installing again says it again
+	assert [message for message in mc.install('zsh', home=str(home), environ=env, command=ENGINE)[1] if 'compinit' in message] == notes
 
 
 def test_install_never_overwrites_foreign_files(tmp_path):
