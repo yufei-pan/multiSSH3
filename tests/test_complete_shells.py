@@ -83,6 +83,44 @@ def test_zsh_completes_in_a_real_shell(setup):
 		session.close()
 
 
+@pytest.mark.parametrize('engine', ['sleep 5', 'exit 1', r"printf 'MSSHC9\nE\n\0'"], ids=['slow', 'failing', 'other-protocol'])
+def test_zsh_falls_back_to_file_names_without_an_answer(setup, engine):
+	# no answer: what zsh offers for a command it has no completion for (file names), as bash does
+	env, home = setup
+	stand_in = home / 'engine'
+	stand_in.write_text('#!/bin/sh\n{}\n'.format(engine))
+	stand_in.chmod(0o755)
+	(home / 'zzfile_unique').write_text('')
+	session = zsh_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3'), glue_file(home, 'zsh', [str(stand_in)]))
+	try:
+		started = time.monotonic()
+		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		assert time.monotonic() - started < 3
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
+	# an answer with nothing in it: bash's -o default offers file names, and zsh does the same,
+	# except for a password (nodefault)
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	start = bash_session if shell == 'bash' else zsh_session
+	session = start(home, env, glue_file(home, shell))
+	try:
+		# hosts, then a remote command, that nothing matches
+		assert session.line_after('mssh zzf') == 'mssh zzfile_unique '
+		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		# a remote command's own completion that offers nothing
+		assert session.line_after('mssh h fakecmd zz') == 'mssh h fakecmd zzfile_unique '
+		assert session.line_after('mssh -p zz') == 'mssh -p zz'
+		assert session.line_after('mssh h --password=zz') == 'mssh h --password=zz'
+	finally:
+		session.close()
+
+
 # a command whose completion is built on _arguments, as most of zsh's are
 ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
 
