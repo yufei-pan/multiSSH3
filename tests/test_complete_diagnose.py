@@ -1,5 +1,6 @@
 '''Warnings before Enter: what the engine says about the words of an mssh line already typed.'''
 import os
+import random
 
 import pytest
 
@@ -71,6 +72,100 @@ def test_a_variable_of_the_shell_is_not_an_unknown_host(engine, monkeypatch, wor
 	monkeypatch.setenv('LABGPUS', 'node01,node02')
 	seed(engine, LABGPUS='invalid')
 	assert warnings(engine, 'mssh {} uptime'.format(word))[0] == []
+
+
+class AllUnknown(object):
+	'''Host states saying the prober just found every host it was asked about unknown.'''
+	def get(self, host):
+		return mc.HostState('invalid', NOW)
+
+
+def warnings_if_all_unknown(engine, line, shell='bash'):
+	'''The warnings for line if every host the engine asks about turned out unknown.'''
+	found, _ = engine.diagnose(mc.Request(shell, line, '', ''), now=NOW, states=AllUnknown())
+	return [(line[item.start:item.end], item.kind, item.message) for item in found]
+
+
+@pytest.mark.parametrize('line', [
+	'mssh $NODES nvidia-smi',                 # NODES=gpu[01-16], a variable of the shell only
+	'mssh ${NODES} nvidia-smi',
+	'mssh "$NODES" nvidia-smi',
+	'mssh root@$NODES nvidia-smi',
+	'mssh ${NODES:-gpu[01-16],login1} nvidia-smi',
+	'mssh $(cat hosts.txt) uptime',
+	'mssh "$(cat hosts.txt)" uptime',
+	'mssh `cat hosts.txt` uptime',
+	'mssh $((1+2)) uptime',
+	'mssh node{1,2} uptime',                  # brace expansion
+	'mssh gpu{01..16} uptime',
+	'mssh ~ uptime',                          # tilde expansion
+	'mssh ~admin uptime',
+	'mssh !$ uptime',                         # history expansion: the last word of the line before
+])
+def test_a_host_word_the_shell_expands_is_not_checked(engine, line):
+	# mssh sees what the shell makes of the word, not the word: nothing can be said about it
+	assert warnings_if_all_unknown(engine, line) == []
+	# and the prober is not asked about pieces of it
+	assert warnings(engine, line) == ([], False)
+	assert mc.take_probe_queue(engine.directory) == [] and engine.started == []
+
+
+def test_literal_hosts_next_to_an_expansion_are_still_checked(engine):
+	seed(engine, gpu017='invalid')
+	assert warnings(engine, 'mssh $NODES,gpu017 nvidia-smi')[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+	assert warnings(engine, 'mssh "$NODES",gpu017 nvidia-smi')[0] == [('"$NODES",gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+	assert warnings(engine, 'mssh gpu017,${A:-x,y}z nvidia-smi')[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+	assert mc.take_probe_queue(engine.directory) == []
+
+
+@pytest.mark.parametrize('raw, how', [
+	('a"$b"\\$c\'$d\'', 'uddlull'),
+	("$'\\x41$'x", 'llu'),
+	('"a\\"b"', 'dld'),
+	("'open", 'llll'),
+])
+def test_quoting_says_how_each_character_was_typed(raw, how):
+	assert ''.join(mark for mark, _ in mc._quoting(raw)) == how
+
+
+def test_quoting_reads_words_as_lex_does():
+	rng = random.Random(2005)
+	pieces = ['a', ',', '$', "'", '"', '\\', '{', '}', '(', '`', '~', '!', ' ', '\n', "$'", '\\x41', '\\n', '..']
+	for _ in range(5000):
+		line = ''.join(rng.choice(pieces) for _ in range(rng.randint(1, 12)))
+		for token in mc.lex(line):
+			assert len(mc._quoting(token.raw)) == len(token.text), line
+
+
+@pytest.mark.parametrize('line, message', [
+	# the shell passes these as typed; mssh drops the $ and looks the name up in its environment
+	("mssh '$NODES' uptime", 'NODES: unknown host'),
+	('mssh \\$NODES uptime', 'NODES: unknown host'),
+	("mssh '${NODES}' uptime", '{NODES}: unknown host'),
+	("mssh $'$NODES' uptime", 'NODES: unknown host'),
+	('mssh node$ uptime', 'node: unknown host'),
+	# no brace expansion in quotes: mssh splits node{1,2} at its comma
+	('mssh "node{1,2}" uptime', 'node{1: unknown host'),
+	# an unmatched glob reaches mssh as typed (mssh takes [ ], * and ? in ranges)
+	('mssh node* uptime', 'node*: unknown host'),
+])
+def test_text_the_shell_leaves_alone_is_checked_as_mssh_reads_it(engine, line, message):
+	assert warnings_if_all_unknown(engine, line)[0][2] == message
+
+
+@pytest.mark.parametrize('shell, line, checked', [
+	('zsh', 'mssh $NODES uptime', False),
+	('zsh', 'mssh !$ uptime', False),
+	('zsh', 'mssh gpu{01..16} uptime', False),
+	('fish', 'mssh $NODES uptime', False),
+	('fish', 'mssh (cat hosts.txt) uptime', False),  # fish's command substitution
+	('fish', 'mssh node{1,2} uptime', False),
+	# fish has no history expansion and no {a..b} sequences
+	('fish', 'mssh !$ uptime', True),
+	('fish', 'mssh gpu{01..16} uptime', True),
+])
+def test_what_the_shell_expands_depends_on_the_shell(engine, shell, line, checked):
+	assert bool(warnings_if_all_unknown(engine, line, shell)) == checked
 
 
 def test_the_word_being_typed_is_left_alone(engine):

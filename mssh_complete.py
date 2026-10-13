@@ -2008,6 +2008,174 @@ def _host_parts(token):
 		position = end
 	return parts
 
+# characters that can start an expansion the shell makes before mssh sees the word
+_EXPANSION_STARTS = frozenset('$`~{!(')
+# what follows a $ that the shell expands: a name, a digit, ${...}, $(...), $[...], a special parameter, zsh's flags
+_PARAMETER_STARTS = frozenset('_{([@*#?$!-=~^+')
+
+def _quoting(raw):
+	'''
+	How each character of a word's dequoted text (lex's Token.text) was typed: (how, stretch),
+	how 'u' unquoted, 'd' in "...", 'l' taken literally (in '...' or $'...', or after a backslash);
+	stretch numbers the quoted and unquoted stretches of the word. Reads quotes as lex does.
+	'''
+	marks = []
+	stretch = 0
+	index = 0
+	length = len(raw)
+	while index < length:
+		char = raw[index]
+		if char == '\\':
+			if index + 1 < length and raw[index + 1] != '\n':
+				marks.append(('l', stretch + 1))
+			index += 2
+			stretch += 2
+		elif char == "'":
+			end = raw.find("'", index + 1)
+			end = length if end < 0 else end
+			marks.extend([('l', stretch + 1)] * (end - index - 1))
+			index = end + 1
+			stretch += 2
+		elif char == '"':
+			index += 1
+			while index < length and raw[index] != '"':
+				if raw[index] == '\\' and index + 1 < length and raw[index + 1] in '"\\$`\n':
+					if raw[index + 1] != '\n':
+						marks.append(('l', stretch + 1))
+					index += 2
+				else:
+					marks.append(('d', stretch + 1))
+					index += 1
+			index += 1
+			stretch += 2
+		elif char == '$' and index + 1 < length and raw[index + 1] == "'":
+			index += 2
+			while index < length and raw[index] != "'":
+				if raw[index] == '\\' and index + 1 < length:
+					text, index = _ansi_c_escape(raw, index + 1)
+					marks.extend([('l', stretch + 1)] * len(text))
+				else:
+					marks.append(('l', stretch + 1))
+					index += 1
+			index += 1
+			stretch += 2
+		else:
+			marks.append(('u', stretch))
+			index += 1
+	return marks
+
+def _shell_expansions(text, marks, shell):
+	'''
+	(start, end) stretches of a word's dequoted text that the shell replaces before it runs the
+	command: $NAME, ${...}, $(...), $((...)), `...`, a leading ~, {a,b}, and in bash and zsh
+	{1..3} and history's !$; also an unquoted (...) (fish's command substitution; a glob pattern
+	or an error in bash and zsh). Globs are left alone: one matching no file reaches mssh as
+	typed, and mssh takes [ ], * and ? in ranges. marks: _quoting's.
+	'''
+	length = len(text)
+
+	def closing(index, how):
+		'''The index after the bracket matching the one at index (nested ones skipped), or None.'''
+		opening = text[index]
+		close = {'{': '}', '(': ')', '[': ']'}[opening]
+		depth = 0
+		for end in range(index, length):
+			if marks[end][0] not in how:
+				continue
+			if text[end] == opening:
+				depth += 1
+			elif text[end] == close:
+				depth -= 1
+				if depth == 0:
+					return end + 1
+		return None
+
+	# unquoted braces: where each one closes, and whether it holds a , or (bash, zsh) a .. of its own
+	braces = {}
+	stack = []
+	for position in range(length):
+		char = text[position]
+		if marks[position][0] != 'u':
+			continue
+		if char == '{':
+			stack.append([position, False])
+		elif char == '}' and stack:
+			start, listed = stack.pop()
+			braces[start] = (position + 1, listed)
+		elif stack and (char == ',' or (shell != 'fish' and text.startswith('..', position))):
+			stack[-1][1] = True
+
+	found = []
+	index = 0
+	while index < length:
+		char, how = text[index], marks[index][0]
+		end = None
+		# the next character, typed in the same stretch: "$" and $"..." are no expansions
+		following = text[index + 1] if index + 1 < length and marks[index + 1] == marks[index] else ''
+		if how == 'l':
+			pass
+		elif char == '$' and following and (following.isalnum() or following in _PARAMETER_STARTS):
+			if following in '{([':
+				# unclosed: the shell asks for more or fails, mssh gets nothing of it either way
+				end = closing(index + 1, 'ud') or length
+			elif following.isalnum() or following == '_':
+				end = index + 2
+				while end < length and (text[end].isalnum() or text[end] == '_') and marks[end] == marks[index]:
+					end += 1
+			else:
+				end = index + 2
+		elif char == '`':
+			end = next((position + 1 for position in range(index + 1, length) if text[position] == '`' and marks[position][0] != 'l'), length)
+		elif char == '!' and shell != 'fish' and following and following not in ' \t\n=(':
+			# history expansion, in "..." too: how far the event reaches is hard to tell
+			end = length
+		elif how != 'u':
+			pass
+		elif char == '~' and index == 0:
+			end = text.find('/') if '/' in text else length
+		elif char == '{':
+			close, listed = braces.get(index, (None, False))
+			if listed:
+				end = close
+		elif char == '(':
+			end = closing(index, 'u') or length
+		if end is None:
+			index += 1
+		else:
+			found.append((index, end))
+			index = max(end, index + 1)
+	return found
+
+def _without_shell_expansions(token, shell):
+	'''
+	A hosts word with the hosts the shell rewrites before mssh sees them ($NODES, $(cat file),
+	node{1,2}, ~, !$, ...) blanked out: mssh gets something else, nothing can be said about them.
+	Text the shell passes as typed (in '...', after a backslash) stays: mssh reads it itself.
+	'''
+	if not _EXPANSION_STARTS.intersection(token.raw):
+		return token
+	text = token.text
+	marks = _quoting(token.raw)
+	# lex read the word another way: say nothing about it
+	spans = _shell_expansions(text, marks, shell) if len(marks) == len(text) else [(0, len(text))]
+	if not spans:
+		return token
+	expanded = [False] * len(text)
+	for start, end in spans:
+		expanded[start:end] = [True] * (end - start)
+	blanked = list(text)
+	position = 0
+	while position < len(text):
+		end = position
+		while end < len(text) and text[end] not in _HOST_SEPARATORS:
+			end += 1
+		# the host the shell rewrites a piece of
+		if any(expanded[position:end]):
+			blanked[position:end] = ' ' * (end - position)
+		position = end + 1
+	blanked = ''.join(blanked)
+	return Token(blanked, blanked if token.raw == text else token.raw, token.quoted, token.open_quote, token.start)
+
 def _is_ip_address(name):
 	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
 	parts = name.split('.')
@@ -2410,7 +2578,7 @@ class Engine(object):
 				# still being typed
 				continue
 			if role == ROLE_HOSTS:
-				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
+				found.extend(self._host_diagnostics(_without_shell_expansions(token, request.shell), states, now, wanted, reach))
 		found.extend(self._option_diagnostics(options))
 		wanted = _unique(wanted)
 		if probe and wanted and self.directory:
