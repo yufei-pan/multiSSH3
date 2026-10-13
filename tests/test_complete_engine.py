@@ -165,6 +165,73 @@ def test_skip_hosts_prefers_members_of_the_hosts_argument(tmp_path):
 	assert texts(query('mssh n[2-3] -X ', knowledges=[], hosts=table))[:2] == ['n2', 'n3']
 
 
+@pytest.mark.parametrize('hosts', ['n[1-9]', 'nn', 'n[1-3],n[4-9]', 'root@nn'])
+def test_skip_hosts_prefers_members_up_to_the_member_limit(tmp_path, monkeypatch, hosts):
+	# node[00000-49999] -X, or an alias of 50k hosts, listed all 50k members one by one to keep 200
+	monkeypatch.setattr(mc, 'RANGE_MEMBERS_LIMIT', 4)
+	names = ['n{}'.format(number) for number in range(1, 10)]
+	table = _host_table(tmp_path, names + ['m1'], aliases=[('nn', names)])
+	listed = texts(query('mssh {} -X '.format(hosts), knowledges=[], hosts=table))
+	assert listed[:4] == ['n1', 'n2', 'n3', 'n4'] and listed.index('m1') < listed.index('n5')
+
+
+def test_skip_hosts_of_a_huge_range_are_not_written_out(tmp_path):
+	# its first members are preferred, as for any range past the member limit
+	table = _host_table(tmp_path, ['n1', 'n2', 'm1'])
+	assert texts(query('mssh n[1-10000000] -X ', knowledges=[], hosts=table)) == ['n1', 'n2', 'm1']
+
+
+def _ranges_typed_before():
+	'''n[1-3] typed five times, n[4-6] twice.'''
+	return [memory([line(NOW - 10 * number, '-su', 'n[1-3]', '"uptime"') for number in range(5)]
+		+ [line(NOW - 7 * number, '-su', 'n[4-6]', '"uptime"') for number in range(2)])]
+
+
+def test_members_of_ranges_typed_before_are_not_listed_beside_them(tmp_path):
+	table = _host_table(tmp_path, ['n{}'.format(number) for number in range(1, 10)])
+	assert texts(query('mssh n', knowledges=_ranges_typed_before(), hosts=table)) == ['n[1-3]', 'n[4-6]', 'n7', 'n8', 'n9']
+
+
+def test_hiding_members_of_ranges_stops_at_its_limit(tmp_path, monkeypatch):
+	monkeypatch.setattr(mc, 'HIDDEN_MEMBERS_LIMIT', 3)
+	table = _host_table(tmp_path, ['n{}'.format(number) for number in range(1, 10)])
+	assert texts(query('mssh n', knowledges=_ranges_typed_before(), hosts=table)) == ['n[1-3]', 'n[4-6]', 'n4', 'n5', 'n6', 'n7', 'n8', 'n9']
+
+
+def test_past_the_deadline_members_of_ranges_are_listed(tmp_path):
+	import time
+	table = _host_table(tmp_path, ['n{}'.format(number) for number in range(1, 10)])
+	engine = mc.Engine(SPEC, _ranges_typed_before(), table)
+	response = engine.query(mc.Request('bash', 'mssh n', '', 'n'), deadline=time.monotonic() - 1)
+	assert texts(response) == ['n[1-3]', 'n[4-6]'] + ['n{}'.format(number) for number in range(1, 10)]
+
+
+def test_a_long_history_of_wide_ranges_is_not_expanded_whole(tmp_path, monkeypatch):
+	# 300 ranges of 4,000 hosts typed before: hiding all their members took 300 ms per TAB, past the shells' wait
+	history = [line(NOW - number, '-su', 'node[{:05d}-{:05d}]'.format(start, start + 3999), '"uptime"')
+		for number, start in enumerate(range(0, 30000, 100))]
+	table = _host_table(tmp_path, ['node{:05d}'.format(number) for number in range(0, 34000, 7)])
+	expanded = []
+	nested = [0]
+	expand = mc.expand_ranges
+
+	def counting(text, limit=100000):
+		nested[0] += 1
+		try:
+			out = expand(text, limit)
+		finally:
+			nested[0] -= 1
+		if not nested[0]:
+			expanded.append(len(out))
+		return out
+	monkeypatch.setattr(mc, 'expand_ranges', counting)
+	response = query('mssh ', knowledges=[memory(history)], hosts=table)
+	assert sum(expanded) < 100000
+	# the most used ranges come first, and their members are still not listed
+	assert texts(response)[0] == 'node[00000-03999]'
+	assert 'node00007' not in texts(response)
+
+
 def test_protocol_round_trip():
 	request = mc.parse_request(b'MSSHC1\0bash\x005.2\0nosort=1 icase=0\0mssh gp\0 x\0gp\0hist one\nhist two\n')
 	assert (request.shell, request.flags, request.before, request.after, request.word, request.history) == ('bash', {'nosort': '1', 'icase': '0'}, 'mssh gp', ' x', 'gp', ['hist one', 'hist two'])

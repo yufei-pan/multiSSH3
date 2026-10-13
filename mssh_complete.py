@@ -1073,6 +1073,9 @@ def expand_ranges(text, limit=100000):
 	for part in body.split(','):
 		low, sep, high = part.strip().partition('-')
 		if sep and _is_digits(low) and _is_digits(high):
+			if len(values) + int(high) - int(low) >= limit:
+				# past the limit: given back whole without writing it out (node[1-10000000] took 1.5 s)
+				return [text]
 			width = min(len(low), len(high))
 			values.extend('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
 		elif not sep and part.strip():
@@ -1087,6 +1090,81 @@ def expand_ranges(text, limit=100000):
 		if len(out) > limit:
 			return [text]
 	return out
+
+def range_union(texts, limit, budget, deadline=None):
+	'''
+	What expand_ranges(text, limit) gives for each of texts, as one set, writing each name once:
+	the number ranges of texts with one [...] are merged first, so hundreds of overlapping wide
+	ranges cost what the hosts they cover cost, not what all their members cost. Writing stops
+	after budget names or at the deadline; texts come most important first, and the merged
+	numbers are written in the order texts first name them, then the texts with more [...].
+	'''
+	names = set()
+	spans = {}   # (text before the [, text after the ], digits) -> [(low, high)] of the a-b parts
+	order = []   # keys of spans, as texts first name them
+	other = []   # texts with more than one [...]: expand_ranges takes them apart
+	for text in texts:
+		start = text.find('[')
+		end = text.find(']', start + 1)
+		if start < 0 or end < 0 or '[' in text[end + 1:]:
+			other.append(text)
+			continue
+		head, tail, body = text[:start], text[end + 1:], text[start + 1:end]
+		if '[' in body:
+			# a value holding a [ is read again as a range
+			other.append(text)
+			continue
+		parts = []
+		count = 0
+		# expand_ranges' reading of the parts: a-b with digits, or one value
+		for part in body.split(','):
+			low, sep, high = part.strip().partition('-')
+			if sep and _is_digits(low) and _is_digits(high):
+				parts.append((low, high))
+				count += max(int(high) - int(low) + 1, 0)
+			elif not sep and part.strip():
+				parts.append((part.strip(), None))
+				count += 1
+			else:
+				count = None
+				break
+		if count is None or count > limit:
+			# given back whole (letters, hex, past the limit)
+			names.add(text)
+			continue
+		for low, high in parts:
+			if high is None:
+				names.add(head + low + tail)
+				continue
+			key = (head, tail, min(len(low), len(high)))
+			if key not in spans:
+				spans[key] = []
+				order.append(key)
+			spans[key].append((int(low), int(high)))
+	written = 0
+	for key in order:
+		head, tail, width = key
+		merged = []
+		for low, high in sorted(spans[key]):
+			if low > high:
+				continue
+			if merged and low <= merged[-1][1] + 1:
+				merged[-1][1] = max(merged[-1][1], high)
+			else:
+				merged.append([low, high])
+		for low, high in merged:
+			if written >= budget or (deadline is not None and time.monotonic() > deadline):
+				return names
+			last = min(high, low + budget - written - 1)
+			names.update('{}{:0{}d}{}'.format(head, number, width, tail) for number in range(low, last + 1))
+			written += last - low + 1
+	for text in other:
+		if written >= budget or (deadline is not None and time.monotonic() > deadline):
+			break
+		members = expand_ranges(text, limit)
+		names.update(members)
+		written += len(members)
+	return names
 
 #%% ------------ Cache directory ----------------
 def _private_dir(path, create=True):
@@ -2211,6 +2289,7 @@ def _unique(names):
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
 GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most this many
+HIDDEN_MEMBERS_LIMIT = 131072  # members of ranges typed before written out to hide them from a hosts TAB, at most (~25 ms)
 UNAVAILABLE_PENALTY = 0.5  # score factor for hosts mssh found unreachable
 SHELL_WEIGHT = 0.25        # weight of a shell history line next to an mssh history use
 MAX_CANDIDATES = 200
@@ -3005,15 +3084,25 @@ class Engine(object):
 		return out
 
 	def _members(self, hosts_text):
-		'''The host names a hosts argument names, as far as the index knows them (aliases, number ranges).'''
+		'''
+		The host names a hosts argument names, as far as the index knows them (aliases, number
+		ranges): the first RANGE_MEMBERS_LIMIT of them, as for its warnings.
+		'''
+		import itertools
 		members = set()
 		for word in split_hosts(hosts_text or ''):
+			room = RANGE_MEMBERS_LIMIT - len(members)
+			if room <= 0:
+				break
 			word = word.rpartition('@')[2]
 			alias = self.hosts.alias_index(word)
 			if alias is not None:
-				members.update(self.hosts.alias_members(alias))
+				named = self.hosts.alias_members(alias)
+			elif _range_count(word) is not None:
+				named = _iter_range(word)
 			else:
-				members.update(expand_ranges(word))
+				named = expand_ranges(word, limit=RANGE_MEMBERS_LIMIT)
+			members.update(itertools.islice(named, room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -3047,12 +3136,15 @@ class Engine(object):
 		def single(name):
 			return Candidate(lead + name, 'unreachable recently' if name in unavailable else '', 'hosts', host_score(name))
 		# ranges typed before, e.g. node[1-3]: their members are not listed beside them, unless typed
-		# on their own before or named by the hosts argument (-X)
-		in_ranges = set()
+		# on their own before or named by the hosts argument (-X). range_union writes each member
+		# once (expanding hundreds of wide ranges one by one outlasted the shells' wait), up to
+		# HIDDEN_MEMBERS_LIMIT members and the deadline.
+		ranges = []
 		for name, score in scores.items():
 			if '[' in name and name not in aliases:
 				out.append(Candidate(lead + name, 'used before', 'groups', score))
-				in_ranges.update(expand_ranges(name, limit=RANGE_MEMBERS_LIMIT))
+				ranges.append((-score, name))
+		in_ranges = range_union([name for _, name in sorted(ranges)], RANGE_MEMBERS_LIMIT, HIDDEN_MEMBERS_LIMIT, deadline)
 		names -= in_ranges - set(boost) - set(scores)
 		if len(names) <= GROUP_THRESHOLD:
 			out.extend(single(name) for name in names)
