@@ -517,6 +517,20 @@ def test_unreachable_members_of_an_alias_written_with_users(skipping, tmp_path, 
 	assert warnings(skipping, line)[0] == expected
 
 
+@pytest.mark.parametrize('failed', [['a@node1'], ['b@node1'], ['a@node1', 'b@node1']])
+def test_an_alias_listing_a_host_for_two_users_counts_the_host_once(skipping, tmp_path, failed):
+	# pair=a@node1,b@node1: mssh runs two names (either can be skipped), the warning counts one host
+	skipping.hosts = mc.HostTable(index(tmp_path, {'node1': HOSTS_FILE}, {'pair': ['node1', 'node1']}, {'pair': ['a', 'b']}))
+	unavailable(skipping, *failed)
+	assert warnings(skipping, 'mssh pair uptime')[0] == [('pair', 'unreachable', 'pair: 1 unreachable (node1)')]
+
+
+def test_an_alias_listing_a_host_for_two_users_counts_it_once_as_unknown(skipping, tmp_path):
+	seed(skipping, node1='invalid')
+	skipping.hosts = mc.HostTable(index(tmp_path, {'node1': HISTORY}, {'pair': ['node1', 'node1']}, {'pair': ['a', 'b']}))
+	assert warnings(skipping, 'mssh pair uptime')[0] == [('pair', 'range', 'pair: 1 of 1 hosts unknown (node1)')]
+
+
 @pytest.mark.parametrize('line', [
 	'mssh root@node05 uptime',
 	'mssh -u root node05 uptime',
@@ -543,9 +557,10 @@ def test_warnings_follow_what_mssh_skips(skipping, monkeypatch, tmp_path, line):
 	word = words[-2]
 	def mssh_runs():
 		multiSSH3.__globalUnavailableHosts.clear()
+		# mssh returns the hosts it skips too, marked skipped (they fail the run): those it does not run
 		return {host.name for host in multiSSH3.run_command_on_hosts(hosts=word, commands=['true'],
 			username=words[2] if words[1] == '-u' else None, no_start=True, no_watch=True, quiet=True,
-			no_history=True, called=True, will_update_unreachable_hosts=False)}
+			no_history=True, called=True, will_update_unreachable_hosts=False) if not host.skipped}
 	unavailable(skipping)
 	every = mssh_runs()
 	skips = 0
