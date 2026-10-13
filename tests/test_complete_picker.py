@@ -145,6 +145,25 @@ def test_run_on_a_wrapped_line_opens_below_all_of_it():
 	assert grid.cursor == (0, 0)
 
 
+@pytest.mark.parametrize('burst', ['\x1b', '\x1b\x1b', '\x1b[27u', '\x1b[27;1u', '\x1b[27;1;27~', '\x1b[27;3u'])
+def test_run_cancels_on_esc_however_the_terminal_sends_it(burst):
+	# a lone Esc; two at once (a double press over ssh or mosh, Alt+Esc); the kitty keyboard
+	# protocol's CSI u; xterm's modifyOtherKeys
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(FakeTerminal([burst])) == 'cancel'
+
+
+def test_run_takes_keys_sent_as_csi_u():
+	picker = mc.Picker(items('gpu01', 'gpu02', 'gpu03'), items('mssh x y'), 'hosts')
+	# Ctrl-R and Ctrl-N move down, Ctrl-P up, Enter chooses (the kitty protocol, flags 1 and 8)
+	assert picker.run(FakeTerminal(['\x1b[114;5u', '\x1b[110;5u', '\x1b[112;5u', '\x1b[13u'])) == 'choose'
+	assert picker.chosen().text == 'gpu02'
+	# Tab switches, typing filters, Backspace edits the filter, Ctrl-G cancels
+	picker = mc.Picker(items('gpu01'), items('mssh x y', 'mssh z'), 'hosts')
+	assert picker.run(FakeTerminal(['\x1b[9u', '\x1b[122u', '\x1b[120u', '\x1b[127u', '\x1b[103;5u'])) == 'cancel'
+	assert (picker.tab, picker.query) == ('history', 'z')
+	assert picker.run(FakeTerminal(['\x1b[99;5u'])) == 'cancel'
+
+
 def test_run_is_unavailable_on_a_tiny_terminal():
 	assert mc.Picker(items('a'), []).run(FakeTerminal([], rows=4)) == 'unavailable'
 

@@ -4,6 +4,7 @@ import os
 import pty
 import struct
 import termios
+import threading
 
 import pytest
 
@@ -24,6 +25,68 @@ from vt_grid import Grid
 ])
 def test_decode_keys(data, expected):
 	assert mc.decode_keys(data) == expected
+
+
+@pytest.mark.parametrize('data, expected', [
+	# two Esc bytes together: a double press that arrived at once (ssh, mosh, a multiplexer) or Alt+Esc
+	(b'\x1b\x1b', ('esc', b'\x1b\x1b')),
+	# the kitty keyboard protocol ("CSI u"), with and without its default modifier
+	(b'\x1b[27u', ('esc', b'\x1b')),
+	(b'\x1b[27;1u', ('esc', b'\x1b')),
+	# xterm's modifyOtherKeys
+	(b'\x1b[27;1;27~', ('esc', b'\x1b')),
+	# Alt+Esc in the kitty protocol: what a legacy terminal sends for it
+	(b'\x1b[27;3u', ('esc', b'\x1b\x1b')),
+	# Alt + an arrow as Esc Esc [ C is still Alt + the arrow
+	(b'\x1b\x1b[C', ('alt-right', b'\x1b\x1b[C')),
+])
+def test_decode_keys_reads_esc_however_it_is_sent(data, expected):
+	assert mc.decode_keys(data) == [expected]
+
+
+@pytest.mark.parametrize('data, expected', [
+	# the key, with the bytes a terminal sends for it without the kitty protocol or modifyOtherKeys:
+	# what readline understands when the editor hands it the key
+	(b'\x1b[13u', ('enter', b'\r')),
+	(b'\x1b[9u', ('tab', b'\t')),
+	(b'\x1b[127u', ('backspace', b'\x7f')),
+	(b'\x1b[99;5u', ('ctrl-c', b'\x03')),
+	(b'\x1b[103;5u', ('ctrl-g', b'\x07')),
+	(b'\x1b[114;5u', ('ctrl-r', b'\x12')),
+	(b'\x1b[110;5u', ('ctrl-n', b'\x0e')),
+	(b'\x1b[32;5u', ('ctrl-space', b'\x00')),
+	(b'\x1b[91;5u', ('esc', b'\x1b')),
+	(b'\x1b[27;5;99~', ('ctrl-c', b'\x03')),
+	(b'\x1b[27;5;114~', ('ctrl-r', b'\x12')),
+	(b'\x1b[102;3u', ('alt-f', b'\x1bf')),
+	(b'\x1b[27;3;98~', ('alt-b', b'\x1bb')),
+	(b'\x1b[97u', ('a', b'a')),
+	(b'\x1b[97;2u', ('A', b'A')),
+	(b'\x1b[97;65u', ('A', b'A')),
+	(b'\x1b[97;66u', ('a', b'a')),
+	(b'\x1b[97;129u', ('a', b'a')),
+	(b'\x1b[49:33;2u', ('!', b'!')),
+	(b'\x1b[49;2;33u', ('!', b'!')),
+	(b'\x1b[233u', ('é', 'é'.encode('utf-8'))),
+	(b'\x1b[13;2u', ('enter', b'\r')),
+	(b'\x1b[99;5:1u', ('ctrl-c', b'\x03')),
+	(b'\x1b[99;5:2u', ('ctrl-c', b'\x03')),
+	# keys with no legacy bytes, or not keys typed: unknown, as read
+	(b'\x1b[9;2u', ('unknown', b'\x1b[Z')),
+	(b'\x1b[13;5u', ('unknown', b'\x1b[13;5u')),
+	(b'\x1b[97;9u', ('unknown', b'\x1b[97;9u')),
+	(b'\x1b[49;2u', ('unknown', b'\x1b[49;2u')),
+	(b'\x1b[99;5:3u', ('unknown', b'\x1b[99;5:3u')),
+	(b'\x1b[57414u', ('unknown', b'\x1b[57414u')),
+	(b'\x1b[1114112u', ('unknown', b'\x1b[1114112u')),
+	(b'\x1b[55296u', ('unknown', b'\x1b[55296u')),
+	(b'\x1b[;5u', ('unknown', b'\x1b[;5u')),
+	(b'\x1b[?1u', ('unknown', b'\x1b[?1u')),
+	(b'\x1b[27;5;99;1~', ('unknown', b'\x1b[27;5;99;1~')),
+	(b'\x1b[15;5~', ('unknown', b'\x1b[15;5~')),
+])
+def test_decode_keys_reads_csi_u_and_modify_other_keys(data, expected):
+	assert mc.decode_keys(data) == [expected]
 
 
 def test_display_width_counts_wide_and_combining_characters():
@@ -84,6 +147,58 @@ def test_terminal_tells_a_lone_esc_from_a_sequence(tty_pair):
 		os.write(master, b'\x1b')
 		assert term.read_key(timeout=1) == ('esc', b'\x1b')
 		assert term.read_key(timeout=0.05) is None
+
+
+@pytest.mark.parametrize('typed, expected', [
+	(b'\x1b[27u', ('esc', b'\x1b')),
+	(b'\x1b[27;1u', ('esc', b'\x1b')),
+	(b'\x1b[27;1;27~', ('esc', b'\x1b')),
+	(b'\x1b[13u', ('enter', b'\r')),
+	(b'\x1b[99;5u', ('ctrl-c', b'\x03')),
+	(b'\x1b[27;5;114~', ('ctrl-r', b'\x12')),
+])
+def test_terminal_reads_a_csi_u_key_and_no_more(tty_pair, typed, expected):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, typed + b'z')
+		assert term.read_key(timeout=1) == expected
+		assert term.read_key(timeout=1) == ('z', b'z')
+		assert term.read_key(timeout=0.05) is None
+
+
+@pytest.mark.parametrize('typed', [
+	b'\x1b\x1b',
+	# Esc pressed again and again, or Esc and then a key, all at once: what was read cannot go back
+	# to the terminal, so it comes with the Esc
+	b'\x1b\x1b\x1b', b'\x1b\x1bf', b'\x1b\x1b\x1b[A',
+])
+def test_terminal_reads_esc_pressed_twice_as_esc(tty_pair, typed):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, typed)
+		assert term.read_key(timeout=1) == ('esc', typed)
+		assert term.read_key(timeout=0.05) is None
+		# a key typed after the Esc presses is a key of its own
+		os.write(master, b'z')
+		assert term.read_key(timeout=1) == ('z', b'z')
+
+
+@pytest.mark.parametrize('typed', [b'\x1b', b'\x1b\x1b', b'\x1b[27u', b'\x1b[27;1u', b'\x1b[27;1;27~', b'\x1b[103;5u', b'\x1b[99;5u'])
+def test_the_picker_closes_on_esc_however_the_terminal_sends_it(tty_pair, typed):
+	master, slave, path = tty_pair
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+	picker = mc.Picker([mc.PickItem('gpu01'), mc.PickItem('gpu02')], [], 'hosts')
+	# a picker that missed the key would wait for ever: Enter comes later and chooses
+	enter = threading.Timer(2, os.write, (master, b'\r'))
+	try:
+		with mc.Terminal(path) as term:
+			os.write(master, typed)
+			enter.start()
+			assert picker.run(term) == 'cancel'
+			assert not term.has_input()
+	finally:
+		enter.cancel()
+		enter.join()
 
 
 def test_terminal_restores_the_mode(tty_pair):
