@@ -3373,8 +3373,10 @@ class Picker(object):
 	The Ctrl-R menu as state: a slot tab (candidates for the word at the cursor) and a history tab
 	(whole past invocations), a fuzzy filter and a selection. run() draws it below the prompt line.
 	'''
-	def __init__(self, slot_items, history_items, slot_title='', now=None, unicode=None):
+	def __init__(self, slot_items, history_items, slot_title='', now=None, unicode=None, warnings=()):
 		self.items = {'slot': list(slot_items), 'history': list(history_items)}
+		# up to three warnings about the line, shown under the title
+		self.warnings = [_printable(text) for text in list(warnings)[:3]]
 		self.titles = {'slot': slot_title or 'candidates', 'history': 'history'}
 		self.tab = 'slot' if self.items['slot'] else 'history'
 		self.query = ''
@@ -3447,6 +3449,9 @@ class Picker(object):
 		counter = ' {}/{} '.format(self.selected + 1 if matches else 0, len(matches))
 		fill = max(inner - text_width(title) - text_width(counter), 0)
 		lines = [fit(top_left + title + horizontal * fill + counter + top_right, width)]
+		for warning in self.warnings:
+			text = fit(' {} {}'.format('⚠' if self.unicode else '!', warning), inner)
+			lines.append(vertical + text + ' ' * (inner - text_width(text)) + vertical)
 		for number in range(self.offset, self.offset + rows):
 			if number >= len(matches):
 				lines.append(vertical + ' ' * (inner) + vertical)
@@ -3490,7 +3495,7 @@ class Picker(object):
 			str: 'choose', 'cancel', or 'unavailable' when the terminal is too small
 		'''
 		rows, width = term.size()
-		height = min(PICKER_ROWS, rows - 4)
+		height = min(PICKER_ROWS, rows - 4 - len(self.warnings))
 		if height < 1 or width < 20:
 			return 'unavailable'
 		up = 0
@@ -3510,7 +3515,7 @@ class Picker(object):
 			# while the menu is open the cursor shows where it is in the line
 			cursor = ('\x1b[{}A'.format(end_row - row) if end_row > row else '') + '\r' + ('\x1b[{}C'.format(column) if column else '')
 		# make room below the line (the screen may scroll), come back to the same column and save it
-		lines = height + 2
+		lines = height + 2 + len(self.warnings)
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		try:
 			draw = True
@@ -3525,6 +3530,23 @@ class Picker(object):
 				draw = not term.has_input()
 		finally:
 			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+
+def reason_line(diagnostics, unicode=None):
+	'''The one line shown under the prompt: the first warning, and how many more there are ('' for none).'''
+	if not diagnostics:
+		return ''
+	unicode = _unicode_terminal() if unicode is None else unicode
+	more = len(diagnostics) - 1
+	return '{} {}{}'.format('⚠' if unicode else '!', diagnostics[0].message, ' (+{} more)'.format(more) if more else '')
+
+def picker_warnings(engine, request):
+	'''Up to three warnings about the request's line, for the top of the picker.'''
+	try:
+		found, _ = engine.diagnose(Request(request.shell, request.before, request.after, ''))
+	except Exception as e:
+		_debug('diagnostics failed: {!r}'.format(e))
+		return []
+	return [item.message for item in found[:3]]
 
 def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
@@ -5349,7 +5371,7 @@ def _cmd_pick():
 		slot, title, history, word = picker_items(request, engine, history_lines, now)
 		if not slot and not history:
 			return 2
-		picker = Picker(slot, history, title, now)
+		picker = Picker(slot, history, title, now, warnings=picker_warnings(engine, request))
 		prompt = _prompt_from_flags(request.flags)
 		line = before = None
 		if prompt is not None:
@@ -5455,7 +5477,7 @@ def _cmd_edit(args):
 		slot, title, items, word = picker_items(request, engine, cache['history'])
 		if not slot and (slot_only or not items):
 			return None
-		picker = Picker(slot, [] if slot_only else items, title)
+		picker = Picker(slot, [] if slot_only else items, title, warnings=picker_warnings(engine, request))
 		editor.erase(term)
 		outcome = picker.run(term, prompt + text, prompt + text[:cursor])
 		if outcome != 'choose':
