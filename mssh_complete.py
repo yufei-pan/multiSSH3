@@ -1581,6 +1581,160 @@ def load_for_query(directory, now):
 		spawn_rebuild(directory)
 	return index, tail
 
+#%% ------------ Host state ----------------
+HOST_STATE_NAME = 'host-state.tsv'
+PROBE_QUEUE_NAME = 'probe-queue'
+PROBE_LOCK_NAME = 'probe.lock'
+VALIDITY_FRESH = 600.0  # seconds a valid / invalid answer stays fresh
+UNSURE_FRESH = 60.0     # seconds an unsure answer stays fresh
+PING_FRESH = 60.0       # seconds a ping result stays fresh (a host on the line is pinged again after)
+
+def boot_id():
+	'''An identifier of the current boot, or None where the system has none.'''
+	try:
+		with open('/proc/sys/kernel/random/boot_id') as f:
+			return f.read().strip() or None
+	except OSError:
+		return None
+
+class HostState(object):
+	'''
+	What the prober learned about one host. Times are wall-clock seconds.
+
+	validity: 'valid', 'invalid' or 'unsure' (multiSSH3.host_validity), '' when never checked;
+	ping: 'answer', 'silent', 'none' (could not ping) or '' when never pinged;
+	answered_at: when the host last answered ping (0 when never).
+	'''
+	__slots__ = ('validity', 'checked_at', 'ping', 'pinged_at', 'answered_at')
+
+	def __init__(self, validity='', checked_at=0.0, ping='', pinged_at=0.0, answered_at=0.0):
+		self.validity = validity
+		self.checked_at = checked_at
+		self.ping = ping
+		self.pinged_at = pinged_at
+		self.answered_at = answered_at
+
+	def fresh_validity(self, now):
+		'''The validity while it is fresh, else ''.'''
+		limit = UNSURE_FRESH if self.validity == 'unsure' else VALIDITY_FRESH
+		return self.validity if self.validity and now - self.checked_at <= limit else ''
+
+	def fresh_ping(self, now):
+		'''The ping result while it is fresh, else ''.'''
+		return self.ping if self.ping and now - self.pinged_at <= PING_FRESH else ''
+
+def needs_probe(state, now):
+	'''Whether the prober must look at a host: its validity is not fresh, or it may be pinged and its ping is not.'''
+	if state is None:
+		return True
+	validity = state.fresh_validity(now)
+	return not validity or (validity != 'invalid' and not state.fresh_ping(now))
+
+_VALIDITIES = ('valid', 'invalid', 'unsure')
+_PINGS = ('', 'answer', 'silent', 'none')
+
+def read_host_states(directory):
+	'''host -> HostState from host-state.tsv; {} for a missing, foreign or other-boot file.'''
+	try:
+		with open(os.path.join(directory, HOST_STATE_NAME), encoding='utf-8', errors='replace') as f:
+			lines = f.read().split('\n')
+	except OSError:
+		return {}
+	head = lines[0].split(',', 1)
+	if len(head) != 2 or head[0] != '#boot_id':
+		return {}
+	current = boot_id()
+	if current and head[1] != current:
+		return {}
+	states = {}
+	for line in lines[1:]:
+		fields = line.split('\t')
+		if len(fields) != 6 or not fields[0] or fields[1] not in _VALIDITIES or fields[3] not in _PINGS:
+			continue
+		try:
+			states[fields[0]] = HostState(fields[1], float(fields[2]), fields[3], float(fields[4]), float(fields[5]))
+		except ValueError:
+			continue
+	return states
+
+def write_host_states(directory, states):
+	'''Replace host-state.tsv with states (host -> HostState), atomically.'''
+	import tempfile
+	lines = ['#boot_id,{}'.format(boot_id() or '')]
+	for host in sorted(states):
+		state = states[host]
+		lines.append('\t'.join([host, state.validity, repr(float(state.checked_at)), state.ping,
+			repr(float(state.pinged_at)), repr(float(state.answered_at))]))
+	fd, temporary = tempfile.mkstemp(prefix='.host-state.', dir=directory)
+	try:
+		with os.fdopen(fd, 'w', encoding='utf-8') as f:
+			f.write('\n'.join(lines) + '\n')
+		os.replace(temporary, os.path.join(directory, HOST_STATE_NAME))
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
+def _queueable(host):
+	return bool(host) and '\t' not in host and not _has_control(host)
+
+def queue_probes(directory, hosts):
+	'''
+	Append hosts to the probe queue in one write (queries do this; the prober takes them).
+
+	Hosts already waiting in the queue are left out: a query for a long range repeats on every
+	keystroke.
+	'''
+	path = os.path.join(directory, PROBE_QUEUE_NAME)
+	try:
+		with open(path, encoding='utf-8', errors='surrogateescape') as f:
+			waiting = set(f.read().split('\n'))
+	except OSError:
+		waiting = set()
+	new = []
+	for host in hosts:
+		if _queueable(host) and host not in waiting:
+			waiting.add(host)
+			new.append(host)
+	if not new:
+		return
+	data = ''.join(host + '\n' for host in new)
+	fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+	try:
+		os.write(fd, data.encode('utf-8', 'surrogateescape'))
+	finally:
+		os.close(fd)
+
+def take_probe_queue(directory):
+	'''
+	Empty the probe queue and return its hosts, newest first, each once.
+
+	The queue is renamed before it is read: a query appending meanwhile starts a new queue. A host
+	lost to that race is queued again by the next query that finds it without a fresh answer.
+	'''
+	path = os.path.join(directory, PROBE_QUEUE_NAME)
+	taken = path + '.taken'
+	try:
+		os.replace(path, taken)
+	except OSError:
+		return []
+	try:
+		with open(taken, encoding='utf-8', errors='surrogateescape') as f:
+			lines = f.read().split('\n')
+	except OSError:
+		lines = []
+	try:
+		os.unlink(taken)
+	except OSError:
+		pass
+	hosts = []
+	for host in reversed(lines):
+		if _queueable(host) and host not in hosts:
+			hosts.append(host)
+	return hosts
+
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
 GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most this many
