@@ -244,6 +244,62 @@ def test_bash_always_loads_from_bashrc(tmp_path, monkeypatch):
 	assert not (home / '.local' / 'share' / 'bash-completion').exists()
 
 
+# With HOME empty, expanduser('~') is '/', and install wrote /.bashrc. These tests never let it get there:
+# expanduser, the user database, os.environ's HOME and the working directory all point into tmp_path,
+# and the '/' cases go only to the function that names the home directory, which writes nothing.
+def _no_real_home(tmp_path, monkeypatch, user_home):
+	import pwd
+	for name in ('expanded', 'environ', 'cwd'):
+		(tmp_path / name).mkdir()
+	monkeypatch.setattr(os.path, 'expanduser', lambda path: str(tmp_path / 'expanded') + path[1:] if path.startswith('~') else path)
+	monkeypatch.setenv('HOME', str(tmp_path / 'environ'))
+	monkeypatch.chdir(str(tmp_path / 'cwd'))
+	def getpwuid(uid):
+		if user_home is None:
+			raise KeyError(uid)
+		return pwd.struct_passwd(('u', 'x', uid, 0, '', user_home, '/bin/sh'))
+	monkeypatch.setattr(pwd, 'getpwuid', getpwuid)
+
+
+@pytest.mark.parametrize('environ_home, user_home, expected', [
+	('/', '/', None),
+	('//', '/', None),
+	('', '/', None),
+	('', None, None),
+	('', 'USER', 'USER'),
+	('ENV', '/', 'ENV'),
+])
+def test_the_home_directory_is_never_slash(tmp_path, monkeypatch, environ_home, user_home, expected):
+	names = {'USER': str(tmp_path / 'user'), 'ENV': str(tmp_path / 'env')}
+	_no_real_home(tmp_path, monkeypatch, names.get(user_home, user_home))
+	environ = {'HOME': names.get(environ_home, environ_home)}
+	if expected is None:
+		with pytest.raises(mc.InstallError):
+			mc._home_directory(None, environ)
+	else:
+		assert mc._home_directory(None, environ) == names[expected]
+
+
+def test_install_with_an_empty_home_uses_the_user_database(tmp_path, monkeypatch):
+	_no_real_home(tmp_path, monkeypatch, str(tmp_path / 'user'))
+	(tmp_path / 'user').mkdir()
+	environ = {'HOME': '', 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'XDG_RUNTIME_DIR': str(tmp_path)}
+	assert mc.install('bash', environ=environ, command=ENGINE)[0] == 0
+	assert mc.RC_BEGIN_CREATED in (tmp_path / 'user' / '.bashrc').read_text()
+	assert [os.listdir(str(tmp_path / name)) for name in ('expanded', 'environ', 'cwd')] == [[], [], []]
+	assert mc.uninstall('bash', environ=environ)[0] == 0
+	assert os.listdir(str(tmp_path / 'user')) == ['.local']
+
+
+@pytest.mark.parametrize('action', ['install', 'uninstall'])
+def test_install_without_a_home_directory_changes_nothing(tmp_path, monkeypatch, action):
+	_no_real_home(tmp_path, monkeypatch, None)
+	environ = {'HOME': '', 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'XDG_RUNTIME_DIR': str(tmp_path)}
+	code, messages = mc.install('bash', environ=environ, command=ENGINE) if action == 'install' else mc.uninstall('bash', environ=environ)
+	assert (code, messages) == (1, ['did not change anything: HOME is empty and the user database names no home directory; set HOME and run this again'])
+	assert [os.listdir(str(tmp_path / name)) for name in ('expanded', 'environ', 'cwd')] == [[], [], []]
+
+
 LOGIN_LINE = '[ -f ~/.bashrc ] && . ~/.bashrc'
 
 @pytest.mark.parametrize('files, reads', [

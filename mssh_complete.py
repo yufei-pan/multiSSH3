@@ -5723,6 +5723,28 @@ def _zsh_rc(home, environ):
 	rc = os.path.join(zdotdir or home, '.zshrc')
 	return rc, (None if why is None else 'note: zsh did not say whether ZDOTDIR is set ({}): using {}'.format(why, rc))
 
+def _home_directory(home, environ):
+	'''
+	The home directory to install into: home when given, else $HOME, else the user database's.
+
+	Raises:
+		InstallError: there is none, or it is / (with HOME empty, expanduser('~') gives '/', and
+			install wrote /.bashrc)
+	'''
+	where = 'HOME'
+	if not home:
+		home = environ.get('HOME')
+	if not home:
+		where = 'the user database (HOME is empty)'
+		try:
+			import pwd
+			home = pwd.getpwuid(os.getuid()).pw_dir
+		except (ImportError, KeyError):
+			raise InstallError('did not change anything: HOME is empty and the user database names no home directory; set HOME and run this again')
+	if not home or os.path.realpath(home) == os.path.realpath(os.sep):
+		raise InstallError('did not change anything: the home directory from {} is {!r}; set HOME to your home directory and run this again'.format(where, home))
+	return home
+
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
 	# fish's own configuration directory: $XDG_CONFIG_HOME/fish, else ~/.config/fish
@@ -5754,7 +5776,10 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 	'''
 	import shlex
 	environ = os.environ if environ is None else environ
-	home = home or os.path.expanduser('~')
+	try:
+		home = _home_directory(home, environ)
+	except InstallError as error:
+		return 1, list(error.args)
 	messages = []
 	if shell == 'fish':
 		major = _fish_major()
@@ -5791,7 +5816,10 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 def uninstall(shell, home=None, environ=None):
 	'''Remove what install wrote for shell. Returns (exit code, messages).'''
 	environ = os.environ if environ is None else environ
-	home = home or os.path.expanduser('~')
+	try:
+		home = _home_directory(home, environ)
+	except InstallError as error:
+		return 1, list(error.args)
 	messages = []
 	paths = _paths(shell, home, environ)
 	if paths.get('note'):
