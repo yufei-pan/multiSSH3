@@ -6,6 +6,7 @@ so the engine's suggestion for "mssh gp" is the whole line u[01-16] "nvidia-smi"
 '''
 import os
 import re
+import shlex
 import subprocess
 import time
 
@@ -444,8 +445,8 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
 
 
-def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY):
-	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late).'''
+def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, extra=''):
+	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late); extra runs last.'''
 	pre = ''
 	if zas:
 		import os
@@ -460,7 +461,7 @@ def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_
 	(home / '.zsh_history').write_text(shell_history)
 	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
 	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
-		pre=history if after else pre + '\n' + history, extra=pre if after else '')
+		pre=history if after else pre + '\n' + history, extra=(pre if after else '') + '\n' + extra)
 
 
 @pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
@@ -614,6 +615,50 @@ def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, dela
 			time.sleep(delay)
 		rows = settled(session, 3)
 		assert rows[0] == '@@READY@@ mssh gpu099 uptime' and any('gpu099: unknown host' in row for row in rows[1:]), rows[:4]
+	finally:
+		session.close()
+
+
+def slow_engine(seconds=1):
+	"""Glue lines making every engine query take a while, so a test can look at the shell while one is asked."""
+	return '_mssh_complete_engine() {{ sleep {}; {} "$@" }}'.format(seconds, ' '.join(shlex.quote(part) for part in ENGINE))
+
+
+# zsh-autosuggestions fetching in the widgets (synchronous), with a strategy of the operator's after mssh's
+ZAS_SYNC = """unset ZSH_AUTOSUGGEST_USE_ASYNC
+ZSH_AUTOSUGGEST_STRATEGY=(slow)
+_zsh_autosuggest_strategy_slow() { zmodload zsh/zselect; zselect -t 100 }"""
+
+
+@pytest.mark.parametrize('zas, extra, keys', [
+	(False, '', 'mssh gp'),
+	(False, '', 'mssh --ipmi_\t'),
+	# grey text from zsh-autosuggestions, which gives the terminal back itself: only the warnings' query is left
+	(True, '', 'mssh gpu017 '),
+	(True, ZAS_SYNC, 'mssh gp'),
+], ids=['grey-text', 'tab', 'warnings', 'zsh-autosuggestions-sync'])
+def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
+	# before zsh 5.8 each query's process substitution took the terminal from the shell (Ctrl-C went to the
+	# query, the shell's reads failed until it took the terminal back) unless the glue gives it back
+	env, home = home
+	session = zsh_with(env, home, zas, extra=slow_engine() + '\n' + extra)
+	try:
+		session.send(keys)
+		time.sleep(0.5)
+		assert os.tcgetpgrp(session.fd) == session.pid
+	finally:
+		session.close()
+
+
+def test_zsh_ctrl_c_drops_a_line_while_its_grey_text_is_asked_for(home):
+	# not lost to the query (zsh before 5.8)
+	env, home = home
+	session = zsh_with(env, home, extra=slow_engine())
+	try:
+		session.send('mssh gp')
+		time.sleep(0.5)
+		session.send('\x03')
+		assert printed(session, '') == ''
 	finally:
 		session.close()
 

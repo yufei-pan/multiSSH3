@@ -4668,6 +4668,7 @@ _mssh() {
 			fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null
 	)
+	_mssh_complete_keep_terminal
 	(( end = EPOCHREALTIME + ${MSSH_COMPLETE_TIMEOUT:-0.3} ))
 	resp=
 	while true; do
@@ -4713,6 +4714,15 @@ _mssh() {
 
 _mssh_complete_engine() {
 	@ENGINE@ "$@"
+}
+
+_mssh_complete_keep_terminal() {
+	# after each `exec {fd}< <(...)`: before zsh 5.8 the process substitution takes the terminal from the
+	# shell (Ctrl-C then goes to it, and the shell's next reads can fail with "error on TTY read"); a
+	# command run in the foreground hands the terminal back when it ends, as zsh-autosuggestions does
+	# (its issue 364)
+	(( _mssh_complete_fork )) && [[ -o monitor ]] && command true
+	return 0
 }
 
 _mssh_complete_is_mssh() {
@@ -4782,6 +4792,7 @@ _zsh_autosuggest_strategy_mssh() {
 	# synchronous zsh-autosuggestions waits for the strategy while the operator types
 	(( ${+ZSH_AUTOSUGGEST_USE_ASYNC} )) || limit=0.05
 	exec {fd}< <(_mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
+	_mssh_complete_keep_terminal
 	(( end = EPOCHREALTIME + limit ))
 	while true; do
 		(( remaining = (end - EPOCHREALTIME) * 100 ))
@@ -4882,6 +4893,7 @@ _mssh_complete_ghost_redraw() {
 	(( CURSOR == $#BUFFER )) && _mssh_complete_is_mssh "$BUFFER" || return 0
 	_mssh_complete_asked=$BUFFER
 	exec {_mssh_complete_fd}< <(_mssh_complete_request 'ghost=1 nul=0' "$BUFFER" '' | _mssh_complete_engine query 2>/dev/null)
+	_mssh_complete_keep_terminal
 	zle -F $_mssh_complete_fd _mssh_complete_ghost_ready
 }
 
@@ -4983,10 +4995,7 @@ _mssh_complete_warn_ask() {
 	exec {_mssh_complete_warn_fd}< <(
 		(( $1 > 0 )) && zselect -t $1
 		_mssh_complete_request 'diag=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine query 2>/dev/null)
-	# before zsh 5.8, a process substitution started while keys arrive (from the zle -F handler) can
-	# leave the shell out of the terminal's foreground: forcing a fork sets that right, as
-	# zsh-autosuggestions does (its issue 364)
-	(( _mssh_complete_warn_fork )) && command true
+	_mssh_complete_keep_terminal
 	zle -F $_mssh_complete_warn_fd _mssh_complete_warn_ready
 }
 
@@ -5082,8 +5091,6 @@ _mssh_complete_warn_setup() {
 	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
 	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason=
 	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
-	typeset -gi _mssh_complete_warn_fork=0
-	is-at-least 5.8 || _mssh_complete_warn_fork=1
 	zle -N _mssh_complete_warn_answer
 	zle -N _mssh_complete_warn_redraw
 	zle -N _mssh_complete_warn_finish
@@ -5095,6 +5102,9 @@ _mssh_complete_setup() {
 	# precmd, once, at the first prompt (plugins loaded after the mssh block are there by then):
 	# Ctrl-R, warnings, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
 	add-zsh-hook -d precmd _mssh_complete_setup
+	autoload -Uz is-at-least
+	typeset -gi _mssh_complete_fork=0
+	is-at-least 5.8 || _mssh_complete_fork=1
 	_mssh_complete_take_ctrl_r
 	_mssh_complete_warn_setup
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
