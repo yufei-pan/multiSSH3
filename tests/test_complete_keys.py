@@ -933,7 +933,7 @@ def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, dela
 		session.close()
 
 
-def slow_engine(seconds=1):
+def slow_engine_glue(seconds=1):
 	"""Glue lines making every engine query take a while, so a test can look at the shell while one is asked."""
 	return '_mssh_complete_engine() {{ sleep {}; {} "$@" }}'.format(seconds, ' '.join(shlex.quote(part) for part in ENGINE))
 
@@ -955,7 +955,7 @@ def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
 	# before zsh 5.8 each query's process substitution took the terminal from the shell (Ctrl-C went to the
 	# query, the shell's reads failed until it took the terminal back) unless the glue gives it back
 	env, home = home
-	session = zsh_with(env, home, zas, extra=slow_engine() + '\n' + extra)
+	session = zsh_with(env, home, zas, extra=slow_engine_glue() + '\n' + extra)
 	try:
 		session.send(keys)
 		time.sleep(0.5)
@@ -967,7 +967,7 @@ def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
 def test_zsh_ctrl_c_drops_a_line_while_its_grey_text_is_asked_for(home):
 	# not lost to the query (zsh before 5.8)
 	env, home = home
-	session = zsh_with(env, home, extra=slow_engine())
+	session = zsh_with(env, home, extra=slow_engine_glue())
 	try:
 		session.send('mssh gp')
 		time.sleep(0.5)
