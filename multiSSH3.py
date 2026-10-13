@@ -151,6 +151,7 @@ _DEFAULT_RETURN_UNFINISHED = False
 _DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
 _DEFAULT_NO_START = False
 _etc_hosts = {}
+_etc_hosts_lock = threading.Lock()
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
@@ -303,6 +304,52 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
 		time.sleep(1)
 
+def read_hosts_file(path):
+	'''
+	Read a hosts file such as /etc/hosts: lines of an IP address followed by its names.
+
+	It is read as the C library reads it: text after # is a comment, lines that do not start with
+	an IP address are skipped, and a name listed twice keeps its first address. When a name has
+	both, it gets its first IPv4 address, as names looked up in DNS do. Bytes that are not UTF-8
+	are replaced, they never stop the read.
+
+	Args:
+		path (str): The hosts file
+
+	Returns:
+		dict: host name -> IP address, empty when the file cannot be read
+	'''
+	hosts = {}
+	if not path:
+		return hosts
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			for line in f:
+				fields = line.split('#', 1)[0].split()
+				if len(fields) < 2:
+					continue
+				address = fields[0]
+				ipv4 = ':' not in address
+				try:
+					socket.inet_pton(socket.AF_INET if ipv4 else socket.AF_INET6, address)
+				except (OSError, ValueError):
+					continue
+				for name in fields[1:]:
+					known = hosts.get(name)
+					if known is None or (ipv4 and ':' in known):
+						hosts[name] = address
+	except OSError:
+		pass
+	return hosts
+
+def _load_etc_hosts():
+	'''_etc_hosts, read from DEFAULT_HOST_FILE when empty (by one thread: the parallel lookups of a range all start here).'''
+	if not _etc_hosts:
+		with _etc_hosts_lock:
+			if not _etc_hosts:
+				_etc_hosts.update(read_hosts_file(DEFAULT_HOST_FILE))
+	return _etc_hosts
+
 def getIP(hostname: str,local=False):
 	'''
 	Get the IP address of the hostname
@@ -330,19 +377,7 @@ def _getIP(hostname, local):
 	except ValueError:
 		pass
 	# Then we check DEFAULT_HOST_FILE
-	if not _etc_hosts and os.path.exists(DEFAULT_HOST_FILE):
-		with open(DEFAULT_HOST_FILE,'r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
-					continue
-				#ip, host = line.split()[:2]
-				chunks = line.split()
-				if len(chunks) < 2:
-					continue
-				ip = chunks[0]
-				for host in chunks[1:]:
-					_etc_hosts[host] = ip
-	if hostname in _etc_hosts:
+	if hostname in _load_etc_hosts():
 		return _etc_hosts[hostname]
 	if local:
 		return None

@@ -234,7 +234,7 @@ First, mssh will expand [a-b] ranges in the hostname strings.
 
 When hostname need to be resolved, mssh will check in the following order:
 - Return if it is an ipv4 address
-- Return if hostname is in /etc/hosts
+- Return if hostname is in the hosts file (`/etc/hosts`, or `--host_file`): its first IPv4 address there, else its first IPv6 address
 - If `-C, --no_env` is not specified and hostname is in current terminal environment variables
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
