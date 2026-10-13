@@ -487,6 +487,8 @@ Hosts the shell rewrites before mssh runs (`$NODES`, `$(cat hosts.txt)`, `` `...
 
 zsh, bash with ble.sh and the plain-bash line editor mark the words and show the reason; fish 4 prints the reason under the line after a space; fish 3 and plain bash without the editor list the warnings at the top of the Ctrl-R menu.
 
+With [zsh-syntax-highlighting](https://github.com/zsh-users/zsh-syntax-highlighting) before zsh 5.9 (or before its 0.8), source it last in `.zshrc`, as it asks: loaded later (a plugin manager's deferred loading), it removes the marks and the grey text's colour at every key.
+
 Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (which prints what your ssh config says about the name) and ping. It never connects or logs in to a host itself, so it cannot trip fail2ban. One exception comes from your ssh config: `ssh -G` runs the commands of `Match exec` lines, so a `Match exec` command that contacts the host (such as `nc -z %h 22` to choose a jump host) runs for every host name you type, before Enter. Check `~/.ssh/config` and `/etc/ssh/ssh_config` (and the files they `Include`) if fail2ban matters. The prober runs at low priority, as many checks at once as mssh's own `max_connections` allows. What it learns lives in mssh's runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or the temp dir) and is gone after a reboot. It remembers when up to 10 000 hosts last answered ping, for a day (longer when `MSSH_COMPLETE_PING_TTL` or mssh's unreachable host expiry is longer); `-uhe` above that on the line finds no older answers. `mssh-complete eval --diagnostics` replays your history and lists the hosts mssh would reject.
 
 | Environment variable | Effect |
@@ -499,7 +501,7 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 | `MSSH_COMPLETE_PING_TTL` | Seconds a host that answered ping is expected to keep answering (default: mssh's unreachable host expiry, 600) |
 | `MSSH_COMPLETE_DEBUG` | `1` logs errors to `complete.log` in the cache directory |
 
-> Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
+> Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1; zsh-syntax-highlighting 0.7.1 and 0.8.0), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
 
 > After upgrading mssh, run `mssh --completion install` again to get the new shell glue. Glue from an older mssh keeps working, without the newer features.
 

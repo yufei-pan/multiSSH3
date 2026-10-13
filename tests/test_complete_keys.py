@@ -6,6 +6,7 @@ so the engine's suggestion for "mssh gp" is the whole line u[01-16] "nvidia-smi"
 '''
 import os
 import re
+import shlex
 import subprocess
 import time
 
@@ -21,6 +22,7 @@ HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.form
 SHELL_HISTORY = 'echo aa1\necho aa2\necho bb\n'
 FAKE_MSSH = 'mssh() { printf "@@RAN[%s]@@\\n" "$*"; }'
 RIGHT = '\x1b[C'
+LEFT = '\x1b[D'
 UP = '\x1b[A'
 
 
@@ -675,10 +677,11 @@ def test_blesh_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
 # ---------------------------------------------------------------- zsh
 
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
+ZSH_SH = '/opt/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh'
 
 
-def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, **options):
-	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late).'''
+def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, extra='', **options):
+	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late); extra runs last.'''
 	pre = ''
 	if zas:
 		import os
@@ -693,7 +696,7 @@ def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_
 	(home / '.zsh_history').write_text(shell_history)
 	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
 	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
-		pre=history if after else pre + '\n' + history, extra=pre if after else '', **options)
+		pre=history if after else pre + '\n' + history, extra=(pre if after else '') + '\n' + extra, **options)
 
 
 @pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
@@ -830,6 +833,56 @@ def reverse_search_found(session, line):
 	return any(row.startswith('(reverse-i-search)`') and row.endswith(': ' + line) for row in screen(session))
 
 
+def line_styles(session, text):
+	"""The SGR parameters of each character on the screen row holding text."""
+	grid = rendered(session)
+	row = next(row for row, line in enumerate(grid.lines()) if text in line)
+	return grid.styles(row)
+
+
+@pytest.mark.parametrize('typed, fixes, line', [
+	# a typo fixed: backspace over "17 ", then "1 " (gpu01 is fine)
+	('mssh gpu017 ', ['\x7f\x7f\x7f', '1 uptime'], 'mssh gpu01 uptime'),
+	# fixed inside the word (delete its 0), then the word left
+	('mssh gpu017 uptime', [LEFT * 9 + '\x7f', '\x05'], 'mssh gpu17 uptime'),
+], ids=['typo-retyped', 'fixed-in-place'])
+def test_zsh_underline_goes_away_when_the_host_is_fixed(home, typed, fixes, line):
+	# zsh rewrites the style of a mark (fg=red,underline) and moves the mark along with the text the
+	# operator edits: the glue still finds its marks
+	env, home = home
+	known(env, gpu017='invalid', gpu01='valid', gpu17='valid')
+	session = zsh_with(env, home)
+	try:
+		session.send(typed)
+		session.read_until('unknown host'.encode(), 10)
+		time.sleep(0.5)
+		for keys in fixes:
+			session.send(keys)
+			time.sleep(0.3)
+		time.sleep(1)
+		session.read_until(b'@@never@@', 0.2)
+		assert not [style for style in line_styles(session, line) if '4' in style.split(';')], screen(session)[:2]
+	finally:
+		session.close()
+
+
+def test_zsh_accepted_grey_text_is_not_grey(home):
+	# a character of the grey text typed first: zsh moved the grey highlight along with it
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.send('u')
+		time.sleep(0.5)
+		session.send(RIGHT)
+		time.sleep(0.5)
+		session.read_until(b'@@never@@', 0.2)
+		assert not [style for style in line_styles(session, 'nvidia-smi') if '244' in style.split(';')]
+	finally:
+		session.close()
+
+
 def settled(session, quiet=1.0):
 	"""The non-empty rows of the screen once the session printed nothing more for a while."""
 	time.sleep(quiet)
@@ -876,6 +929,108 @@ def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, dela
 			time.sleep(delay)
 		rows = settled(session, 3)
 		assert rows[0] == '@@READY@@ mssh gpu099 uptime' and any('gpu099: unknown host' in row for row in rows[1:]), rows[:4]
+	finally:
+		session.close()
+
+
+def slow_engine(seconds=1):
+	"""Glue lines making every engine query take a while, so a test can look at the shell while one is asked."""
+	return '_mssh_complete_engine() {{ sleep {}; {} "$@" }}'.format(seconds, ' '.join(shlex.quote(part) for part in ENGINE))
+
+
+# zsh-autosuggestions fetching in the widgets (synchronous), with a strategy of the operator's after mssh's
+ZAS_SYNC = """unset ZSH_AUTOSUGGEST_USE_ASYNC
+ZSH_AUTOSUGGEST_STRATEGY=(slow)
+_zsh_autosuggest_strategy_slow() { zmodload zsh/zselect; zselect -t 100 }"""
+
+
+@pytest.mark.parametrize('zas, extra, keys', [
+	(False, '', 'mssh gp'),
+	(False, '', 'mssh --ipmi_\t'),
+	# grey text from zsh-autosuggestions, which gives the terminal back itself: only the warnings' query is left
+	(True, '', 'mssh gpu017 '),
+	(True, ZAS_SYNC, 'mssh gp'),
+], ids=['grey-text', 'tab', 'warnings', 'zsh-autosuggestions-sync'])
+def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
+	# before zsh 5.8 each query's process substitution took the terminal from the shell (Ctrl-C went to the
+	# query, the shell's reads failed until it took the terminal back) unless the glue gives it back
+	env, home = home
+	session = zsh_with(env, home, zas, extra=slow_engine() + '\n' + extra)
+	try:
+		session.send(keys)
+		time.sleep(0.5)
+		assert os.tcgetpgrp(session.fd) == session.pid
+	finally:
+		session.close()
+
+
+def test_zsh_ctrl_c_drops_a_line_while_its_grey_text_is_asked_for(home):
+	# not lost to the query (zsh before 5.8)
+	env, home = home
+	session = zsh_with(env, home, extra=slow_engine())
+	try:
+		session.send('mssh gp')
+		time.sleep(0.5)
+		session.send('\x03')
+		assert printed(session, '') == ''
+	finally:
+		session.close()
+
+
+def zsh_syntax_highlighting():
+	"""The line loading zsh-syntax-highlighting; skip without it, unless MSSH_REQUIRE_SHELLS lists it."""
+	if not os.path.isfile(ZSH_SH):
+		if 'zsh-syntax-highlighting' in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
+			pytest.fail('zsh-syntax-highlighting is required here but not at ' + ZSH_SH)
+		pytest.skip('zsh-syntax-highlighting is not installed at ' + ZSH_SH)
+	# last in the rc file, as its instructions say
+	return 'source ' + ZSH_SH
+
+
+def greyed(session, text):
+	"""Whether text is on screen with every character in the grey text's colour (256 colours)."""
+	grid = rendered(session)
+	for row, line in enumerate(grid.lines()):
+		column = line.find(text)
+		if column >= 0:
+			return all('38;5;244' in style for style in grid.styles(row)[column:column + len(text)])
+	return False
+
+
+@pytest.mark.parametrize('line, move, keys', [
+	('mssh gpu017 ', '', 'upt'),
+	# a word before the host edited: the mark moves with the host
+	('mssh -u root gpu017 ', LEFT * 8, 's'),
+], ids=['next-word', 'word-before-edited'])
+def test_zsh_marks_stay_with_zsh_syntax_highlighting(home, line, move, keys):
+	# before zsh 5.9 (and before its 0.8) zsh-syntax-highlighting empties region_highlight after every key
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home, extra=zsh_syntax_highlighting())
+	try:
+		session.send(line)
+		session.read_until('unknown host'.encode(), 10)
+		session.send(move)
+		time.sleep(1)
+		session.send(keys)
+		time.sleep(0.5)
+		session.read_until(b'@@never@@', 0.2)
+		assert underlined(session, 'gpu017'), screen(session)[:2]
+	finally:
+		session.close()
+
+
+def test_zsh_grey_text_stays_grey_with_zsh_syntax_highlighting(home):
+	env, home = home
+	session = zsh_with(env, home, extra=zsh_syntax_highlighting())
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		# Ctrl-L: a key that leaves the line as it is
+		session.send('\x0c')
+		time.sleep(0.5)
+		session.read_until(b'@@never@@', 0.2)
+		assert greyed(session, 'nvidia-smi')
 	finally:
 		session.close()
 

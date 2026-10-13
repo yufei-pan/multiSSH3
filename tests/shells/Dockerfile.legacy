@@ -14,3 +14,7 @@ ENV MSSH_TEST_BLESH=/opt/blesh/ble.sh
 ADD --checksum=sha256:0df7affff21cd87ed298e6a3970ed08a1dd66a6efa676454ee5b091ad503badf \
     https://github.com/zsh-users/zsh-autosuggestions/archive/refs/tags/v0.7.1.tar.gz /tmp/zas.tar.gz
 RUN mkdir -p /opt/zsh-autosuggestions && tar -xzf /tmp/zas.tar.gz -C /opt/zsh-autosuggestions --strip-components=1 && rm /tmp/zas.tar.gz
+# zsh-syntax-highlighting, pinned (0.7.1, as EPEL 8 ships it): the warning tests also run with it
+ADD --checksum=sha256:f5044266ee198468b1bcec881a56e6399e209657d6ed9fa6d21175bc76afdefa \
+    https://github.com/zsh-users/zsh-syntax-highlighting/archive/refs/tags/0.7.1.tar.gz /tmp/zsyh.tar.gz
+RUN mkdir -p /opt/zsh-syntax-highlighting && tar -xzf /tmp/zsyh.tar.gz -C /opt/zsh-syntax-highlighting --strip-components=1 && rm /tmp/zsyh.tar.gz
