@@ -195,11 +195,29 @@ mssh --add_control_master_config
 ```
 
 ```config
+# Added by multiSSH3.py to speed up subsequent connections (mssh --add_control_master_config).
+# ssh keeps one connection per host open for an hour after its last use and shares it. Its socket
+# goes in /run/user/<uid> while you have a login session, else in /dev/shm/multiSSH3-<uid> when that
+# is a directory only you can write to (su, sudo, cron, containers); with neither, ssh does not share.
+Match exec "/bin/sh -c 'u=$(id -u) || exit 1; test -O /run/user/$u -a -w /run/user/$u'"
+  ControlPath /run/user/%i/ssh_sockets_%C
+Match exec "/bin/sh -c 'u=$(id -u) || exit 1; test -O /run/user/$u -a -w /run/user/$u && exit 1; d=/dev/shm/multiSSH3-$u; test -d $d || mkdir -m 700 $d 2>/dev/null; test -O $d || exit 1; case $(ls -ld $d) in drwx?-??-*) ;; *) exit 1;; esac'"
+  ControlPath /dev/shm/multiSSH3-%i/ssh_sockets_%C
 Host *
   ControlMaster auto
-  ControlPath /run/user/%i/ssh_sockets_%C
   ControlPersist 3600
+# End of the block added by multiSSH3.py
 ```
+
+The block applies to every ssh you run, not only mssh's. ssh fails outright (exit 255, nothing run) when the directory of its `ControlPath` is missing, so each `Match exec` line checks its directory first:
+
+1. `/run/user/<uid>`, the per-user directory systemd keeps while you have a login session.
+2. Else `/dev/shm/multiSSH3-<uid>` (under `su`, `sudo`, cron and in containers): mssh's runtime directory there, created with mode 0700 when missing, and used only if it is yours and nobody else can write to it. ssh trusts whatever listens where it looks for its master and hands it your terminal.
+3. Else ssh connects without sharing, as without the block (also on systems with neither, such as macOS).
+
+The sockets never go in your home directory: on clusters it is often NFS, GPFS or Lustre, where unix sockets may not work. The checks run in `/bin/sh` whatever your login shell (csh and fish too) and work with OpenSSH 7.4 and later; they add about 2 ms to each ssh. Each `Match exec` starts your `$SHELL`, so with a `$SHELL` that is not an executable every ssh fails. The checks also run when the autocomplete's background checker calls `ssh -G`; they only look at local directories (and may create `/dev/shm/multiSSH3-<uid>`).
+
+Up to multiSSH3 6.31 the block was `Host *` with `ControlPath /run/user/%i/ssh_sockets_%C`, which makes every ssh fail where `/run/user/<uid>` is missing. Run `mssh --add_control_master_config` again: it replaces that block, and only it, keeping the rest of the file and its permissions as they were. Running it once more changes nothing.
 
 ## Environment Variables for Hostname Aliases
 
@@ -686,13 +704,8 @@ mssh -f ./data/ allServers /tmp/data/
 ### `--add_control_master_config` | False
 - Add ControlMaster configuration to your `~/.ssh/config` file to enable persistent ssh connections.
 - This will help speed up connections to multiple hosts.
-- The configuration added is:
-```config
-Host *
-  ControlMaster auto
-  ControlPath /run/user/%i/ssh_sockets_%C
-  ControlPersist 3600
-```
+- The configuration added, and where ssh puts its sockets, is described in [SSH ControlMaster Configuration](#ssh-controlmaster-configuration).
+- Run it again to replace the block multiSSH3 6.31 and older added, which makes ssh fail where `/run/user/<uid>` is missing.
 
 ### `-V, --version` | False
 - Print the version of multiSSH3 and exit.
