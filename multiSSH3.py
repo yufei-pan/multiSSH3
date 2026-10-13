@@ -726,6 +726,7 @@ class Host:
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
 		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
+		self.dropped_before_login = False # the last try ended with the server dropping ssh's connection before login (sshd MaxStartups?)
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -765,6 +766,7 @@ class Host:
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
 		newHost.interactive_stdin = self.interactive_stdin
+		newHost.dropped_before_login = self.dropped_before_login
 		return newHost
 
 #%% ------------ Exportable Help Functions ----------------
@@ -2202,6 +2204,94 @@ def __handle_writing_stream(stream,stop_event,host):
 def _emfile_backoff_seconds(attempt):
 	return min(0.1 * (2 ** attempt), 1.0)
 
+# ssh's own lines when the server closed or reset its connection before login. The banner exchange is
+# the very first step. "Connection closed by ADDRESS port PORT" is an end of file met while connecting
+# or logging in (once logged in, ssh says "Connection to HOST closed by remote host."), naming the
+# address ssh connected to, or UNKNOWN port 65535 through a ProxyJump / ProxyCommand. A reset reads the
+# same before and after login: only the banner exchange line before it tells.
+_SSH_BANNER_DROP = re.compile(r'(?:kex|ssh)_exchange_identification: (read: Connection reset by peer|Connection closed by remote host)')
+_SSH_CONNECTION_DROP = re.compile(r'Connection (closed|reset) by (\S+) port (\d+)')
+# what scp and rsync print when the ssh they run was dropped. scp's legacy protocol (before OpenSSH 9.0,
+# and scp -O) exits with 1; rsync with ssh's 255, or with 12 when it notices the closed stream first
+_COPY_TOOL_DROP_LINES = {
+	'scp': re.compile(r'(?:\S*/)?scp: Connection closed|lost connection'),
+	'rsync': re.compile(r'rsync: connection unexpectedly closed \((\d+) bytes received so far\) \[\w+\]'
+		r'|rsync error: (?:unexplained error \(code 255\)|error in rsync protocol data stream \(code 12\)) at io\.c\(\d+\) \[\w+=[^\]]*\]'),
+}
+_LOGIN_DROP_RETURN_CODES = {'ssh': (255,), 'scp': (255, 1), 'rsync': (255, 12)}
+
+_LoginDrop = namedtuple('_LoginDrop', ['banners', 'drops', 'nothing_received'])
+_LoginDrop.__doc__ = '''
+A run that ended with the server dropping ssh's connection before login, from _login_drop.
+
+banners holds each banner exchange line's reason ('read: Connection reset by peer' or 'Connection
+closed by remote host'); drops the (closed or reset, address, port) of each "Connection closed / reset
+by" line, in order; nothing_received is True when rsync said it received 0 bytes.
+'''
+
+def _login_drop(returncode, stdout, stderr, tool):
+	'''
+	Read a finished run as one whose connection the server dropped before login.
+
+	It exited with ssh's 255 (or scp's 1, rsync's 12), printed nothing on stdout, and every stderr line
+	is ssh's report of the dropped connection (or scp's / rsync's of the ssh they ran).
+
+	Args:
+		returncode (int): The run's exit code
+		stdout (list): The run's stdout lines
+		stderr (list): The run's stderr lines, before ERROR_MESSAGES_TO_IGNORE removed any
+		tool (str): 'ssh', 'scp' or 'rsync', the program mssh ran
+
+	Returns:
+		_LoginDrop: What the lines say, or None when the run is anything else
+	'''
+	if returncode not in _LOGIN_DROP_RETURN_CODES.get(tool, ()) or any(line.strip() for line in stdout):
+		return None
+	tool_lines = _COPY_TOOL_DROP_LINES.get(tool)
+	banners = []
+	drops = []
+	nothing_received = False
+	for line in stderr:
+		line = line.strip()
+		if not line:
+			continue
+		match = _SSH_BANNER_DROP.fullmatch(line)
+		if match:
+			banners.append(match.group(1))
+			continue
+		match = _SSH_CONNECTION_DROP.fullmatch(line)
+		if match:
+			drops.append(match.groups())
+			continue
+		match = tool_lines.fullmatch(line) if tool_lines else None
+		if not match:
+			return None
+		if tool == 'rsync' and match.group(1) == '0':
+			nothing_received = True
+	if not banners and not drops:
+		return None
+	return _LoginDrop(banners, drops, nothing_received)
+
+def _shows_dropped_login(drop):
+	'''Whether a _login_drop result shows the connection ended before login: a lone reset can come later too.'''
+	return bool(drop) and (bool(drop.banners) or any(kind == 'closed' for kind, _address, _port in drop.drops))
+
+def _dropped_login_hint(count, max_connections):
+	'''
+	The hint for a run whose failed hosts include count hosts the server dropped before login.
+
+	Args:
+		count (int): How many hosts
+		max_connections (int): The -m given, 0 or negative for the limits derived from it
+	'''
+	if isinstance(max_connections, int) and 0 < max_connections <= 10:
+		cure = 'try a lower -m'
+	else:
+		cure = 'try fewer at once, e.g. -m 10'
+	return ("Hint: the server dropped {} before login: sshd's MaxStartups (default 10:30:100), on the hosts "
+		"or a ProxyJump bastion, turns away connections opened at once; {}".format(
+		'1 connection' if count == 1 else '{} connections'.format(count), cure))
+
 def _record_host_exception(host, exc):
 	'''Record an exception raised while running the host's command as a failure. Call from an except block.'''
 	import traceback
@@ -2492,7 +2582,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		return attempt('stop')
 	return attempt('run', formatedCMD)
 
-def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
+def _execute_command(host, formatedCMD, sem, timeout, retry_limit, tool=None):
 	'''
 	Run one built command, retrying (within retry_limit) while too many files are open.
 
@@ -2502,6 +2592,8 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
 		timeout (int): Seconds without output before the command is stopped, 0 for no limit
 		retry_limit (int): Retries left
+		tool (str): 'ssh', 'scp' or 'rsync' when the command is mssh's own connection to the host,
+			None for local and IPMI commands
 
 	Returns:
 		tuple: (stop, retry_limit, attempt_line_starts). stop is True when the retries ran out
@@ -2518,6 +2610,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				host.output.append('Running command: '+' '.join(formatedCMD))
 				if __DEBUG_MODE:
 					host.stderr.append('Running command: '+' '.join(formatedCMD))
+				# this try's lines, to tell whether the server dropped the connection before login
+				run_stdout_start, run_stderr_start = len(host.stdout), len(host.stderr)
+				host.dropped_before_login = False
 				#host.stdout = []
 				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
 				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
@@ -2612,6 +2707,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 					else:
 						host.returncode = -1
 				host.output.append(f'Command finished with return code {host.returncode}')
+				# read before the ignored messages are filtered out, they may hold ssh's lines about the drop
+				if tool and not timed_out and not _emo:
+					host.dropped_before_login = _shows_dropped_login(_login_drop(host.returncode, host.stdout[run_stdout_start:], host.stderr[run_stderr_start:], tool))
 				if host.stderr:
 					# filter out the error messages that we want to ignore
 					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
@@ -2669,7 +2767,11 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		if action == 'rebuild':
 			retry_limit -= 1
 			continue
-		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
+		# mssh's own ssh, scp or rsync to the host, whose connection the server may drop before login
+		tool = None
+		if not host.shell and (not host.ipmi or ipmi_definition.get('ipmi_method') == 'ssh_ipmitool'):
+			tool = ('scp' if useScp else 'rsync') if host.files else 'ssh'
+		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit, tool)
 		if stop:
 			return
 		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
@@ -5252,6 +5354,8 @@ def main(args = None):
 	# between runs, a long --repeat loop must not hold every run's output
 	failedHostNames = set()
 	succeededHosts = set()
+	# failed hosts whose server dropped the connection before login: they get a hint
+	droppedHostNames = set()
 	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
 	if not args.no_history:
 		record_command_history(vars(args))
@@ -5269,6 +5373,8 @@ def main(args = None):
 		for host in run_command_on_hosts(**runArgs,called=False):
 			if host.returncode and host.returncode != 0:
 				failedHostNames.add(host.name)
+				if getattr(host, 'dropped_before_login', False):
+					droppedHostNames.add(host.name)
 			else:
 				succeededHosts.add(host.name)
 	# each failing host counts once, however many runs or commands it failed
@@ -5280,6 +5386,8 @@ def main(args = None):
 		if not __global_suppress_printout: 
 			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
 			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts))}')
+			if droppedHostNames:
+				eprint(_dropped_login_hint(len(droppedHostNames), args.max_connections))
 	else:
 		if not __global_suppress_printout: 
 			eprint('Complete. All hosts returned 0.')

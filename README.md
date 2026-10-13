@@ -588,6 +588,8 @@ mssh -f ./data/ allServers /tmp/data/
 - Note: mssh will open at least 3 files per connection. By default some linux systems will only set the ulimit -n to 1024 files. This means about 300 connections can be opened simultaneously. You can increase the ulimit -n value to allow more connections if needed.
   - You will observe `Warning: The number of maximum connections {max_connections} is larger than estimated limit {estimated_limit} .....` if the max connections is larger than estimated limit.
   - mssh will also throttle thread generation if the estimated limit is lower than `2 * max_connections` to avoid hitting the file descriptor limit as python will use some file descriptors when setting up threads.
+- Behind a bastion (`ssh -J`, or `ProxyJump` in `~/.ssh/config`), every connection goes through the bastion's sshd, and its `MaxStartups` (default `10:30:100`) turns away connections that have not logged in yet once more than 10 are opening: 30% of new ones, rising to all of them at 100. mssh opens up to `-m` connections at once, so with the default some hosts fail with `kex_exchange_identification: read: Connection reset by peer` / `Connection closed by UNKNOWN port 65535` (exit code 255). The same can happen on a host many clients connect to at once.
+  - When hosts fail this way, a hint after the summary says how many and why. Use `-m 10` (or fewer) for runs through a bastion, or raise `MaxStartups` on it.
 
 ### `-j, --json` | _`DEFAULT_JSON_OUTPUT`_
 - Output in json format.
