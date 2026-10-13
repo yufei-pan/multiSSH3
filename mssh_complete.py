@@ -1540,6 +1540,7 @@ TAIL_LIMIT_ENTRIES = 500
 ARP_TTL = 300.0
 LOCK_NAME = 'complete-index.lock'
 LOCK_STALE = 60.0
+LOCK_FAILED = 'failed'  # the last line of a rebuild lock kept after the build failed
 FIRST_BUILD_BUDGET = 2.0
 
 def check_freshness(index, now):
@@ -1582,7 +1583,13 @@ def check_freshness(index, now):
 	return 'tail', lines
 
 def take_lock(path, now=None):
-	'''Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).'''
+	'''
+	Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).
+
+	The file says who took it (pid, time and a random token), so the process the lock was taken for
+	can tell later whether it still holds it (see release_lock).
+	'''
+	import binascii
 	now = time.time() if now is None else now
 	for _ in range(2):
 		try:
@@ -1602,9 +1609,56 @@ def take_lock(path, now=None):
 		except OSError:
 			return False
 		with os.fdopen(fd, 'w') as f:
-			f.write('{} {}\n'.format(os.getpid(), int(now)))
+			f.write('{} {} {}\n'.format(os.getpid(), int(now), binascii.hexlify(os.urandom(8)).decode('ascii')))
 		return True
 	return False
+
+def read_lock(path):
+	'''What the lock file at path says, or None when it cannot be read (gone, for one).'''
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			return f.read()
+	except OSError:
+		return None
+
+def release_lock(path, owner):
+	'''
+	Remove the lock at path if it still says owner (what read_lock gave when its holder started).
+
+	A lock older than LOCK_STALE is taken over by the next process that wants it, even when its
+	holder is still running (stuck past that, or the machine was suspended): that holder must leave
+	the new lock alone, or a third process would start beside the second.
+	'''
+	if owner is None or read_lock(path) != owner:
+		return
+	try:
+		os.unlink(path)
+	except OSError:
+		pass
+
+def keep_failed_lock(path, owner):
+	'''
+	After a failed run, keep the lock at path (if it still says owner) and add that it failed: the
+	next run starts once the lock goes stale, LOCK_STALE from now, instead of at the next query. A
+	failure that repeats (a full runtime directory, multiSSH3.py missing) would otherwise cost a
+	full run on every query.
+	'''
+	if owner is None or read_lock(path) != owner:
+		return
+	try:
+		with open(path, 'a') as f:
+			f.write(LOCK_FAILED + '\n')
+	except OSError:
+		# not marked (a query without an index waits its budget out), but kept all the same
+		try:
+			os.utime(path, None)
+		except OSError:
+			pass
+
+def rebuild_failed(directory):
+	'''Whether the last rebuild failed, less than LOCK_STALE ago (see keep_failed_lock).'''
+	content = read_lock(os.path.join(directory, LOCK_NAME))
+	return content is not None and content.endswith('\n' + LOCK_FAILED + '\n')
 
 def _spawn_detached(directory, lock_name, command):
 	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
@@ -1640,7 +1694,8 @@ def load_for_query(directory, now):
 	'''
 	The index to answer from and the history lines it is missing.
 
-	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one.
+	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one,
+	unless that build failed (the next one starts when its lock goes stale).
 
 	Returns:
 		tuple: (NsvIndex or None, history tail lines)
@@ -1650,7 +1705,7 @@ def load_for_query(directory, now):
 	if index is None:
 		spawn_rebuild(directory)
 		until = time.monotonic() + FIRST_BUILD_BUDGET
-		while index is None and time.monotonic() < until:
+		while index is None and time.monotonic() < until and not rebuild_failed(directory):
 			time.sleep(0.05)
 			if os.path.exists(path):
 				index = _load_index(path)
@@ -1865,8 +1920,10 @@ def take_probe_queue(directory):
 
 #%% ------------ Prober ----------------
 PROBE_RUN_LIMIT = 120.0  # seconds one prober run may last; the next query starts another for what is left
-PING_COMMAND = ('ping', '-c2', '-i0.2', '-W1', '-q')
+PING_OPTIONS = ('-i0.2', '-W1', '-q')
+PING_COMMAND = ('ping', '-c2') + PING_OPTIONS
 PING_TIMEOUT = 10   # seconds: PING_COMMAND is done in about one, unless its own name lookup hangs
+PING_LOOPBACK = '127.0.0.1'  # pinged once a run, to tell whether ping works here at all
 DNS_TIMEOUT = 2.0
 
 def _out_of_resources(error):
@@ -1891,12 +1948,34 @@ def probe_parallelism(mssh):
 		pass
 	return max(parallel, 4)
 
+def ping_works():
+	'''
+	Whether ping can work here at all, from one ping of the loopback address with the prober's
+	options. Without permission (no CAP_NET_RAW, a group outside net.ipv4.ping_group_range) ping
+	fails for every host, yet no one host's failure tells: iputils ping exits 2 both for that and
+	for a name it cannot resolve, busybox ping 1 both for that and for silence, and their messages
+	are translated. The loopback address needs no name lookup, so a failure there with a message,
+	or with an exit code other than 1 (silence), means ping cannot work. A loopback that is silent
+	without saying why (a firewall dropping ICMP) leaves ping on, as does a check that cannot
+	finish for now (out of descriptors or processes, out of time).
+	'''
+	import subprocess
+	argv = [PING_COMMAND[0], '-c1'] + list(PING_OPTIONS) + [PING_LOOPBACK]
+	try:
+		result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PING_TIMEOUT)
+	except subprocess.TimeoutExpired:
+		return True
+	except OSError as e:
+		# out of resources says nothing yet; otherwise there is no ping command, or one we may not run
+		return _out_of_resources(e)
+	return result.returncode == 0 or (result.returncode == 1 and not result.stderr.strip())
+
 def ping_host(host):
 	'''
-	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (no permission, a name it
-	cannot resolve) or runs out of time (stuck on its name lookup: a slow DNS server says nothing
-	about the host). Raises FileNotFoundError without a ping command, OSError when out of
-	descriptors or processes.
+	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (a name it cannot
+	resolve; run_probe finds out first whether ping works at all, see ping_works) or runs out of
+	time (stuck on its name lookup: a slow DNS server says nothing about the host). Raises
+	FileNotFoundError without a ping command, OSError when out of descriptors or processes.
 	'''
 	import subprocess
 	argv = list(PING_COMMAND) + (['-6'] if ':' in host else []) + [host]
@@ -1978,7 +2057,7 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 		thread.join()
 	return sorted(retry, key=hosts.index)
 
-def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
+def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=None):
 	'''
 	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
 	learned in host-state.tsv after each batch (without what no query can use any more:
@@ -1986,9 +2065,15 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 	back into the queue. Never connects to a host itself: only DNS, ssh -G (which reads the ssh
 	config, running the commands of its Match exec lines) and ping.
 
+	With lock (the lock file this run holds; owner is what it said when the run started, read now
+	when not given), the run keeps the lock fresh after each batch, and stops, leaving its hosts
+	queued, once the lock says something else: another prober took it over as stale.
+
 	Returns:
 		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
 	'''
+	if lock and owner is None:
+		owner = read_lock(lock)
 	try:
 		os.nice(10)
 	except (AttributeError, OSError):
@@ -1998,7 +2083,7 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 	horizon = answer_horizon(mssh)
 	started = now()
 	checked = 0
-	ping_available = [True]
+	ping_available = None
 	while now() - started < limit:
 		hosts = take_probe_queue(directory)
 		if not hosts:
@@ -2010,8 +2095,17 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 			if now() - started >= limit:
 				queue_probes(directory, todo[::-1])
 				return {'checked': checked, 'parallel': parallel}
+			if ping_available is None:
+				# once a run, and only once there is a host to check
+				ping_available = [ping_works()]
 			batch, todo = todo[:parallel], todo[parallel:]
 			retry = _probe_batch(mssh, batch, states, now, ping_available)
+			if lock and read_lock(lock) != owner:
+				# the lock was taken over (this batch ran past LOCK_STALE, or the machine was
+				# suspended): the prober holding it writes host-state.tsv now, and writing ours would
+				# undo its results; it takes these hosts from the queue instead
+				queue_probes(directory, (batch + todo)[::-1])
+				return {'checked': checked, 'parallel': parallel}
 			checked += len(batch) - len(retry)
 			write_host_states(directory, prune_host_states(states, now(), horizon))
 			if lock:
@@ -6095,41 +6189,44 @@ def _cmd_edit(args):
 
 def _cmd_rebuild(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	# what the query that started us wrote into the lock, read before anything else
+	owner = read_lock(lock) if lock else None
+	built = False
 	try:
 		directory = cache_dir()
 		if directory is None:
 			print('mssh-complete: no private cache directory', file=sys.stderr)
 			return 1
-		print(build_index(directory))
+		path = build_index(directory)
+		built = True
+		print(path)
 		return 0
 	except Exception as e:
 		_debug('rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
 		return 1
 	finally:
-		if lock:
-			try:
-				os.unlink(lock)
-			except OSError:
-				pass
+		if lock and built:
+			release_lock(lock, owner)
+		elif lock:
+			keep_failed_lock(lock, owner)
 
 def _cmd_probe(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	# what the query that started us wrote into the lock, read before anything else
+	owner = read_lock(lock) if lock else None
 	try:
 		directory = cache_dir()
 		if directory is None:
 			return 1
-		run_probe(directory, lock)
+		run_probe(directory, lock, owner=owner)
 		return 0
 	except Exception as e:
 		_debug('probe failed: {!r}'.format(e))
 		return 1
 	finally:
 		if lock:
-			try:
-				os.unlink(lock)
-			except OSError:
-				pass
+			release_lock(lock, owner)
 
 def _cmd_eval(args):
 	import argparse
