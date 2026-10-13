@@ -169,6 +169,8 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [dict(d) for d in scenario.get("ipmi", [ipmi()])])
 	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", scenario.get("strict", False))
 	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", scenario.get("debug", False))
+	# a key given as ~/... is expanded from HOME
+	monkeypatch.setenv("HOME", "/home/tester")
 	monkeypatch.setattr(multiSSH3, "_emo", False)
 	monkeypatch.setattr(multiSSH3.getpass, "getuser", lambda: "tester")
 	# rsync's arguments depend on who runs mssh (see _rsync_owner_options): record them as root's

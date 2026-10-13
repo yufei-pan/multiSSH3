@@ -359,6 +359,7 @@ It also supports interactive inputs. ( and able to async boardcast to all suppli
 ```bash
 mssh www bash
 ```
+A line typed while a host asks for a password ( its last line ends like `Password:`, `[sudo] password for alice:` or `Enter passphrase for key '...':` ) is sent as typed but not shown: the input line shows a `*` for each character, and the hosts' windows, their output ( `--json` too ) and the `User Inputs` list show `******** (hidden at a password prompt)`.
 mssh cache all inputs and send them to all hosts when they are ready to receive inputs.
 What you type goes to the commands' input, not to ssh's own questions (see below).
 
@@ -405,6 +406,7 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 > Esc     : Clear / hide view  
 > ```
 > `Esc` clears the input line. On an empty input line it hides the live view; the commands keep running and their output is printed when they finish.
+> The live view leaves out ssh's own notices, as the output at the end does ( `ERROR_MESSAGES_TO_IGNORE` ): mssh does not keep the hosts' keys, so ssh says `Warning: Permanently added ...` on every connection, and a quiet command's window showed only that.
 > You can also toggle this help in curses by pressing `?` or `F1`.
 > The one-character keys (`?`, `_`, `+`, `{`, `}`, `<`, `>`, `|`) act only on an empty input line; after you have typed something they are typed like any other character, so a `?` can still reach the hosts. `F1` toggles the help at any time.
 
@@ -523,9 +525,11 @@ mssh -q -- web1 grep -r TODO /srv
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
+- A `~` at the start of the path means `$HOME`, as for the rest of mssh, also where `$HOME` is not your home directory in the passwd file ( `sudo -E`, containers ): ssh is given the key file mssh found there. The history file keeps the `~`.
 - This option implies `--use_key`.
 - If this option is not specified but `--use_key` is specified, it will search for identity files in `DEFAULT_IDENTITY_FILE`.
 - If no value is specified, it will search `DEFAULT_SSH_KEY_SEARCH_PATH`.
+- ssh then logs in with that key only (`-o IdentitiesOnly=yes`), not first with every key in your ssh-agent: with six or more there, sshd ends the login ( `Too many authentication failures` ) before the key is tried. A key held by the agent is still used when the file given is it or its `.pub`. A key file that does not exist is passed to ssh as before, which then uses the agent's keys.
 
 ### `-uk, --use_key` | _`DEFAULT_USE_KEY`_
 - Attempt to use public key authentication to connect to the hosts.
@@ -590,8 +594,9 @@ mssh -f ./data/ allServers /tmp/data/
 - A source that rsync brings back as a symbolic link (it is one on the host, as `/etc/os-release` is on Debian) would point into this machine, or nowhere: mssh copies it again as the file it points to (`--copy-links`), as on push. A link to a directory, or one that points to nothing on the host, stays the link, with a warning (and, for a link to nothing, rsync's exit code 23). Not for a `dir/` or glob source, nor when the local destination is itself a link.
 
 ### `-t, --timeout TIMEOUT` | _`DEFAULT_CLI_TIMEOUT`_
-- Timeout for each command in seconds.
+- Idle timeout in seconds: a host's command is stopped when it has printed nothing for this long. A command that keeps printing is not stopped, however long it runs.
 - When using 0, timeout is disabled.
+- mssh stops only its own ssh ( or scp, rsync, ... ) on this machine, as Ctrl-C does. Without a terminal, the command on the host gets no signal: it runs on until it ends, or until it next writes output to the closed connection. The host shows `Timeout!` and what was stopped, with return code 124; a host stopped by Ctrl-C shows `Ctrl C detected, Emergency Stop!` and return code 130. To have the command end with its connection, give it a terminal with `-ea=-tt` ( for commands, not file copies ): its stdout and stderr then come as one stream.
 - For CLI interface, will use `DEFAULT_CLI_TIMEOUT` as default.
 - For module interface, will use `DEFAULT_TIMEOUT` as default.
 
@@ -896,7 +901,7 @@ options:
   -G, -gm, --gather_mode
                         Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS> (default: False)
   -t, --timeout TIMEOUT
-                        Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: 0)
+                        Idle timeout in seconds: stop a host's command after this long without output. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: 0)
   -T, --use_script_timeout
                         Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: 50)
   -r, --repeat REPEAT   Repeat the command for a number of times (default: 1)
@@ -1044,7 +1049,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		hosts (str or iterable): Hosts to run the command on. Can be a string (comma/space-separated) or iterable. Default: DEFAULT_HOSTS.
 		commands (list or None): List of commands to run on the hosts. If files are used, defines the destination. Default: None.
 		oneonone (bool): If True, run each command on the corresponding host (1:1 mapping). Default: DEFAULT_ONE_ON_ONE.
-		timeout (int): Timeout for each command in seconds. Default: DEFAULT_TIMEOUT.
+		timeout (int): Idle timeout: stop a host's command after this many seconds without output. Default: DEFAULT_TIMEOUT.
 		password (str): Password for SSH/IPMI authentication. Default: DEFAULT_PASSWORD.
 		no_watch (bool): If True, do not use curses TUI; just print output. Default: DEFAULT_NO_WATCH.
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.

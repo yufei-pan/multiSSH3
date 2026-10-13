@@ -1166,7 +1166,8 @@ class Host:
 		# also store a globally unique integer i from 0
 		self.i = i if i != -1 else _get_i()
 		self.uuid = uuid if uuid is not ... else uuid4()
-		self.identity_file = identity_file
+		# the key file mssh found: ssh expands a ~ from the passwd entry, not $HOME (sudo -E, containers)
+		self.identity_file = os.path.expanduser(identity_file) if identity_file else identity_file
 		self.ip = ip if ip else getIP(name)
 		self.current_color_pair = [-1, -1, 1]
 		self.output_buffer = io.BytesIO()
@@ -2826,6 +2827,9 @@ def __handle_writing_stream(stream,stop_event,host):
 			stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 			stream.flush()
 			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
+			if isinstance(__keyPressesIn[sentInputPos], _HiddenInput):
+				# typed at a password prompt: sent as typed, not shown in the window or kept in the output
+				line = '> ' + _hidden_input_shown(__keyPressesIn[sentInputPos])
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
@@ -3173,6 +3177,23 @@ def _record_host_exception(host, exc):
 	host.stderr.extend(traceback.format_exc().split('\n'))
 	host.output.extend(traceback.format_exc().split('\n'))
 	host.returncode = -1
+
+def _stopped_command_note(formatedCMD):
+	'''
+	What mssh stopped when it stopped formatedCMD (-t, Ctrl C), and what that leaves behind.
+
+	Only the local program ends: a command ssh runs on a host gets no signal (it has no terminal), it
+	runs on until it ends, or until it writes to the closed connection.
+	'''
+	program = formatedCMD[0] if formatedCMD else ''
+	if program == _binPaths.get('sshpass') and len(formatedCMD) > 3:
+		program = formatedCMD[3]
+	if program == _binPaths.get('ssh'):
+		return 'ssh was stopped: the command may still run on the host'
+	name = os.path.basename(str(program))
+	if program in (_binPaths.get('rsync'), _binPaths.get('scp')):
+		return f'{name} was stopped: the copy may be incomplete'
+	return f'{name} was stopped'
 
 def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 	'''Return True when the next IPMI password should wait out retry_lockout_time.
@@ -3670,6 +3691,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 		if _ssh_cannot_ask(host, passwds):
 			# it would send the passwords it cannot ask for empty, each a failed login in the host's auth log (fail2ban)
 			sshLocalExtraArgs += ['-o NumberOfPasswordPrompts=0']
+		if host.identity_file and os.path.exists(os.path.expanduser(host.identity_file)):
+			# log in with this key only: ssh offers every ssh-agent key before it, and sshd ends the login
+			# after MaxAuthTries (6) failures. A key file that is not there leaves ssh the agent's keys
+			sshLocalExtraArgs += ['-o','IdentitiesOnly=yes']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
 		# rsync splits --rsh on spaces and honours quotes: quoted, an identity path with a space stays one argument
@@ -4030,12 +4055,17 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				timeoutLineAppended = False
 				sleep_interval = 1.0e-7 # 100 nanoseconds
 				timed_out = False
+				stopped_by_ctrl_c = False
 				while proc.poll() is None:  # while the process is still running
 					if timeout > 0:
 						if time.monotonic() - host.lastUpdateTime > timeout:
 							timed_out = True
 							host.stderr.append('Timeout!')
 							host.output.append('Timeout!')
+							# -t counts the time since the last output, not since the start
+							stopped = f'No output for {timeout} s, so {_stopped_command_note(formatedCMD)}.'
+							host.stderr.append(stopped)
+							host.output.append(stopped)
 							proc.send_signal(signal.SIGINT)
 							time.sleep(0.1)
 							proc.terminate()
@@ -4057,6 +4087,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					if _emo:
 						host.stderr.append('Ctrl C detected, Emergency Stop!')
 						host.output.append('Ctrl C detected, Emergency Stop!')
+						stopped_by_ctrl_c = True
 						proc.send_signal(signal.SIGINT)
 						time.sleep(0.1)
 						proc.terminate()
@@ -4095,12 +4126,19 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				returncode = proc.poll()
 				if timed_out:
 					returncode = 124
+				elif stopped_by_ctrl_c or _emo:
+					# Ctrl C. The terminal's reaches the command too, which may end before mssh stops it: ssh then
+					# says only "Killed by signal 2." (hidden), sshpass exits 0. Either way it did not finish
+					if not stopped_by_ctrl_c:
+						host.stderr.append('Ctrl C detected, Emergency Stop!')
+						host.output.append('Ctrl C detected, Emergency Stop!')
+					stopped = _stopped_command_note(formatedCMD) + '.'
+					host.stderr.append(stopped)
+					host.output.append(stopped)
+					returncode = 130
 				elif returncode is None:
-					# process been killed via timeout or sigkill
-					if host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
-						returncode = 137
-					else:
-						returncode = -1
+					# process been killed via sigkill
+					returncode = -1
 				host.output.append(f'Command finished with return code {returncode}')
 				# read before the ignored messages are filtered out, they may hold ssh's lines about the drop
 				login_drop = None
@@ -5005,6 +5043,28 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		window.addnstr(y, x + columnsWritten, trail, len(trail), boxAttr)
 		columnsWritten += columns
 
+# ssh's notices are short; a longer line is the command's output. Searching all of a line that can be
+# megabytes long, with patterns like "Connection to .* closed", could take minutes
+_TUI_NOTICE_MAX_LENGTH = 1024
+
+def _tui_leaves_out(line):
+	'''
+	Whether a host's window leaves line out: ssh's own notices, which the output at the end leaves out too
+	(ERROR_MESSAGES_TO_IGNORE). "Warning: Permanently added ..." comes with every connection (mssh keeps no
+	known hosts), and was all a quiet command's window showed.
+	'''
+	return len(line) <= _TUI_NOTICE_MAX_LENGTH and bool(__ERROR_MESSAGES_TO_IGNORE_REGEX.search(line))
+
+def _tui_first_shown_line(output, rows):
+	'''The index in output from which a window of rows rows shows the lines it does not leave out.'''
+	index = len(output)
+	shown = 0
+	while index > 0 and shown < rows:
+		index -= 1
+		if not _tui_leaves_out(output[index]):
+			shown += 1
+	return index
+
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexOffset = 0):
 	'''
 	Generate a list for the hosts to be displayed on the screen. This is used to display as much relevant information as possible.
@@ -5264,8 +5324,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					# This means the user have done scrolling and is committing to modify the current line.
 					if lineToDisplay  < -1:
 						# We overwrite the last line (current working line) with the line to display, removing the newline at the end
-						__keyPressesIn[-1] = __keyPressesIn[lineToDisplay][:-1]
+						__keyPressesIn[-1] = type(__keyPressesIn[lineToDisplay])(__keyPressesIn[lineToDisplay][:-1])
 						lineToDisplay = -1
+					if not isinstance(__keyPressesIn[-1], _HiddenInput) and any(host.returncode is None and _asks_for_password(host) for host in hosts):
+						# a host asks for a password: this line is sent as typed, but not shown or kept
+						__keyPressesIn[-1] = _HiddenInput(__keyPressesIn[-1])
 					curserPosition = max(0, min(curserPosition, len(__keyPressesIn[lineToDisplay])))
 					if key == 10 or key == curses.KEY_ENTER: # 10 is the key code for newline, KEY_ENTER the keypad's Enter
 						__keyPressesIn[-1].append('\n')
@@ -5306,6 +5369,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# it counts the shown text before the cursor: a byte outside the encoding shows as 4 characters (\xe9)
 				displayCurserPosition = min(len(_typed_line_for_display(__keyPressesIn[lineToDisplay][:curserPosition])),len(encodedLine) -1)
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
+				if isinstance(__keyPressesIn[lineToDisplay], _HiddenInput):
+					# a password: a * for each character typed, never the characters
+					stars = '*' * len(''.join(__keyPressesIn[lineToDisplay]).strip('\n')) + ' '
+					starCursor = min(curserPosition, len(stars) - 1)
+					stats = f'Send CMD: {stars[:starCursor]}\x1b[7m{stars[starCursor]}\x1b[0m{stars[starCursor + 1:]}'
 			if stats != old_stat or refresh_all:
 				old_stat = stats
 				# calculate the real curser position in stats as we centered the stats
@@ -5355,13 +5423,15 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
 				if host.lineNumToPrintSet:
-					# visible range is from len(host.output) - host_window_height + 1 to len(host.output) - 1
-					visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
+					# visible range: the last host_window_height - 1 lines the window does not leave out
+					visibleLowerBound = _tui_first_shown_line(host.output, host_window_height - 1)
 					lineNumToPrintSet = host.lineNumToPrintSet.copy()
 					host.lineNumToPrintSet = set()
 					for lineNumToReprint in sorted(lineNumToPrintSet):
 						# if the line is visible, we will reprint it
 						if visibleLowerBound <= lineNumToReprint < len(host.output):
+							if _tui_leaves_out(host.output[lineNumToReprint]):
+								continue
 							# each line on its own: one line curses cannot draw must not leave the lines after it blank
 							try:
 								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
@@ -5753,6 +5823,38 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 				remaining_hostnames.add(this_hostname)
 	return merge_groups, remaining_hostnames
 
+class _HiddenInput(list):
+	'''A line typed in the curses display while a host asked for a password: sent as typed, never shown or kept.'''
+
+# the words of a prompt for a secret ("Password:", "Enter passphrase for key '...': ", "Password for
+# 'https://...':"), a few translations. "[sudo]" starts sudo's prompt in any language
+_PASSWORD_PROMPT_WORDS = ('password', 'passphrase', 'pass phrase', 'passwort', 'mot de passe', 'contraseña', 'senha', 'пароль', '密码', 'パスワード')
+# prompts are short: only this many characters at the end of a line are looked at. The line comes from the
+# host, it may be megabytes long
+_PASSWORD_PROMPT_TAIL = 200
+# what is shown and kept instead of a hidden line: not its length either
+_HIDDEN_INPUT_SHOWN = '******** (hidden at a password prompt)'
+
+def _is_password_prompt(line):
+	'''Whether line ends like a prompt for a secret: a colon, after one of _PASSWORD_PROMPT_WORDS or "[sudo]".'''
+	tail = line[-_PASSWORD_PROMPT_TAIL:].rstrip()
+	if not tail.endswith((':', '：')):
+		return False
+	tail = tail.lower()
+	return tail.lstrip().startswith('[sudo]') or any(word in tail for word in _PASSWORD_PROMPT_WORDS)
+
+def _asks_for_password(host):
+	'''Whether host's last line, finished or not, asks for a password.'''
+	# the end of the partial lines only: a character takes at most 4 bytes
+	lines = [buffer.getvalue()[-4 * _PASSWORD_PROMPT_TAIL:].decode(_encoding, errors='replace') for buffer in (host.stdout_buffer, host.stderr_buffer)]
+	if host.output:
+		lines.append(host.output[-1])
+	return any(_is_password_prompt(line) for line in lines)
+
+def _hidden_input_shown(chars):
+	'''What a hidden typed line's "> ..." line shows: neither its characters nor their number.'''
+	return _HIDDEN_INPUT_SHOWN + ('↵' if chars and chars[-1] == '\n' else '')
+
 def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = None, errors_only = None):
 	'''
 	Format Host results for display / return.
@@ -5816,7 +5918,8 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		rtnStr += '\n'.join(tableLines) + '\n'
 		rtnStr += '*'*80+'\n'
 		if keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
+			# a line typed at a password prompt shows as _HIDDEN_INPUT_SHOWN
+			CMDsOut = [_HIDDEN_INPUT_SHOWN if isinstance(cmd, _HiddenInput) else ''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 			#rtnStr += '\n'
 	else:
@@ -5835,7 +5938,8 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		merge_groups ,remaining_hostnames = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
 		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
 		if keyPressesIn[-1]:
-			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
+			# a line typed at a password prompt shows as _HIDDEN_INPUT_SHOWN
+			CMDsOut = [_HIDDEN_INPUT_SHOWN if isinstance(cmd, _HiddenInput) else ''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
 			outputs.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
 			cmdOut = []
 			for line in CMDsOut:
@@ -6728,7 +6832,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		hosts (str or iterable): Hosts to run the command on. Can be a string (comma/space-separated) or iterable. Default: DEFAULT_HOSTS.
 		commands (list or None): List of commands to run on the hosts. If files are used, defines the destination. Default: None.
 		oneonone (bool): If True, run each command on the corresponding host (1:1 mapping). Default: DEFAULT_ONE_ON_ONE.
-		timeout (int): Timeout for each command in seconds. Default: DEFAULT_TIMEOUT.
+		timeout (int): Idle timeout: stop a host's command after this many seconds without output. Default: DEFAULT_TIMEOUT.
 		password (str): Password for SSH/IPMI authentication. Default: DEFAULT_PASSWORD.
 		no_watch (bool): If True, do not use curses TUI; just print output. Default: DEFAULT_NO_WATCH.
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.
@@ -7358,7 +7462,7 @@ def get_parser():
 	parser.add_argument('-W','--scp', action='store_true', help=_plain_help(f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})'), default=DEFAULT_SCP)
 	parser.add_argument('-G','-gm','--gather_mode', action='store_true', help='Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
-	parser.add_argument("-t","--timeout", type=int, help=_plain_help(f"Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})"), default=DEFAULT_CLI_TIMEOUT)
+	parser.add_argument("-t","--timeout", type=int, help=_plain_help(f"Idle timeout in seconds: stop a host's command after this long without output. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})"), default=DEFAULT_CLI_TIMEOUT)
 	parser.add_argument('-T','--use_script_timeout',action='store_true', help=_plain_help(f'Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: {DEFAULT_TIMEOUT})'), default=False)
 	parser.add_argument("-r","--repeat", type=_positive_int, help=_plain_help(f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})"), default=DEFAULT_REPEAT)
 	parser.add_argument("-i","--interval", type=int, help=_plain_help(f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})"), default=DEFAULT_INTERVAL)
