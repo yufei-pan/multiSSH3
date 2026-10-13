@@ -3754,7 +3754,8 @@ def get_host_raw_output(hosts, terminal_width):
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
 			hostPrintOut.extend(f" {line}" for line in host.stdout)
-			max_length = max(max_length, max(map(len, host.stdout)))
+			# in terminal columns: the dividers between host blocks are as wide as the widest line
+			max_length = max(max_length, max(map(_text_columns, host.stdout)))
 			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
@@ -3777,7 +3778,7 @@ def get_host_raw_output(hosts, terminal_width):
 				# 	else:
 				# 		hostPrintOut.extend(text_wrapper.wrap(line))
 				hostPrintOut.extend(f" {line}" for line in host.stderr)
-				max_length = max(max_length, max(map(len, host.stderr)))
+				max_length = max(max_length, max(map(_text_columns, host.stderr)))
 				lineBag.add((prevLine,2))
 				lineBag.add((2,host.stderr[0]))
 				lineBag.update(host.stderr)

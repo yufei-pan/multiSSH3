@@ -234,3 +234,20 @@ def test_wide_output_scrolls_through_a_curses_host_window(tmp_path):
 		'│last 日本語',
 	]
 
+
+@pytest.mark.parametrize('stdout, stderr, width', [
+	# 30 characters in 60 columns, 60 characters in 30 columns
+	(['日本語' * 10], [], 62),
+	(['e\u0301' * 30], ['ok'], 32),
+	(['short'], ['ｆｕｌｌｗｉｄｔｈ ' * 3], 59),
+])
+def test_merged_output_lines_are_as_wide_as_the_widest_output(fake_host, stdout, stderr, width):
+	host = fake_host('mock-a', 'true')
+	host.stdout = stdout
+	host.stderr = stderr
+	host.returncode = 0
+
+	line_length = multiSSH3.get_host_raw_output([host], terminal_width=200)[4]
+
+	# the dividers between host blocks: the longest line and two columns more
+	assert line_length == width
