@@ -802,7 +802,7 @@ def check_warned_picker(session):
 	assert not [lines[row] for row in menu if any(secret in lines[row] for secret in PASSWORDS)]
 
 
-@pytest.mark.parametrize('shell', ['bash', 'editor', 'blesh', 'fish'])
+@pytest.mark.parametrize('shell', ['bash', 'editor', 'zsh', 'zsh-autosuggestions', 'blesh', 'fish'])
 def test_picker_shows_the_warnings_about_the_line_at_its_top(home, shell):
 	env, home = home
 	known(env, gpu017='invalid')

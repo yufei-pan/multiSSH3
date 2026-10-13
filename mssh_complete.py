@@ -4749,7 +4749,12 @@ _mssh_complete_ctrl_r() {
 			fi
 		fi
 		zle reset-prompt
-		(( st <= 1 )) && return 0
+		if (( st <= 1 )); then
+			# the menu was drawn over the reason line, which zsh does not draw again: show it (the
+			# redraw hook asks anew only when a finished word changed; that answer replaces it)
+			[[ -n ${_mssh_complete_warn_reason-} ]] && zle -M -- "$_mssh_complete_warn_reason"
+			return 0
+		fi
 	fi
 	[[ -n $_mssh_complete_previous ]] && zle $_mssh_complete_previous
 	return 0
