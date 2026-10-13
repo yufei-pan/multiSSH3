@@ -1,3 +1,6 @@
+import io
+import threading
+
 import pytest
 
 import multiSSH3
@@ -450,3 +453,211 @@ def test_generate_display_escape_with_input_clears_line(stub_curses_harness, fak
 	assert multiSSH3.__keyPressesIn == [[]]
 	assert result is not None
 	assert result[1] == 0
+
+
+def _rendered_text(harness):
+	return [
+		arg
+		for window in harness.windows
+		for method, args, kwargs in window.calls
+		for arg in args
+		if method == "addnstr" and isinstance(arg, str)
+	]
+
+
+def _reject_text_like_curses(monkeypatch, harness, bad=lambda text: "\0" in text):
+	"""Make the stub windows raise for text real curses cannot draw (addnstr rejects a NUL)."""
+	window_class = type(harness.window)
+	record = window_class.addnstr
+
+	def addnstr(self, *args, **kwargs):
+		if any(isinstance(arg, str) and bad(arg) for arg in args):
+			raise ValueError("embedded null character")
+		return record(self, *args, **kwargs)
+
+	monkeypatch.setattr(window_class, "addnstr", addnstr)
+
+
+def _finish_after_one_redraw(harness, host, monkeypatch):
+	def finish_without_input():
+		host.returncode = 0
+		return -1
+
+	monkeypatch.setattr(harness.window, "getch", finish_without_input)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+
+def test_generate_display_shows_nul_in_output_and_keeps_later_lines(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output = ["before", "a\0b", "after"]
+	host.lineNumToPrintSet = {0, 1, 2}
+	_reject_text_like_curses(monkeypatch, stub_curses_harness)
+	_finish_after_one_redraw(stub_curses_harness, host, monkeypatch)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+	rendered = _rendered_text(stub_curses_harness)
+
+	assert result is None
+	assert "a^@b" in rendered  # NUL shown the way curses shows the other control characters (^A, ^[)
+	assert "after" in rendered
+
+
+def test_generate_display_one_line_failing_to_draw_keeps_the_others(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output = ["before", "cannot-draw", "after"]
+	host.lineNumToPrintSet = {0, 1, 2}
+	_reject_text_like_curses(monkeypatch, stub_curses_harness, bad=lambda text: text == "cannot-draw")
+	_finish_after_one_redraw(stub_curses_harness, host, monkeypatch)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+	rendered = _rendered_text(stub_curses_harness)
+
+	assert result is None
+	assert "before" in rendered
+	assert "after" in rendered
+
+
+def test_generate_display_shows_nul_in_unfinished_output_line(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output_buffer.write(b"part\0ial")  # printf 'part\0ial'; sleep 60: no newline yet
+	_reject_text_like_curses(monkeypatch, stub_curses_harness)
+	_finish_after_one_redraw(stub_curses_harness, host, monkeypatch)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=2)
+
+	assert result is None  # not "Error: embedded null character"
+	assert "part^@ial" in _rendered_text(stub_curses_harness)
+
+
+def test_generate_display_shows_typed_nul_in_input_line(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [["a", "\0", "b"]])  # Ctrl-@ types a NUL
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	_reject_text_like_curses(monkeypatch, stub_curses_harness)
+	stub_curses_harness.inject_keys([-1, 12])  # one redraw, then Ctrl-R
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window, [host], curserPosition=3, min_char_len=10, min_line_len=2
+	)
+
+	assert result[6] == "Refresh requested"  # not "Error: embedded null character"
+	assert any("a^@b" in text for text in _rendered_text(stub_curses_harness))
+
+
+def _type_keys(harness, fake_host, monkeypatch, keys, history=None):
+	"""Feed keys to the display as getch() returns them, then Ctrl-R; returns the display's result."""
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list(line) for line in history or [[]]])
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	harness.inject_keys(list(keys) + [12])
+	return multiSSH3.__generate_display(harness.window, [host], min_char_len=10, min_line_len=2)
+
+
+def _sent_bytes(fake_host):
+	"""What the hosts' stdin gets for the lines typed so far."""
+	class RecordingPipe(io.BytesIO):
+		def close(self):
+			self.sent = self.getvalue()
+			super().close()
+
+	pipe = RecordingPipe()
+	host = fake_host("mock-b", "cat")
+	host.interactive_stdin = False  # the TUI is gone: send every finished line, then end of input
+	multiSSH3.__handle_writing_stream(pipe, threading.Event(), host)
+	return pipe.sent
+
+
+@pytest.mark.parametrize(
+	"typed",
+	["héllo", "€", "日本", "😀"],
+)
+def test_generate_display_decodes_characters_typed_in_several_bytes(stub_curses_harness, fake_host, monkeypatch, typed):
+	# getch() returns each byte of a UTF-8 character on its own: é comes as 0xc3, then 0xa9
+	result = _type_keys(stub_curses_harness, fake_host, monkeypatch, typed.encode("utf-8"))
+
+	assert multiSSH3.__keyPressesIn == [list(typed)]  # not "hÃ©llo"
+	assert result[1] == len(typed)  # the cursor moved one place per character
+
+
+def test_characters_typed_in_several_bytes_reach_the_hosts_as_typed(stub_curses_harness, fake_host, monkeypatch):
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, "héllo\n".encode("utf-8"))
+
+	assert _sent_bytes(fake_host) == "héllo\n".encode("utf-8")  # not 68 c3 83 c2 a9 6c 6c 6f 0a
+
+
+def test_bytes_outside_the_encoding_reach_the_hosts_unchanged_and_in_order(stub_curses_harness, fake_host, monkeypatch):
+	# a Latin-1 terminal in a UTF-8 session: é is the single byte 0xe9, which starts a UTF-8 sequence
+	# that the next key (a, then Enter) cuts short
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, b"caf\xe9a\xe9\n")
+
+	assert _sent_bytes(fake_host) == b"caf\xe9a\xe9\n"
+
+
+def test_input_line_shows_bytes_outside_the_encoding_as_hex(stub_curses_harness, fake_host, monkeypatch):
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, [*b"caf\xe9!", -1])  # one redraw before Ctrl-R
+
+	assert any("caf\\xe9!" in text for text in _rendered_text(stub_curses_harness))  # the byte sent, not \udce9
+
+
+def test_sent_line_echo_shows_what_was_sent(fake_host, monkeypatch):
+	import time
+
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list("hé caf\udce9\n"), []])
+	host = fake_host("mock-b", "cat")
+	host.interactive_stdin = True
+	stop = threading.Event()
+	writer = threading.Thread(target=multiSSH3.__handle_writing_stream, args=(io.BytesIO(), stop, host), daemon=True)
+	writer.start()
+	deadline = time.monotonic() + 5
+	while not host.output and time.monotonic() < deadline:
+		time.sleep(0.01)
+	stop.set()
+	writer.join(timeout=5)
+
+	assert host.output == ["> hé caf\\xe9↵"]
+
+
+@pytest.mark.parametrize("key", [266, 276, 331, 409], ids=["F2", "F12", "Insert", "mouse"])
+def test_function_keys_without_a_binding_type_nothing(stub_curses_harness, fake_host, monkeypatch, key):
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("a"), key, ord("b")])
+
+	assert multiSSH3.__keyPressesIn == [list("ab")]  # F2 used to type chr(266), "Ċ"
+
+
+def test_function_key_without_a_binding_leaves_a_history_line_alone(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list("old\n"), []])
+	stub_curses_harness.inject_keys([266, 12])
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window, [host], lineToDisplay=-2, min_char_len=10, min_line_len=2
+	)
+
+	assert multiSSH3.__keyPressesIn == [list("old\n"), []]
+	assert result[0] == -2
+
+
+def test_keypad_enter_sends_the_line(stub_curses_harness, fake_host, monkeypatch):
+	import curses
+
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("y"), curses.KEY_ENTER])
+
+	assert multiSSH3.__keyPressesIn == [list("y\n"), []]  # it used to type chr(343), "ŗ"
+
+
+def test_question_mark_is_typed_once_the_input_line_has_text(stub_curses_harness, fake_host, monkeypatch):
+	result = _type_keys(stub_curses_harness, fake_host, monkeypatch, b"is it?")
+
+	assert multiSSH3.__keyPressesIn == [list("is it?")]  # sent to the hosts, e.g. answering a prompt
+	assert result[5] is False  # the help stays closed
+	assert "show" not in stub_curses_harness.panels[-1].calls
+
+
+def test_f1_toggles_help_while_the_input_line_has_text(stub_curses_harness, fake_host, monkeypatch):
+	result = _type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("a"), 265])  # 265: F1
+
+	assert multiSSH3.__keyPressesIn == [list("a")]
+	assert result[5] is True

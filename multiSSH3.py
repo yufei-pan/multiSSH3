@@ -2226,6 +2226,18 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		# if there is still some data in the buffer, we add it to the target
 		add_line(buffer,target, host)
 
+def _encode_typed_line(chars):
+	'''The bytes a line typed in the TUI sends: bytes typed outside _encoding (surrogates) go out as typed.'''
+	text = ''.join(chars)
+	try:
+		return text.encode(encoding=_encoding, errors='surrogateescape')
+	except UnicodeEncodeError:
+		return text.encode(encoding=_encoding, errors='backslashreplace')
+
+def _typed_line_for_display(chars):
+	'''A typed line as text to show: what _encode_typed_line sends, with bytes outside _encoding as \\xe9.'''
+	return _encode_typed_line(chars).decode(encoding=_encoding, errors='backslashreplace')
+
 def __handle_writing_stream(stream,stop_event,host):
 	'''
 	Write the key presses to the stream
@@ -2246,9 +2258,9 @@ def __handle_writing_stream(stream,stop_event,host):
 	sentInputPos = 0
 	while not stop_event.is_set() and host.interactive_stdin:
 		if sentInputPos < len(__keyPressesIn) - 1 :
-			stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+			stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 			stream.flush()
-			line = '> ' + ''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\n', '↵')
+			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
@@ -2260,7 +2272,7 @@ def __handle_writing_stream(stream,stop_event,host):
 		# the TUI ended while the command runs: send the lines already typed, then end of input
 		try:
 			while sentInputPos < len(__keyPressesIn) - 1:
-				stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+				stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 				sentInputPos += 1
 			stream.flush()
 		except Exception:
@@ -3362,7 +3374,8 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		window.move(keep_top_n_lines,0)
 		window.deleteln()
 		y = maxY - 1
-	line = line.replace('\n', ' ').replace('\r', ' ')
+	# curses draws the other control characters as ^A, ^[ ... but refuses a NUL (ValueError): show it as ^@
+	line = line.replace('\n', ' ').replace('\r', ' ').replace('\0', '^@')
 	if parse_ansi_colors:
 		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
 	else:
@@ -3433,6 +3446,24 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexO
 		if host not in hosts_to_display or i != hosts_to_display.index(host):
 			rearrangedHosts.add(host)
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
+
+def _tui_typed_keys(key, decoder):
+	'''
+	The key presses one getch() result completes, in the order they were typed.
+
+	getch() returns a character typed as several bytes (UTF-8 é is c3 a9) one byte at a time. Those
+	bytes go through decoder (incremental, errors='surrogateescape') and come back as one str once
+	the character is complete. Any other key comes back as its int code, after the bytes of a
+	sequence it cut short: those come back as surrogates, which _encode_typed_line sends unchanged.
+	'''
+	if key == -1:
+		return ()
+	if 128 <= key <= 255:
+		text = decoder.decode(bytes((key,)))
+		return (text,) if text else ()
+	cut_short = decoder.decode(b'', True)
+	decoder.reset()
+	return (cut_short, key) if cut_short else (key,)
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
 	global _encoding
@@ -3534,7 +3565,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		help_window.idlok(True)
 		help_window.box()
 		_curses_add_string_to_window(window=help_window,y=0,line='Help', color_pair_list=[-1,-1,1], centered=True, fill_char='─', lead_str='┌', box_ansi_color=box_ansi_color)
-		_curses_add_string_to_window(window=help_window,y=1,line='?       : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=1,line='? or F1 : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=2,line='_ or +  : Change window hight', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=3,line='{ or }  : Change window width', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=4,line='< or >  : Change host index', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
@@ -3550,10 +3581,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		help_panel.hide()
 		curses.panel.update_panels()
 		indexOffset = 0
+		# collects the bytes of a character typed in several bytes, see _tui_typed_keys
+		key_decoder = codecs.getincrementaldecoder(_encoding)(errors='surrogateescape')
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
-			# Check for keypress
-			key = stdscr.getch()
-			if key != -1:  # -1 means no keypress
+			# Check for keypress: an int key code, or a str for a character typed in several bytes (UTF-8)
+			for key in _tui_typed_keys(stdscr.getch(), key_decoder):
 				# we store the keypresses in a list of lists.
 				# Each list is a list of characters to be sent to the stdin of the process at once.
 				# When we encounter a newline, we add a new list to the list of lists. ( a new line of input )
@@ -3620,8 +3652,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == curses.KEY_EXIT or (key == 27 and lineToDisplay == -1 and not __keyPressesIn[-1]): # 27 is the key code for ESC
 					# exit the display on KEY_EXIT, or on ESC when the input line is empty. ESC with input clears the line below
 					return
-				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
-					# if the key is help, we will display the help message
+				elif key == curses.KEY_HELP or (key == 63 and not __keyPressesIn[-1]) or key == curses.KEY_F1: # 63 is the key code for ?
+					# if the key is help, we will display the help message. Like the other one-character keys, ? toggles
+					# it only on an empty input line: after text it is typed (a prompt's answer may need it). F1 always works
 					if not help_shown:
 						help_panel.show()
 						help_shown = True
@@ -3631,6 +3664,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						refresh_all = True
 						#return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Help closed')
 					curses.panel.update_panels()
+				elif not isinstance(key, str) and key > 255 and key not in (263, 330, curses.KEY_ENTER):
+					# a function key without a binding (F2, Insert, ...; 263 Backspace, 330 Delete and KEY_ENTER are handled below):
+					# chr() of its code would type an unrelated letter
+					pass
 			# We are left with these are keys that mofidy the current line.
 				else:
 					# This means the user have done scrolling and is committing to modify the current line.
@@ -3639,8 +3676,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						__keyPressesIn[-1] = __keyPressesIn[lineToDisplay][:-1]
 						lineToDisplay = -1
 					curserPosition = max(0, min(curserPosition, len(__keyPressesIn[lineToDisplay])))
-					if key == 10: # 10 is the key code for newline
-						__keyPressesIn[-1].append(chr(key))
+					if key == 10 or key == curses.KEY_ENTER: # 10 is the key code for newline, KEY_ENTER the keypad's Enter
+						__keyPressesIn[-1].append('\n')
 						__keyPressesIn.append([])
 						lineToDisplay = -1
 						curserPosition = 0
@@ -3658,9 +3695,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						if curserPosition < len(__keyPressesIn[lineToDisplay]):
 							__keyPressesIn[lineToDisplay].pop(curserPosition)
 					else:
-						# if the key is not a special key, we will add it
-						__keyPressesIn[lineToDisplay].insert(curserPosition, chr(key))
-						curserPosition += 1
+						# if the key is not a special key, we will add it, one list item per character
+						typed = key if isinstance(key, str) else chr(key)
+						__keyPressesIn[lineToDisplay][curserPosition:curserPosition] = list(typed)
+						curserPosition += len(typed)
 			# reconfigure when the terminal size changes
 			if org_dim != stdscr.getmaxyx():
 				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
@@ -3670,11 +3708,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} i:{indexOffset} "
 			else:
 				# we use the stat bar to display the key presses
-				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').strip('\n') + ' '
+				encodedLine = _typed_line_for_display(__keyPressesIn[lineToDisplay]).strip('\n') + ' '
 				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
 				# format the stats line with chracter at curser position inverted using ansi escape sequence
 				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
-				displayCurserPosition = min(curserPosition,len(encodedLine) -1)
+				# it counts the shown text before the cursor: a byte outside the encoding shows as 4 characters (\xe9)
+				displayCurserPosition = min(len(_typed_line_for_display(__keyPressesIn[lineToDisplay][:curserPosition])),len(encodedLine) -1)
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
 			if stats != old_stat or refresh_all:
 				old_stat = stats
@@ -3725,22 +3764,20 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
 				if host.lineNumToPrintSet:
-					try:
-						# visible range is from len(host.output) - host_window_height + 1 to len(host.output)
-						visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
-						lineNumToPrintSet = host.lineNumToPrintSet.copy()
-						host.lineNumToPrintSet = set()
-						for lineNumToReprint in sorted(lineNumToPrintSet):
-							# if the line is visible, we will reprint it
-							if visibleLowerBound <= lineNumToReprint <= len(host.output):
+					# visible range is from len(host.output) - host_window_height + 1 to len(host.output) - 1
+					visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
+					lineNumToPrintSet = host.lineNumToPrintSet.copy()
+					host.lineNumToPrintSet = set()
+					for lineNumToReprint in sorted(lineNumToPrintSet):
+						# if the line is visible, we will reprint it
+						if visibleLowerBound <= lineNumToReprint < len(host.output):
+							# each line on its own: one line curses cannot draw must not leave the lines after it blank
+							try:
 								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 								hostWindowUpdated = True
-					except Exception:
-						# import traceback
-						# print(str(e).strip())
-						# print(traceback.format_exc().strip())
-						if org_dim != stdscr.getmaxyx():
-							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
+							except Exception:
+								if org_dim != stdscr.getmaxyx():
+									return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
 				if host.lastPrintedUpdateTime != host.lastUpdateTime and host.output_buffer.tell() > 0:
 					# this means there is still output in the buffer, we will print it
 					# we will print the output in the window
@@ -4496,6 +4533,14 @@ def _found_unreachable(host):
 	# a stderr line before the timeout's means the host answered, lines after it come from stopping the command
 	return host.stderr[0].strip().startswith('Timeout!')
 
+def _stream_is_terminal(stream):
+	'''True when stream is an open terminal: False when it is redirected, closed, or None (its fd was closed at start).'''
+	try:
+		return bool(stream is not None and stream.isatty())
+	except (AttributeError, ValueError, OSError):
+		return False
+
+
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
@@ -4506,7 +4551,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	# hosts skipped as unreachable are not run, only reported with the others
 	skipped_hosts = [host for host in hosts if host.skipped]
 	hosts = [host for host in hosts if not host.skipped]
-	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
+	# The TUI needs a screen and a keyboard. When stdin is not a terminal (< file, a pipe, a while-read loop,
+	# xargs) nobody can type: commands would wait forever on a stdin pipe, and curses would read what stdin
+	# holds (the loop's next lines) as key presses. Without the TUI, commands get /dev/null as stdin.
+	use_tui = bool(__curses_available and not no_watch and not return_unfinished and _stream_is_terminal(sys.stdout) and _stream_is_terminal(sys.stdin) and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
 	global _commands_started
