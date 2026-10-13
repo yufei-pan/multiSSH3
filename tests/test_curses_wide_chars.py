@@ -96,14 +96,17 @@ def test_curses_add_string_stops_at_the_window_edge(line, expected, curses_color
 
 
 def test_curses_add_string_centers_and_fills_by_columns(curses_color_mocks):
-	window = CellWindow(2, 15)
+	window = CellWindow(3, 15)
 
 	multiSSH3._curses_add_string_to_window(window=window, y=0, line='h:[ls 日本]', centered=True, fill_char='─', lead_str='┼')
 	multiSSH3._curses_add_string_to_window(window=window, y=1, line='\x1b[31m日本\x1b[0mé', fill_char='.', lead_str='│')
+	multiSSH3._curses_add_string_to_window(window=window, y=2, line='日本語のファイル名', fill_char='.', lead_str='│')
 
 	assert window.overflows == []
 	assert window.row(0) == '┼─h:[ls 日本]─ '
 	assert window.row(1) == '│日本é........ '
+	# the column a wide character did not fit in is filled too
+	assert window.row(2) == '│日本語のファ. '
 
 
 @pytest.fixture
