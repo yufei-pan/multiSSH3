@@ -151,6 +151,10 @@ Defaults are read from the following chain map stored as json files, top ones ov
 > Config and env files found on these default paths are only loaded when they are owned by you or root and nobody else can write to them (group write is fine when the group is your own private group). Others are skipped with a warning that shows the `chmod` fix. Files you name with `--config_file`, `--env_file` or `--env_files` are always loaded.
 >
 > `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above are written `0644` so every user can read them. An existing file's permissions are only ever tightened, and a file whose permissions cannot be restricted is left untouched (the config is printed instead).
+>
+> A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link.
+>
+> Each value is checked against the type of the setting's default. Values whose meaning is clear are converted (`"true"` / `"false"`, `"yes"` / `"no"` for true / false settings, numbers written as strings, a list of host names for `DEFAULT_HOSTS`); anything else, such as `"DEFAULT_TIMEOUT": "fifty"` or an encoding Python does not know, is ignored with a warning naming the file and the key, and the setting keeps its value from the rest of the chain. A file that is not a JSON object is skipped the same way. `--config_file` applies a file exactly as the chain does, `_sshPath`, `DEFAULT_ENV_FILE` and `ERROR_MESSAGES_TO_IGNORE` included.
 
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
@@ -670,6 +674,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-e, --encoding ENCODING` | _`DEFAULT_ENCODING`_
 - The encoding to use for decoding the output from the hosts.
 - Default is `utf-8`.
+- An encoding Python cannot decode text with (unknown, or a codec such as `rot13`) is refused before any host runs.
 
 ### `-dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD` | _`DEFAULT_DIFF_DISPLAY_THRESHOLD`_
 - The threshold of different lines to total lines ratio to trigger N-body diff display mode.
@@ -1019,6 +1024,6 @@ __DEBUG_MODE = False
 
 > `_etc_hosts` is a custom dict to use instead of reading /etc/hosts file for hostname resolution.
 
-> `__ERROR_MESSAGES_TO_IGNORE_REGEX` is the compiled regex pattern for error messages to ignore. If custom defined, mssh will ignore `ERROR_MESSAGES_TO_IGNORE` and use supplied regex pattern instead.
+> `__ERROR_MESSAGES_TO_IGNORE_REGEX` is the compiled regex pattern for error messages to ignore. If custom defined, mssh will ignore `ERROR_MESSAGES_TO_IGNORE` and use supplied regex pattern instead. In a config file, give the pattern as a string. An empty `ERROR_MESSAGES_TO_IGNORE` hides no stderr line.
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
