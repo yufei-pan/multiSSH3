@@ -6,7 +6,7 @@ import sys
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import ENGINE, REPO, make_home, require_shell
+from complete_shell_harness import ENGINE, REPO, build_index, make_home, require_shell
 
 MSSH = [sys.executable, '-I', str(REPO / 'multiSSH3.py')]
 # what a shell reports for a command SIGPIPE ended (128 + 13), as for seq or cat piped into head
@@ -250,3 +250,36 @@ def test_a_host_name_the_locale_cannot_encode_is_no_variable(tmp_path):
 
 	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
 	assert result.stdout.decode().splitlines() == ["(['h\\xe9llo'], ['h\\xe9llo'])", "[('unknown', 'h\\xe9llo: unknown host')]"]
+
+
+_EVAL_SCRIPT = '''
+import sys
+sys.path.insert(0, {repo!r})
+import multiSSH3, mssh_complete as mc
+# no DNS: every name is one the prober would reject; nothing starts in the background
+multiSSH3.host_validity = lambda name, timeout=2.0: 'invalid'
+mc.spawn_probe = mc.spawn_rebuild = lambda directory: False
+sys.exit(mc.main(['eval', '--diagnostics', {history!r}]))
+'''
+
+
+@pytest.mark.parametrize('host, printed, c_locale', [
+	# a name the C locale cannot print (Python 3.6): a backslash escape
+	(b'h\xc3\xa9llo', b'h\\xe9llo', True),
+	# bytes that are not UTF-8, which stdout's strict UTF-8 (en_US.UTF-8) could not print: the bytes themselves
+	(b'h\xffllo', b'h\xffllo', False),
+])
+def test_the_diagnostics_report_names_a_host_stdout_cannot_print(tmp_path, host, printed, c_locale):
+	env, home = make_home(tmp_path)
+	(home / '.mssh_history').write_bytes(b'1790000000\t/x/multiSSH3.py\t-su\t' + host + b'\t"uptime"\n')
+	# built now: the report would wait for it
+	build_index(env)
+	script = tmp_path / 'eval.py'
+	script.write_text(_EVAL_SCRIPT.format(repo=str(REPO), history=str(home / '.mssh_history')))
+
+	result = subprocess.run((C_LOCALE_PYTHON if c_locale else [sys.executable, '-I']) + [str(script)],
+		env=_c_locale_env(env) if c_locale else dict(env, LC_ALL='en_US.UTF-8'), stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE, timeout=60)
+
+	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+	assert b'    ' + printed + b'  1 line' in result.stdout

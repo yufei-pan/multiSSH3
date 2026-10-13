@@ -6148,6 +6148,23 @@ def _cmd_probe(args):
 			except OSError:
 				pass
 
+def _print_as_stdout_can(text):
+	'''
+	Print text that may hold host names from the history, as stdout can: characters that came from bytes
+	that are not UTF-8 as those bytes, characters stdout's encoding lacks (all but ASCII in the C locale
+	on Python 3.6) as backslash escapes. print() failed on either.
+	'''
+	import re
+	buffer = getattr(sys.stdout, 'buffer', None)
+	if buffer is None:
+		sys.stdout.write(text)
+		return
+	encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+	parts = re.split('([\udc80-\udcff]+)', text)
+	sys.stdout.flush()
+	buffer.write(b''.join(part.encode('ascii', 'surrogateescape') if index % 2 else part.encode(encoding, 'backslashreplace')
+		for index, part in enumerate(parts)))
+
 def _cmd_eval(args):
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete eval', description='Replay mssh history and report how much typing completion saves.')
@@ -6166,7 +6183,7 @@ def _cmd_eval(args):
 	if options.diagnostics:
 		lines = [line for line in lines if _entry_time(line) >= options.since][-options.limit:]
 		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
-		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
+		_print_as_stdout_can(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)))
 		return 0
 	print(format_report(evaluate(lines, spec, options.since, options.limit)))
 	return 0
