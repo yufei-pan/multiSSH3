@@ -5415,13 +5415,21 @@ def detect_shell(environ=None):
 	return name if name in SHELLS else None
 
 def _fish_major():
-	'''The major version of the fish on PATH, or None.'''
+	'''
+	The major version of the fish on PATH, or None.
+
+	From `fish --version`, which reads no configuration: `fish -c` runs the operator's config.fish and
+	conf.d first, which may print, be slow or do things. The line may be translated ("fish, Version
+	3.7.1"), and old releases wrote it to stderr: its first number is the version.
+	'''
+	import re
 	import subprocess
 	try:
-		output = subprocess.run(['fish', '-c', 'echo $FISH_VERSION'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
-		return int(output.decode('ascii', 'replace').strip().split('.')[0])
-	except (OSError, ValueError, subprocess.SubprocessError):
+		output = subprocess.run(['fish', '--version'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5).stdout
+	except (OSError, subprocess.SubprocessError):
 		return None
+	found = re.search(r'\b(\d+)\.\d+', output.decode('ascii', 'replace'))
+	return int(found.group(1)) if found else None
 
 def _ours(path):
 	try:
