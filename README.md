@@ -395,11 +395,11 @@ Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the
 While you type an mssh line, words already typed that mssh would trip over are marked, and one line under the prompt says why. Nothing is ever blocked: Enter runs what you typed.
 
 - **Unknown host:** a name mssh would reject (no IP, alias or hosts-file entry, not in DNS, not mapped by your ssh config), with the host you probably meant: `gpu017: unknown host — did you mean gpu17?`
-- **Range surprises:** a range or alias with members mssh would reject: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …) — did you mean node[01-16]?`
+- **Range surprises:** a range or alias with members mssh would reject: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …) — did you mean node[01-16]?`. Braces the shell expands make several words of the hosts, and mssh runs the second as the command: `node{1,2}: the shell makes 2 words of this; mssh would run node2 as the command — did you mean node1,node2?`
 - **Unreachable host:** one that failed in your recent mssh runs (`will be skipped` with `-su`), or that answered ping recently and stopped.
 - **Conflicting options:** two options mssh refuses together, an option given twice, or one that does nothing on this line (`-iu does nothing: only used with --ipmi`).
 
-Hosts the shell rewrites before mssh runs (`$NODES`, `$(cat hosts.txt)`, `` `...` ``, `~`, `node{1,2}`, `!$`) are not checked: mssh gets what the shell makes of them. In single quotes or after a backslash they reach mssh as typed and are checked as mssh reads them.
+Hosts the shell rewrites before mssh runs (`$NODES`, `$(cat hosts.txt)`, `` `...` ``, `~`, `!$`) are not checked: mssh gets what the shell makes of them. In single quotes or after a backslash they reach mssh as typed and are checked as mssh reads them.
 
 zsh, bash with ble.sh and the plain-bash line editor mark the words and show the reason; fish 4 prints the reason under the line after a space; fish 3 and plain bash without the editor list the warnings at the top of the Ctrl-R menu.
 

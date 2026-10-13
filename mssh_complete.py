@@ -2090,7 +2090,7 @@ def _shell_expansions(text, marks, shell):
 					return end + 1
 		return None
 
-	# unquoted braces: where each one closes, and whether it holds a , or (bash, zsh) a .. of its own
+	# unquoted braces: where each one closes, and whether it holds a , of its own
 	braces = {}
 	stack = []
 	for position in range(length):
@@ -2102,7 +2102,7 @@ def _shell_expansions(text, marks, shell):
 		elif char == '}' and stack:
 			start, listed = stack.pop()
 			braces[start] = (position + 1, listed)
-		elif stack and (char == ',' or (shell != 'fish' and text.startswith('..', position))):
+		elif stack and char == ',':
 			stack[-1][1] = True
 
 	found = []
@@ -2133,9 +2133,9 @@ def _shell_expansions(text, marks, shell):
 			pass
 		elif char == '~' and index == 0:
 			end = text.find('/') if '/' in text else length
-		elif char == '{':
-			close, listed = braces.get(index, (None, False))
-			if listed:
+		elif char == '{' and index in braces:
+			close, listed = braces[index]
+			if listed or (all(how == 'u' for how, _ in marks[index:close]) and _brace_sequence(text[index + 1:close - 1], shell)):
 				end = close
 		elif char == '(':
 			end = closing(index, 'u') or length
@@ -2175,6 +2175,129 @@ def _without_shell_expansions(token, shell):
 		position = end + 1
 	blanked = ''.join(blanked)
 	return Token(blanked, blanked if token.raw == text else token.raw, token.quoted, token.open_quote, token.start)
+
+# a brace warning lists the hosts to write instead up to this many
+BRACE_LIST_LIMIT = 16
+
+def _is_integer(text):
+	return _is_digits(text[1:] if text.startswith('-') else text)
+
+def _brace_sequence(inside, shell):
+	'''
+	What the shell puts in place of a {x..y} or {x..y..step}, given what is inside the braces:
+	(a range of numbers, the width the shell pads them to, 0 for none), or (a list of characters,
+	0). None when the shell leaves the braces as typed (always in fish, which has no sequences).
+	'''
+	fields = inside.split('..')
+	if shell == 'fish' or len(fields) not in (2, 3):
+		return None
+	first, last = fields[0], fields[1]
+	step = abs(int(fields[2])) if len(fields) == 3 and _is_integer(fields[2]) else (1 if len(fields) == 2 else 0)
+	if not step:
+		return None
+	if _is_integer(first) and _is_integer(last):
+		low, high = int(first), int(last)
+		# a leading zero on either end pads every number to the longer end
+		padded = any(len(field.lstrip('-')) > 1 and field.lstrip('-').startswith('0') for field in (first, last))
+		numbers = range(low, high + 1, step) if low <= high else range(low, high - 1, -step)
+		return numbers, max(len(first), len(last)) if padded else 0
+	# letters; zsh takes any two characters
+	if len(first) == 1 and len(last) == 1 and (shell == 'zsh' or ((first + last).isalpha() and max(first, last) < '\x80')):
+		low, high = ord(first), ord(last)
+		codes = range(low, high + 1, step) if low <= high else range(low, high - 1, -step)
+		return [chr(code) for code in codes], 0
+	return None
+
+def _brace_values(text, marks, start, end, shell):
+	'''
+	(values, width) for the braces text[start:end] the shell expands: a list for {a,b}, else
+	_brace_sequence's. (None, 0) when they nest or the shell leaves them as typed.
+	'''
+	inner = range(start + 1, end - 1)
+	if any(text[position] in '{}' and marks[position][0] == 'u' for position in inner):
+		return None, 0
+	cuts = [position for position in inner if text[position] == ',' and marks[position][0] == 'u']
+	if cuts:
+		bounds = [start] + cuts + [end - 1]
+		return [text[low + 1:high] for low, high in zip(bounds, bounds[1:])], 0
+	if any(marks[position][0] != 'u' for position in inner):
+		return None, 0
+	return _brace_sequence(text[start + 1:end - 1], shell) or (None, 0)
+
+def _closed_brackets(text):
+	'''Whether every [ of text closes before another opens: mssh pairs its [ ] as typed when more are added around it.'''
+	inside = False
+	for char in text:
+		if char == '[':
+			if inside:
+				return False
+			inside = True
+		elif char == ']':
+			inside = False
+	return not inside
+
+def _brace_split(token, shell):
+	'''
+	The warning for a hosts word the shell makes several words of by brace expansion (node{1,2},
+	gpu{01..16}): mssh takes the first as its hosts and runs the second as the command. It says
+	what to write instead (a list, an mssh range) for a word typed without quotes. None for any
+	other word.
+	'''
+	if '{' not in token.raw:
+		return None
+	text = token.text
+	marks = _quoting(token.raw)
+	if len(marks) != len(text):
+		return None
+	groups = []
+	for start, end in _shell_expansions(text, marks, shell):
+		if text[start] == '{':
+			values, width = _brace_values(text, marks, start, end, shell)
+			if values is None:
+				return None
+			groups.append((start, end, values, width))
+	bounds = [0] + [edge for start, end, _, _ in groups for edge in (start, end)] + [len(text)]
+	# braces the shell leaves around or between expanded ones change how it reads them: not worked out
+	if any(text[position] in '{}' and marks[position][0] == 'u' for low, high in zip(bounds[::2], bounds[1::2]) for position in range(low, high)):
+		return None
+	pieces = [text[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
+	count = 1
+	for _, _, values, _ in groups:
+		count *= len(values)
+	# the shell drops an empty word: what it leaves is not worked out
+	if count < 2 or (not ''.join(pieces) and any('' in values for _, _, values, _ in groups if isinstance(values, list))):
+		return None
+
+	def value(group, number):
+		_, _, values, width = group
+		return values[number] if isinstance(values, list) else '{:0{width}d}'.format(values[number], width=width)
+
+	def mssh_range(group):
+		'''A {1..16} as an mssh range, [1-16]. mssh pads to the shorter end: both ends get the shell's width.'''
+		_, _, numbers, width = group
+		low, high = sorted((numbers[0], numbers[-1]))
+		return '[{:0{width}d}-{:0{width}d}]'.format(low, high, width=width)
+
+	def word(number):
+		'''Word number (0: the first) of those the shell makes: bash and zsh vary the last braces fastest, fish the first.'''
+		chosen = {}
+		for index in (range(len(groups)) if shell == 'fish' else range(len(groups) - 1, -1, -1)):
+			number, chosen[index] = divmod(number, len(groups[index][2]))
+		return pieces[0] + ''.join(value(groups[index], chosen[index]) + pieces[index + 1] for index in range(len(groups)))
+
+	dash, _ = _punctuation()
+	message = '{}: the shell makes {} words of this; mssh would run {} as the command'.format(token.raw, count, word(1))
+	meant = None
+	if token.raw == text:
+		if (all(isinstance(values, range) and abs(values.step) == 1 and min(values[0], values[-1]) >= 0 for _, _, values, _ in groups)
+				and all(_closed_brackets(piece) for piece in pieces)):
+			meant = pieces[0] + ''.join(mssh_range(group) + pieces[index + 1] for index, group in enumerate(groups))
+		elif count <= BRACE_LIST_LIMIT:
+			# hosts beside the braces once
+			meant = ','.join(_unique(host for number in range(count) for host in word(number).split(',')))
+	if meant is not None and len(message) + len(dash) + len(meant) + len('did you mean ?') <= MAX_MESSAGE:
+		message += dash + 'did you mean {}?'.format(meant)
+	return Diagnostic(token.start, token.start + len(token.raw), 'range', message)
 
 def _is_ip_address(name):
 	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
@@ -2579,6 +2702,9 @@ class Engine(object):
 				continue
 			if role == ROLE_HOSTS:
 				found.extend(self._host_diagnostics(_without_shell_expansions(token, request.shell), states, now, wanted, reach))
+				split = _brace_split(token, request.shell)
+				if split is not None:
+					found.append(split)
 		found.extend(self._option_diagnostics(options))
 		wanted = _unique(wanted)
 		if probe and wanted and self.directory:
