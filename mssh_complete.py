@@ -2312,6 +2312,14 @@ def _shell_escape(shell, text, strict=False):
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
 
+# shells that expand ! inside double quotes when they read a line (history expansion, on by default in
+# interactive bash and zsh); there a backslash stops it in bash only by staying in the word
+_BANG_SHELLS = frozenset(('bash', 'zsh'))
+
+def _bang_in_double_quotes(shell, open_quote, text):
+	'''Whether text put inside an open double quote holds a ! that shell would expand.'''
+	return open_quote == '"' and shell in _BANG_SHELLS and '!' in text
+
 def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
@@ -2682,7 +2690,7 @@ class Engine(object):
 		if context.open_quote:
 			closing = '"' if context.open_quote == '"' else "'"
 			unsafe = '"\\$`' if closing == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in unsafe for char in rest) or _bang_in_double_quotes(request.shell, context.open_quote, rest):
 				return None
 			if context.slot == SLOT_COMMAND:
 				rest += closing
@@ -2716,7 +2724,7 @@ class Engine(object):
 		rest = common[len(typed):]
 		if context.open_quote:
 			unsafe = '"\\$`' if context.open_quote == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in unsafe for char in rest) or _bang_in_double_quotes(shell, context.open_quote, rest):
 				return None
 		else:
 			rest = _shell_escape(shell, rest, _literal_word(context))
@@ -2831,7 +2839,7 @@ class Engine(object):
 				shares.append(share)
 				features.update(make_features([], hosts, []))
 		command, share = _top_share(self._feature_values('c:', features, deadline))
-		quote = _quote_command(command) if command is not None else None
+		quote = _quote_command(command, shell) if command is not None else None
 		if quote is None:
 			return '', 0.0
 		text += ' ' + quote + command + quote
@@ -2872,6 +2880,8 @@ class Engine(object):
 				if context.open_quote == '"' and any(char in rest for char in '"\\$`'):
 					continue
 				if context.open_quote in ("'", "$'") and "'" in rest:
+					continue
+				if _bang_in_double_quotes(request.shell, context.open_quote, rest):
 					continue
 				if not context.open_quote and not bash_quotes:
 					rest = _shell_escape(request.shell, rest, _literal_word(context))
@@ -3702,11 +3712,69 @@ def picker_items(request, engine, history_lines, now=None):
 	history = [PickItem(entries[number][2], '', seen[entries[number][2]][1], entries[number][1]) for number in order]
 	return slot, title, history, word
 
+def _bangs_out(text, after_dollar):
+	'''Double quoted text (its quotes left out) as bangs_out_of_double_quotes writes it, quotes included.'''
+	pieces = ['']
+	position = 0
+	while position < len(text):
+		char = text[position]
+		if char == '\\':
+			pieces[-1] += text[position:position + 2]
+			position += 2
+			continue
+		# $! is a parameter (zsh also takes flags between: $=!, $#!)
+		if char == '!' and text[position + 1:position + 2] not in (' ', '\t', '=') and not pieces[-1].rstrip('=~^#+').endswith('$'):
+			pieces.append('')
+		else:
+			pieces[-1] += char
+		position += 1
+	if len(pieces) == 1:
+		return '"' + text + '"'
+	# no empty "" next to a ! (but the one after a $ stays: bash reads $"..." as a translated string)
+	return '\\!'.join('"' + piece + '"' if piece or (number == 0 and after_dollar) else '' for number, piece in enumerate(pieces))
+
+def bangs_out_of_double_quotes(line):
+	'''
+	line with each ! that bash or zsh would expand inside double quotes taken out of them, escaped:
+	"a!b" -> "a"\\!"b", "done!" -> "done"\\!. The words mean what they meant. Left as they are: a ! outside
+	double quotes, before a blank or =, or in $! (none of which bash expands), and the rest of the line
+	from double quotes holding ${, $( or ` on, since the shell reads quotes inside those again.
+	'''
+	out = []
+	index = 0
+	while index < len(line):
+		char = line[index]
+		end = index + 1
+		if char == '\\':
+			end = index + 2
+		elif char == "'" or line.startswith("$'", index):
+			# nothing expands in single quotes; in $'...' a backslash escapes the quote
+			end = index + (2 if char == '$' else 1)
+			while end < len(line) and line[end] != "'":
+				end += 2 if char == '$' and line[end] == '\\' else 1
+			end += 1
+		elif char == '"':
+			while end < len(line) and line[end] != '"':
+				end += 2 if line[end] == '\\' else 1
+			text = line[index + 1:end]
+			if end >= len(line) or '`' in text or '$(' in text or '${' in text:
+				# where these quotes end, and so how the rest reads, is not sure
+				out.append(line[index:])
+				break
+			out.append(_bangs_out(text, out[-1:] == ['$']))
+			index = end + 1
+			continue
+		out.append(line[index:end])
+		index = end
+	return ''.join(out)
+
 def apply_pick(request, picker, word, context):
 	'''The new line and cursor after a choice: (line, cursor).'''
 	item = picker.chosen()
 	if picker.tab == 'history':
-		return item.text, len(item.text)
+		# a line recorded in double quotes (mssh 6.26 and older) may hold a ! the shell would expand
+		text = bangs_out_of_double_quotes(item.text) if request.shell in _BANG_SHELLS else item.text
+		return text, len(text)
 	suffix = ' '
 	if context is not None and context.open_quote:
 		suffix = ('"' if context.open_quote == '"' else "'") + ' '
@@ -5604,9 +5672,9 @@ def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', 
 		position += 1
 	return result
 
-def _quote_command(command):
-	'''(quote char, command) for typing command inside quotes, or None when that would need escapes.'''
-	if not any(char in command for char in '"\\$`'):
+def _quote_command(command, shell):
+	'''The quote char for typing command inside quotes in shell, or None when that would need escapes.'''
+	if not any(char in command for char in '"\\$`') and not _bang_in_double_quotes(shell, '"', command):
 		return '"'
 	if "'" not in command:
 		return "'"
@@ -5672,7 +5740,8 @@ def slot_cases(entry):
 	commands = [command for command in entry.commands if command.strip()]
 	quoted_commands = []
 	for command in commands:
-		quote = _quote_command(command)
+		# the replay types as an operator does in bash
+		quote = _quote_command(command, 'bash')
 		if quote is None:
 			commands = []
 			quoted_commands = []
@@ -5687,7 +5756,7 @@ def slot_cases(entry):
 		cases.append(('hosts', head, '', entry.hosts, False, first_command if plain else ''))
 		if tail:
 			cases.append(('hosts-back', head, tail, entry.hosts, False, ''))
-		if commands and _quote_command(commands[0]) == '"':
+		if commands and _quote_command(commands[0], 'bash') == '"':
 			cases.append(('command', head + entry.hosts + ' "', '', commands[0], True, ''))
 	for number, (_, value, name) in enumerate(options):
 		others = ' '.join(['mssh'] + option_texts[:number] + option_texts[number + 1:]) + ' '
@@ -5948,7 +6017,8 @@ def editor_completions(engine, before):
 			names = sorted(os.listdir(listed))
 		except OSError:
 			names = []
-		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
+		# in "..." bash also expands ! (history expansion)
+		unsafe = {'"': '"\\$`!', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
 		for name in names:
 			if not name.startswith(start) or _has_control(name):
 				continue

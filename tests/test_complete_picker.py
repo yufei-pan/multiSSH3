@@ -192,6 +192,38 @@ def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	assert mc.apply_pick(req, picker, None, None) == (texts[0], len(texts[0]))
 
 
+@pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
+def test_history_tab_takes_a_bang_out_of_double_quotes(shell):
+	# mssh 6.26 and older recorded commands in double quotes, where bash and zsh expand ! when the line runs
+	history = [line(NOW, '-su', 'web1', '"grep !important /etc/x"')]
+	req = mc.Request(shell, 'mssh ', '', '')
+	_, _, offered, _ = mc.picker_items(req, engine(history), history, NOW)
+	recorded = 'mssh -su web1 "grep !important /etc/x"'
+	assert [item.text for item in offered] == [recorded]
+	inserted = recorded if shell == 'fish' else 'mssh -su web1 "grep "\\!"important /etc/x"'
+	assert mc.apply_pick(req, mc.Picker([], offered), None, None) == (inserted, len(inserted))
+
+
+@pytest.mark.parametrize('text, moved', [
+	('mssh h "grep !x f"', 'mssh h "grep "\\!"x f"'),
+	('mssh h "echo done!"', 'mssh h "echo done"\\!'),
+	('mssh h "!x" "a!!b"', 'mssh h \\!"x" "a"\\!\\!"b"'),
+	('mssh h "a\\"!b"', 'mssh h "a\\""\\!"b"'),
+	# bash reads $"..." as "..." (translated), zsh as $ and "...": the quote after $ is never taken back
+	('mssh h $"!x"', 'mssh h $""\\!"x"'),
+	# never expanded: in single quotes, in $'...', escaped, before a blank or =, and $!
+	("mssh h 'a!b' $'c!d' e\\!f", None),
+	('mssh h "a != b" "a!=b" "$!"', None),
+	# expansions read the quotes inside them again
+	('mssh h "${!name}" "${x:-a!b}" "$(echo a!b)" "`echo a!b`"', None),
+])
+def test_bangs_out_of_double_quotes(text, moved):
+	moved = text if moved is None else moved
+	assert mc.bangs_out_of_double_quotes(text) == moved
+	# the words are what they were
+	assert [token.text for token in mc.lex(moved)] == [token.text for token in mc.lex(text)]
+
+
 def run_engine(args, data, env):
 	'''Run the engine with no controlling terminal.'''
 	import subprocess

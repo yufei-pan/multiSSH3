@@ -170,6 +170,16 @@ def test_editor_file_names_follow_bash(tmp_path, monkeypatch):
 	assert texts('mssh -f ~/my') == ['~/my\\ file.txt']
 
 
+def test_editor_file_names_put_no_bang_inside_double_quotes(tmp_path, monkeypatch):
+	# bash expands ! inside double quotes when it reads the line (history expansion)
+	(tmp_path / 'wow!.txt').write_text('')
+	monkeypatch.chdir(tmp_path)
+	engine = mc.Engine(mc.spec_from_parser(multiSSH3.get_parser()), [])
+	assert mc.editor_completions(engine, 'mssh -f "wo')[0] == []
+	assert mc.editor_completions(engine, "mssh -f 'wo")[0] == ["'wow!.txt"]
+	assert mc.editor_completions(engine, 'mssh -f wo')[0] == ['wow\\!.txt']
+
+
 def test_tab_with_nothing_to_insert_opens_the_slot_menu():
 	opened = []
 

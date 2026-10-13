@@ -78,6 +78,35 @@ def test_inside_an_open_quote_the_suggestion_closes_it():
 	assert ghost.text == 'idia-smi"'
 
 
+# bash and zsh expand ! inside double quotes when they read the line (history expansion, on by default)
+BANG = [line(NOW - number, '-su -u=ops', 'web1', "'grep !important /etc/x'") for number in range(6)]
+
+
+@pytest.mark.parametrize('shell, quoted', [
+	('bash', "'grep !important /etc/x'"), ('zsh', "'grep !important /etc/x'"), ('fish', '"grep !important /etc/x"')])
+def test_a_command_holding_a_bang_is_suggested_in_single_quotes(shell, quoted):
+	assert suggest('mssh -u o', shell=shell, history=BANG).text == 'ps web1 ' + quoted
+
+
+def test_a_command_holding_a_bang_and_a_single_quote_is_not_suggested():
+	history = [line(NOW - number, '-su -u=ops', 'web1', '"echo it\'s done!"') for number in range(6)]
+	assert suggest('mssh -u o', history=history).text == 'ps'
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_no_bang_is_suggested_inside_an_open_double_quote(shell):
+	assert suggest('mssh -u=ops web1 "gr', shell=shell, history=BANG) is None
+	assert suggest("mssh -u=ops web1 'gr", shell=shell, history=BANG).text == "ep !important /etc/x'"
+	# nor in the start values share
+	shared = [line(NOW - number, '-su', 'web1', "'echo hi!{}'".format(end)) for number in range(3) for end in 'ab']
+	assert suggest('mssh web1 "ec', shell=shell, history=shared) is None
+	assert suggest("mssh web1 'ec", shell=shell, history=shared).text == 'ho hi!'
+
+
+def test_fish_suggests_a_bang_inside_double_quotes():
+	assert suggest('mssh -u=ops web1 "gr', shell='fish', history=BANG).text == 'ep !important /etc/x"'
+
+
 def test_unquoted_command_words_are_escaped():
 	ghost = suggest('mssh storage1 cat /da', history=[line(NOW - number, '-su', 'storage1', '"cat /data|wc"') for number in range(5)])
 	assert ghost.text == 'ta\\|wc'
