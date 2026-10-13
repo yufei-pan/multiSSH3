@@ -406,14 +406,18 @@ def test_run_command_ends_its_threads_when_the_command_cannot_start(fake_host, m
 		raise FileNotFoundError(errno.ENOENT, "No such file or directory", "/missing/ssh")
 
 	_patch_popen(monkeypatch, missing_ssh)
-	before = threading.active_count()
+	# threads left by earlier tests (readers given up on a background process) may end meanwhile: count only new ones
+	before = set(threading.enumerate())
+
+	def started_here():
+		return [thread for thread in threading.enumerate() if thread not in before]
 
 	multiSSH3.run_command(host, sem, timeout=5)
 
 	deadline = time.monotonic() + 2
-	while threading.active_count() > before and time.monotonic() < deadline:
+	while started_here() and time.monotonic() < deadline:
 		threading.Event().wait(0.01)
-	assert threading.active_count() == before
+	assert started_here() == []
 	assert host.returncode == -1
 
 
