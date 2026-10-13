@@ -1,11 +1,27 @@
+import setuptools
 from setuptools import setup
 from multiSSH3 import version
+
+classifiers = [
+    'Programming Language :: Python :: 3',
+    'Operating System :: POSIX :: Linux',
+    'Operating System :: MacOS',
+    'Operating System :: Microsoft :: Windows',
+]
+# setuptools 77+ (PEP 639) takes an SPDX license expression and warns about license classifiers (an error next to an
+# expression); older ones (the newest for Python 3.8 and earlier, so all a Python 3.6 install has) know only the
+# free-text license and the classifier. The LICENSE text reaches their sdist through MANIFEST.in.
+if int(setuptools.__version__.split('.')[0]) >= 77:
+    license_metadata = {'license_expression': 'GPL-3.0-or-later', 'license_files': ['LICENSE']}
+else:
+    license_metadata = {'license': 'GPL-3.0-or-later'}
+    classifiers.append('License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)')
 
 setup(
     name='multiSSH3',
     version=version,
     description='Run commands on multiple hosts via SSH',
-    long_description=open('README.md').read(),
+    long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Yufei Pan',
     author_email='pan@zopyr.us',
@@ -21,13 +37,7 @@ setup(
             'mssh-complete=mssh_complete:main',
         ],
     },
-    classifiers=[
-        'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
-        'Operating System :: POSIX :: Linux',
-        'Operating System :: MacOS',
-        'Operating System :: Microsoft :: Windows',
-    ],
+    classifiers=classifiers,
     python_requires='>=3.6',
-	license='GPLv3+',
+    **license_metadata
 )
