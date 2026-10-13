@@ -168,6 +168,9 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setattr(multiSSH3, "_binPaths", dict(scenario["bins"]))
 	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [dict(d) for d in scenario.get("ipmi", [ipmi()])])
 	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", scenario.get("strict", False))
+	# the golden command lines are from before ssh got its timeout options: test_ssh_timeouts.py covers those
+	for setting in ("DEFAULT_SSH_CONNECT_TIMEOUT", "DEFAULT_SSH_SERVER_ALIVE_INTERVAL", "DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX"):
+		monkeypatch.setattr(multiSSH3, setting, 0)
 	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", scenario.get("debug", False))
 	# a key given as ~/... is expanded from HOME
 	monkeypatch.setenv("HOME", "/home/tester")

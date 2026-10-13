@@ -73,6 +73,11 @@ DEFAULT_SCP = False
 DEFAULT_FILE_SYNC = False
 DEFAULT_TIMEOUT = 50
 DEFAULT_CLI_TIMEOUT = 0
+# seconds after which ssh gives up on a host that does not answer (ConnectTimeout) or stops answering
+# (ServerAliveInterval x ServerAliveCountMax), unless -ea or the ssh config set them; 0 leaves them to ssh
+DEFAULT_SSH_CONNECT_TIMEOUT = 30
+DEFAULT_SSH_SERVER_ALIVE_INTERVAL = 15
+DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX = 4
 DEFAULT_UNAVAILABLE_HOST_EXPIRY = 600
 DEFAULT_REPEAT = 1
 DEFAULT_INTERVAL = 0
@@ -590,10 +595,10 @@ def _resolve_dns(hostname):
 _SSH_CONFIG_PROBE_NAME = 'multissh3-unknown-host.invalid'
 
 @cache_decorator
-def _ssh_config_values(hostname):
-	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None.'''
+def _ssh_config_values(hostname, config_file=None):
+	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None. config_file: ssh -F.'''
 	try:
-		result = subprocess.run([_binPaths['ssh'], '-G', '--', hostname], stdout=subprocess.PIPE,
+		result = subprocess.run([_binPaths['ssh'], '-G'] + (['-F', config_file] if config_file else []) + ['--', hostname], stdout=subprocess.PIPE,
 						  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
 	except Exception:
 		return None
@@ -655,6 +660,145 @@ def _ssh_config_target(hostname):
 	if templated and not (getIP(target,local=True) or _resolve_dns(target)):
 		return None
 	return target
+
+def _ssh_config_dirs():
+	'''
+	Where ssh reads its config: (the user's ~/.ssh, /etc/ssh). Like ssh, the user's home directory
+	is the passwd database's, not $HOME.
+	'''
+	try:
+		import pwd
+		home = pwd.getpwuid(os.getuid()).pw_dir
+	except Exception:
+		home = os.path.expanduser('~')
+	return os.path.join(home, '.ssh'), '/etc/ssh'
+
+# "keyword arguments" or "keyword=arguments", as ssh reads a config line; no match for comments and blank lines
+_SSH_CONFIG_LINE = re.compile(r'\s*([^\s=#]+)\s*=?\s*(.*)')
+
+@cache_decorator
+def _ssh_config_keywords(config_file=None):
+	'''
+	The keywords (lowercased) set anywhere in ssh's config files, for any host, or None when mssh
+	cannot tell which files ssh reads (an Include with %d or ${HOME}, which ssh expands itself).
+
+	Reads ~/.ssh/config and /etc/ssh/ssh_config, or config_file (ssh -F), and the files they
+	Include, without running anything: only an option the files mention is worth an ssh -G per
+	host, which runs their Match exec lines.
+	'''
+	user_dir, system_dir = _ssh_config_dirs()
+	if config_file:
+		files = [] if config_file.lower() == 'none' else [(config_file, user_dir)]
+	else:
+		files = [(os.path.join(user_dir, 'config'), user_dir), (os.path.join(system_dir, 'ssh_config'), system_dir)]
+	keywords = set()
+	read = set()
+	while files:
+		path, include_dir = files.pop()
+		# a file including itself, or includes without end, are read once; a pipe is left to ssh
+		if path in read or len(read) > 256 or not os.path.isfile(path):
+			continue
+		read.add(path)
+		try:
+			with open(path, errors='replace') as f:
+				lines = f.read().splitlines()
+		except OSError:
+			continue
+		for line in lines:
+			match = _SSH_CONFIG_LINE.match(line)
+			if not match:
+				continue
+			keyword = match.group(1).lower()
+			keywords.add(keyword)
+			if keyword != 'include':
+				continue
+			try:
+				patterns = shlex.split(match.group(2), comments=True)
+			except ValueError:
+				return None
+			for pattern in patterns:
+				if '%' in pattern or '$' in pattern:
+					return None
+				if pattern.startswith('~/'):
+					pattern = os.path.join(os.path.dirname(user_dir), pattern[2:])
+				# relative to ~/.ssh in the user's files, to /etc/ssh in the system's
+				pattern = os.path.join(include_dir, os.path.expanduser(pattern))
+				files.extend((included, include_dir) for included in glob.glob(pattern))
+	return keywords
+
+def _ssh_options_given(args):
+	'''
+	What the ssh options among args (-ea: its words, or the string) set: (the keywords of the -o
+	options, lowercased; the config file of -F, or None). For an rsync copy too: rsync's own -o and
+	-F take no value.
+	'''
+	keywords = set()
+	config_file = None
+	args = args.split() if isinstance(args, str) else [str(arg) for arg in args or ()]
+	for index, arg in enumerate(args):
+		if arg[:2] not in ('-o', '-F'):
+			continue
+		# -oKeyword=value, or -o Keyword=value: the keyword up to a space or =
+		value = arg[2:] if arg[2:] else (args[index + 1] if index + 1 < len(args) else '')
+		if not arg[2:] and value.startswith('-'):
+			continue
+		if arg[:2] == '-o':
+			keywords.add(re.split(r'[\s=]', value.strip().strip('\'"'), maxsplit=1)[0].lower())
+		elif value.strip().lower() == 'none' or os.path.isfile(value.strip()):
+			# not rsync's -FF (filter rules)
+			config_file = value.strip()
+	return keywords, config_file
+
+def _whole_number(value):
+	'''A DEFAULT_SSH_* setting as the whole number ssh takes (rounded up), 0 for none.'''
+	try:
+		return max(0, int(math.ceil(float(value))))
+	except (TypeError, ValueError, OverflowError):
+		return 0
+
+# many hosts start at once: at most this many ssh -G for _ssh_timeout_options at a time
+_ssh_config_slots = threading.BoundedSemaphore(8)
+
+def _ssh_timeout_options(destination, ssh_args=()):
+	'''
+	The -o options that make ssh give up on a host that does not answer, or stops answering, so it
+	cannot hold up the run: ConnectTimeout, ServerAliveInterval and ServerAliveCountMax from the
+	DEFAULT_SSH_* settings, 0 leaving one to ssh.
+
+	The operator's values win. ssh uses the first value it gets, and a command-line -o beats the
+	ssh config, so an option is left out when ssh_args (-ea) give it, or when the ssh config sets it
+	for this destination: ssh -G is asked only when the config files mention the option. mssh's
+	ServerAliveCountMax only goes with mssh's ServerAliveInterval.
+
+	Args:
+		destination (str): [user@]host, as ssh gets it
+		ssh_args (list): -ea's words
+
+	Returns:
+		list: '-o', 'Keyword=number' words
+	'''
+	given, config_file = _ssh_options_given(ssh_args)
+	wanted = []
+	# (keyword, number, what ssh -G shows when nothing sets it)
+	for keyword, value, unset in (('ConnectTimeout', DEFAULT_SSH_CONNECT_TIMEOUT, 'none'),
+			('ServerAliveInterval', DEFAULT_SSH_SERVER_ALIVE_INTERVAL, '0'),
+			('ServerAliveCountMax', DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX, '3')):
+		number = _whole_number(value)
+		if number and keyword.lower() not in given:
+			wanted.append((keyword, number, unset))
+	mentioned = _ssh_config_keywords(config_file)
+	if wanted and (mentioned is None or any(keyword.lower() in mentioned for keyword, _, _ in wanted)):
+		with _ssh_config_slots:
+			config = _ssh_config_values(destination, config_file) if config_file else _ssh_config_values(destination)
+		if config:
+			wanted = [(keyword, number, unset) for keyword, number, unset in wanted if config.get(keyword.lower(), unset) == unset]
+	if not any(keyword == 'ServerAliveInterval' for keyword, _, _ in wanted):
+		# with the operator's keepalive interval (or none), the count is theirs too
+		wanted = [option for option in wanted if option[0] != 'ServerAliveCountMax']
+	options = []
+	for keyword, number, _ in wanted:
+		options += ['-o', '{}={}'.format(keyword, number)]
+	return options
 
 
 _i_counter = count()
@@ -3848,6 +3992,11 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				host.name = 'localhost'
 				return attempt('rebuild')
 		else:
+			# ssh, scp and rsync's ssh give up on a host that does not answer, or stops answering. An -o
+			# or -F in -ea is ssh's for rsync too: rsync's own -o and -F take no value
+			timeoutOptions = _ssh_timeout_options(host.resolvedName, extraargs)
+			sshLocalExtraArgs += timeoutOptions
+			rsyncLocalExtraArgs[-1] += ''.join(' ' + option for option in timeoutOptions)
 			if host.files:
 				if host.scp:
 					if 'scp' in _binPaths:
@@ -4347,7 +4496,11 @@ def _copy_id_command(host, identity_file=None, extraargs=None):
 		words += ['-i', os.path.expanduser(identity_file)]
 	if not SSH_STRICT_HOST_KEY_CHECKING:
 		words += ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
-	words += _copy_id_extra_args(extraargs)
+	# a host that does not answer must not hold up the others (without -p they run one by one); the
+	# operator's options are the ones ssh-copy-id gets (it drops -F)
+	extra = _copy_id_extra_args(extraargs)
+	words += _ssh_timeout_options(host, extra)
+	words += extra
 	words.append(host)
 	return ' '.join(shlex.quote(word) for word in words)
 
@@ -7195,6 +7348,9 @@ def generate_default_config(args):
 		'DEFAULT_FILE_SYNC': args.file_sync,
 		'DEFAULT_TIMEOUT': DEFAULT_TIMEOUT,
 		'DEFAULT_CLI_TIMEOUT': args.timeout,
+		'DEFAULT_SSH_CONNECT_TIMEOUT': DEFAULT_SSH_CONNECT_TIMEOUT,
+		'DEFAULT_SSH_SERVER_ALIVE_INTERVAL': DEFAULT_SSH_SERVER_ALIVE_INTERVAL,
+		'DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX': DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX,
 		'DEFAULT_UNAVAILABLE_HOST_EXPIRY': args.unavailable_host_expiry,
 		'DEFAULT_REPEAT': args.repeat,
 		'DEFAULT_INTERVAL': args.interval,

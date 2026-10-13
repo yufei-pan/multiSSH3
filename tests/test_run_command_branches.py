@@ -91,6 +91,7 @@ def test_run_command_scp_files(fake_host, monkeypatch):
 	assert scp_calls[0] == [
 		"scp", "-rp",
 		"-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
 
@@ -161,6 +162,7 @@ def test_run_command_gather_mode_scp(fake_host, monkeypatch):
 	assert gather_calls[0] == [
 		"scp", "-rp",
 		"-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"--", "mock-a:/tmp/remote", "/tmp/local",
 	]
 
