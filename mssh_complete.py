@@ -1841,8 +1841,10 @@ def take_probe_queue(directory):
 
 #%% ------------ Prober ----------------
 PROBE_RUN_LIMIT = 120.0  # seconds one prober run may last; the next query starts another for what is left
-PING_COMMAND = ('ping', '-c2', '-i0.2', '-W1', '-q')
+PING_OPTIONS = ('-i0.2', '-W1', '-q')
+PING_COMMAND = ('ping', '-c2') + PING_OPTIONS
 PING_TIMEOUT = 10   # seconds: PING_COMMAND is done in about one, unless its own name lookup hangs
+PING_LOOPBACK = '127.0.0.1'  # pinged once a run, to tell whether ping works here at all
 DNS_TIMEOUT = 2.0
 
 def _out_of_resources(error):
@@ -1867,12 +1869,34 @@ def probe_parallelism(mssh):
 		pass
 	return max(parallel, 4)
 
+def ping_works():
+	'''
+	Whether ping can work here at all, from one ping of the loopback address with the prober's
+	options. Without permission (no CAP_NET_RAW, a group outside net.ipv4.ping_group_range) ping
+	fails for every host, yet no one host's failure tells: iputils ping exits 2 both for that and
+	for a name it cannot resolve, busybox ping 1 both for that and for silence, and their messages
+	are translated. The loopback address needs no name lookup, so a failure there with a message,
+	or with an exit code other than 1 (silence), means ping cannot work. A loopback that is silent
+	without saying why (a firewall dropping ICMP) leaves ping on, as does a check that cannot
+	finish for now (out of descriptors or processes, out of time).
+	'''
+	import subprocess
+	argv = [PING_COMMAND[0], '-c1'] + list(PING_OPTIONS) + [PING_LOOPBACK]
+	try:
+		result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PING_TIMEOUT)
+	except subprocess.TimeoutExpired:
+		return True
+	except OSError as e:
+		# out of resources says nothing yet; otherwise there is no ping command, or one we may not run
+		return _out_of_resources(e)
+	return result.returncode == 0 or (result.returncode == 1 and not result.stderr.strip())
+
 def ping_host(host):
 	'''
-	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (no permission, a name it
-	cannot resolve) or runs out of time (stuck on its name lookup: a slow DNS server says nothing
-	about the host). Raises FileNotFoundError without a ping command, OSError when out of
-	descriptors or processes.
+	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (a name it cannot
+	resolve; run_probe finds out first whether ping works at all, see ping_works) or runs out of
+	time (stuck on its name lookup: a slow DNS server says nothing about the host). Raises
+	FileNotFoundError without a ping command, OSError when out of descriptors or processes.
 	'''
 	import subprocess
 	argv = list(PING_COMMAND) + (['-6'] if ':' in host else []) + [host]
@@ -1962,7 +1986,7 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=
 	parallel = probe_parallelism(mssh)
 	started = now()
 	checked = 0
-	ping_available = [True]
+	ping_available = None
 	while now() - started < limit:
 		hosts = take_probe_queue(directory)
 		if not hosts:
@@ -1974,6 +1998,9 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=
 			if now() - started >= limit:
 				queue_probes(directory, todo[::-1])
 				return {'checked': checked, 'parallel': parallel}
+			if ping_available is None:
+				# once a run, and only once there is a host to check
+				ping_available = [ping_works()]
 			batch, todo = todo[:parallel], todo[parallel:]
 			retry = _probe_batch(mssh, batch, states, now, ping_available)
 			if lock and read_lock(lock) != owner:
