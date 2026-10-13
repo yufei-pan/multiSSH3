@@ -223,6 +223,8 @@ When a definition of step 2 applies to the host, the login of step 1 or 3 is onl
 | `DEFAULT_IPMI_USERNAME`, `DEFAULT_IPMI_PASSWORD` and `DEFAULT_IPMI_DEFINITIONS` as above | | `u1`/`p1`, `u2`/`p2`, `ADMIN`/`pw` |
 | `"DEFAULT_IPMI_DEFINITIONS": [{"hostname_keyword": "gpu", "username": "root", "password": "x"}]` | | `root`/`x` on `gpu01`, `admin`/`admin` on `cpu01` |
 
+A host that fails every login then gets `ipmitool` run on it over ssh (see `-M, --ipmi`), once: mssh does not run a command line it already ran on that host.
+
 `--store_config_file` stores the command line's IPMI options as the `DEFAULT_IPMI_*` values and keeps your `DEFAULT_IPMI_DEFINITIONS`. A definition in the list with all seven keys equal to the `DEFAULT_IPMI_*` values or to the built-in ones is not a login of its own: it marks where the `DEFAULT_IPMI_*` login goes. mssh writes one there (the list starts with one, and `--store_config_file` puts it first when the command line had IPMI options, as they were tried first). Config files written by mssh 6.31 and earlier can hold such a copy of the built-in `admin` / `admin` definition: it is read the same way, so it no longer makes mssh try `admin` / `admin` before your login.
 
 ## Environment Variables for Hostname Aliases

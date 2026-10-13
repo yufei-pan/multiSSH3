@@ -2752,18 +2752,31 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 	if retry_limit is ...:
 		# resolved at call time, the CLI and config files can add ipmi definitions after import
 		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
+	# the IPMI command lines run on this host: one again (the ssh fallback every failed definition
+	# adds, or two definitions that end up the same) would only repeat a failed login
+	ran = set()
 	while True:
 		if retry_limit < 0:
 			host.output.append('Error: Retry limit reached!')
 			host.stderr.append('Error: Retry limit reached!')
 			host.returncode = 1
 			return
+		line_counts = (len(host.output), len(host.stdout), len(host.stderr))
 		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list)
 		if action == 'stop':
 			return
 		if action == 'rebuild':
 			retry_limit -= 1
 			continue
+		if host.ipmi:
+			attempt = tuple(str(arg) for arg in formatedCMD)
+			if attempt in ran:
+				# not run: drop what building it said, it was said when it ran
+				del host.output[line_counts[0]:]
+				del host.stdout[line_counts[1]:]
+				del host.stderr[line_counts[2]:]
+				continue
+			ran.add(attempt)
 		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
 		if stop:
 			return

@@ -61,6 +61,12 @@ def logins_tried(monkeypatch, config=None, argv=(), host='bmc1', command_line=Tr
 	does; argv is the rest of the command line after "-M host 'power status'". Without
 	command_line the module runs the host as when imported (no process_args).
 	'''
+	runs = commands_run(monkeypatch, config, argv, host, command_line)
+	return [_login(run) for run in runs if run[:2] == ['/bin/sh', '-c']]
+
+
+def commands_run(monkeypatch, config=None, argv=(), host='bmc1', command_line=True, bins=('sh', 'ipmitool', 'ssh')):
+	'''Every command line mssh runs for host in --ipmi mode when each one fails (see logins_tried).'''
 	for name, value in BUILTIN.items():
 		monkeypatch.setattr(multiSSH3, name, value)
 	# DEFAULT_IPMI_DEFINITIONS as the module builds it before any config file loads
@@ -71,7 +77,7 @@ def logins_tried(monkeypatch, config=None, argv=(), host='bmc1', command_line=Tr
 	if command_line:
 		args = multiSSH3.process_args(['-M', host, 'power status'] + list(argv))
 		assert args.ipmi
-	monkeypatch.setattr(multiSSH3, '_binPaths', {'sh': '/bin/sh', 'ipmitool': '/bin/ipmitool', 'ssh': '/bin/ssh'})
+	monkeypatch.setattr(multiSSH3, '_binPaths', {name: '/bin/' + name for name in bins})
 	monkeypatch.setattr(multiSSH3.time, 'sleep', lambda seconds: None)
 	runs = []
 
@@ -83,7 +89,8 @@ def logins_tried(monkeypatch, config=None, argv=(), host='bmc1', command_line=Tr
 	target = multiSSH3.Host(host, 'power status', ipmi=True, ip='10.0.0.1')
 	target.interactive_stdin = False
 	multiSSH3.run_command(target, threading.Semaphore(1), 5)
-	return [_login(run) for run in runs if run[:2] == ['/bin/sh', '-c']]
+	assert target.stderr == ['Error: Exhausted all matching ipmi definitions!']
+	return runs
 
 
 def test_nothing_configured_tries_the_built_in_login(monkeypatch):
@@ -204,6 +211,22 @@ def test_command_line_ipmi_args_with_config_login_only(monkeypatch):
 	assert logins_tried(monkeypatch, config, ['-ia=-I lanplus']) == [('cfguser', 'cfgpass', '-I lanplus')]
 
 
+SSH_FALLBACK = ['/bin/ssh', '-o StrictHostKeyChecking=no', '-o UserKnownHostsFile=/dev/null', '--', 'bmc1', 'ipmitool power status']
+
+
+def test_ssh_fallback_runs_once_after_every_login_failed(monkeypatch):
+	# each failed ipmitool login queued the same ssh login again
+	config = {'DEFAULT_IPMI_DEFINITIONS': [{'username': 'u1', 'password': 'p1'}, {'username': 'u2', 'password': 'p2'}]}
+	runs = commands_run(monkeypatch, config)
+	assert [_login(run) for run in runs] == [('u1', 'p1', ''), ('u2', 'p2', ''), tuple(SSH_FALLBACK)]
+
+
+def test_without_local_ipmitool_ssh_runs_once(monkeypatch):
+	# every definition turns into the same ssh login when ipmitool is not installed here
+	config = {'DEFAULT_IPMI_DEFINITIONS': [{'username': 'u1', 'password': 'p1'}, {'username': 'u2', 'password': 'p2'}]}
+	assert commands_run(monkeypatch, config, bins=('sh', 'ssh')) == [SSH_FALLBACK]
+
+
 def _stored_definitions(monkeypatch, tmp_path, config, argv):
 	'''DEFAULT_IPMI_DEFINITIONS and the login as `mssh ARGV --store_config_file` writes them over config.'''
 	for name, value in BUILTIN.items():
@@ -300,6 +323,8 @@ def test_end_to_end_config_login_only(tmp_path):
 def test_end_to_end_definitions_only(tmp_path):
 	runs = _mssh_ipmi_run(tmp_path, {'DEFAULT_IPMI_DEFINITIONS': [{'username': 'u1', 'password': 'p1'}, {'username': 'u2', 'password': 'p2'}]})
 	assert _ipmitool_logins(runs) == [('u1', 'p1'), ('u2', 'p2')]
+	# then ipmitool on the host over ssh, once
+	assert [run for run in runs if run[0] == 'ssh'] == [['ssh', '-o StrictHostKeyChecking=no', '-o UserKnownHostsFile=/dev/null', '--', '127.0.0.1', 'ipmitool power status']]
 
 
 def test_end_to_end_command_line_login_with_config_login(tmp_path):
