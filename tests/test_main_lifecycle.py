@@ -1,6 +1,17 @@
+import io
+import json
+import os
+import select
+import struct
+import subprocess
+import sys
+import threading
+import time
+
 import pytest
 
 import multiSSH3
+from conftest import MULTISSH3_PY
 
 
 def test_main_runs_immediately_and_sleeps_only_between_repeats(fake_host, monkeypatch):
@@ -86,6 +97,21 @@ def test_signal_handler_second_interrupt_kills_only_own_children(monkeypatch):
 	assert commands == []
 
 
+class _TerminalWithoutFileno:
+	"""A terminal stdin select() cannot wait on (e.g. IDLE's): the prompt reads it with a thread."""
+	def __init__(self, line=""):
+		self.line = line
+
+	def isatty(self):
+		return True
+
+	def fileno(self):
+		raise io.UnsupportedOperation("no file descriptor")
+
+	def readline(self):
+		return self.line
+
+
 def test_input_with_timeout_returns_inline_input(monkeypatch):
 	class InlineThread:
 		def __init__(self, target, daemon):
@@ -94,7 +120,7 @@ def test_input_with_timeout_returns_inline_input(monkeypatch):
 			self.target()
 
 	monkeypatch.setattr(multiSSH3.threading, "Thread", InlineThread)
-	monkeypatch.setattr(multiSSH3.sys.stdin, "readline", lambda: "multiple\n")
+	monkeypatch.setattr(sys, "stdin", _TerminalWithoutFileno("multiple\n"))
 
 	assert multiSSH3.input_with_timeout_and_countdown(3) == "multiple"
 
@@ -107,11 +133,194 @@ def test_input_with_timeout_returns_none(monkeypatch):
 			return None
 
 	ticks = iter([0.0, 2.0])
+	monkeypatch.setattr(sys, "stdin", _TerminalWithoutFileno())
 	monkeypatch.setattr(multiSSH3.threading, "Thread", IdleThread)
 	monkeypatch.setattr(multiSSH3.time, "monotonic", lambda: next(ticks, 2.0))
 	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
 
 	assert multiSSH3.input_with_timeout_and_countdown(1) is None
+
+
+@pytest.fixture
+def terminal_stdin(monkeypatch):
+	"""stdin on a fresh pty: returns (master, slave), what is written to master is what the user types."""
+	pty = pytest.importorskip("pty")
+	master, slave = pty.openpty()
+	monkeypatch.setattr(sys, "stdin", io.open(slave, "r", closefd=False))
+	yield master, slave
+	os.close(master)
+	os.close(slave)
+
+
+def _new_threads(before):
+	return [thread for thread in threading.enumerate() if thread not in before and thread.is_alive()]
+
+
+def _next_read(fd, settle=0.3):
+	"""What the next reader of the terminal gets, without blocking (a stray reader may take it first)."""
+	fcntl = pytest.importorskip("fcntl")
+	time.sleep(settle)
+	flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+	fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+	try:
+		return os.read(fd, 1024)
+	except BlockingIOError:
+		return b""
+	finally:
+		fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+
+
+def test_prompt_returns_the_line_typed_at_the_terminal(terminal_stdin):
+	master, slave = terminal_stdin
+	os.write(master, b" m \n")
+
+	assert multiSSH3.input_with_timeout_and_countdown(3) == "m"
+
+
+def test_prompt_leaves_no_reader_behind_when_time_is_up(terminal_stdin, capsys):
+	# the TUI starts right after the prompt: a reader left waiting on the terminal took its first line
+	master, slave = terminal_stdin
+	before = set(threading.enumerate())
+
+	assert multiSSH3.input_with_timeout_and_countdown(2) is None
+
+	assert _new_threads(before) == []
+	os.write(master, b"hi\n")
+	assert _next_read(slave) == b"hi\n"
+	err = capsys.readouterr().err
+	assert "Please enter your selection [2s]: " in err
+	assert "\rPlease enter your selection [1s]: " in err
+
+
+def test_prompt_drops_a_half_typed_answer_when_time_is_up(terminal_stdin):
+	# typed during the prompt, it was meant for the prompt: it must not end up in the next reader's line
+	master, slave = terminal_stdin
+	os.write(master, b"m")
+
+	assert multiSSH3.input_with_timeout_and_countdown(1) is None
+
+	os.write(master, b"\n")
+	assert _next_read(slave) == b"\n"
+
+
+def test_prompt_on_windows_reads_the_console_with_a_thread(monkeypatch):
+	# select() only waits on sockets there
+	def no_select(*args):
+		raise AssertionError("select() on a Windows console")
+	monkeypatch.setattr(select, "select", no_select)
+	stdin = _TerminalWithoutFileno("m\n")
+	stdin.fileno = lambda: 0
+	monkeypatch.setattr(sys, "stdin", stdin)
+	monkeypatch.setattr(multiSSH3.os, "name", "nt")
+
+	assert multiSSH3.input_with_timeout_and_countdown(3) == "m"
+
+
+def test_prompt_takes_the_default_at_once_when_stdin_is_not_a_terminal(monkeypatch, capsys):
+	# e.g. `while read host; do mssh $host ls pwd; done < hosts`: the pipe holds the loop's next hosts, not an answer
+	read_end, write_end = os.pipe()
+	os.write(write_end, b"zz-nohost-2.invalid\nzz-nohost-3.invalid\n")
+	os.close(write_end)
+	monkeypatch.setattr(sys, "stdin", io.open(read_end, "r", closefd=False))
+	start = time.monotonic()
+	try:
+		assert multiSSH3.input_with_timeout_and_countdown(3) is None
+		assert time.monotonic() - start < 1
+		assert os.read(read_end, 1024) == b"zz-nohost-2.invalid\nzz-nohost-3.invalid\n"
+	finally:
+		os.close(read_end)
+	assert "stdin is not a terminal" in capsys.readouterr().err
+
+
+_FAKE_SSH = '''#!{python}
+import os, select, sys, time
+if sys.argv[1:2] == ["-G"]:
+	print("hostname " + sys.argv[-1])
+	sys.exit(0)
+log = os.environ["FAKE_SSH_LOG"]
+with open(log, "a") as f:
+	f.write("START\\n")
+got = b""
+deadline = time.monotonic() + 8
+while b"\\n" not in got and time.monotonic() < deadline:
+	if select.select([0], [], [], 0.1)[0]:
+		data = os.read(0, 1024)
+		if not data:
+			break
+		got += data
+with open(log, "a") as f:
+	f.write("GOT " + repr(got) + "\\n")
+'''
+
+
+def test_tui_gets_the_first_line_typed_after_the_one_word_prompt(tmp_path):
+	# `mssh 127.0.0.1 sleep 9` asks whether `sleep 9` is one command; once the prompt timed out, the
+	# first line typed into the TUI must reach the command (a leftover prompt reader used to take it)
+	pty = pytest.importorskip("pty")
+	termios = pytest.importorskip("termios")
+	fcntl = pytest.importorskip("fcntl")
+	pytest.importorskip("curses")
+	fake_ssh = tmp_path / "fake_ssh"
+	fake_ssh.write_text(_FAKE_SSH.format(python=sys.executable))
+	fake_ssh.chmod(0o755)
+	# in HOME, not --config_file: the program paths are set from the config files read at import
+	config = tmp_path / ".multiSSH3.config.json"
+	config.write_text(json.dumps({"_sshPath": str(fake_ssh), "_scpPath": str(fake_ssh), "_rsyncPath": str(fake_ssh)}))
+	config.chmod(0o600)
+	hosts_file = tmp_path / "hosts"
+	hosts_file.write_text("")
+	runtime = tmp_path / "run"
+	runtime.mkdir(mode=0o700)
+	log = tmp_path / "fake_ssh.log"
+	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(runtime), TERM="xterm-256color", FAKE_SSH_LOG=str(log))
+	for name in ("COLUMNS", "LINES"):
+		env.pop(name, None)
+	# never let a real ssh run: check the program mssh will call before running it
+	ssh_used = subprocess.run(
+		[sys.executable, "-c", "import multiSSH3; print(multiSSH3._binPaths['ssh'])"],
+		env=env, cwd=str(MULTISSH3_PY.parent), stdout=subprocess.PIPE, universal_newlines=True, timeout=60,
+	).stdout.strip()
+	assert ssh_used == str(fake_ssh)
+	master, slave = pty.openpty()
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+	proc = subprocess.Popen(
+		[sys.executable, str(MULTISSH3_PY), "-ef", "/dev/null", "--host_file", str(hosts_file), "--no_history",
+		 "127.0.0.1", "sleep", "9"],
+		stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(tmp_path), start_new_session=True,
+	)
+	os.close(slave)
+	screen = bytearray()
+
+	def read_until(done, timeout):
+		end = time.monotonic() + timeout
+		while not done() and time.monotonic() < end:
+			if select.select([master], [], [], 0.05)[0]:
+				try:
+					data = os.read(master, 65536)
+				except OSError:
+					break
+				if not data:
+					break
+				screen.extend(data)
+		return done()
+
+	def logged(text):
+		return log.exists() and text in log.read_text()
+
+	try:
+		assert read_until(lambda: b"Multiple one word command" in screen, 15), bytes(screen)
+		# the prompt times out (3 s), the command starts, then curses takes the terminal (alternate screen)
+		assert read_until(lambda: logged("START") and b"\x1b[?1049h" in screen, 15), bytes(screen)
+		read_until(lambda: False, 0.5)
+		os.write(master, b"hi\r")
+		assert read_until(lambda: logged("GOT"), 15), bytes(screen)
+		assert "GOT b'hi\\n'" in log.read_text()
+		read_until(lambda: proc.poll() is not None, 10)
+	finally:
+		if proc.poll() is None:
+			proc.kill()
+		proc.wait(timeout=10)
+		os.close(master)
 
 
 def test_process_config_file_generates_and_exits_without_work(monkeypatch):
