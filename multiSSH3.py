@@ -4715,6 +4715,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if not gather_mode:
 			pathSet = set()
 			for pattern in file:
+				# a path that exists is meant as written: the shell expanded the user's globs already,
+				# and glob would read report[1].txt as report1.txt
+				if os.path.lexists(pattern):
+					pathSet.add(pattern)
+					continue
 				try:
 					pathSet.update(glob.glob(pattern,include_hidden=True,recursive=True))
 				except Exception:

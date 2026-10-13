@@ -336,3 +336,53 @@ def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
 	assert ei.value.code == 66
 	assert first in str(ei.value)
 	assert second in str(ei.value)
+
+
+def _copied_files(monkeypatch, files, **kwargs):
+	'''The source files each host is given for -f files (no copy is run).'''
+	_mock_run(monkeypatch)
+	hosts = multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		commands="/dest/",
+		file=files,
+		no_start=True,
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+		**kwargs
+	)
+	return hosts[0].files
+
+
+def test_existing_path_with_glob_characters_is_copied_as_written(monkeypatch, tmp_path):
+	# the shell already expanded the user's globs; glob would read [1] as a character class
+	(tmp_path / "report1.txt").write_text("other file")
+	literal = tmp_path / "report[1].txt"
+	literal.write_text("wanted")
+
+	assert _copied_files(monkeypatch, [str(literal)]) == [str(literal)]
+
+
+def test_existing_path_whose_brackets_match_nothing_is_found(monkeypatch, tmp_path):
+	literal = tmp_path / "data[2024].csv"
+	literal.write_text("wanted")
+
+	assert _copied_files(monkeypatch, [str(literal)]) == [str(literal)]
+
+
+def test_existing_path_with_glob_characters_is_synced_as_written(monkeypatch, tmp_path):
+	(tmp_path / "report1.txt").write_text("other file")
+	literal = tmp_path / "report[1].txt"
+	literal.write_text("wanted")
+
+	assert _copied_files(monkeypatch, [str(literal)], file_sync=True) == [str(literal)]
+
+
+def test_pattern_that_is_no_path_is_still_expanded(monkeypatch, tmp_path):
+	# a quoted glob reaches mssh unexpanded
+	(tmp_path / "a.log").write_text("a")
+	(tmp_path / "b.log").write_text("b")
+
+	assert sorted(_copied_files(monkeypatch, [str(tmp_path / "*.log")])) == [str(tmp_path / "a.log"), str(tmp_path / "b.log")]

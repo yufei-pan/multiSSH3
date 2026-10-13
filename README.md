@@ -455,6 +455,7 @@ mssh -ea="--delete" -f ./data/ allServers /tmp/data/
 ### `-f, --file FILE` | None
 - The file to be copied to the hosts. Use -f multiple times to copy multiple files.
 - When file is specified, the command(s) will be treated as the destination path(s) on the remote hosts.
+- A path that exists is copied as written, glob characters in its name included (`report[1].txt`); any other is expanded as a glob, so a quoted glob (`-f '*.log'`) is expanded by mssh.
 - Files are copied with rsync when it is installed on this machine, else with scp as with `-W, --scp`.
 - As with rsync, a directory given with a trailing slash (`./data/`) copies its contents into the destination, one without (`./data`) copies the directory itself into it.
 - A host where rsync could not run (rsync is not installed there or could not start, or ssh failed to connect) is retried with scp, laying the files out as rsync would have: scp copies the entries of a `./data/` directory, and a lone directory goes inside the destination directory (scp fails if that directory does not exist, instead of creating it). Not retried: an empty `./data/` (scp has nothing to copy) and, in gather mode, a remote `dir/` source going into a local directory that exists or with other sources (scp would copy the directory itself into it).
