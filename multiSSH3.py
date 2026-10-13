@@ -2302,6 +2302,9 @@ def _build_command(host, passwds, ipmi_definitions_list):
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+		if _ssh_cannot_ask(host, passwds):
+			# it would send the passwords it cannot ask for empty, each a failed login in the host's auth log (fail2ban)
+			sshLocalExtraArgs += ['-o NumberOfPasswordPrompts=0']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
 		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(sshLocalExtraArgs)]
@@ -2730,6 +2733,18 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			continue
 		return
 
+
+def _ssh_cannot_ask(host, passwds):
+	'''
+	True when the host's ssh runs without a terminal (see Host.use_terminal) and nothing answers its
+	password questions in its place: not sshpass (-p), not an askpass program the user asked for with
+	SSH_ASKPASS_REQUIRE. IPMI hosts are left alone: ssh_ipmitool takes its password later.
+	'''
+	if host.use_terminal or os.name != 'posix' or host.ipmi:
+		return False
+	if passwds and 'sshpass' in _binPaths:
+		return False
+	return os.environ.get('SSH_ASKPASS_REQUIRE', '').lower() not in ('force', 'prefer')
 
 #%% ------------ Start Threading Block ----------------
 def _run_command_thread(host, sem, timeout, passwds):

@@ -310,6 +310,8 @@ ssh asks for a password, a key passphrase or to confirm a new host key on your t
 
 For many hosts, use ssh keys (`ssh-agent` for a key with a passphrase) or `-p` (needs `sshpass`), and with `SSH_STRICT_HOST_KEY_CHECKING` add new hosts' keys to `known_hosts` first. Ctrl-C still stops the commands: mssh stops them itself, as it does for `-t`.
 
+Without a terminal, ssh would send each password it cannot ask for empty, three times per host, and every one is a failed login in the host's auth log (fail2ban). So mssh then gives ssh, scp and rsync `-o NumberOfPasswordPrompts=0`, except with `-p` and when `SSH_ASKPASS_REQUIRE` tells ssh to ask through an askpass program. A `ProxyJump` host's ssh does not get it: if that host may want a password, set `NumberOfPasswordPrompts 0` for it in your ssh config.
+
 ### Curses Window Size Control
 
 By default, it will try to fit everything inside your window. 

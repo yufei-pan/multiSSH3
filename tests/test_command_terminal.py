@@ -212,3 +212,55 @@ def test_hosts_start_without_the_terminal_by_default(fake_host):
 	host = fake_host("mock-b", "true")
 	host.use_terminal = True
 	assert host.copy().use_terminal is True
+
+
+def _started_argv(fake_host, monkeypatch, use_terminal=False, password=None, files=None, scp=False, sshpass=True):
+	started = []
+	host = fake_host("mock-a", "/tmp/" if files else "true", files=files, scp=scp)
+	host.use_terminal = use_terminal
+	for tool in ("ssh", "scp", "rsync"):
+		monkeypatch.setitem(multiSSH3._binPaths, tool, tool)
+	if sshpass:
+		monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
+	else:
+		monkeypatch.delitem(multiSSH3._binPaths, "sshpass", raising=False)
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: started.append(argv) or _FinishedProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5, passwds=password)
+
+	return started[0]
+
+
+_NO_PASSWORD_PROMPTS = "-o NumberOfPasswordPrompts=0"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="commands keep the console on Windows")
+def test_ssh_without_a_terminal_sends_no_password_it_cannot_ask_for(fake_host, monkeypatch):
+	# with no terminal ssh sent an empty password three times per host: each one a failed login in the
+	# host's auth log (fail2ban), and OpenSSH 9.8+ sshd then refuses this machine for a while
+	monkeypatch.delenv("SSH_ASKPASS_REQUIRE", raising=False)
+	argv = _started_argv(fake_host, monkeypatch)
+	assert argv[0] == "ssh" and _NO_PASSWORD_PROMPTS in argv[:argv.index("--")]
+	# file copies: scp passes it to its ssh, rsync through --rsh
+	assert _NO_PASSWORD_PROMPTS in _started_argv(fake_host, monkeypatch, files=["/etc/hostname"], scp=True)
+	rsync = _started_argv(fake_host, monkeypatch, files=["/etc/hostname"])
+	assert rsync[0] == "rsync" and _NO_PASSWORD_PROMPTS in rsync[rsync.index("--rsh") + 1]
+	# no sshpass: -p cannot answer, ssh has no terminal either
+	assert _NO_PASSWORD_PROMPTS in _started_argv(fake_host, monkeypatch, password="secret", sshpass=False)
+
+
+@pytest.mark.parametrize("case", ["terminal", "sshpass", "askpass"])
+def test_ssh_asks_for_passwords_where_something_answers(fake_host, monkeypatch, case):
+	monkeypatch.delenv("SSH_ASKPASS_REQUIRE", raising=False)
+	if case == "terminal":
+		# -nw with one host: the operator types it, as with plain ssh
+		argv = _started_argv(fake_host, monkeypatch, use_terminal=True)
+	elif case == "sshpass":
+		# -p: sshpass answers on its own pty
+		argv = _started_argv(fake_host, monkeypatch, password="secret")
+		assert argv[0] == "sshpass"
+	else:
+		# the user asked ssh to use the askpass program (it needs no terminal)
+		monkeypatch.setenv("SSH_ASKPASS_REQUIRE", "force")
+		argv = _started_argv(fake_host, monkeypatch)
+	assert not any("NumberOfPasswordPrompts" in str(arg) for arg in argv)
