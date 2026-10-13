@@ -339,7 +339,9 @@ def assign_roles(words, spec, current=None):
 		if pending is not None:
 			option = pending
 			pending = None
-			if not dashed:
+			# the word after a password option is its password, whatever it looks like: argparse stops
+			# at "-p -secret", but the shell's history keeps the line, and a password is never another word
+			if not dashed or option.dest in PASSWORD_DESTS:
 				roles.append((ROLE_VALUE, option))
 				continue
 		if text == '--' and not is_current and not after_separator:

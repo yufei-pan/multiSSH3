@@ -239,6 +239,22 @@ def test_passwords_in_shell_history_are_never_offered():
 			assert secret not in candidate.text, (before, candidate.text)
 
 
+def test_passwords_starting_with_a_dash_are_never_offered():
+	# argparse stops at these lines (it reads the password as an option), but the shell's history keeps them
+	shell = mc.shell_history_knowledge([
+		'mssh -p -Tr0ub4dor web1 uptime',
+		'mssh --password -Tr0ub4dor web1 uptime',
+		'mssh -ip "-my s3cr3t" -M bmc1 power status',
+	] + ['mssh -ip "-my p4ss" node1 "df"'] * 3, SPEC)
+	engine = mc.Engine(SPEC, [shell])
+	for before, word in (('mssh web1 ', ''), ('mssh -m ', ''), ('mssh ', ''), ('mssh -', '-'), ('mssh -M bmc1 ', ''),
+			('mssh node1 ', ''), ('mssh h "', ''), ('mssh h -', '-'), ('mssh -u ', '')):
+		shown = [candidate.text for candidate in engine.query(mc.Request('bash', before, '', word)).candidates]
+		ghost = engine.suggest(mc.Request('bash', before, '', ''))
+		shown.append(ghost.text if ghost else '')
+		assert not [text for text in shown if 'Tr0ub4dor' in text or 's3cr3t' in text or 'p4ss' in text], (before, shown)
+
+
 def test_mssh_behind_a_wrapper_is_read_as_mssh():
 	shell = mc.shell_history_knowledge(['sudo mssh -u deploy gpu1 "nvidia-smi"'], SPEC)
 	assert texts(query('mssh -u ', ' gpu1', knowledges=[shell]))[0] == 'deploy'

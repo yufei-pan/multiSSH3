@@ -114,6 +114,27 @@ def test_features_come_from_both_sides_of_the_cursor():
 	assert context.features == ['c:systemctl restart slurmd', 'm:plain', 'o:--username', 'p:systemctl', 's:systemctl restart', 'v:username=root']
 
 
+@pytest.mark.parametrize('line, value', [
+	# argparse stops at these lines, but the shell's history keeps them: the word is still the password
+	('-p -Tr0ub4dor web1 uptime', '-Tr0ub4dor'),
+	('--password -Tr0ub4dor web1 uptime', '-Tr0ub4dor'),
+	('-ip "-my secret" -M bmc1 power', '-my secret'),
+	('-ip -q bmc1 power', '-q'),
+	('-p -- web1 uptime', '--'),
+])
+def test_the_word_after_a_password_option_is_the_password(line, value):
+	tokens = mc.lex(line)
+	roles = mc.assign_roles(tokens, SPEC)
+	assert [token.text for token, (role, option) in zip(tokens, roles) if role == 'value'] == [value]
+	assert [token.text for token, (role, _) in zip(tokens, roles) if role == 'hosts'] == [line.split()[-2]]
+
+
+@pytest.mark.parametrize('before', ['mssh -p -', 'mssh -p -Tr', 'mssh -ip "-my se', 'mssh --password --'])
+def test_a_password_being_typed_is_the_password_slot(before):
+	context = mc.parse_context(before, '', SPEC)
+	assert (context.slot, context.option.dest in mc.PASSWORD_DESTS) == ('value', True)
+
+
 def test_passwords_never_become_features():
 	context = mc.parse_context('mssh -p=secret -ip hunter2 -u ', ' h c', SPEC)
 	assert not any('secret' in feature or 'hunter2' in feature or 'password' in feature for feature in context.features)
