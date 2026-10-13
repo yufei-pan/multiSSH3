@@ -4079,6 +4079,14 @@ class LineEditor(object):
 		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r\x1b[J')
 		self._row = 0
 
+	def interrupted(self, term, prompt):
+		'''
+		Leave the screen as bash leaves it after Ctrl-C: the prompt and the text as typed (no grey
+		suggestion, no warning), ^C, and the cursor at the start of the next row.
+		'''
+		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r' + prompt + self.text + '^C\x1b[J\r\n')
+		self._row = 0
+
 	def run(self, term, prompt, style=None):
 		'''
 		Edit until the line is handed back.
@@ -4103,7 +4111,10 @@ class LineEditor(object):
 			self.busy = term.has_input()
 			outcome = self.handle(name, raw)
 			if outcome is not None:
-				self.erase(term)
+				if outcome[0] == 'abandon':
+					self.interrupted(term, prompt)
+				else:
+					self.erase(term)
 				return outcome
 			if not self.busy:
 				self.draw(term, prompt, style)
@@ -4411,7 +4422,8 @@ _mssh_complete_space() {
 					MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null)
 				if _mssh_complete_apply "$resp"; then
 					case $_mssh_complete_action in
-						abandon) READLINE_LINE= READLINE_POINT=0; bind -m emacs '"\C-x\C-y": accept-line' ;;
+						# the editor left the line and ^C on screen: readline draws a fresh prompt below
+						abandon) READLINE_LINE= READLINE_POINT=0 ;;
 						pass) bind -m emacs "\"\\C-x\\C-y\": \"$_mssh_complete_keys\"" ;;
 					esac
 					return 0

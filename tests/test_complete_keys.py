@@ -313,6 +313,22 @@ def test_editor_ctrl_c_drops_the_line(home):
 		session.close()
 
 
+def test_editor_ctrl_c_leaves_the_line_on_screen(home):
+	# as bash does: what was typed stays, ^C after it, and one fresh prompt below (no warning left over)
+	env, home = home
+	known(env, gpu017='invalid')
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gpu017 upt')
+		session.read_until('unknown host'.encode(), 10)
+		time.sleep(0.3)
+		session.send('\x03')
+		rows = settled(session)
+		assert rows[-2:] == ['@@READY@@ mssh gpu017 upt^C', '@@READY@@'], rows
+	finally:
+		session.close()
+
+
 def test_editor_ctrl_r_opens_the_picker(home):
 	env, home = home
 	session = editor_session(env, home)
