@@ -5533,6 +5533,20 @@ def uninstall(shell, home=None, environ=None):
 		_remove_rc_block(paths['rc'], messages)
 	return 0, messages or ['nothing to remove']
 
+def prepare_index():
+	'''
+	Build the index now, for `mssh --completion install`: the first TAB in a new shell then answers
+	from it instead of starting the build. A failure does not fail the install. Returns the message.
+	'''
+	directory = cache_dir()
+	if directory is None:
+		return 'no private runtime directory for the completion index: TAB offers options and shell history only'
+	try:
+		return 'built the completion index ' + build_index(directory)
+	except Exception as e:
+		_debug('install: rebuild failed: {!r}'.format(e))
+		return 'could not build the completion index now ({}): the first TAB tries again'.format(e)
+
 def completion_command(values):
 	'''`mssh --completion ...`: print the glue for a shell, or install / uninstall it.'''
 	action = values[0] if values else ''
@@ -5551,6 +5565,8 @@ def completion_command(values):
 			print('mssh: the mssh line editor is for bash only', file=sys.stderr)
 			return 2
 		code, messages = install(shell, editor=editor) if action == 'install' else uninstall(shell)
+		if action == 'install' and code == 0:
+			messages.append(prepare_index())
 		for message in messages:
 			print(message)
 		return code

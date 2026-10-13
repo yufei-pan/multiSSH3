@@ -217,8 +217,44 @@ def test_install_finds_its_block_however_the_file_was_edited(tmp_path, change):
 	assert 'mssh completion' not in rc.read_text() and 'alias ll="ls -l"' in rc.read_text()
 
 
+@pytest.fixture
+def install_env(tmp_path, monkeypatch):
+	'''HOME and XDG_RUNTIME_DIR of a test home in os.environ, and install() writing nothing.'''
+	env, home = make_home(tmp_path, HISTORY)
+	monkeypatch.setenv('HOME', env['HOME'])
+	monkeypatch.setenv('XDG_RUNTIME_DIR', env['XDG_RUNTIME_DIR'])
+	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (0, ['wrote the glue']))
+	return home
+
+
+def test_install_builds_the_index_right_away(install_env, capsys):
+	# the first TAB in a new shell then answers from the index instead of starting its build
+	assert mc.completion_command(['install', 'bash']) == 0
+	path = os.path.join(mc.cache_dir(), mc.INDEX_NAME)
+	assert capsys.readouterr().out.splitlines() == ['wrote the glue', 'built the completion index ' + path]
+	assert 'storage1' in mc.HostTable(mc.NsvIndex.load(path)).names
+
+
+def test_install_says_when_it_cannot_build_the_index(install_env, monkeypatch, capsys):
+	def fail(directory):
+		raise OSError(28, 'No space left on device')
+	monkeypatch.setattr(mc, 'build_index', fail)
+	assert mc.completion_command(['install', 'bash']) == 0
+	assert capsys.readouterr().out.splitlines()[-1] == 'could not build the completion index now ([Errno 28] No space left on device): the first TAB tries again'
+	monkeypatch.setattr(mc, 'cache_dir', lambda create=True: None)
+	assert mc.completion_command(['install', 'bash']) == 0
+	assert capsys.readouterr().out.splitlines()[-1] == 'no private runtime directory for the completion index: TAB offers options and shell history only'
+
+
+def test_uninstall_builds_nothing(install_env, monkeypatch):
+	monkeypatch.setattr(mc, 'uninstall', lambda shell: (0, []))
+	monkeypatch.setattr(mc, 'build_index', lambda directory: pytest.fail('built an index'))
+	assert mc.completion_command(['uninstall', 'bash']) == 0
+
+
 def test_completion_command_takes_the_editor_word(monkeypatch):
 	calls = []
+	monkeypatch.setattr(mc, 'prepare_index', lambda: 'built the completion index')
 	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (calls.append((shell, editor)), (0, []))[1])
 	assert mc.completion_command(['install', 'bash', 'editor']) == 0
 	assert mc.completion_command(['install', 'bash', '--editor']) == 0
