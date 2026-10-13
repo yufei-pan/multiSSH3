@@ -333,8 +333,8 @@ def assign_roles(words, spec, current=None):
 	except after unquoted command words, where it belongs to the remote command.
 
 	The first "--" ends the options, as in argparse (Python 3.12+; 3.6's parse_known_args too):
-	every later word is the hosts, when no word was yet, or a command word, dashes and another
-	"--" included.
+	every later word is a positional, the hosts when none came before it, then command words,
+	dash words and another "--" included.
 
 	Returns:
 		list: (role, OptionSpec or None) per word
