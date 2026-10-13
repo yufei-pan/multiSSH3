@@ -73,3 +73,12 @@ def test_setup_declares_the_license_without_warnings(egg_info):
 	else:
 		assert "License: GPL-3.0-or-later" in metadata
 		assert "Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)" in metadata
+
+
+def test_sdist_and_metadata_carry_the_license_text(egg_info):
+	# the GPL asks for its text to go with every copy; setuptools 77+ also names it in the metadata and the wheel
+	assert "Version 3, 29 June 2007" in (PACKAGE_ROOT / "LICENSE").read_text(encoding="utf-8")
+	assert "LICENSE" in sdist_files(egg_info)
+	metadata = metadata_lines(egg_info)
+	if "License-Expression: GPL-3.0-or-later" in metadata:
+		assert "License-File: LICENSE" in metadata

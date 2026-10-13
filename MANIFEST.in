@@ -2,5 +2,6 @@
 # File types are listed rather than grafting tests/: no bytecode slips in, and no exclude rule warns when there is none.
 # tests/test_packaging.py fails if a file under tests/ is left out.
 include README.md
+include LICENSE
 include pytest.ini
 recursive-include tests *.py *.json *.sh Dockerfile.*

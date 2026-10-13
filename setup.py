@@ -9,9 +9,10 @@ classifiers = [
     'Operating System :: Microsoft :: Windows',
 ]
 # setuptools 77+ (PEP 639) takes an SPDX license expression and warns about license classifiers (an error next to an
-# expression); older ones, all there is on Python 3.6, know only the free-text license and the classifier
+# expression); older ones (the newest for Python 3.8 and earlier, so all a Python 3.6 install has) know only the
+# free-text license and the classifier. The LICENSE text reaches their sdist through MANIFEST.in.
 if int(setuptools.__version__.split('.')[0]) >= 77:
-    license_metadata = {'license_expression': 'GPL-3.0-or-later'}
+    license_metadata = {'license_expression': 'GPL-3.0-or-later', 'license_files': ['LICENSE']}
 else:
     license_metadata = {'license': 'GPL-3.0-or-later'}
     classifiers.append('License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)')
