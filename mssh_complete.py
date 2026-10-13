@@ -1202,6 +1202,56 @@ def read_hosts_file(path):
 		pass
 	return hosts
 
+def _ssh_config_words(line):
+	'''
+	The keyword (lower case) and arguments of an ssh config line, split as ssh splits them.
+
+	The keyword ends at blanks or one "="; arguments are split at blanks, may be quoted with " or '
+	and escape a quote, a backslash or (unquoted) a space with a backslash; an argument starting
+	with # starts a comment. Returns ('', []) for an empty or comment line, and for a line ssh
+	rejects (an unterminated quote).
+	'''
+	line = line.lstrip(' \t').rstrip(' \t\r\n\f')
+	end = 0
+	while end < len(line) and line[end] not in ' \t=':
+		end += 1
+	keyword = line[:end].lower()
+	if not keyword or keyword.startswith('#'):
+		return '', []
+	# one "=" may stand between the keyword and the arguments, blanks around it or not
+	rest = line[end:].lstrip(' \t')
+	if rest.startswith('='):
+		rest = rest[1:]
+	args = []
+	index = 0
+	while index < len(rest):
+		if rest[index] in ' \t':
+			index += 1
+			continue
+		if rest[index] == '#':
+			break
+		arg = []
+		quote = ''
+		while index < len(rest):
+			char = rest[index]
+			if char == '\\' and index + 1 < len(rest) and (rest[index + 1] in '\'"\\' or (not quote and rest[index + 1] == ' ')):
+				arg.append(rest[index + 1])
+				index += 2
+				continue
+			if not quote and char in ' \t':
+				break
+			if not quote and char in '"\'':
+				quote = char
+			elif char == quote:
+				quote = ''
+			else:
+				arg.append(char)
+			index += 1
+		if quote:
+			return '', []
+		args.append(''.join(arg))
+	return keyword, args
+
 def read_ssh_config(path, base_dir, names, users, read):
 	'''
 	Add the Host names (no patterns) and User values of an ssh config file and the files it Includes.
@@ -1223,22 +1273,16 @@ def read_ssh_config(path, base_dir, names, users, read):
 	read.append(path)
 	with f:
 		for line in f:
-			line = line.strip()
-			if not line or line.startswith('#'):
-				continue
-			key, _, value = line.replace('=', ' ', 1).partition(' ')
-			key = key.lower()
-			value = value.strip()
+			key, args = _ssh_config_words(line)
 			if key == 'host':
-				for pattern in value.split():
-					pattern = pattern.strip('"')
+				for pattern in args:
 					if pattern and not any(char in pattern for char in '*?!'):
 						names.add(pattern)
-			elif key == 'user' and value:
-				users.add(value.strip('"'))
+			elif key == 'user' and args and args[0]:
+				users.add(args[0])
 			elif key == 'include':
-				for pattern in value.split():
-					pattern = os.path.expanduser(pattern.strip('"'))
+				for pattern in args:
+					pattern = os.path.expanduser(pattern)
 					if not os.path.isabs(pattern):
 						pattern = os.path.join(base_dir, pattern)
 					for included in sorted(glob.glob(pattern)):
