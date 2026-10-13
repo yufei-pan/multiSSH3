@@ -31,6 +31,7 @@ import textwrap
 import threading
 import time
 import typing
+import unicodedata
 from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap, namedtuple
 from itertools import count, product
@@ -3779,6 +3780,69 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 	return threads
 
 #%% ------------ Display Block ----------------
+# printable ASCII, one column per character: text that needs no closer look
+_NOT_PRINTABLE_ASCII = re.compile('[^ -~]')
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+@functools.lru_cache(maxsize=8192)
+def _char_columns(char):
+	'''
+	Terminal columns a printable character takes, as the C library's wcwidth() counts them (curses uses it).
+
+	East Asian wide and fullwidth characters (CJK, kana, hangul, most emoji) take 2. Combining marks,
+	format characters (zero width space, joiner) and the vowels and final consonants of conjoining
+	hangul take 0: they join the character before. Everything else takes 1, the East Asian ambiguous
+	width characters (box drawing, arrows, Greek, Cyrillic) too, as terminals count them outside CJK
+	locales: the display's own borders are made of them.
+	'''
+	if char < '\u0300':
+		return 1
+	category = unicodedata.category(char)
+	if category in ('Mn', 'Me', 'Cf') or '\u1160' <= char <= '\u11ff':
+		return 0
+	return 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+
+def _text_columns(text):
+	'''Columns text takes on a terminal (see _char_columns): color and other escape sequences take none.'''
+	if '\x1b' in text:
+		text = _ANSI_ESCAPE.sub('', text)
+	if not _NOT_PRINTABLE_ASCII.search(text):
+		return len(text)
+	return sum(map(_char_columns, text))
+
+def _curses_fit(text, columns, column = 0):
+	'''
+	text as curses should draw it in at most columns columns.
+
+	A character that does not fit whole is left out, with the rest of text: curses would wrap it onto
+	the next line, or scroll the window from its last line. A tab becomes spaces up to the next
+	multiple of 8 columns from the start of the line's text (column is where text starts in it), as
+	on the host's terminal: curses would count from the window's edge, and wrap a tab that passes its
+	side. Another control character becomes its ^X form, which curses would draw in two columns (or,
+	for a backspace, act on).
+
+	Returns:
+		(str, int, bool): the text to draw, the columns it takes, and whether all of text fits
+	'''
+	if columns <= 0:
+		return '', 0, not text
+	if not _NOT_PRINTABLE_ASCII.search(text):
+		return text[:columns], min(len(text), columns), len(text) <= columns
+	pieces = []
+	used = 0
+	for char in text:
+		if char < ' ' or char == '\x7f':
+			piece = ' ' * (8 - (column + used) % 8) if char == '\t' else '^' + chr(ord(char) ^ 0x40)
+			size = len(piece)
+		else:
+			piece = char
+			size = _char_columns(char)
+		if used + size > columns:
+			return ''.join(pieces), used, False
+		pieces.append(piece)
+		used += size
+	return ''.join(pieces), used, True
+
 def __approximate_color_8bit(color):
 	"""
 	Approximate an 8-bit color (0-255) to the nearest curses color.
@@ -4004,9 +4068,9 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		line: The line to add
 		y: Line position in the window. Use -1 to scroll the window up 1 line and add the line at the bottom
 		x: Column position in the window
-		number_of_char_to_write: Number of characters to write. -1 for all remaining space in line, 0 for no characters, and a positive integer for a specific number of characters.
+		number_of_char_to_write: Number of terminal columns to write. -1 for all remaining space in line, 0 for no characters, and a positive integer for a specific number of columns.
 		color_pair_list: List of [foreground, background, color_pair] curses color pair values
-		fill_char: Character to fill the remaining space in the line
+		fill_char: Character to fill the remaining space in the line, one column wide
 		parse_ansi_colors: Parse ASCII color codes
 		centered: Center the text in the window
 		lead_str: Leading string to add to the line
@@ -4049,39 +4113,53 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
 	else:
 		segments = [line]
-	charsWritten = 0
+	# Positions count terminal columns, not characters: a wide character (CJK, most emoji) takes two, a combining
+	# mark none. Each piece is cut to the columns left before it is drawn (_curses_fit): curses would wrap the rest
+	# onto the next line, or scroll the window when it is the last one
+	columnsWritten = 0
 	boxAttr = __parse_ansi_escape_sequence_to_curses_attr(box_ansi_color)
 	# first add the lead_str
-	if len(lead_str) > 0:
-		window.addnstr(y, x, lead_str, numChar, boxAttr)
-		charsWritten = min(len(lead_str), numChar)
+	if lead_str:
+		lead, columnsWritten, _ = _curses_fit(lead_str, numChar)
+		window.addnstr(y, x, lead, len(lead), boxAttr)
+	trail_columns = _curses_fit(trail_str, numChar)[1]
 	# process centering
 	if centered:
-		fill_length = numChar - len(lead_str) - len(trail_str) - sum([len(segment) for segment in segments if not segment.startswith("\x1b[")])
+		text_columns = 0
+		for segment in segments:
+			if segment and not (parse_ansi_colors and segment.startswith("\x1b[")):
+				text_columns += _curses_fit(segment, numChar, text_columns)[1]
+		fill_length = numChar - columnsWritten - trail_columns - text_columns
 		leading_fill_length = fill_length // 2
 		if leading_fill_length > 0:
-			window.addnstr(y, x + charsWritten, fill_char * (leading_fill_length // len(fill_char) + 1), leading_fill_length, boxAttr)
-			charsWritten += leading_fill_length
+			window.addnstr(y, x + columnsWritten, fill_char * (leading_fill_length // len(fill_char) + 1), leading_fill_length, boxAttr)
+			columnsWritten += leading_fill_length
 	# add the segments
+	text_columns = 0
+	text_cut = False
 	for segment in segments:
 		if not segment:
 			continue
 		if parse_ansi_colors and segment.startswith("\x1b["):
-			# Parse ANSI escape sequence
+			# Parse ANSI escape sequence, also after the text is cut: the color goes on to the next lines
 			_ = __parse_ansi_escape_sequence_to_curses_attr(segment,color_pair_list)
-		else:
-			# Add text with current color
-			if charsWritten < numChar and len(segment) > 0:
-				window.addnstr(y, x + charsWritten, segment, numChar - charsWritten, color_pair_list[2])
-				charsWritten += min(len(segment), numChar - charsWritten)
-	# if we have finished printing segments but we still have space, we will fill it with fill_char
-	trail_fill_length = numChar - charsWritten - len(trail_str)
+		elif not text_cut and columnsWritten < numChar:
+			# Add text with current color, as much as fits. Nothing after a cut: it would not follow what is shown
+			text, columns, text_fits = _curses_fit(segment, numChar - columnsWritten, text_columns)
+			if text:
+				window.addnstr(y, x + columnsWritten, text, len(text), color_pair_list[2])
+			columnsWritten += columns
+			text_columns += columns
+			text_cut = not text_fits
+	# if we have finished printing segments but we still have space, we will fill it with fill_char (one column wide)
+	trail_fill_length = numChar - columnsWritten - trail_columns
 	if trail_fill_length > 0 and fill_char:
-		window.addnstr(y, x + charsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length , boxAttr)
-		charsWritten += trail_fill_length
-	if len(trail_str) > 0 and charsWritten < numChar:
-		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxAttr)
-		charsWritten += min(len(trail_str), numChar - charsWritten)
+		window.addnstr(y, x + columnsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length , boxAttr)
+		columnsWritten += trail_fill_length
+	if trail_str and columnsWritten < numChar:
+		trail, columns, _ = _curses_fit(trail_str, numChar - columnsWritten)
+		window.addnstr(y, x + columnsWritten, trail, len(trail), boxAttr)
+		columnsWritten += columns
 
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexOffset = 0):
 	'''
@@ -4757,7 +4835,8 @@ def get_host_raw_output(hosts, terminal_width):
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
 			hostPrintOut.extend(f" {line}" for line in host.stdout)
-			max_length = max(max_length, max(map(len, host.stdout)))
+			# in terminal columns: the dividers between host blocks are as wide as the widest line
+			max_length = max(max_length, max(map(_text_columns, host.stdout)))
 			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
@@ -4774,7 +4853,7 @@ def get_host_raw_output(hosts, terminal_width):
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
 			hostPrintOut.extend(f" {line}" for line in stderr)
-			max_length = max(max_length, max(map(len, stderr)))
+			max_length = max(max_length, max(map(_text_columns, stderr)))
 			lineBag.add((prevLine,2))
 			lineBag.add((2,stderr[0]))
 			lineBag.update(stderr)
