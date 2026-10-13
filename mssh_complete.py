@@ -582,16 +582,20 @@ def parse_context(before, after, spec):
 			else:
 				command_words = None
 		else:
-			# the unquoted command words the current word continues
+			# the unquoted command words the current word continues; argparse drops a "--" between them
+			def joins(index):
+				role = roles[index][0]
+				return role == ROLE_SEPARATOR or (role == ROLE_COMMAND and not words[index].quoted)
 			first = current
-			while first > 0 and roles[first - 1][0] == ROLE_COMMAND and not words[first - 1].quoted:
+			while first > 0 and joins(first - 1):
 				first -= 1
 			last = current
-			while last + 1 < len(words) and roles[last + 1][0] == ROLE_COMMAND and not words[last + 1].quoted:
+			while last + 1 < len(words) and joins(last + 1):
 				last += 1
 			skip = set(range(first, last + 1))
-			command_words = [token.text for token in words[first:current]] + [prefix]
-			command_word_index = current - first
+			typed = [token.text for token, (role, _) in zip(words[first:current], roles[first:current]) if role != ROLE_SEPARATOR]
+			command_words = typed + [prefix]
+			command_word_index = len(typed)
 			command_prefix = ''
 	options, hosts, commands = _collect(words, roles, skip)
 	return Context(slot=slot, option=option, prefix=prefix, value_start=value_start,

@@ -89,6 +89,21 @@ def test_a_command_after_double_dash_and_hosts_starts_at_its_first_word():
 	assert (context.command_words, context.command_word_index) == (['systemctl', 'rest'], 1)
 
 
+@pytest.mark.parametrize('before, after, words, index', [
+	# argparse drops the "--": mssh h ls -- -la runs "ls -la"
+	('mssh h ls -- -l', '', ['ls', '-l'], 1),
+	('mssh h ls -- ', '', ['ls', ''], 1),
+	('mssh h -- ls -- -l', '', ['ls', '--', '-l'], 2),
+	('mssh h -- l', ' -la', ['l'], 0),
+	("mssh h 'uptime' -- l", '', ['l'], 0),
+])
+def test_double_dash_between_command_words_does_not_split_the_command(before, after, words, index):
+	context = mc.parse_context(before, after, SPEC)
+	assert (context.slot, context.command_words, context.command_word_index) == ('command', words, index)
+	# the words of the command being typed are not a command of their own
+	assert 'c:ls' not in context.features and 'p:ls' not in context.features
+
+
 def test_program_name_has_no_context():
 	assert mc.parse_context('mss', '', SPEC) is None
 
