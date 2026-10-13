@@ -2037,6 +2037,32 @@ def _ipv4_range(name):
 		plain = plain and not sep
 	return not plain
 
+def _ipv4_members(name, limit=None):
+	'''
+	(the first limit members, how many in all) of an IPv4 range (_ipv4_range), expanded as mssh
+	expands it: [ ] dropped, an a-b range per octet, x * ? for a whole octet or a range end (0 or
+	255), and no .0 or .255 in the last octet. limit: RANGE_MEMBERS_LIMIT when None.
+	'''
+	import itertools
+	wild = ('x', '*', '?')
+	octets = []
+	for part in name.replace('[', '').replace(']', '').strip().split('.'):
+		if '-' in part:
+			low, high = part.split('-', 1)
+			low = 0 if not low or low in wild else int(low)
+			high = 255 if not high or high in wild else int(high)
+			octets.append([str(value) for value in range(low, high + 1)])
+		elif part in wild:
+			octets.append([str(value) for value in range(256)])
+		else:
+			octets.append([part])
+	octets[-1] = [value for value in octets[-1] if value not in ('0', '255')]
+	total = 1
+	for values in octets:
+		total *= len(values)
+	limit = RANGE_MEMBERS_LIMIT if limit is None else limit
+	return ['.'.join(address) for address in itertools.islice(itertools.product(*octets), limit)], total
+
 def _range_count(text):
 	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
 	start = text.find('[')
@@ -2407,8 +2433,7 @@ class Engine(object):
 			return 'unsure' if answer == 'invalid' and self._mssh_may_know(host, reach) else answer
 		found = []
 		for name, (start, end) in _host_parts(token):
-			if not name or _ipv4_range(name):
-				# IP addresses only: nothing to say about them
+			if not name:
 				continue
 			members = self._host_members(name)
 			if members is None:
@@ -2436,7 +2461,10 @@ class Engine(object):
 		'''
 		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
 		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
+		The members of an IPv4 range are addresses: they are only pinged, never unknown.
 		'''
+		if _ipv4_range(name):
+			return _ipv4_members(name)
 		number = self.hosts.alias_index(name)
 		if number is not None:
 			members = self.hosts.alias_members(number)

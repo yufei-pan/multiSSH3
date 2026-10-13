@@ -162,7 +162,22 @@ def test_a_huge_range_is_checked_up_to_the_member_limit(engine, monkeypatch):
 
 def test_ipv4_ranges_hold_only_addresses(engine):
 	# mssh's IPv4 range syntax: ranges, x, * or ? in an octet (found replaying real history)
-	assert warnings(engine, 'mssh 127.0.0.1-20,10.0.[1-2].x,10.1.1.* uptime') == ([], False)
+	assert warnings(engine, 'mssh 127.0.0.1-20,10.0.[1-2].x,10.1.1.* uptime')[0] == []
+
+
+def test_members_of_an_ipv4_range_are_pinged(engine):
+	# addresses need no DNS: they are queued for the prober's ping, as members of other ranges are
+	assert warnings(engine, 'mssh 10.0.0.1-3 uptime') == ([], True)
+	assert sorted(mc.take_probe_queue(engine.directory)) == ['10.0.0.1', '10.0.0.2', '10.0.0.3']
+
+
+@pytest.mark.parametrize('pattern', ['192.168.1.1-254', '10.0.[1-2].x', '10.1.1.*', '127.0.0.1-20', '10.0.x-1.?', '[10-11].0.0.5'])
+def test_ipv4_ranges_expand_as_mssh_expands_them(pattern):
+	members, total = mc._ipv4_members(pattern, limit=100000)
+	expanded = getattr(multiSSH3, '__expandIPv4Address')(frozenset([pattern]))
+	assert sorted(members) == sorted(expanded) and total == len(expanded)
+	# past the limit the total is still counted
+	assert mc._ipv4_members(pattern, limit=5) == (members[:5], total)
 
 
 def test_lines_that_do_not_run_mssh_get_nothing(engine):
@@ -266,6 +281,16 @@ def test_unreachable_members_of_a_range(skipping):
 	unavailable(skipping, 'node03')
 	mc.write_host_states(skipping.directory, {'node07': mc.HostState('valid', NOW, 'silent', NOW - 5, NOW - 60)})
 	assert warnings(skipping, 'mssh node[01-08] uptime')[0] == [('node[01-08]', 'unreachable', 'node[01-08]: 2 unreachable (node03, node07)')]
+
+
+@pytest.mark.parametrize('pattern, down', [
+	('192.168.1.1-254', ['192.168.1.5', '192.168.1.9']),
+	('10.0.[1-2].x', ['10.0.2.7']),
+])
+def test_unreachable_members_of_an_ipv4_range(skipping, pattern, down):
+	unavailable(skipping, *down)
+	assert warnings(skipping, 'mssh {} uptime'.format(pattern))[0] == [
+		(pattern, 'unreachable', '{}: {} unreachable ({})'.format(pattern, len(down), ', '.join(down)))]
 
 
 def test_an_unknown_host_is_not_also_unreachable(skipping):
