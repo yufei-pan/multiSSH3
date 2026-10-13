@@ -211,12 +211,14 @@ class ParserSpec(object):
 		for option in self.options:
 			for string in option.strings:
 				self.by_string[string] = option
+		self._passwords = [option for option in self.options if option.dest in PASSWORD_DESTS]
 
 	def lookup(self, text):
 		'''
 		The option a word names, and the value attached to it ("-x=value", "--long=value", "-xVALUE").
 
-		Names count in full only: mssh takes no abbreviations ("--user" is not --username).
+		Names count in full only: mssh takes no abbreviations ("--user" is not --username). Words
+		that give a password some other way are password options all the same (_password_spelling).
 
 		Returns:
 			tuple: (OptionSpec or None, attached value or None)
@@ -228,12 +230,44 @@ class ParserSpec(object):
 		option = self.by_string.get(name) if sep else None
 		if option is not None:
 			return option, value
+		found = self._password_spelling(text)
+		if found is not None:
+			return found
 		if len(text) > 2 and text[0] == '-' and text[1] != '-':
 			# argparse reads -pVALUE as -p VALUE, '=' in VALUE included
 			short = self.by_string.get(text[:2])
 			if short is not None and short.nargs != '0':
 				return short, text[2:]
 		return None, None
+
+	def _password_spelling(self, text):
+		'''
+		(password option, the value attached to it or None) for a word that is no option name but
+		gives a password, else None; only so the password is never offered or shown. mssh up to 6.31
+		took any unique abbreviation ("--pass x", "--ipmi_passw=x"), and the shell's history keeps
+		those lines; short flags written together may end in -p ("-qp x", "-qpx"); and "-ipx" is -ip
+		with its value (argparse reads -i px, an error).
+		'''
+		name, sep, value = text.partition('=')
+		if name.startswith('--'):
+			found = [string for string in self.by_string if string.startswith(name)] if len(name) > 2 else []
+			if len(found) == 1 and self.by_string[found[0]].dest in PASSWORD_DESTS:
+				return self.by_string[found[0]], (value if sep else None)
+			return None
+		if len(text) < 3 or text[0] != '-':
+			return None
+		for option in self._passwords:
+			for string in option.strings:
+				if not string.startswith('--') and text.startswith(string):
+					return option, text[len(string):]
+		for index in range(1, len(text)):
+			option = self.by_string.get('-' + text[index])
+			if option is None or (option.nargs != '0' and option.dest not in PASSWORD_DESTS):
+				return None
+			if option.nargs != '0':
+				rest = text[index + 1:]
+				return option, (rest[1:] if rest.startswith('=') else rest) or None
+		return None
 
 	def to_rows(self):
 		return [option.to_row() for option in self.options]
@@ -323,7 +357,9 @@ def assign_roles(words, spec, current=None):
 		if pending is not None:
 			option = pending
 			pending = None
-			if not dashed:
+			# the word after a password option is its password, whatever it looks like: argparse stops
+			# at "-p -secret", but the shell's history keeps the line, and a password is never another word.
+			if not dashed or option.dest in PASSWORD_DESTS:
 				roles.append((ROLE_VALUE, option))
 				continue
 		if after_separator:
