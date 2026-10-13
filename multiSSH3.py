@@ -5958,6 +5958,49 @@ def get_parser():
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
+def _parse_command_line(parser, argv = None):
+	'''Parse argv with mssh's parser as Python 3.12.8+ argparse does, on every Python.
+
+	Options and positionals mix freely. The first "--" ends the options: the word after it is the hosts
+	unless they came before it, and every later word is a command word, dash words and a later "--"
+	included. Older argparse read the options again after a "--" in front of the hosts ("mssh -- h -u y"
+	set the username) and dropped every "--"; Python 3.6 kept it in the commands after an option. So only
+	the words before the "--" go to argparse, and the words after it are placed here.
+	'''
+	argv = list(sys.argv[1:] if argv is None else argv)
+	after = None
+	if '--' in argv:
+		cut = argv.index('--')
+		argv, after = argv[:cut], argv[cut + 1:]
+		default_hosts = parser.get_default('hosts')
+		# tells "no hosts before the --" from hosts typed as the default's value
+		no_hosts = object()
+		parser.set_defaults(hosts=no_hosts)
+	try:
+		try:
+			namespace, leftovers = parser.parse_intermixed_args(argv), []
+		except Exception:
+			# Python 3.6 has no parse_intermixed_args: what parse_known_args cannot place becomes commands
+			namespace, leftovers = parser.parse_known_args(argv)
+	finally:
+		if after is not None:
+			parser.set_defaults(hosts=default_hosts)
+	commands = namespace.commands or []
+	if after is not None:
+		before = ([] if namespace.hosts is no_hosts else [namespace.hosts]) + commands
+		words = before + after
+		namespace.hosts = words[0] if words else default_hosts
+		commands = words[1:]
+		# leftovers come from before the "--", so they go in front of the words after it
+		at = max(len(before) - 1, 0)
+		commands[at:at] = leftovers
+	elif leftovers:
+		commands += leftovers
+	if leftovers:
+		eprint(f"Warning: Unknown arguments, treating all as commands: {leftovers!r}")
+	namespace.commands = commands
+	return namespace
+
 def process_args(args = None):
 	global __configs_from_file
 	cfp = 	parser = argparse.ArgumentParser(add_help=False)
@@ -5976,18 +6019,7 @@ def process_args(args = None):
 		pass
 	parser = get_parser()
 	_install_signal_handlers()
-	# We parse the arguments
-	# if python version is 3.7 or higher, use parse_intermixed_args
-	try:
-		args = parser.parse_intermixed_args(args)
-	except Exception :
-		#eprint(f"Error while parsing arguments: {e!r}")
-		# try to parse the arguments using parse_known_args
-		args, unknown = parser.parse_known_args(args)
-		# if there are unknown arguments, we will try to parse them again using parse_args
-		if unknown:
-			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
-			args.commands += unknown
+	args = _parse_command_line(parser, args)
 	try:
 		args.config_file = cfpa.config_file
 	except Exception:
