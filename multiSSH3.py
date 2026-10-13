@@ -342,9 +342,72 @@ def _install_signal_handlers():
 
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
 	"""
-	Read input from the user with a timeout (cross-platform).
-	If the user does not enter any input within `timeout` seconds, return None.
-	Otherwise, return the input string.
+	Ask the user for a line, counting down `timeout` seconds.
+
+	Returns the line stripped, or None when the time is up or nobody can answer (stdin is not a
+	terminal), so the caller takes its default. Outside Windows nothing keeps reading stdin once it
+	returns: the TUI that may start next gets every key typed after the prompt.
+	"""
+	try:
+		interactive = sys.stdin.isatty()
+	except Exception:
+		# no stdin at all (None) or a closed one
+		interactive = False
+	if not interactive:
+		# a pipe or file holds input for someone else (e.g. the hosts left in a `while read host` loop)
+		# and nobody is there to answer: take the default without reading any of it
+		eprint(f"{prompt}: stdin is not a terminal, taking the default")
+		return None
+	try:
+		fd = sys.stdin.fileno()
+	except Exception:
+		fd = None
+	if fd is None or os.name == 'nt':
+		# select() cannot wait on a Windows console, nor on a stdin without a file descriptor
+		return _input_with_timeout_by_thread(timeout, prompt)
+	import select
+	encoding = getattr(sys.stdin, 'encoding', None) or 'utf-8'
+	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
+	typed = b''
+	shown = timeout
+	start_time = time.monotonic()
+	try:
+		while True:
+			elapsed = time.monotonic() - start_time
+			remaining = timeout - int(elapsed)
+			if remaining <= 0:
+				break
+			if remaining != shown:
+				shown = remaining
+				eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
+			# wait for a line (a terminal in its usual line mode only shows complete lines), at most
+			# until the next whole second, when the countdown changes
+			if not select.select([fd], [], [], int(elapsed) + 1 - elapsed)[0]:
+				continue
+			# read the descriptor itself: sys.stdin would buffer whatever comes after the line
+			data = os.read(fd, 4096)
+			typed += data
+			if not data or b'\n' in typed or b'\r' in typed:
+				# Enter, or Ctrl-D (end of input)
+				eprint()  # move to the next line
+				return typed.decode(encoding, errors='replace').strip()
+	except (OSError, ValueError):
+		# the terminal went away
+		eprint()
+		return None
+	# time is up: drop a half-typed answer, it was meant for this prompt, not for what reads the terminal next
+	try:
+		import termios
+		termios.tcflush(fd, termios.TCIFLUSH)
+	except Exception:
+		pass
+	eprint()  # move to the next line
+	return None
+
+def _input_with_timeout_by_thread(timeout, prompt):
+	"""
+	input_with_timeout_and_countdown for a stdin select() cannot wait on (Windows, or one without a
+	file descriptor). On a timeout the reader thread stays blocked in readline and takes the next line typed.
 	"""
 	# Queue to receive user input from the background thread
 	input_queue = queue.Queue()
