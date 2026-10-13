@@ -451,9 +451,11 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 
 ### `-ea, --extraargs EXTRAARGS` | _`DEFAULT_EXTRA_ARGS`_
 - Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.
+- The string is split into arguments as a shell would: quote an argument that contains spaces.
 - Example:
 ```bash
 mssh -ea="--delete" -f ./data/ allServers /tmp/data/
+mssh -ea="-o ProxyCommand='ssh -W %h:%p bastion'" allServers uptime
 ```
 
 ### `-11, --oneonone` | _`DEFAULT_ONE_ON_ONE`_
@@ -520,12 +522,12 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-mpre, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX` | _`DEFAULT_IPMI_INTERFACE_IP_PREFIX`_
 - The prefix of the IPMI interfaces. Will replace the resolved IP address with the given prefix when using ipmi mode.
 - This will take precedence over `INTERFACE_IP_PREFIX` when in ipmi mode.
-- Ex: `10.0.0.1` + `-mpre '192.168'` -> `192.168.0.1`
+- Ex: `10.0.0.1` + `-mpre '192.168'` (or `'192.168.'`) -> `192.168.0.1`
 
 ### `-pre, --interface_ip_prefix INTERFACE_IP_PREFIX` | _`DEFAULT_INTERFACE_IP_PREFIX`_
 - The prefix of the for the interfaces. Will replace the resolved IP address with the given prefix when connecting to the host.
 - Will prioritize `IPMI_INTERFACE_IP_PREFIX` if it exists when in ipmi mode.
-- Ex: `10.0.0.1` + `-pre '172.30'` -> `172.30.0.1`
+- Ex: `10.0.0.1` + `-pre '172.30'` (or `'172.30.'`) -> `172.30.0.1`
 
 ### `-iu, --ipmi_username IPMI_USERNAME` | _`DEFAULT_IPMI_USERNAME`_
 - The username to use to connect to the hosts via ipmi.
@@ -575,6 +577,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-Z, -rz, --return_zero` | _`DEFAULT_RETURN_ZERO`_
 - Return 0 even if there are errors.
 - Useful in scripting when failure is expected and bash is set to exit when error occurs.
+- Not when mssh itself is stopped: SIGTERM (`kill`, a batch scheduler, a service manager) or SIGHUP (the terminal closing, unless started with `nohup`) kills the running commands, starts no more and exits with 143 or 129.
 
 ### `-C, --no_env` | _`DEFAULT_NO_ENV`_
 - Do not load the command line environment variables for hostname resolution.

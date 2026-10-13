@@ -224,6 +224,37 @@ def test_tui_keeps_stdin_open_for_key_presses(fake_host, monkeypatch):
 	assert seen == [True]
 
 
+def test_exit_from_the_tui_stands_when_the_terminal_hung_up(fake_host, monkeypatch):
+	# SIGHUP from a closed terminal: curses' cleanup fails on it and replaces mssh's SystemExit with an
+	# error, which must not start the TUI again on the dead terminal
+	import curses
+
+	tries = []
+
+	def hung_up_wrapper(*args, **kwargs):
+		tries.append(1)
+		host.returncode = -9  # the handler killed the command
+		try:
+			raise SystemExit(129)  # the signal handler, inside the TUI
+		finally:
+			raise curses.error("nocbreak() returned ERR")
+
+	host = fake_host("mock-a", "sleep 60")
+	monkeypatch.setattr(multiSSH3, "__curses_available", True)
+	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	finished = threading.Thread(target=lambda: None)
+	finished.start()
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda hosts, **kwargs: [finished])
+	monkeypatch.setattr(curses, "wrapper", hung_up_wrapper)
+
+	with pytest.raises(SystemExit) as exc_info:
+		_process([host], no_watch=False)
+
+	assert exc_info.value.code == 129
+	assert tries == [1]
+
+
 def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
 	host = fake_host("v6-host", "true", interface_ip_prefix="10.0.0.", ip="2001:db8::5")
 	commands = []
@@ -234,6 +265,22 @@ def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
 
 	assert commands[0][-2] == "v6-host"  # [ssh, ..., '--', target, command]: not rewritten to 10.0.0.x
 	assert any("ip_prefix" in line for line in host.output)
+
+
+@pytest.mark.parametrize("prefix, address", [
+	("172.30", "172.30.5.7"),
+	("172.30.", "172.30.5.7"),  # was 172.30..7
+	("192.168.9.", "192.168.9.7"),
+])
+def test_interface_ip_prefix_with_or_without_a_trailing_dot(fake_host, monkeypatch, prefix, address):
+	host = fake_host("node7", "true", interface_ip_prefix=prefix, ip="10.0.5.7")
+	commands = []
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda cmd, **kwargs: commands.append(cmd) or FakeProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert commands[0][-2] == address  # [ssh, ..., '--', target, command]
 
 
 def test_stdin_closes_when_the_tui_exits_early(fake_host, monkeypatch):

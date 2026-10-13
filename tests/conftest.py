@@ -151,6 +151,7 @@ def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,
 		"_commands_started": multiSSH3._commands_started,
+		"_stopping": multiSSH3._stopping,
 		"_env_files": list(multiSSH3._env_files),
 		"_explicit_env_files": set(multiSSH3._explicit_env_files),
 		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
@@ -197,6 +198,18 @@ def restore_module_globals():
 	multiSSH3._binPaths = dict(saved["_binPaths"])
 	multiSSH3.join_threads(timeout=2)
 	_clear_expand_caches()
+
+
+@pytest.fixture(autouse=True)
+def restore_signal_handlers():
+	"""main() and process_args install mssh's handlers for Ctrl C, SIGTERM and SIGHUP: keep them out of pytest."""
+	import signal
+	numbers = [getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)]
+	saved = {number: signal.getsignal(number) for number in numbers}
+	yield
+	for number, handler in saved.items():
+		if handler is not None:
+			signal.signal(number, handler)
 
 
 @pytest.fixture
