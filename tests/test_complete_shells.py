@@ -428,7 +428,18 @@ def test_zsh_installs_where_zsh_reads_its_rc_file(tmp_path, zdotdir):
 	assert rc.read_text() == 'setopt nobeep\n'
 
 
-@pytest.mark.parametrize('answer', ['zdotdir', 'chatty zshenv', 'none', 'fails'])
+# a stand-in zsh: the answer goes to the file named by its last argument (`print ... >| "$1"`),
+# and to stdout as an `mssh-zdotdir:` line (how the first version asked)
+FAKE_ZSH = '''#!/bin/sh
+for last; do :; done
+answer() {{
+	echo "mssh-zdotdir:$1"
+	case $last in /*) printf '%s\n' "$1" > "$last" ;; esac
+}}
+{}
+'''
+
+@pytest.mark.parametrize('answer', ['zdotdir', 'chatty zshenv', 'holds stdout', 'none', 'fails'])
 def test_zsh_install_asks_zsh_for_zdotdir(tmp_path, answer):
 	# ZDOTDIR set in ~/.zshenv without export is not in mssh's environment: zsh itself knows it
 	env, home = make_home(tmp_path)
@@ -436,29 +447,47 @@ def test_zsh_install_asks_zsh_for_zdotdir(tmp_path, answer):
 	zdotdir.mkdir(parents=True)
 	(home / 'bin').mkdir()
 	fake = home / 'bin' / 'zsh'
-	fake.write_text('#!/bin/sh\n' + {
-		'zdotdir': 'echo "mssh-zdotdir:{}"\n'.format(zdotdir),
-		'chatty zshenv': 'echo "mssh-zdotdir:/wrong"; echo hello from zshenv; echo "mssh-zdotdir:{}"\n'.format(zdotdir),
-		'none': 'echo "mssh-zdotdir:"\n',
-		'fails': 'exit 1\n'}[answer])
+	fake.write_text(FAKE_ZSH.format({
+		'zdotdir': 'answer {}'.format(zdotdir),
+		'chatty zshenv': 'echo "mssh-zdotdir:/wrong"; echo hello from zshenv; answer {}'.format(zdotdir),
+		# a zshenv that starts a background job without redirecting it: reading zsh's output waited for the job
+		'holds stdout': '(sleep 8) & answer {}'.format(zdotdir),
+		'none': 'answer ""',
+		'fails': 'exit 1'}[answer]))
 	fake.chmod(0o755)
 	env = dict(env, PATH=str(home / 'bin') + os.pathsep + env['PATH'])
-	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	started = time.monotonic()
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0 and time.monotonic() - started < 4
 	rc = home / '.zshrc' if answer in ('none', 'fails') else zdotdir / '.zshrc'
 	assert mc.RC_BEGIN_CREATED in rc.read_text()
+	# when zsh does not answer, the operator is told which file was used
+	note = 'note: zsh did not say whether ZDOTDIR is set (it exited with status 1): using {}'.format(rc)
+	assert [message for message in messages if message.startswith('note: zsh')] == ([note] if answer == 'fails' else [])
 	assert mc.uninstall('zsh', home=str(home), environ=env)[0] == 0
 	assert not rc.exists()
 
 
-def test_a_new_zsh_loads_the_glue_from_an_unexported_zdotdir(tmp_path):
+def test_zsh_install_says_when_there_is_no_zsh_to_ask(tmp_path):
+	env, home = make_home(tmp_path)
+	(home / 'bin').mkdir()
+	code, messages = mc.install('zsh', home=str(home), environ=dict(env, PATH=str(home / 'bin')), command=ENGINE)
+	assert code == 0 and 'note: zsh did not say whether ZDOTDIR is set (zsh is not on PATH): using {}'.format(home / '.zshrc') in messages
+
+
+@pytest.mark.parametrize('job', ['', '(sleep 8) &\n'])
+def test_a_new_zsh_loads_the_glue_from_an_unexported_zdotdir(tmp_path, job):
 	path = require_shell('zsh')
 	env, home = make_home(tmp_path)
 	zdotdir = home / '.config' / 'zsh'
 	zdotdir.mkdir(parents=True)
-	(home / '.zshenv').write_text('ZDOTDIR=$HOME/.config/zsh\n')
+	# a background job started by ~/.zshenv keeps zsh's stdout open after zsh is done
+	(home / '.zshenv').write_text('ZDOTDIR=$HOME/.config/zsh\n' + job)
 	(zdotdir / '.zshrc').write_text('autoload -Uz compinit && compinit -u -D\n')
 	assert 'ZDOTDIR' not in env
+	started = time.monotonic()
 	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	assert time.monotonic() - started < 4
 	assert not (home / '.zshrc').exists()
 	result = subprocess.run([path, '-i', '-c', 'print -r -- "loaded=${+functions[_mssh]}"'], env=env, cwd=str(home),
 		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)

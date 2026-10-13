@@ -5651,24 +5651,45 @@ def _bash_login_note(home, rc):
 
 def _zsh_rc(home, environ):
 	'''
-	The .zshrc zsh reads: the one in $ZDOTDIR when that is set (and not empty), else ~/.zshrc.
+	The .zshrc zsh reads, the one in $ZDOTDIR when that is set (and not empty), else ~/.zshrc; and a
+	note when zsh could not say which (else None).
 
 	ZDOTDIR is often set in ~/.zshenv or /etc/zshenv, not always exported, so mssh's environment may
 	not hold it: zsh is asked, running only those zshenv files, as every zsh does. Without an answer
 	from zsh, the environment's ZDOTDIR is used.
 	'''
 	import subprocess
+	import tempfile
 	zdotdir = environ.get('ZDOTDIR')
+	why = None
+	fd, answer = tempfile.mkstemp(prefix='mssh-zdotdir.')
+	os.close(fd)
 	try:
-		output = subprocess.run(['zsh', '-c', 'print -r -- "mssh-zdotdir:${ZDOTDIR-}"'], env=environ,
-			stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
-	except (OSError, subprocess.SubprocessError):
-		output = b''
-	# the last answer: a zshenv may print lines of its own
-	answers = [line for line in output.decode('utf-8', 'surrogateescape').splitlines() if line.startswith('mssh-zdotdir:')]
-	if answers:
-		zdotdir = answers[-1][len('mssh-zdotdir:'):]
-	return os.path.join(zdotdir or home, '.zshrc')
+		# the answer goes to a file: a zshenv may print, or start a background job that keeps zsh's
+		# stdout open long after zsh is done
+		process = subprocess.Popen(['zsh', '-c', 'print -r -- "${ZDOTDIR-}" >| "$1"', 'zsh', answer], env=environ,
+			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		try:
+			status = process.wait(timeout=5)
+		except subprocess.TimeoutExpired:
+			process.kill()
+			process.wait()
+			why = 'it took over 5 s'
+		else:
+			with open(answer, 'rb') as f:
+				said = f.read()
+			if said.endswith(b'\n'):
+				zdotdir = os.fsdecode(said[:-1])
+			else:
+				why = 'it exited with status {}'.format(status) if status else 'it gave no answer'
+	except FileNotFoundError:
+		why = 'zsh is not on PATH'
+	except OSError as error:
+		why = 'zsh could not be run: {}'.format(error.strerror or error)
+	finally:
+		os.unlink(answer)
+	rc = os.path.join(zdotdir or home, '.zshrc')
+	return rc, (None if why is None else 'note: zsh did not say whether ZDOTDIR is set ({}): using {}'.format(why, rc))
 
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
@@ -5680,7 +5701,8 @@ def _paths(shell, home, environ):
 			'keys': os.path.join(config, 'fish', 'conf.d', 'mssh-complete.fish')}
 	if shell == 'zsh':
 		# zsh reads .zshrc from $ZDOTDIR when that is set (often in ~/.zshenv), and never reads ~/.zshrc then
-		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': _zsh_rc(home, environ)}
+		rc, note = _zsh_rc(home, environ)
+		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': rc, 'note': note}
 	# always from ~/.bashrc: bash-completion's per-user directory only loads where bash-completion
 	# runs, which an installed package does not guarantee (stock Debian root shells do not load it)
 	return {'files': [os.path.join(data, 'multiSSH3', 'completion.bash')], 'rc': os.path.join(home, '.bashrc')}
@@ -5708,6 +5730,8 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 			return 1, ['fish {} is too old for mssh autocomplete: it needs fish 3.0 or later'.format(major)]
 	text = render_glue(shell, command)
 	paths = _paths(shell, home, environ)
+	if paths.get('note'):
+		messages.append(paths['note'])
 	try:
 		written = [path for path in paths['files'] if _write_glue(path, text, messages)]
 		if paths.get('keys') and written:
@@ -5738,6 +5762,8 @@ def uninstall(shell, home=None, environ=None):
 	home = home or os.path.expanduser('~')
 	messages = []
 	paths = _paths(shell, home, environ)
+	if paths.get('note'):
+		messages.append(paths['note'])
 	try:
 		for path in paths['files'] + ([paths['keys']] if paths.get('keys') else []):
 			if _ours(path):
@@ -5750,7 +5776,9 @@ def uninstall(shell, home=None, environ=None):
 			_remove_rc_block(paths['rc'], messages)
 	except InstallError as error:
 		return 1, messages + list(error.args)
-	return 0, messages or ['nothing to remove']
+	if len(messages) == (1 if paths.get('note') else 0):
+		messages.append('nothing to remove')
+	return 0, messages
 
 def completion_command(values):
 	'''`mssh --completion ...`: print the glue for a shell, or install / uninstall it.'''
