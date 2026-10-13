@@ -1509,6 +1509,7 @@ TAIL_LIMIT_ENTRIES = 500
 ARP_TTL = 300.0
 LOCK_NAME = 'complete-index.lock'
 LOCK_STALE = 60.0
+LOCK_FAILED = 'failed'  # the last line of a rebuild lock kept after the build failed
 FIRST_BUILD_BUDGET = 2.0
 
 def check_freshness(index, now):
@@ -1604,6 +1605,30 @@ def release_lock(path, owner):
 	except OSError:
 		pass
 
+def keep_failed_lock(path, owner):
+	'''
+	After a failed run, keep the lock at path (if it still says owner) and add that it failed: the
+	next run starts once the lock goes stale, LOCK_STALE from now, instead of at the next query. A
+	failure that repeats (a full runtime directory, multiSSH3.py missing) would otherwise cost a
+	full run on every query.
+	'''
+	if owner is None or read_lock(path) != owner:
+		return
+	try:
+		with open(path, 'a') as f:
+			f.write(LOCK_FAILED + '\n')
+	except OSError:
+		# not marked (a query without an index waits its budget out), but kept all the same
+		try:
+			os.utime(path, None)
+		except OSError:
+			pass
+
+def rebuild_failed(directory):
+	'''Whether the last rebuild failed, less than LOCK_STALE ago (see keep_failed_lock).'''
+	content = read_lock(os.path.join(directory, LOCK_NAME))
+	return content is not None and content.endswith('\n' + LOCK_FAILED + '\n')
+
 def _spawn_detached(directory, lock_name, command):
 	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
 	lock = os.path.join(directory, lock_name)
@@ -1638,7 +1663,8 @@ def load_for_query(directory, now):
 	'''
 	The index to answer from and the history lines it is missing.
 
-	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one.
+	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one,
+	unless that build failed (the next one starts when its lock goes stale).
 
 	Returns:
 		tuple: (NsvIndex or None, history tail lines)
@@ -1648,7 +1674,7 @@ def load_for_query(directory, now):
 	if index is None:
 		spawn_rebuild(directory)
 		until = time.monotonic() + FIRST_BUILD_BUDGET
-		while index is None and time.monotonic() < until:
+		while index is None and time.monotonic() < until and not rebuild_failed(directory):
 			time.sleep(0.05)
 			if os.path.exists(path):
 				index = _load_index(path)
@@ -6094,20 +6120,25 @@ def _cmd_rebuild(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
 	# what the query that started us wrote into the lock, read before anything else
 	owner = read_lock(lock) if lock else None
+	built = False
 	try:
 		directory = cache_dir()
 		if directory is None:
 			print('mssh-complete: no private cache directory', file=sys.stderr)
 			return 1
-		print(build_index(directory))
+		path = build_index(directory)
+		built = True
+		print(path)
 		return 0
 	except Exception as e:
 		_debug('rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
 		return 1
 	finally:
-		if lock:
+		if lock and built:
 			release_lock(lock, owner)
+		elif lock:
+			keep_failed_lock(lock, owner)
 
 def _cmd_probe(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None

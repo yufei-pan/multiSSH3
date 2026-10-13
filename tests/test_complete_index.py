@@ -1,5 +1,7 @@
+import errno
 import os
 import subprocess
+import threading
 import time
 
 import pytest
@@ -143,6 +145,58 @@ def test_a_rebuild_leaves_a_lock_taken_over_from_it(home, monkeypatch):
 	assert mc.main(['rebuild', '--lock', lock]) == 0
 	with open(lock) as f:
 		assert f.read() == successor[0]
+
+
+def failing_build(directory, now=None, mssh=None):
+	# as when the runtime directory is full, or a file size limit is lower than the index
+	raise OSError(errno.EFBIG, 'File too large')
+
+
+def test_a_failed_rebuild_is_tried_again_once_its_lock_is_stale(home, monkeypatch):
+	# a failure that repeats would otherwise cost a full rebuild on every query
+	directory = mc.cache_dir()
+	lock = os.path.join(directory, mc.LOCK_NAME)
+	monkeypatch.setattr(mc, 'build_index', failing_build)
+	assert mc.take_lock(lock)
+	assert mc.main(['rebuild', '--lock', lock]) == 1
+	started = []
+	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
+	assert mc.spawn_rebuild(directory) is False
+	stale = time.time() - mc.LOCK_STALE - 1
+	os.utime(lock, (stale, stale))
+	assert mc.spawn_rebuild(directory) is True
+	assert len(started) == 1
+
+
+def test_queries_do_not_wait_for_a_rebuild_that_failed(home, monkeypatch):
+	directory = mc.cache_dir()
+	lock = os.path.join(directory, mc.LOCK_NAME)
+	monkeypatch.setattr(mc, 'build_index', failing_build)
+	assert mc.take_lock(lock)
+	mc.main(['rebuild', '--lock', lock])
+	started = []
+	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
+	began = time.monotonic()
+	assert mc.load_for_query(directory, time.time()) == (None, [])
+	assert time.monotonic() - began < 0.5
+	assert started == []
+
+
+def test_the_first_query_stops_waiting_when_the_build_fails(home, monkeypatch):
+	directory = mc.cache_dir()
+	monkeypatch.setattr(mc, 'build_index', failing_build)
+	runs = []
+
+	def popen(argv, **kwargs):
+		# the detached rebuild, failing a moment after it starts
+		run = threading.Timer(0.1, mc.main, args=(argv[-3:],))
+		run.start()
+		runs.append(run)
+	monkeypatch.setattr(subprocess, 'Popen', popen)
+	began = time.monotonic()
+	assert mc.load_for_query(directory, time.time()) == (None, [])
+	assert time.monotonic() - began < 1
+	runs[0].join()
 
 
 def test_first_query_builds_the_index(home):
