@@ -1211,6 +1211,45 @@ def read_hosts_file(path):
 		pass
 	return hosts
 
+def _ssh_config_words(text):
+	'''
+	The arguments of an ssh config line after its keyword, split as ssh splits them: quotes group
+	words, a backslash escapes a quote, a backslash or a space, and a word starting with # starts a
+	comment.
+
+	Returns:
+		list, or None for a line with an open quote (ssh rejects it)
+	'''
+	words = []
+	position = 0
+	while position < len(text):
+		if text[position] in ' \t':
+			position += 1
+			continue
+		if text[position] == '#':
+			break
+		word = []
+		quote = ''
+		while position < len(text):
+			char = text[position]
+			following = text[position + 1:position + 2]
+			if char == '\\' and following and (following in '"\'\\' or (not quote and following == ' ')):
+				word.append(following)
+				position += 1
+			elif not quote and char in ' \t':
+				break
+			elif not quote and char in '"\'':
+				quote = char
+			elif char == quote:
+				quote = ''
+			else:
+				word.append(char)
+			position += 1
+		if quote:
+			return None
+		words.append(''.join(word))
+	return words
+
 def read_ssh_config(path, base_dir, names, users, read):
 	'''
 	Add the Host names (no patterns) and User values of an ssh config file and the files it Includes.
@@ -1235,19 +1274,26 @@ def read_ssh_config(path, base_dir, names, users, read):
 			line = line.strip()
 			if not line or line.startswith('#'):
 				continue
-			key, _, value = line.replace('=', ' ', 1).partition(' ')
-			key = key.lower()
-			value = value.strip()
+			# the keyword ends at a space, a tab or "=", which may also stand between it and its arguments
+			end = 0
+			while end < len(line) and line[end] not in ' \t=':
+				end += 1
+			key = line[:end].lower()
+			rest = line[end:].lstrip(' \t')
+			if rest.startswith('='):
+				rest = rest[1:]
+			words = _ssh_config_words(rest)
+			if not words:
+				continue
 			if key == 'host':
-				for pattern in value.split():
-					pattern = pattern.strip('"')
+				for pattern in words:
 					if pattern and not any(char in pattern for char in '*?!'):
 						names.add(pattern)
-			elif key == 'user' and value:
-				users.add(value.strip('"'))
+			elif key == 'user' and words[0]:
+				users.add(words[0])
 			elif key == 'include':
-				for pattern in value.split():
-					pattern = os.path.expanduser(pattern.strip('"'))
+				for pattern in words:
+					pattern = os.path.expanduser(pattern)
 					if not os.path.isabs(pattern):
 						pattern = os.path.join(base_dir, pattern)
 					for included in sorted(glob.glob(pattern)):

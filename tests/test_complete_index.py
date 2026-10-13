@@ -74,6 +74,18 @@ def test_names_mssh_cannot_take_as_one_host_are_not_collected(home):
 	assert [candidate.text for candidate in response.candidates] == []
 
 
+def test_ssh_config_lines_are_split_as_ssh_splits_them(home):
+	'''A trailing comment holds no host and no user, quotes make one pattern of two words, a tab or
+	"=" may follow the keyword, and ssh rejects a line with an open quote.'''
+	(home / '.ssh' / 'config').write_text('Host zzweb1 # the zzserver\n  User ops # deploy user\nHost\tzztabbed\n'
+		'Host=zzequals\nHost "zztwo zzwords" zzquoted\nHost "zzopen\nHost zz#hash\n')
+	index, _ = build()
+	names = set(mc.HostTable(index).names)
+	assert {'zzweb1', 'zztabbed', 'zzequals', 'zzquoted', 'zz#hash'} <= names
+	assert not names & {'#', 'the', 'zzserver', 'zztwo', 'zzwords', '"zztwo', 'zzwords"', 'zzopen', '"zzopen'}
+	assert index.row('config', 0) == ['users', 'ops']
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
