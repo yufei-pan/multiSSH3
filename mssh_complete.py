@@ -5470,6 +5470,16 @@ def _remove_rc_block(rc, messages):
 			messages.append('removed the mssh block from ' + rc)
 		return
 
+def _zsh_starts_completion(rc):
+	'''Whether rc (comments left out) starts zsh's completion system, which TAB needs: compinit, or a framework that runs it.'''
+	import re
+	try:
+		with open(rc, encoding='utf-8', errors='replace') as f:
+			text = ''.join(line for line in f if not line.lstrip().startswith('#'))
+	except OSError:
+		return False
+	return re.search(r'compinit|oh-my-zsh|prezto|zimfw|ZIM_HOME|antigen|zplug|zgen', text) is not None
+
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
 	config = environ.get('XDG_CONFIG_HOME') or os.path.join(home, '.config')
@@ -5519,6 +5529,8 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 		if editor and shell == 'bash':
 			body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
 		_add_rc_block(paths['rc'], body, messages)
+		if shell == 'zsh' and not _zsh_starts_completion(paths['rc']):
+			messages.append("TAB needs zsh's completion system, which {0} does not seem to start: if TAB does not complete mssh in a new zsh, add this line to {0}: autoload -Uz compinit && compinit".format(paths['rc']))
 	return (0 if written else 1), messages
 
 def uninstall(shell, home=None, environ=None):

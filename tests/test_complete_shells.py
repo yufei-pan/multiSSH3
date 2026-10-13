@@ -267,6 +267,29 @@ def test_uninstall_deletes_an_rc_file_it_created(tmp_path):
 	assert not (home / '.zshrc').exists()
 
 
+@pytest.mark.parametrize('zshrc, noted', [
+	(None, True),
+	('setopt nobeep\n', True),
+	('# autoload -Uz compinit && compinit\n', True),
+	('autoload -Uz compinit\ncompinit -i\n', False),
+	('source $ZSH/oh-my-zsh.sh\n', False),
+	('zinit light zsh-users/zsh-completions\nzicompinit; zicdreplay\n', False),
+], ids=['no-zshrc', 'no-compinit', 'commented-out', 'compinit', 'oh-my-zsh', 'zinit'])
+def test_zsh_install_says_when_the_rc_file_does_not_start_completion(tmp_path, zshrc, noted):
+	# TAB needs zsh's completion system, which zsh starts only when told to
+	env, home = make_home(tmp_path)
+	rc = home / '.zshrc'
+	if zshrc is not None:
+		rc.write_text(zshrc)
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	notes = [message for message in messages if 'compinit' in message]
+	note = "TAB needs zsh's completion system, which {0} does not seem to start: if TAB does not complete mssh in a new zsh, add this line to {0}: autoload -Uz compinit && compinit".format(rc)
+	assert notes == ([note] if noted else []), messages
+	# installing again says it again
+	assert [message for message in mc.install('zsh', home=str(home), environ=env, command=ENGINE)[1] if 'compinit' in message] == notes
+
+
 def test_install_never_overwrites_foreign_files(tmp_path):
 	env, home = make_home(tmp_path)
 	target = home / '.config' / 'fish' / 'completions' / 'mssh.fish'
