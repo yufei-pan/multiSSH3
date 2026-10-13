@@ -268,6 +268,18 @@ def test_editor_marks_an_unknown_host_and_says_why(home):
 		session.close()
 
 
+def test_editor_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh node01 journalctl -u slurmd')
+		reason = "⚠ -u is mssh's --username here — quote the command: 'journalctl -u slurmd'"
+		assert reason in plain(session.read_until(b'slurmd\'', 10))
+		assert underlined(session, '-u')
+	finally:
+		session.close()
+
+
 def test_editor_enter_runs_what_was_typed(home):
 	env, home = home
 	session = editor_session(env, home)
@@ -535,6 +547,18 @@ def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
 		assert '⚠ gpu017: unknown host' in plain(output)
 		# the host is underlined
 		assert underlined(session, 'gpu017')
+	finally:
+		session.close()
+
+
+def test_zsh_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh node01 df -h ')
+		output = session.read_until(b'df -h\'', 10)
+		assert "⚠ -h is mssh's --help here — quote the command: 'df -h'" in plain(output)
+		assert underlined(session, '-h')
 	finally:
 		session.close()
 
