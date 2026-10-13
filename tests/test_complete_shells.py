@@ -562,12 +562,12 @@ def test_an_rc_file_mssh_may_not_change_gets_the_lines_to_change_by_hand(tmp_pat
 		rc.write_text('alias ll="ls -l"\n')
 	if change in ('update', 'remove'):
 		assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
-	replace_file = mc._replace_file
-	def read_only(path, text):
-		if path == str(rc):
-			raise OSError(errno.EROFS, os.strerror(errno.EROFS))
-		replace_file(path, text)
-	monkeypatch.setattr(mc, '_replace_file', read_only)
+	for name in ('_replace_file', '_append_file'):
+		def read_only(path, text, write=getattr(mc, name)):
+			if path == str(rc):
+				raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+			write(path, text)
+		monkeypatch.setattr(mc, name, read_only)
 	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
 	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
 	failed = 'could not change {}: {}; it is as it was'.format(rc, os.strerror(errno.EROFS))
@@ -583,6 +583,48 @@ def test_an_rc_file_mssh_may_not_change_gets_the_lines_to_change_by_hand(tmp_pat
 			advice = ['to load it anyway, add these lines to it yourself:', mc.RC_BEGIN, load, mc.RC_END]
 	assert code == 1
 	assert messages[-len(advice) - 1:] == [failed] + advice
+
+
+@pytest.mark.parametrize('obstacle', ['bind mount', 'directory not writable'])
+def test_rc_files_that_cannot_be_replaced_still_get_a_new_block(tmp_path, monkeypatch, obstacle):
+	# a bind-mounted ~/.bashrc (docker -v, devcontainers, Kubernetes subPath) cannot be renamed over
+	# (EBUSY), and a home directory the user may not write takes no temporary file: the first install
+	# appends in place as it always did; editing an existing block says what to change by hand
+	import tempfile
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	if obstacle == 'bind mount':
+		replace = os.replace
+		def busy(source, target):
+			if target == str(rc):
+				raise OSError(errno.EBUSY, os.strerror(errno.EBUSY), source, target)
+			replace(source, target)
+		monkeypatch.setattr(os, 'replace', busy)
+		reason = 'cannot replace it ({})'.format(os.strerror(errno.EBUSY))
+	else:
+		mkstemp = tempfile.mkstemp
+		def denied(*args, **kwargs):
+			if kwargs.get('dir') == str(home):
+				raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), os.path.join(str(home), '.bashrc.x.mssh-tmp'))
+			return mkstemp(*args, **kwargs)
+		monkeypatch.setattr(tempfile, 'mkstemp', denied)
+		reason = 'cannot make a file beside it ({})'.format(os.strerror(errno.EACCES))
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+	assert code == 0 and 'added a block loading it to {}'.format(rc) in messages
+	assert rc.read_text() == 'alias ll="ls -l"\n\n{}\n{}\n{}\n'.format(mc.RC_BEGIN, load, mc.RC_END)
+	before = rc.read_text()
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)
+	assert code == 1 and messages[-6:] == ['could not change {}: {}; it is as it was'.format(rc, reason),
+		'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:',
+		mc.RC_BEGIN, 'export MSSH_COMPLETE_EDITOR=1', load, mc.RC_END]
+	code, messages = mc.uninstall('bash', home=str(home), environ=env)
+	assert code == 1 and messages[-2:] == ['could not change {}: {}; it is as it was'.format(rc, reason),
+		'to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
+	# never a temporary file: not in the messages, not left behind
+	assert rc.read_text() == before and sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history']
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason='root may write any file')

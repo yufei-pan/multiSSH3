@@ -5370,7 +5370,11 @@ def _replace_file(path, text):
 		raise OSError(errno.EINVAL, 'not a regular file')
 	if old is not None and not os.access(target, os.W_OK):
 		raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
-	fd, temporary = tempfile.mkstemp(prefix='.' + os.path.basename(target).lstrip('.') + '.', suffix='.mssh-tmp', dir=os.path.dirname(target))
+	try:
+		fd, temporary = tempfile.mkstemp(prefix='.' + os.path.basename(target).lstrip('.') + '.', suffix='.mssh-tmp', dir=os.path.dirname(target))
+	except OSError as error:
+		# a directory the user may not write: say so, not the temporary file's name
+		raise OSError(error.errno, 'cannot make a file beside it ({})'.format(error.strerror))
 	try:
 		with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
 			f.write(text)
@@ -5390,13 +5394,45 @@ def _replace_file(path, text):
 						pass
 			os.fchmod(f.fileno(), mode)
 			os.fsync(f.fileno())
-		os.replace(temporary, target)
+		try:
+			os.replace(temporary, target)
+		except OSError as error:
+			# a bind-mounted file (EBUSY, EXDEV) cannot be renamed over
+			raise OSError(error.errno, 'cannot replace it ({})'.format(error.strerror))
 	except BaseException:
 		try:
 			os.unlink(temporary)
 		except OSError:
 			pass
 		raise
+
+def _append_file(path, text):
+	'''
+	Append text to the regular file at path in place, as a shell's >> would: links (hard or symbolic),
+	bind mounts, owner and attributes stay as they are, and the directory need not be writable.
+
+	A write that fails part way is cut off again, which leaves the file as it was.
+	'''
+	import errno
+	import stat
+	data = memoryview(text.encode('utf-8', 'surrogateescape'))
+	fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK)
+	try:
+		info = os.fstat(fd)
+		if not stat.S_ISREG(info.st_mode):
+			raise OSError(errno.EINVAL, 'not a regular file')
+		try:
+			while data:
+				data = data[os.write(fd, data):]
+			os.fsync(fd)
+		except BaseException:
+			try:
+				os.ftruncate(fd, info.st_size)
+			except OSError:
+				pass
+			raise
+	finally:
+		os.close(fd)
 
 def detect_shell(environ=None):
 	'''The shell that ran us (parent process), else $SHELL; None if neither is bash, zsh or fish.'''
@@ -5464,16 +5500,23 @@ def _shown(rc):
 	'''rc as messages name it: with the file it links to, the one that changes.'''
 	return '{} (a link to {})'.format(rc, os.path.realpath(rc)) if os.path.islink(rc) else rc
 
-def _write_rc(rc, text, by_hand):
-	'''Replace rc with text. by_hand: the lines that tell the operator how to make the change when mssh may not.'''
+def _write_rc(rc, text, by_hand, append=False):
+	'''
+	Replace rc with text, or append text to it. by_hand: the lines that tell the operator how to make
+	the change when mssh may not.
+	'''
 	import errno
 	try:
-		_replace_file(rc, text)
+		if append:
+			_append_file(rc, text)
+		else:
+			_replace_file(rc, text)
 	except OSError as error:
 		lines = ['could not change {}: {}; it is as it was'.format(rc, _reason(error, rc))]
-		# a file mssh may not change: home-manager links rc files into the read-only Nix store, and
-		# managed dotfiles may be read-only; a full disk is fixed by freeing space and running this again
-		if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+		# a file mssh may not change: home-manager links rc files into the read-only Nix store, managed
+		# dotfiles may be read-only, a bind-mounted one cannot be replaced; a full disk is fixed by
+		# freeing space and running this again
+		if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS, errno.EBUSY, errno.EXDEV):
 			lines += by_hand
 		raise InstallError(*lines)
 
@@ -5539,7 +5582,9 @@ def _add_rc_block(rc, body, messages):
 		messages.append('updated the mssh block in ' + _shown(rc))
 		return
 	block = '\n{}\n{}\n{}\n'.format(RC_BEGIN if text is not None else RC_BEGIN_CREATED, body, RC_END)
-	_write_rc(rc, (text or '') + block, add_by_hand)
+	# a new block is appended in place: the user's lines are never rewritten, and a write that fails
+	# part way could only leave an incomplete block, which is cut off again (or refused next time)
+	_write_rc(rc, block, add_by_hand, append=text is not None)
 	messages.append('added a block loading it to ' + _shown(rc))
 
 def _remove_rc_block(rc, messages):
