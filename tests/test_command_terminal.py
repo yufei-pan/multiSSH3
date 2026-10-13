@@ -264,3 +264,75 @@ def test_ssh_asks_for_passwords_where_something_answers(fake_host, monkeypatch, 
 		monkeypatch.setenv("SSH_ASKPASS_REQUIRE", "force")
 		argv = _started_argv(fake_host, monkeypatch)
 	assert not any("NumberOfPasswordPrompts" in str(arg) for arg in argv)
+
+
+def _run_and_note(fake_host, monkeypatch, capsys, stderr_by_host, password=None, use_terminal=False, no_output=False):
+	'''Run hosts whose ssh printed stderr_by_host[name], with the default output; return mssh's stderr.'''
+	def fake_start(hosts, **kwargs):
+		for host in hosts:
+			host.stderr = list(stderr_by_host[host.name])
+			host.returncode = 255
+			# the case under test, whatever processRunOnHosts decided for this many hosts
+			host.use_terminal = use_terminal
+		return []
+
+	hosts = [fake_host(name, "hostname") for name in stderr_by_host]
+	monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", fake_start)
+	multiSSH3.processRunOnHosts(timeout=5, password=password, max_connections=4, hosts=hosts,
+		return_unfinished=False, no_watch=True, json=False, no_output=no_output, greppable=False,
+		unavailableHosts={}, will_update_unreachable_hosts=False, pre_merge=True)
+	return capsys.readouterr().err
+
+
+def _denied(user, host, methods="publickey,password"):
+	return ["Warning: Permanently added '{}' (ED25519) to the list of known hosts.".format(host),
+		"{}@{}: Permission denied ({}).".format(user, host, methods)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="commands keep the console on Windows")
+def test_a_note_says_why_ssh_did_not_ask_for_the_password(fake_host, monkeypatch, capsys):
+	err = _run_and_note(fake_host, monkeypatch, capsys, {
+		"bob@node1": _denied("bob", "node1"),
+		"bob@node2": _denied("bob", "node2", "publickey,keyboard-interactive"),
+		"bob@node3": ["ok"],
+	})
+	notes = [line for line in err.splitlines() if line.startswith("Note:")]
+	assert len(notes) == 1  # one line for the run, not one per host
+	assert "ssh could not ask for the password (or key passphrase) of bob@node[1-2]" in notes[0]
+	assert "-p" in notes[0] and "-nw -m 1" in notes[0]
+
+
+@pytest.mark.parametrize("case", ["terminal", "sshpass", "publickey_only", "other_host", "no_output"])
+def test_no_note_unless_ssh_wanted_a_password_it_could_not_ask_for(fake_host, monkeypatch, capsys, case):
+	stderr = {"bob@node1": _denied("bob", "node1")}
+	kwargs = {}
+	if case == "terminal":
+		kwargs["use_terminal"] = True  # it could ask: the password was wrong or not typed
+	elif case == "sshpass":
+		kwargs["password"] = "wrong"  # sshpass answered: the password was wrong
+	elif case == "publickey_only":
+		stderr = {"bob@node1": _denied("bob", "node1", "publickey")}  # no password would have helped
+	elif case == "other_host":
+		# an ssh run by the command (or a jump host) failed, not the one mssh started for node1
+		stderr = {"bob@node1": _denied("bob", "elsewhere")}
+	else:
+		kwargs["no_output"] = True
+	assert "Note:" not in _run_and_note(fake_host, monkeypatch, capsys, stderr, **kwargs)
+
+
+def test_the_note_reads_hostile_remote_output_in_linear_time(fake_host):
+	# stderr comes from the remote side: a long line of '@' made an \S+@\S+ pattern backtrack for seconds
+	tail = ": Permission denied (publickey,password)."
+	lines = ["@" * 100000, "a@" * 50000, "@" * 100000 + tail, "a@" * 50000 + tail, "u@h" + tail[:-1] + "@" * 100000,
+		"u@h: Permission denied (" + "(" * 100000, "x" * 100000 + "@h" + tail]
+	for line in lines:
+		started = time.perf_counter()
+		multiSSH3._SSH_PERMISSION_DENIED.fullmatch(line)
+		assert time.perf_counter() - started < 0.05, line[:20]
+	host = fake_host("bob@node1", "true")
+	host.stderr = lines
+	host.returncode = 255
+	started = time.perf_counter()
+	multiSSH3._note_unasked_passwords([host], None)
+	assert time.perf_counter() - started < 0.1

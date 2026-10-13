@@ -3865,6 +3865,38 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			rtnStr = '\n'.join(outputs + [white_str + '─' * (line_length) + color_reset_str])
 	return rtnStr
 
+# ssh's own last word when no login method worked: "bob@node1: Permission denied (publickey,password)."
+# Remote output can hold any line: no part may match an '@' or the ':', so a long line of them costs linear
+# time (a user name with an '@' in it gets no note). Use it anchored (fullmatch / match): search() retries at
+# every start and rescans a long word each time, seconds for one 100 kB line
+_SSH_PERMISSION_DENIED = re.compile(r'([^\s@]+)@([^\s@:]+): Permission denied \(([^)]*)\)\.')
+
+def _note_unasked_passwords(hosts, password):
+	'''
+	After the output, say once which hosts' ssh wanted a password it had no terminal to ask for (see
+	Host.use_terminal), and what to do instead.
+
+	Only when ssh's line names the host itself: an ssh run by the command, or a jump host, is not the
+	one mssh started. Not with -p, where sshpass answered and the password was wrong.
+	'''
+	if os.name != 'posix' or (password and 'sshpass' in _binPaths):
+		return
+	names = []
+	for host in hosts:
+		if host.use_terminal or host.ipmi or host.shell or not host.returncode:
+			continue
+		target = host.name.rsplit('@', 1)[-1].lower()
+		for line in host.stderr:
+			denied = 'Permission denied (' in line and _SSH_PERMISSION_DENIED.fullmatch(line.strip())
+			if denied and denied.group(2).lower() == target and {'password', 'keyboard-interactive'} & set(denied.group(3).split(',')):
+				names.append(host.name)
+				break
+	if names:
+		# a key's passphrase it could not ask for leaves the same line: the key is skipped, password is next
+		eprint('Note: ssh could not ask for the password (or key passphrase) of {}: it may ask only when one command '
+			'runs at a time without the curses display. Use -p, an ssh key (ssh-agent), or -nw -m 1 to type each one.'.format(
+			','.join(compact_hostnames(names))))
+
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	'''
 	Print / generate the output of the hosts to the terminal
@@ -4161,6 +4193,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			hosts = pre_merge_hosts([host.copy() for host in hosts])
 		if not no_output:
 			print_output(hosts,json,greppable=greppable)
+			_note_unasked_passwords(hosts, password)
 	else:
 		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
