@@ -2747,6 +2747,11 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
 
+	Up to max_connections worker threads run the hosts in the given order (IPMI hosts: one each), so
+	the number of threads does not grow with the number of hosts: a process / thread limit (ulimit -u,
+	a container's pids limit) counts every thread. When the system allows fewer threads, the ones
+	started run all the hosts; when none can start, every host fails with a message saying why.
+
 	Args:
 		hosts (list): A list of Host objects
 		timeout (int, optional): The timeout for the command. Defaults to 60.
@@ -2754,17 +2759,64 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 		max_connections (int, optional): The maximum number of concurrent SSH sessions. Defaults to 4 * os.cpu_count().
 
 	Returns:
-		list: A list of threads that get started
+		list: The worker threads started, they end once no host is left to start
 	'''
 	global __thread_start_delay
 	if len(hosts) == 0:
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
-	threads = [threading.Thread(target=_run_command_thread, args=(host, sem,timeout,password), daemon=True) for host in hosts]
-	for thread, host in zip(threads, hosts):
-		thread.start()
-		host.thread = thread
+	waiting = deque(hosts)
+	lock = threading.Lock()
+	# between two IPMI passwords a host waits out retry_lockout_time running nothing, outside the
+	# semaphore: IPMI hosts keep a thread each, as before, so their waits overlap
+	wanted = len(hosts) if any(host.ipmi for host in hosts) else min(max_connections, len(hosts))
+	# workers: how many may take hosts (lowered when no more threads can start), alive: how many run
+	pool = {'workers': max(1, wanted), 'alive': 0}
+	def worker():
+		while True:
+			with lock:
+				if not waiting or pool['alive'] > pool['workers']:
+					pool['alive'] -= 1
+					return
+				host = waiting.popleft()
+			host.thread = threading.current_thread()
+			try:
+				_run_command_thread(host, sem, timeout, password)
+			except BaseException:
+				# e.g. SystemExit: it would end this worker, and the hosts left could wait forever
+				pass
+	threads = []
+	back_offs = 0
+	while len(threads) < pool['workers']:
+		thread = threading.Thread(target=worker, daemon=True)
+		with lock:
+			pool['alive'] += 1
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads allowed (ulimit -u, pids limit)
+			with lock:
+				pool['alive'] -= 1
+				if threads:
+					# the workers started took what was left, and each command they run needs more (ssh,
+					# the threads reading its output): half of them stop before taking another host
+					pool['workers'] = max(1, len(threads) // 2)
+			if threads or _emo or back_offs >= 6:
+				break
+			# none started yet: wait for processes to end, as for too many open files
+			time.sleep(_emfile_backoff_seconds(back_offs))
+			back_offs += 1
+			continue
+		threads.append(thread)
 		time.sleep(__thread_start_delay)
+	if not threads:
+		message = 'Error: No thread could be started to run the command, the system allows no more processes or threads (ulimit -u, pids limit)!'
+		for host in waiting:
+			host.output.append(message)
+			host.stderr.append(message)
+			host.returncode = 1
+	elif pool['workers'] < min(max_connections, len(hosts)) and not __global_suppress_printout:
+		eprint(f"Warning: The system allows no more threads (ulimit -u, pids limit), running the hosts at most {pool['workers']} at a time.")
 	return threads
 
 #%% ------------ Display Block ----------------
