@@ -4911,13 +4911,18 @@ _mssh_complete_ghost_setup() {
 	done
 }
 
-_mssh_complete_warn_clear() {
-	# drop our marks (others' highlights stay) and the reason line (inside a widget)
+_mssh_complete_warn_unmark() {
+	# drop our marks (others' highlights stay)
 	local mark
 	for mark in "${_mssh_complete_warn_marks[@]}"; do
 		region_highlight=("${(@)region_highlight:#${(b)mark}}")
 	done
 	_mssh_complete_warn_marks=()
+}
+
+_mssh_complete_warn_clear() {
+	# drop our marks and the reason line (inside a widget)
+	_mssh_complete_warn_unmark
 	if [[ -n $_mssh_complete_warn_reason ]]; then
 		_mssh_complete_warn_reason=
 		zle -M ''
@@ -4938,19 +4943,21 @@ _mssh_complete_warn_ask() {
 	exec {_mssh_complete_warn_fd}< <(
 		(( $1 > 0 )) && zselect -t $1
 		_mssh_complete_request 'diag=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine query 2>/dev/null)
+	# before zsh 5.8, a process substitution started while keys arrive (from the zle -F handler) can
+	# leave the shell out of the terminal's foreground: forcing a fork sets that right, as
+	# zsh-autosuggestions does (its issue 364)
+	(( _mssh_complete_warn_fork )) && command true
 	zle -F $_mssh_complete_warn_fd _mssh_complete_warn_ready
 }
 
 _mssh_complete_warn_redraw() {
-	# line-pre-redraw hook: ask for warnings when a finished word changed, keep the reason line shown
+	# line-pre-redraw hook: ask for warnings when a finished word changed (zsh keeps the reason line
+	# shown by itself: drawing it again here would cover zsh's completion listings)
 	emulate -L zsh
 	setopt extended_glob
 	# the line without the word at the cursor, which is still being typed
 	local key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
-	if [[ $key == "$_mssh_complete_warn_key" ]]; then
-		[[ -n $_mssh_complete_warn_reason ]] && zle -M -- "$_mssh_complete_warn_reason"
-		return 0
-	fi
+	[[ $key == "$_mssh_complete_warn_key" ]] && return 0
 	_mssh_complete_warn_key=$key
 	_mssh_complete_warn_cancel
 	if ! _mssh_complete_is_mssh "$BUFFER"; then
@@ -4990,18 +4997,27 @@ _mssh_complete_warn_ready() {
 _mssh_complete_warn_answer() {
 	# widget: show the warnings if the line is still the one asked about
 	emulate -L zsh
-	[[ $BUFFER$'\0'$CURSOR == "$_mssh_complete_warn_asked" ]] || return 0
+	if [[ $BUFFER$'\0'$CURSOR != "$_mssh_complete_warn_asked" ]]; then
+		# keys since the question only changed the word being typed (else the redraw hook asked
+		# anew): ask about the line as it is now
+		_mssh_complete_warn_ask 0
+		return 0
+	fi
 	local pending=$1 reason=$2 mark style=underline,fg=red
 	shift 2
 	[[ -n ${NO_COLOR-} ]] && style=underline
-	_mssh_complete_warn_clear
+	_mssh_complete_warn_unmark
 	for mark in "$@"; do
 		_mssh_complete_warn_marks+=("$mark $style")
 	done
 	region_highlight+=("${_mssh_complete_warn_marks[@]}")
+	# one zle -M in a widget: after a second one zsh draws the line a row too high
 	if [[ -n $reason ]]; then
 		_mssh_complete_warn_reason=$reason
 		zle -M -- "$reason"
+	elif [[ -n $_mssh_complete_warn_reason ]]; then
+		_mssh_complete_warn_reason=
+		zle -M ''
 	fi
 	if (( pending && $#_mssh_complete_warn_delays )); then
 		_mssh_complete_warn_ask $_mssh_complete_warn_delays[1]
@@ -5026,6 +5042,8 @@ _mssh_complete_warn_setup() {
 	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
 	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason=
 	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
+	typeset -gi _mssh_complete_warn_fork=0
+	is-at-least 5.8 || _mssh_complete_warn_fork=1
 	zle -N _mssh_complete_warn_answer
 	zle -N _mssh_complete_warn_redraw
 	zle -N _mssh_complete_warn_finish

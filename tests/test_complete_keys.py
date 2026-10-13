@@ -541,6 +541,56 @@ def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
 		session.close()
 
 
+def settled(session, quiet=1.0):
+	"""The non-empty rows of the screen once the session printed nothing more for a while."""
+	time.sleep(quiet)
+	session.read_until(b'@@never@@', 0.5)
+	return [row.rstrip() for row in screen(session) if row.strip()]
+
+
+@pytest.mark.parametrize('keys, below', [
+	# the next word finished, typed or completed: the line keeps its row, the reason stays under it
+	('uptime ', '⚠ gpu017: unknown host'),
+	('upt\t', '⚠ gpu017: unknown host'),
+	# TAB lists as on any line
+	('--ipmi_\t', '--ipmi_method'),
+], ids=['next-word', 'tab-completes', 'tab-lists'])
+def test_zsh_keys_on_a_warned_line(home, keys, below):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu017 ')
+		session.read_until('unknown host'.encode(), 10)
+		time.sleep(0.5)
+		session.send(keys)
+		rows = settled(session)
+		assert rows[0].startswith('@@READY@@ mssh gpu017 ') and any(below in row for row in rows[1:]), rows[:4]
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('known_before, delay', [(False, 0.2), (True, 0.0), (True, 0.12)], ids=['answered-while-typing', 'known-typed-at-once', 'known-typed-quickly'])
+def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, delay):
+	# the answer comes back after the next key, which only changed the word being typed: zsh asks again
+	env, home = home
+	if known_before:
+		known(env, gpu099='invalid')
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu099 ')
+		if not known_before:
+			time.sleep(0.2)
+			known(env, gpu099='invalid')
+		for char in 'uptime':
+			session.send(char)
+			time.sleep(delay)
+		rows = settled(session, 3)
+		assert rows[0] == '@@READY@@ mssh gpu099 uptime' and any('gpu099: unknown host' in row for row in rows[1:]), rows[:4]
+	finally:
+		session.close()
+
+
 def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 	env, home = make_home(tmp_path, ["17900000{:02d}\t/x/multiSSH3.py\t-su -f='my file.txt'\tnode1\t/tmp".format(number) for number in range(6)])
 	build_index(env)
