@@ -1,0 +1,214 @@
+'''
+Which commands may use the operator's terminal.
+
+ssh asks for passwords, passphrases and new host keys on its controlling terminal, not on stdin. With the
+TUI drawing on the terminal, or several commands asking at once, the questions are hidden or mixed, typed
+keys are split between them and a typed password can echo. So only a command that runs alone without the
+TUI keeps the terminal; the others start in a session of their own, where ssh has no terminal and fails at
+once with its reason.
+'''
+import os
+import select
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+import multiSSH3
+
+ROOT = str(Path(multiSSH3.__file__).resolve().parent)
+
+def _can_take_a_terminal():
+	if os.name != "posix":
+		return False
+	try:
+		import pty  # noqa: F401
+		import termios
+	except ImportError:
+		return False
+	return hasattr(termios, "TIOCSCTTY")
+
+
+_needs_pty = pytest.mark.skipif(not _can_take_a_terminal(), reason="needs a pseudo-terminal it can make its controlling terminal")
+
+# how a command finds out whether it could ask the operator something: ssh opens /dev/tty
+_TERMINAL_PROBE = (
+	"import os\n"
+	"try:\n"
+	"    os.close(os.open('/dev/tty', os.O_RDWR))\n"
+	"    print('terminal')\n"
+	"except OSError:\n"
+	"    print('no terminal')\n"
+)
+
+
+def _scratch_env(tmp_path):
+	'''An environment keeping mssh off the machine's home, config and runtime dir.'''
+	home = tmp_path / "home"
+	home.mkdir(exist_ok=True)
+	run = tmp_path / "run"
+	run.mkdir(mode=0o700, exist_ok=True)
+	return dict(os.environ, HOME=str(home), XDG_RUNTIME_DIR=str(run), PYTHONDONTWRITEBYTECODE="1")
+
+
+def _run_on_new_terminal(code, env, keys=(), timeout=30):
+	'''
+	Run python code as an operator's shell runs mssh: the session leader of a new pseudo-terminal, which
+	is its controlling terminal. keys are (seconds, bytes) typed on that terminal; bytes may also be a
+	function returning them (or None to wait). Returns (exit code, everything shown on the terminal).
+	'''
+	import pty
+	master, slave = pty.openpty()
+	starter = "import fcntl, sys, termios; fcntl.ioctl(0, termios.TIOCSCTTY, 0); del fcntl, termios; exec(sys.argv[1])"
+	proc = subprocess.Popen([sys.executable, "-c", starter, code], stdin=slave, stdout=slave, stderr=slave,
+		env=env, cwd=str(Path(env["HOME"]).parent), start_new_session=True)
+	os.close(slave)
+	keys = sorted(keys, key=lambda key: key[0])
+	output = b""
+	started = time.monotonic()
+	try:
+		while True:
+			now = time.monotonic() - started
+			if keys and keys[0][0] <= now:
+				data = keys[0][1]() if callable(keys[0][1]) else keys[0][1]
+				if data is not None:
+					os.write(master, data)
+					keys.pop(0)
+			if now > timeout:
+				raise AssertionError("still running after {} s, shown so far: {!r}".format(timeout, output))
+			ready, _, _ = select.select([master], [], [], 0.05)
+			if not ready:
+				continue
+			try:
+				data = os.read(master, 65536)
+			except OSError:
+				# EIO: nothing has the terminal open any more
+				data = b""
+			if not data:
+				break
+			output += data
+		proc.wait(timeout=10)
+	finally:
+		if proc.poll() is None:
+			proc.kill()
+			proc.wait()
+		os.close(master)
+	return proc.returncode, output.decode(errors="replace")
+
+
+def _probe_hosts_on_terminal(tmp_path, count, max_connections=4):
+	'''Run the terminal probe on count hosts with -nw on a new terminal; what each command found.'''
+	probe = "{} -c {}".format(multiSSH3.shlex.quote(sys.executable), multiSSH3.shlex.quote(_TERMINAL_PROBE))
+	code = (
+		"import json, sys\n"
+		"sys.path.insert(0, {root!r})\n"
+		"import multiSSH3\n"
+		"hosts = [multiSSH3.Host('host{{}}'.format(i), {probe!r}, shell=True, ip='127.0.0.1') for i in range({count})]\n"
+		"multiSSH3.processRunOnHosts(timeout=20, password=None, max_connections={max_connections}, hosts=hosts,\n"
+		"    return_unfinished=False, no_watch=True, json=False, no_output=True, greppable=False,\n"
+		"    unavailableHosts={{}}, will_update_unreachable_hosts=False, pre_merge=False)\n"
+		"print('RESULT ' + json.dumps([host.stdout for host in hosts]))\n"
+	).format(root=ROOT, probe=probe, count=count, max_connections=max_connections)
+	returncode, shown = _run_on_new_terminal(code, _scratch_env(tmp_path))
+	assert returncode == 0, shown
+	import json
+	return json.loads(shown.split("RESULT ", 1)[1].splitlines()[0])
+
+
+@_needs_pty
+def test_commands_of_several_hosts_cannot_use_the_terminal(tmp_path):
+	# with -nw on two hosts, two ssh asked at once: typed keys went to either and a password could echo
+	assert _probe_hosts_on_terminal(tmp_path, 2) == [["no terminal"], ["no terminal"]]
+
+
+@_needs_pty
+def test_a_lone_command_without_the_tui_keeps_the_terminal(tmp_path):
+	# `mssh -nw host cmd` lets ssh ask for a password, as plain ssh does
+	assert _probe_hosts_on_terminal(tmp_path, 1) == [["terminal"]]
+
+
+@_needs_pty
+def test_commands_run_one_at_a_time_keep_the_terminal(tmp_path):
+	# -nw -m 1: one command asks at a time, as typing each host's password needs
+	assert _probe_hosts_on_terminal(tmp_path, 2, max_connections=1) == [["terminal"], ["terminal"]]
+
+
+def _terminal_decisions(fake_host, monkeypatch, count=1, max_connections=4, tui=False, return_unfinished=False):
+	import curses
+	seen = []
+
+	def fake_start(hosts, **kwargs):
+		for host in hosts:
+			seen.append(host.use_terminal)
+			host.returncode = 0
+		return []
+
+	hosts = [fake_host("mock-{}".format(i), "true") for i in range(count)]
+	if tui:
+		monkeypatch.setattr(multiSSH3, "__curses_available", True)
+		monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+		monkeypatch.setattr(multiSSH3.sys.stdin, "isatty", lambda: True, raising=False)
+		monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+		monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", fake_start)
+	multiSSH3.processRunOnHosts(timeout=5, password=None, max_connections=max_connections, hosts=hosts,
+		return_unfinished=return_unfinished, no_watch=not tui, json=False, no_output=True, greppable=False,
+		unavailableHosts={}, will_update_unreachable_hosts=False, pre_merge=False)
+	return seen
+
+
+def test_only_a_command_running_alone_without_the_tui_keeps_the_terminal(fake_host, monkeypatch):
+	assert _terminal_decisions(fake_host, monkeypatch, count=1) == [True]
+	assert _terminal_decisions(fake_host, monkeypatch, count=3) == [False] * 3
+	assert _terminal_decisions(fake_host, monkeypatch, count=3, max_connections=1) == [True] * 3
+
+
+def test_the_tui_takes_the_terminal_even_for_one_host(fake_host, monkeypatch):
+	# curses draws on it and reads its keys: a password question would be hidden behind the TUI
+	assert _terminal_decisions(fake_host, monkeypatch, count=1, tui=True) == [False]
+
+
+def test_commands_left_running_for_the_caller_get_no_terminal(fake_host, monkeypatch):
+	# return_unfinished: the caller goes on (and may start more) while the command runs
+	assert _terminal_decisions(fake_host, monkeypatch, count=1, return_unfinished=True) == [False]
+
+
+class _FinishedProc:
+	def __init__(self):
+		import io
+		self.stdout = io.BytesIO()
+		self.stderr = io.BytesIO()
+		self.stdin = None
+		self.returncode = 0
+
+	def poll(self):
+		return self.returncode
+
+	def communicate(self, *args, **kwargs):
+		return b"", b""
+
+
+@pytest.mark.parametrize("use_terminal", [False, True])
+def test_a_command_without_the_terminal_starts_in_a_session_of_its_own(fake_host, monkeypatch, use_terminal):
+	started = []
+	host = fake_host("mock-a", "true")
+	host.use_terminal = use_terminal
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: started.append(kwargs) or _FinishedProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert host.returncode == 0
+	# a new session has no controlling terminal: ssh cannot open /dev/tty to ask anything (POSIX only)
+	assert started[0].get("start_new_session") is (os.name == "posix" and not use_terminal)
+
+
+def test_hosts_start_without_the_terminal_by_default(fake_host):
+	# start_run_on_hosts / run_command used directly: nothing says the command runs alone
+	assert fake_host("mock-a", "true").use_terminal is False
+	host = fake_host("mock-b", "true")
+	host.use_terminal = True
+	assert host.copy().use_terminal is True

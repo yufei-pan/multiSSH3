@@ -302,6 +302,13 @@ It also supports interactive inputs. ( and able to async boardcast to all suppli
 mssh www bash
 ```
 mssh cache all inputs and send them to all hosts when they are ready to receive inputs.
+What you type goes to the commands' input, not to ssh's own questions (see below).
+
+### Password, Passphrase and Host Key Questions
+
+ssh asks for a password, a key passphrase or to confirm a new host key on your terminal. mssh lets it only when one command runs at a time without the curses display: `-nw` with one host, or `-nw -m 1` to answer each host in turn. Otherwise ssh runs without a terminal and fails at once with its reason, such as `Permission denied (publickey,password).` or `Host key verification failed.`: behind the curses display its questions would be hidden and the run would never end, and several ssh asking at once would split what you type between them and could show a typed password on screen.
+
+For many hosts, use ssh keys (`ssh-agent` for a key with a passphrase) or `-p` (needs `sshpass`), and with `SSH_STRICT_HOST_KEY_CHECKING` add new hosts' keys to `known_hosts` first. Ctrl-C still stops the commands: mssh stops them itself, as it does for `-t`.
 
 ### Curses Window Size Control
 
@@ -531,6 +538,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Disable the curses terminal display and only print the output.
 - Note this will not be 'quiet mode' traditionally, please use `-Q, -no, --quiet, --no_output` to disable output.
 - Useful in scripting to reduce runtime and terminal flashing.
+- With one host, or with `-m 1`, ssh can ask for passwords, passphrases and host keys on your terminal; otherwise it cannot. See [Password, Passphrase and Host Key Questions](#password-passphrase-and-host-key-questions).
 
 ### `-ww, --window_width WINDOW_WIDTH` | _`DEFAULT_WINDOW_WIDTH`_
 - The minimum character length of the curses window.

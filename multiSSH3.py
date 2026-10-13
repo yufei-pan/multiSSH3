@@ -725,6 +725,7 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.use_terminal = False # let the command use the operator's terminal, where ssh asks for passwords and host keys: only when it runs alone without the TUI
 		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
 
 	def __iter__(self):
@@ -764,6 +765,7 @@ class Host:
 		newHost.lastUpdateTime = self.lastUpdateTime
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
+		newHost.use_terminal = self.use_terminal
 		newHost.interactive_stdin = self.interactive_stdin
 		return newHost
 
@@ -2523,7 +2525,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
 				interactive_stdin = host.interactive_stdin
 				stdin = subprocess.PIPE if interactive_stdin else subprocess.DEVNULL
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
+				# a session of its own has no controlling terminal: ssh cannot ask there and fails with its reason
+				own_session = os.name == 'posix' and not host.use_terminal
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session)
 				__running_procs.add(proc)
 				# create a thread to handle stdout
 				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
@@ -4071,6 +4075,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
+		# ssh asks for passwords, passphrases and new host keys on the terminal. With the TUI on it, or several
+		# commands asking at once, the questions hide behind the TUI or mix, and a typed password can echo.
+		# Only a command running alone without the TUI (one host, or -m 1) may ask; the others fail at once.
+		host.use_terminal = not use_tui and not return_unfinished and (len(hosts) == 1 or max_connections == 1)
 	global _commands_started
 	_commands_started = True
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
