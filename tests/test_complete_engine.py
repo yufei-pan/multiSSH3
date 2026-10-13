@@ -175,6 +175,18 @@ def test_skip_hosts_prefers_members_up_to_the_member_limit(tmp_path, monkeypatch
 	assert listed[:4] == ['n1', 'n2', 'n3', 'n4'] and listed.index('m1') < listed.index('n5')
 
 
+@pytest.mark.parametrize('hosts', ['node[000-999]', 'all', 'root@all'])
+@pytest.mark.parametrize('word', ['node9', 'node000,root@node9'])
+def test_skip_hosts_prefers_members_with_the_typed_prefix(tmp_path, monkeypatch, hosts, word):
+	# the limit counted members from the first one: node[00000-49999] -X node491 listed none of node491xx
+	monkeypatch.setattr(mc, 'RANGE_MEMBERS_LIMIT', 4)
+	names = ['node{:03d}'.format(number) for number in range(1000)]
+	table = _host_table(tmp_path, names, aliases=[('all', names)])
+	lead = word.rpartition('@')[0] + '@' if '@' in word else ''
+	assert texts(query('mssh {} -X {}'.format(hosts, word), knowledges=[], hosts=table)) == [
+		lead + text for text in ['node9[00-99]', 'node900', 'node901', 'node902', 'node903']]
+
+
 def test_skip_hosts_of_a_huge_range_are_not_written_out(tmp_path):
 	# past expand_ranges' limit a range names no member (it wrote out ten million names to find that out)
 	table = _host_table(tmp_path, ['n1', 'n2', 'm1'])

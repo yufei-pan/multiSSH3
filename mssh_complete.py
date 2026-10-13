@@ -3062,7 +3062,9 @@ class Engine(object):
 				users.add(os.environ['USER'])
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if user.startswith(word))
 		elif dest == 'skip_hosts':
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts)))
+			# the members that can complete the host being typed (after its "," and "user@")
+			prefix = word.rpartition(',')[2].rpartition('@')[2]
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if action.startswith(word))
 		elif dest == 'encoding':
@@ -3086,10 +3088,10 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text):
+	def _members(self, hosts_text, prefix=''):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
-		ranges): the first RANGE_MEMBERS_LIMIT of them, as for its warnings.
+		ranges), that start with prefix: the first RANGE_MEMBERS_LIMIT of them, as for its warnings.
 		'''
 		import itertools
 		members = set()
@@ -3105,7 +3107,7 @@ class Engine(object):
 				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
 				# a range past its limit names no member, and costs nothing to find out
 				named = expand_ranges(word)
-			members.update(itertools.islice(named, room))
+			members.update(itertools.islice((name for name in named if name.startswith(prefix)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
