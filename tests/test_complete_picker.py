@@ -257,6 +257,43 @@ def test_runs_that_differ_stay_apart():
 		('mssh -nsu node1 uptime', 1)]
 
 
+# runs as typed, then as mssh 6.31 and as later versions record them (main() up to the history line):
+# 6.31 left many options out; both fold -uk and -k DIR into the key found, -s PATH into -f PATH -fs;
+# later versions record -T as -t=50 and --config_file absolute
+FOLDED_RUNS = [
+	('mssh -T node1 uptime', '-su', '-t=50 -su', 'uptime'),
+	('mssh -uk node1 uptime', "-k='~/.ssh/id_ed25519' -su", "-k='~/.ssh/id_ed25519' -su", 'uptime'),
+	('mssh --host_file hosts.txt node1 uptime', '-su', '-su --host_file=hosts.txt', 'uptime'),
+	('mssh -w node1 uptime', '-su', '-su -w', 'uptime'),
+	('mssh --config_file c.json node1 uptime', '-su', '-su --config_file=/home/u/c.json', 'uptime'),
+	('mssh -s /tmp/x node1', '-f=/tmp/x -su -fs', '-f=/tmp/x -fs -su', ''),
+	('mssh -k ~/.ssh/ node1 uptime', "-k='~/.ssh/id_ed25519' -su", "-k='~/.ssh/id_ed25519' -su", 'uptime'),
+	('mssh -t 50 node1 uptime', '-su', '-t=50 -su', 'uptime'),
+	('mssh -m 0 node1 uptime', '-su', '-m=0 -su', 'uptime'),
+]
+
+
+@pytest.mark.parametrize('version', [1, 2], ids=['6.31', 'later'])
+def test_runs_mssh_records_in_another_form_are_used_once(version):
+	history = [line(NOW - 60 * (len(FOLDED_RUNS) - number), run[version], 'node1', run[3]) for number, run in enumerate(FOLDED_RUNS)]
+	slot, rows = offered(history, [run[0] for run in FOLDED_RUNS])
+	assert slot == [('node1', len(FOLDED_RUNS))]
+	recorded = {}
+	for run in FOLDED_RUNS:
+		text = ' '.join(part for part in ('mssh', run[version], 'node1', run[3]) if part)
+		recorded[text] = recorded.get(text, 0) + 1
+	assert sorted(rows) == sorted(recorded.items())
+
+
+def test_a_line_counts_towards_its_own_record_first():
+	# mssh may record a timeout differently (6.31 left -t 50 out), but a record of this one is this run
+	history = [line(NOW - 120, '-t=5 -su', 'node1', 'uptime'), line(NOW - 60, '-t=10 -su', 'node1', 'uptime')]
+	assert offered(history, ['mssh -t 5 node1 uptime'] * 3)[1] == [('mssh -t=10 -su node1 uptime', 1), ('mssh -t=5 -su node1 uptime', 3)]
+	# runs only the shell's history holds stay apart however little they differ
+	_, rows = offered([], ['mssh -I -t 5 node1 uptime', 'mssh -I -t 10 node1 uptime', 'mssh -I -k /k/a node1 uptime', 'mssh -I --host_file a node1 uptime'])
+	assert len(rows) == 4
+
+
 def test_local_commands_are_not_mssh_uses():
 	slot, _ = offered(runs(1, '-su', 'node1', 'uptime'), ['uptime', 'uptime', 'mssh node1 uptime'], 'mssh node1 up')
 	assert slot == [('uptime', 1)]

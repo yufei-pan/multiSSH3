@@ -3635,33 +3635,53 @@ def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
 	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
 
-def _run_key(options, hosts, commands, engine):
+# the options mssh may record in another form than the line typed for the run: 6.31 and earlier left
+# the script timeout (-t 50), 0 and '' values and these options out; it records -T as the timeout,
+# -uk and -k DIR as the key found, -s PATH as -f PATH -fs, and (later versions) --config_file absolute
+_RECORDED_AS = {'use_script_timeout': ('timeout',), 'use_key': ('identity_file',), 'file_sync': ('file',)}
+_RECORDED_LOOSELY = frozenset(('timeout', 'identity_file', 'config_file', 'host_file', 'window_width', 'window_height',
+	'single_window', 'no_output', 'success_hosts', 'return_zero', 'encoding', 'diff_display_threshold', 'force_truecolor',
+	'debug', 'ipmi_interface_ip_prefix', 'ipmi_username', 'ipmi_args', 'ipmi_method', 'ipmi_retry_lockout_time'))
+
+def _run_options(options, engine):
 	'''
-	What tells one mssh run from another however its line was written: the hosts, the commands, and
-	the options that change something, in any order and spelling. A flag counts by the value it
-	leaves when that is not the default (mssh's history has -su on every line), a value unless it is
-	the default (mssh leaves those out).
+	The options of a run that change something, as sorted (dest, value) pairs, whatever their order
+	and spelling: a flag by the value it leaves ('on' / 'off') when that is not the default (mssh's
+	history has -su on every line), a value ('=' and the value) unless it is the default (mssh leaves
+	those out), an option without one by ''.
 
 	Args:
 		options (list): (OptionSpec, value or None) pairs
-		hosts (str): The hosts argument
-		commands (list): The command strings
 		engine (Engine): Its flag_sets and flag_defaults say what the flags do
 	'''
 	flags = {}
-	changes = []
+	pairs = []
 	for option, value in options:
 		if option.nargs == '0' and option.long in engine.flag_sets:
 			flags[option.dest] = engine.flag_sets[option.long]
 		elif value is None:
-			changes.append(('option', option.dest))
+			pairs.append((option.dest, ''))
 		elif value != option.default:
-			changes.append(('value', option.dest, value))
-	changes.extend(('flag', dest, str(on)) for dest, on in flags.items() if on != engine.flag_defaults.get(dest, False))
-	return hosts, tuple(commands), tuple(sorted(changes))
+			pairs.append((option.dest, '=' + value))
+	pairs.extend((dest, 'on' if on else 'off') for dest, on in flags.items() if on != engine.flag_defaults.get(dest, False))
+	return tuple(sorted(pairs))
+
+def _loose_dests(pairs):
+	'''The dests of a typed run's options (_run_options) whose record may differ from them.'''
+	dests = set()
+	for dest, value in pairs:
+		if dest in _RECORDED_AS:
+			dests.add(dest)
+			dests.update(_RECORDED_AS[dest])
+		elif dest in _RECORDED_LOOSELY or value in ('=', '=0'):
+			dests.add(dest)
+	return dests
 
 def _typed_run(line, engine):
-	'''(run key, features) of a shell line running mssh, or None when the history tab cannot offer it.'''
+	'''
+	(run key, features) of a shell line running mssh, or None when the history tab cannot offer it.
+	The run key is (hosts, commands, options as _run_options gives them).
+	'''
 	tokens = lex(line)
 	if not tokens or os.path.basename(tokens[0].text) not in MSSH_NAMES or _has_control(line):
 		return None
@@ -3671,7 +3691,7 @@ def _typed_run(line, engine):
 		return None
 	options, hosts, commands = _collect(words, roles)
 	commands = _join_commands(commands)
-	return _run_key(options, hosts, commands, engine), make_features(options, hosts, commands)
+	return (hosts, tuple(commands), _run_options(options, engine)), make_features(options, hosts, commands)
 
 def _history_items(request, engine, history_lines, name, features):
 	'''
@@ -3720,27 +3740,39 @@ def _history_items(request, engine, history_lines, name, features):
 					runs.append(found[0])
 			if keys[line] is not None:
 				typed[keys[line]][0] += 1
-		# the entries of mssh's history for those runs (most differ in their hosts or commands already)
-		recorded = {}
+		# the entries of mssh's history with the hosts and commands of those runs, and their options
+		candidates = {}
 		wanted = set(key[:2] for key in runs)
 		for number, hosts, commands, line in parsed:
 			if (hosts, commands) in wanted:
 				entry = parse_history_line(line, engine.spec)
-				key = _run_key(entry.options, hosts, commands, engine)
-				if key in typed:
-					recorded.setdefault(key, []).append(number)
+				candidates.setdefault((hosts, commands), []).append((number, _run_options(entry.options, engine)))
+		pools = {}  # the entries some runs' lines count towards -> [times typed, the newest of those runs]
 		for key in runs:
 			count, run_features, line = typed[key]
-			if key in recorded:
-				# mssh's history holds this many of the shell's lines; any more are runs it does not hold
-				count -= sum(entries[number][3] for number in recorded[key])
-				if count > 0:
-					entries[recorded[key][0]][3] += count
-			elif len(entries) < HISTORY_LIMIT:
+			bucket = candidates.get(key[:2], ())
+			# the record of this run, else one mssh may have written in another form
+			found = [number for number, pairs in bucket if pairs == key[2]]
+			loose = _loose_dests(key[2]) if not found else ()
+			if loose:
+				kept = [pair for pair in key[2] if pair[0] not in loose]
+				found = [number for number, pairs in bucket if [pair for pair in pairs if pair[0] not in loose] == kept]
+			if found:
+				pool = pools.setdefault(tuple(found), [0, key])
+				pool[0] += count
+				continue
+			if len(entries) < HISTORY_LIMIT:
 				# the newest spelling of a run only the shell's history holds
 				entries.append([len(features & set(run_features)), 0, line, count])
 			for _ in range(count):
 				unrecorded.add(run_features, 0.0)
+		for found, (count, key) in pools.items():
+			# mssh's history holds this many of the shell's lines; any more are runs it does not hold
+			count -= sum(entries[number][3] for number in found)
+			if count > 0:
+				entries[found[0]][3] += count
+				for _ in range(count):
+					unrecorded.add(typed[key][1], 0.0)
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
 	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order], unrecorded
 
