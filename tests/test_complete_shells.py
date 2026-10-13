@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import re
@@ -478,6 +479,39 @@ def test_a_created_rc_file_gets_the_usual_permissions(tmp_path):
 	assert stat.S_IMODE((home / '.zshrc').stat().st_mode) == 0o640
 
 
+@pytest.mark.parametrize('change', ['create', 'add', 'update', 'remove'])
+def test_an_rc_file_mssh_may_not_change_gets_the_lines_to_change_by_hand(tmp_path, monkeypatch, change):
+	# home-manager links ~/.bashrc into the read-only Nix store, and managed dotfiles may be read-only:
+	# install ended in a traceback there; the operator needs the lines to put in by hand instead
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	if change != 'create':
+		rc.write_text('alias ll="ls -l"\n')
+	if change in ('update', 'remove'):
+		assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	replace_file = mc._replace_file
+	def read_only(path, text):
+		if path == str(rc):
+			raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+		replace_file(path, text)
+	monkeypatch.setattr(mc, '_replace_file', read_only)
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
+	failed = 'could not change {}: {}; it is as it was'.format(rc, os.strerror(errno.EROFS))
+	if change == 'remove':
+		code, messages = mc.uninstall('bash', home=str(home), environ=env)
+		advice = ['to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
+	else:
+		code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=change == 'update')
+		if change == 'update':
+			advice = ['to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:',
+				mc.RC_BEGIN, 'export MSSH_COMPLETE_EDITOR=1', load, mc.RC_END]
+		else:
+			advice = ['to load it anyway, add these lines to it yourself:', mc.RC_BEGIN, load, mc.RC_END]
+	assert code == 1
+	assert messages[-len(advice) - 1:] == [failed] + advice
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason='root may write any file')
 def test_install_leaves_a_read_only_rc_file_alone(tmp_path):
 	# replacing the file would work (the directory is writable), but the user made it read-only
@@ -486,7 +520,8 @@ def test_install_leaves_a_read_only_rc_file_alone(tmp_path):
 	rc.write_text('alias ll="ls -l"\n')
 	rc.chmod(0o444)
 	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
-	assert code == 1 and messages[-1] == 'could not change {}: Permission denied; it is as it was'.format(rc)
+	failed = 'could not change {}: Permission denied; it is as it was'.format(rc)
+	assert code == 1 and messages[messages.index(failed) + 1] == 'to load it anyway, add these lines to it yourself:'
 	assert rc.read_text() == 'alias ll="ls -l"\n'
 
 

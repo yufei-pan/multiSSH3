@@ -5449,11 +5449,18 @@ def _shown(rc):
 	'''rc as messages name it: with the file it links to, the one that changes.'''
 	return '{} (a link to {})'.format(rc, os.path.realpath(rc)) if os.path.islink(rc) else rc
 
-def _write_rc(rc, text):
+def _write_rc(rc, text, by_hand):
+	'''Replace rc with text. by_hand: the lines that tell the operator how to make the change when mssh may not.'''
+	import errno
 	try:
 		_replace_file(rc, text)
 	except OSError as error:
-		raise InstallError('could not change {}: {}; it is as it was'.format(rc, _reason(error, rc)))
+		lines = ['could not change {}: {}; it is as it was'.format(rc, _reason(error, rc))]
+		# a file mssh may not change: home-manager links rc files into the read-only Nix store, and
+		# managed dotfiles may be read-only; a full disk is fixed by freeing space and running this again
+		if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+			lines += by_hand
+		raise InstallError(*lines)
 
 def _rc_block(rc, text):
 	'''
@@ -5503,15 +5510,17 @@ def _add_rc_block(rc, body, messages):
 	text = _read_rc(rc)
 	found = _rc_block(rc, text) if text is not None else None
 	if found is not None:
-		_, _, body_start, body_end, _ = found
+		begin, start, body_start, body_end, _ = found
 		if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
 			messages.append('{} already loads it'.format(_shown(rc)))
 			return
-		_write_rc(rc, text[:body_start] + body + '\n' + text[body_end:])
+		by_hand = ['to load it anyway, replace lines {} to {} of it (the mssh block) with these yourself:'.format(
+			text.count('\n', 0, start) + 1, text.count('\n', 0, body_end) + 1), begin] + body.split('\n') + [RC_END]
+		_write_rc(rc, text[:body_start] + body + '\n' + text[body_end:], by_hand)
 		messages.append('updated the mssh block in ' + _shown(rc))
 		return
 	block = '\n{}\n{}\n{}\n'.format(RC_BEGIN if text is not None else RC_BEGIN_CREATED, body, RC_END)
-	_write_rc(rc, (text or '') + block)
+	_write_rc(rc, (text or '') + block, ['to load it anyway, add these lines to it yourself:', RC_BEGIN] + body.split('\n') + [RC_END])
 	messages.append('added a block loading it to ' + _shown(rc))
 
 def _remove_rc_block(rc, messages):
@@ -5519,7 +5528,9 @@ def _remove_rc_block(rc, messages):
 	found = _rc_block(rc, text) if text is not None else None
 	if found is None:
 		return
-	begin, start, _, _, end = found
+	begin, start, _, body_end, end = found
+	by_hand = ['to remove it anyway, delete lines {} to {} of it (the mssh block) yourself'.format(
+		text.count('\n', 0, start) + 1, text.count('\n', 0, body_end) + 1)]
 	# the line break install put before the block goes with it
 	head = text[:start]
 	head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
@@ -5531,7 +5542,7 @@ def _remove_rc_block(rc, messages):
 			raise InstallError('could not remove {}: {}'.format(rc, _reason(error, rc)))
 		messages.append('removed ' + rc + ' (mssh had created it)')
 	else:
-		_write_rc(rc, text)
+		_write_rc(rc, text, by_hand)
 		messages.append('removed the mssh block from ' + _shown(rc))
 
 def _bash_login_note(home, rc):
