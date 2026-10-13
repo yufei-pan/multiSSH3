@@ -351,7 +351,7 @@ mssh will replace some magic strings in the command string with host specific va
 > Note: Resolved name is the IP / Hostname with user appended and ip prefix applied. This is what got used to connect to the host.
 
 ### When a Host Does Not Answer
-mssh has ssh, scp and rsync's ssh give up on a host that takes the connection but never answers (an overloaded or hung sshd), or that stops answering while its command runs (it went off the network):
+mssh has ssh, scp, rsync's ssh and ssh-copy-id give up on a host that takes the connection but never answers (an overloaded or hung sshd), or that stops answering while its command runs (it went off the network):
 - `-o ConnectTimeout=30`: when connecting and sshd's first words take longer than 30 s, the host fails with `Connection timed out during banner exchange` (older OpenSSH: `ssh: connect to host ... Connection timed out`), return code 255, and counts as unreachable. A file copy takes twice as long, mssh tries scp after rsync failed.
 - `-o ServerAliveInterval=15 -o ServerAliveCountMax=4`: after about 60 s without an answer from a connected host, it fails with `Timeout, server ... not responding.`, return code 255. A command that prints nothing for a long time is not affected: sshd answers the keepalives.
 

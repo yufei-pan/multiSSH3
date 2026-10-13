@@ -328,6 +328,33 @@ def test_real_ssh_accepts_the_options_as_mssh_writes_them():
 	assert {keyword: shown[keyword] for keyword in DEFAULTS} == DEFAULTS
 
 
+def _copy_id_commands(monkeypatch, tmp_path, **kwargs):
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
+	commands = []
+	monkeypatch.setattr(multiSSH3.os, "system", lambda command: commands.append(command) or 0)
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **run: commands.extend(host.command for host in run["hosts"]))
+	try:
+		multiSSH3.run_command_on_hosts(hosts="mock-a", copy_id=True, username="bob", no_watch=True, quiet=True,
+			no_history=True, called=True, will_update_unreachable_hosts=False, **kwargs)
+	except multiSSH3.MultiSSHError:
+		pass  # no command to run after the copy
+	return commands
+
+
+@pytest.mark.parametrize("password", ["", "pw"])
+def test_ssh_copy_id_gives_up_on_a_host_that_does_not_answer(monkeypatch, tmp_path, password):
+	if password:
+		monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
+
+	[command] = _copy_id_commands(monkeypatch, tmp_path, password=password)
+
+	words = shlex.split(command)
+	assert words[words.index("ssh-copy-id"):][-1] == "bob@mock-a"
+	assert _timeout_options(words) == DEFAULTS
+
+
 def _unreachable_after(monkeypatch, tmp_path, host):
 	unavailable = {}
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})

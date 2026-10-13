@@ -4746,6 +4746,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				command = f"{shlex.quote(_binPaths['ssh-copy-id'])} "
 				if identity_file:
 					command = f"{command}-i {shlex.quote(os.path.expanduser(identity_file))} "
+				# a host that does not answer must not hold up the others (without -p they run one by one)
+				for option in _ssh_timeout_options(host):
+					command = f"{command}{shlex.quote(option)} "
 				command = f"{command}{shlex.quote(host)}"
 				if password and 'sshpass' in _binPaths:
 					command = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(password)} {command}"
