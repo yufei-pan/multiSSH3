@@ -5333,6 +5333,65 @@ RC_BEGIN = '# >>> mssh completion >>>'
 RC_BEGIN_CREATED = '# >>> mssh completion (created this file) >>>'
 RC_END = '# <<< mssh completion <<<'
 
+class InstallError(Exception):
+	'''Install or uninstall stopped without changing the file it names; its args are the lines to print.'''
+
+def _reason(error, path):
+	'''What went wrong with path in an OSError, in a few words (naming the file it was about if another one).'''
+	if not error.strerror:
+		return str(error)
+	return error.strerror + (': ' + error.filename if error.filename and error.filename != path else '')
+
+def _replace_file(path, text):
+	'''
+	Replace the file at path with text, all at once: a write that fails part way (disk full, quota)
+	leaves the old file as it was.
+
+	The text goes to a temporary file in the same directory, which then takes the old file's place.
+	A symbolic link stays a link: the file it points to is the one replaced. The new file keeps the
+	old one's permissions, and its owner where we may set it (root installing for another user).
+
+	Raises:
+		OSError: nothing was changed; a file we may not write counts, as it did when files were written in place
+	'''
+	import errno
+	import stat
+	import tempfile
+	target = os.path.realpath(path)
+	try:
+		old = os.stat(target)
+	except FileNotFoundError:
+		old = None
+	if old is not None and not os.access(target, os.W_OK):
+		raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+	fd, temporary = tempfile.mkstemp(prefix='.' + os.path.basename(target).lstrip('.') + '.', suffix='.mssh-tmp', dir=os.path.dirname(target))
+	try:
+		with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
+			f.write(text)
+			f.flush()
+			if old is None:
+				# what creating the file directly would have given it
+				mask = os.umask(0o22)
+				os.umask(mask)
+				mode = 0o666 & ~mask
+			else:
+				mode = stat.S_IMODE(old.st_mode)
+				new = os.fstat(f.fileno())
+				if (new.st_uid, new.st_gid) != (old.st_uid, old.st_gid):
+					try:
+						os.fchown(f.fileno(), old.st_uid, old.st_gid)
+					except OSError:
+						pass
+			os.fchmod(f.fileno(), mode)
+			os.fsync(f.fileno())
+		os.replace(temporary, target)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
 def detect_shell(environ=None):
 	'''The shell that ran us (parent process), else $SHELL; None if neither is bash, zsh or fish.'''
 	environ = os.environ if environ is None else environ
@@ -5368,92 +5427,112 @@ def _write_glue(path, text, messages):
 	if os.path.lexists(path) and not _ours(path):
 		messages.append('skipped {}: it exists and mssh did not write it'.format(path))
 		return False
-	os.makedirs(os.path.dirname(path), exist_ok=True)
-	temporary = path + '.mssh-tmp'
-	with open(temporary, 'w', encoding='utf-8') as f:
-		f.write(text)
-	os.replace(temporary, path)
+	try:
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		_replace_file(path, text)
+	except OSError as error:
+		raise InstallError('could not write {}: {}'.format(path, _reason(error, path)))
 	messages.append('wrote ' + path)
 	return True
 
-def _rc_block(text, begin):
-	'''
-	Where the block opened by begin is in text: (start, body start, body end, end), or None.
+def _read_rc(rc):
+	'''The text of the rc file, or None when there is none.'''
+	try:
+		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
+			return f.read()
+	except FileNotFoundError:
+		return None
+	except OSError as error:
+		raise InstallError('could not read {}: {}'.format(rc, _reason(error, rc)))
 
-	Its markers are whole lines anywhere in the file: the first line, CRLF line ends and a closing
-	marker without a final newline included.
+def _shown(rc):
+	'''rc as messages name it: with the file it links to, the one that changes.'''
+	return '{} (a link to {})'.format(rc, os.path.realpath(rc)) if os.path.islink(rc) else rc
+
+def _write_rc(rc, text):
+	try:
+		_replace_file(rc, text)
+	except OSError as error:
+		raise InstallError('could not change {}: {}; it is as it was'.format(rc, _reason(error, rc)))
+
+def _rc_block(rc, text):
 	'''
-	import re
-	head = re.search(r'(?m)^' + re.escape(begin) + r'[ \t]*\r?\n', text)
-	if head is None:
+	Where the mssh block is in text, rc's contents: (begin marker, start, body start, body end, end), or None.
+
+	Its marker lines are found anywhere in the file, with spaces around them, CRLF line ends, and an
+	end marker without a final newline.
+
+	Raises:
+		InstallError: the markers are not one begin line followed by one end line (one was deleted,
+			or the block copied): mssh can no longer tell its own lines from the user's
+	'''
+	markers = []
+	line_start = number = 0
+	while line_start < len(text):
+		newline = text.find('\n', line_start)
+		line_end = len(text) if newline < 0 else newline + 1
+		number += 1
+		line = text[line_start:line_end].strip()
+		if line in (RC_BEGIN, RC_BEGIN_CREATED, RC_END):
+			markers.append((line, number, line_start, line_end))
+		line_start = line_end
+	if not markers:
 		return None
-	tail = re.compile(r'(?m)^' + re.escape(RC_END) + r'[ \t]*(?:\r?\n|\Z)').search(text, head.end())
-	if tail is None:
-		return None
-	return head.start(), head.end(), tail.start(), tail.end()
+	ends = [marker == RC_END for marker, _, _, _ in markers]
+	# one begin line, then one end line
+	if ends != [False, True]:
+		where = ['{} at line {}'.format('end' if is_end else 'begin', marker[1]) for is_end, marker in zip(ends, markers)]
+		where += ['no end'] if not any(ends) else ['no begin'] if all(ends) else []
+		raise InstallError('did not change {}: its mssh completion markers ({}) are not one block, so mssh cannot tell its lines from yours'.format(rc, ', '.join(where)),
+			'fix them by hand (leave one block or none), then run this again')
+	(begin, _, start, body_start), (_, _, body_end, end) = markers
+	return begin, start, body_start, body_end, end
 
 def _editor_on(rc):
 	'''Whether the mssh block in rc turns the mssh line editor on.'''
 	try:
-		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
-			text = f.read()
-	except OSError:
+		text = _read_rc(rc)
+		found = _rc_block(rc, text) if text is not None else None
+	except InstallError:
+		# adding the block says what is wrong
 		return False
-	for begin in (RC_BEGIN, RC_BEGIN_CREATED):
-		found = _rc_block(text, begin)
-		if found is not None:
-			return 'export MSSH_COMPLETE_EDITOR=1' in text[found[1]:found[2]].splitlines()
-	return False
+	return found is not None and 'export MSSH_COMPLETE_EDITOR=1' in text[found[2]:found[3]].splitlines()
 
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
-	try:
-		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
-			text = f.read()
-	except FileNotFoundError:
-		text = None
-	if text is not None:
-		for begin in (RC_BEGIN, RC_BEGIN_CREATED):
-			found = _rc_block(text, begin)
-			if found is None:
-				continue
-			_, body_start, body_end, _ = found
-			if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
-				messages.append('{} already loads it'.format(rc))
-				return
-			text = text[:body_start] + body + '\n' + text[body_end:]
-			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
-				f.write(text)
-			messages.append('updated the mssh block in ' + rc)
+	text = _read_rc(rc)
+	found = _rc_block(rc, text) if text is not None else None
+	if found is not None:
+		_, _, body_start, body_end, _ = found
+		if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
+			messages.append('{} already loads it'.format(_shown(rc)))
 			return
+		_write_rc(rc, text[:body_start] + body + '\n' + text[body_end:])
+		messages.append('updated the mssh block in ' + _shown(rc))
+		return
 	block = '\n{}\n{}\n{}\n'.format(RC_BEGIN if text is not None else RC_BEGIN_CREATED, body, RC_END)
-	with open(rc, 'a', encoding='utf-8', errors='surrogateescape') as f:
-		f.write(block)
-	messages.append('added a block loading it to ' + rc)
+	_write_rc(rc, (text or '') + block)
+	messages.append('added a block loading it to ' + _shown(rc))
 
 def _remove_rc_block(rc, messages):
-	try:
-		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
-			text = f.read()
-	except FileNotFoundError:
+	text = _read_rc(rc)
+	found = _rc_block(rc, text) if text is not None else None
+	if found is None:
 		return
-	for begin in (RC_BEGIN_CREATED, RC_BEGIN):
-		found = _rc_block(text, begin)
-		if found is None:
-			continue
-		start, _, _, end = found
-		# the line break install put before the block goes with it
-		head = text[:start]
-		head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
-		text = head + text[end:]
-		if begin == RC_BEGIN_CREATED and not text:
+	begin, start, _, _, end = found
+	# the line break install put before the block goes with it
+	head = text[:start]
+	head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
+	text = head + text[end:]
+	if begin == RC_BEGIN_CREATED and not text and not os.path.islink(rc):
+		try:
 			os.unlink(rc)
-			messages.append('removed ' + rc + ' (mssh had created it)')
-		else:
-			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
-				f.write(text)
-			messages.append('removed the mssh block from ' + rc)
-		return
+		except OSError as error:
+			raise InstallError('could not remove {}: {}'.format(rc, _reason(error, rc)))
+		messages.append('removed ' + rc + ' (mssh had created it)')
+	else:
+		_write_rc(rc, text)
+		messages.append('removed the mssh block from ' + _shown(rc))
 
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
@@ -5472,6 +5551,8 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 	'''
 	Install the glue for shell for the current user. Never overwrites a file mssh did not write.
 
+	An rc file is replaced whole or not at all, and left alone when its mssh markers are not one block.
+
 	Args:
 		editor (bool): bash only: also turn on the mssh line editor (MSSH_COMPLETE_EDITOR=1 in the rc block);
 			an rc block that already turns it on keeps it on
@@ -5489,21 +5570,24 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 			return 1, ['fish {} is too old for mssh autocomplete: it needs fish 3.0 or later'.format(major)]
 	text = render_glue(shell, command)
 	paths = _paths(shell, home, environ)
-	written = [path for path in paths['files'] if _write_glue(path, text, messages)]
-	if paths.get('keys') and written:
-		_write_glue(paths['keys'], render_glue('fish-keys', command), messages)
-	if paths.get('rc') and written:
-		quoted = shlex.quote(written[0])
-		# always ends with status 0: a missing or broken file must not even change $? in a new shell
-		line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
-		body = line.format(quoted)
-		if shell == 'bash' and not editor and _editor_on(paths['rc']):
-			# installing again after an upgrade keeps what the operator turned on
-			editor = True
-			messages.append('kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)')
-		if editor and shell == 'bash':
-			body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
-		_add_rc_block(paths['rc'], body, messages)
+	try:
+		written = [path for path in paths['files'] if _write_glue(path, text, messages)]
+		if paths.get('keys') and written:
+			_write_glue(paths['keys'], render_glue('fish-keys', command), messages)
+		if paths.get('rc') and written:
+			quoted = shlex.quote(written[0])
+			# always ends with status 0: a missing or broken file must not even change $? in a new shell
+			line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
+			body = line.format(quoted)
+			if shell == 'bash' and not editor and _editor_on(paths['rc']):
+				# installing again after an upgrade keeps what the operator turned on
+				editor = True
+				messages.append('kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)')
+			if editor and shell == 'bash':
+				body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
+			_add_rc_block(paths['rc'], body, messages)
+	except InstallError as error:
+		return 1, messages + list(error.args)
 	return (0 if written else 1), messages
 
 def uninstall(shell, home=None, environ=None):
@@ -5512,12 +5596,18 @@ def uninstall(shell, home=None, environ=None):
 	home = home or os.path.expanduser('~')
 	messages = []
 	paths = _paths(shell, home, environ)
-	for path in paths['files'] + ([paths['keys']] if paths.get('keys') else []):
-		if _ours(path):
-			os.unlink(path)
-			messages.append('removed ' + path)
-	if paths.get('rc'):
-		_remove_rc_block(paths['rc'], messages)
+	try:
+		for path in paths['files'] + ([paths['keys']] if paths.get('keys') else []):
+			if _ours(path):
+				try:
+					os.unlink(path)
+				except OSError as error:
+					raise InstallError('could not remove {}: {}'.format(path, _reason(error, path)))
+				messages.append('removed ' + path)
+		if paths.get('rc'):
+			_remove_rc_block(paths['rc'], messages)
+	except InstallError as error:
+		return 1, messages + list(error.args)
 	return 0, messages or ['nothing to remove']
 
 def completion_command(values):
