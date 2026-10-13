@@ -186,6 +186,7 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setattr(multiSSH3.subprocess, "Popen", popen)
 	host = multiSSH3.Host(ip="10.0.0.7", i=7, uuid="uuid-7", **scenario["host"])
 	host.interactive_stdin = False  # no stdin writer thread polling time.sleep
+	host.use_terminal = True  # the command line of a lone -nw command; test_command_terminal.py covers the rest
 	kwargs = {"retry_limit": scenario["retry_limit"]} if "retry_limit" in scenario else {}
 
 	multiSSH3.run_command(host, threading.Semaphore(1), 30, scenario.get("passwds"), **kwargs)

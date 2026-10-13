@@ -76,6 +76,7 @@ def test_run_command_scp_files(fake_host, monkeypatch):
 		files=["/tmp/a"],
 		scp=True,
 	)
+	host.use_terminal = True  # a lone -nw command: test_command_terminal.py covers the options added without one
 	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
 	scp_calls = []
 
@@ -97,6 +98,7 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "/tmp/dest", files=["/tmp/a"], scp=False)
 	# Prefer rsync path
+	host.use_terminal = True  # a lone -nw command: test_command_terminal.py covers the options added without one
 	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
 	monkeypatch.delitem(multiSSH3._binPaths, "scp", raising=False)
 	rsync_calls = []
@@ -124,6 +126,7 @@ def test_run_command_gather_mode_scp(fake_host, monkeypatch):
 		scp=True,
 		gatherMode=True,
 	)
+	host.use_terminal = True  # a lone -nw command: test_command_terminal.py covers the options added without one
 	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
 	gather_calls = []
 

@@ -1171,6 +1171,7 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.use_terminal = False # let the command use the operator's terminal, where ssh asks for passwords and host keys: only when it runs alone without the TUI
 		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
 		self.skipped = False # True when mssh did not run the command: the host was unreachable in a recent run
 		self.dropped_before_login = False # the last try ended with the server dropping ssh's connection before login (sshd MaxStartups?)
@@ -1212,6 +1213,7 @@ class Host:
 		newHost.lastUpdateTime = self.lastUpdateTime
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
+		newHost.use_terminal = self.use_terminal
 		newHost.interactive_stdin = self.interactive_stdin
 		newHost.skipped = self.skipped
 		newHost.dropped_before_login = self.dropped_before_login
@@ -3476,6 +3478,9 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+		if _ssh_cannot_ask(host, passwds):
+			# it would send the passwords it cannot ask for empty, each a failed login in the host's auth log (fail2ban)
+			sshLocalExtraArgs += ['-o NumberOfPasswordPrompts=0']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
 		# rsync splits --rsh on spaces and honours quotes: quoted, an identity path with a space stays one argument
@@ -3789,7 +3794,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				if interactive_stdin:
 					stdin_thread, give_stdin = _start_waiting_thread(__handle_writing_stream)
 					give_streams.append(give_stdin)
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
+				# a session of its own has no controlling terminal: ssh cannot ask there and fails with its reason
+				own_session = os.name == 'posix' and not host.use_terminal
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session)
 				__running_procs.add(proc)
 				# the readers read through _CommandPipe: one can be given up when a background process holds its pipe
 				stdout_pipe = _CommandPipe(proc.stdout)
@@ -4250,6 +4257,18 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			continue
 		return
 
+
+def _ssh_cannot_ask(host, passwds):
+	'''
+	True when the host's ssh runs without a terminal (see Host.use_terminal) and nothing answers its
+	password questions in its place: not sshpass (-p), not an askpass program the user asked for with
+	SSH_ASKPASS_REQUIRE. IPMI hosts are left alone: ssh_ipmitool takes its password later.
+	'''
+	if host.use_terminal or os.name != 'posix' or host.ipmi:
+		return False
+	if passwds and 'sshpass' in _binPaths:
+		return False
+	return os.environ.get('SSH_ASKPASS_REQUIRE', '').lower() not in ('force', 'prefer')
 
 #%% ------------ Start Threading Block ----------------
 def _run_command_thread(host, sem, timeout, passwds):
@@ -5577,6 +5596,38 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			rtnStr = '\n'.join(outputs + [white_str + '─' * (line_length) + color_reset_str])
 	return rtnStr
 
+# ssh's own last word when no login method worked: "bob@node1: Permission denied (publickey,password)."
+# Remote output can hold any line: no part may match an '@' or the ':', so a long line of them costs linear
+# time (a user name with an '@' in it gets no note). Use it anchored (fullmatch / match): search() retries at
+# every start and rescans a long word each time, seconds for one 100 kB line
+_SSH_PERMISSION_DENIED = re.compile(r'([^\s@]+)@([^\s@:]+): Permission denied \(([^)]*)\)\.')
+
+def _note_unasked_passwords(hosts, password):
+	'''
+	After the output, say once which hosts' ssh wanted a password it had no terminal to ask for (see
+	Host.use_terminal), and what to do instead.
+
+	Only when ssh's line names the host itself: an ssh run by the command, or a jump host, is not the
+	one mssh started. Not with -p, where sshpass answered and the password was wrong.
+	'''
+	if os.name != 'posix' or (password and 'sshpass' in _binPaths):
+		return
+	names = []
+	for host in hosts:
+		if host.use_terminal or host.ipmi or host.shell or not host.returncode:
+			continue
+		target = host.name.rsplit('@', 1)[-1].lower()
+		for line in host.stderr:
+			denied = 'Permission denied (' in line and _SSH_PERMISSION_DENIED.fullmatch(line.strip())
+			if denied and denied.group(2).lower() == target and {'password', 'keyboard-interactive'} & set(denied.group(3).split(',')):
+				names.append(host.name)
+				break
+	if names:
+		# a key's passphrase it could not ask for leaves the same line: the key is skipped, password is next
+		eprint('Note: ssh could not ask for the password (or key passphrase) of {}: it may ask only when one command '
+			'runs at a time without the curses display. Use -p, an ssh key (ssh-agent), or -nw -m 1 to type each one.'.format(
+			','.join(compact_hostnames(names))))
+
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	'''
 	Print / generate the output of the hosts to the terminal
@@ -5920,6 +5971,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	use_tui = bool(__curses_available and not no_watch and not return_unfinished and _stream_is_terminal(sys.stdout) and _stream_is_terminal(sys.stdin) and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
+		# ssh asks for passwords, passphrases and new host keys on the terminal. With the TUI on it, or several
+		# commands asking at once, the questions hide behind the TUI or mix, and a typed password can echo.
+		# Only a command running alone without the TUI (one host, or -m 1) may ask; the others fail at once.
+		host.use_terminal = not use_tui and not return_unfinished and (len(hosts) == 1 or max_connections == 1)
 	global _commands_started
 	_commands_started = True
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
@@ -5994,6 +6049,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			hosts = pre_merge_hosts([host.copy() for host in hosts])
 		if not no_output:
 			print_output(hosts,json,greppable=greppable)
+			_note_unasked_passwords(hosts, password)
 	else:
 		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
