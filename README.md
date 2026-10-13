@@ -416,7 +416,9 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 
 > After upgrading mssh, run `mssh --completion install` again to get the new shell glue. Glue from an older mssh keeps working, without the newer features.
 
-> The plain-bash editor binds the space key, so every space typed in bash runs a tiny shell function; Ctrl-R becomes a key macro (the binding it replaced is called for other lines). Uninstall restores both in new shells.
+> The plain-bash editor binds the space key, so every space typed in bash runs a tiny shell function; Ctrl-R becomes a key macro (the binding it replaced is called for other lines). Uninstall restores both in new shells. Such a function also fires bash's DEBUG trap, which some tools take for the start of a command: a command timer kept with the DEBUG trap (as some prompts keep theirs) counts from the first space typed instead of from Enter, and the preexec hooks of [bash-preexec](https://github.com/rcaloras/bash-preexec) (used by atuin and iTerm2's shell integration) may run at that space, before the line is complete.
+
+> In plain bash (without ble.sh), Ctrl-R and the line editor take their keys at the first prompt, through `PROMPT_COMMAND`. Where `PROMPT_COMMAND` is read-only (some audit setups on shared clusters make it so), they are left out without a message; TAB completion still works.
 
 ## Options
 
