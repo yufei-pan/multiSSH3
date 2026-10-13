@@ -433,6 +433,8 @@ def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, mo
 	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "/opt/open ssh/bin/ssh")
 	host = fake_host("mock-a", "/dest/", files=["/src/a"], identity_file=identity_file)
+	# run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
+	host.use_terminal = True
 
 	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
 
