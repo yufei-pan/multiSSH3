@@ -1600,8 +1600,8 @@ def host_validity(hostname, timeout=2.0):
 	file alias, a name DNS resolves, a name the ssh config maps to another HostName or puts
 	behind a ProxyJump / ProxyCommand), except that DNS answers in three ways: only "no such name"
 	(EAI_NONAME, EAI_NODATA) can make a name invalid. A lookup failing otherwise or taking longer
-	than timeout seconds, or an ssh -G that fails, makes it 'unsure'. Nothing connects to the
-	host: ssh -G only reads the ssh config.
+	than timeout seconds, or an ssh -G that fails, makes it 'unsure'. This does not connect to the
+	host, but ssh -G runs the commands of Match exec lines in the ssh config, which may.
 
 	Args:
 		hostname (str): One host name, user@ allowed

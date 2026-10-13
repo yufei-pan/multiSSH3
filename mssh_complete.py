@@ -1913,8 +1913,8 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 	'''
 	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
 	learned in host-state.tsv after each batch, until the queue is empty or limit seconds have
-	passed. Hosts left over go back into the queue. Never connects to a host: only DNS, ssh -G
-	(which reads the ssh config) and ping.
+	passed. Hosts left over go back into the queue. Never connects to a host itself: only DNS,
+	ssh -G (which reads the ssh config, running the commands of its Match exec lines) and ping.
 
 	Returns:
 		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
