@@ -464,6 +464,27 @@ def test_blesh_warning_appears_when_the_prober_answers(home):
 		session.close()
 
 
+def test_blesh_keeps_suggesting_and_warning_with_noclobber(home):
+	# the glue's request and answer files are kept per shell: with noclobber, writing them with > failed
+	# from the second time on, which took the grey text and the warnings away
+	env, home = home
+	known(env, gpu017='invalid', gpu018='invalid')
+	session = blesh_session(home, env, glue_file(home, 'bash'), extra='set -o noclobber')
+	try:
+		for host in ('gpu017', 'gpu018'):
+			session.send('mssh gp')
+			assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 10)
+			session.send('\x03')
+			session.read_until(b'@@READY@@', 10)
+			session.send('mssh %s ' % host)
+			assert host + ': unknown host' in plain(session.read_until(b'unknown host', 15))
+			session.send('\x03')
+			session.read_until(b'@@READY@@', 10)
+		assert b'cannot overwrite' not in session.output
+	finally:
+		session.close()
+
+
 def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 	env, home = home
 	session = blesh_session(home, env, glue_file(home, 'bash'))

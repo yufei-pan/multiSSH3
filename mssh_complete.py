@@ -4490,8 +4490,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 			((_ble_edit_ind == ${#_ble_edit_str})) || return 1
 			_mssh_complete_is_mssh "$_ble_edit_str" || return 1
 			local request=$_ble_base_run/$$.mssh-complete.request answer=$_ble_base_run/$$.mssh-complete.answer line text= status
-			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' > "$request" 2>/dev/null || return 1
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			# >|: the files are written again for every question, which > refuses under noclobber
+			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' >| "$request" 2>/dev/null || return 1
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
 			status=$?
 			((status == 148)) && return 148
 			((status == 0)) || return 1
@@ -4528,8 +4529,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		local line reason= pending=0 status start
 		local -a ranges=() starts=()
 		if _mssh_complete_is_mssh "$_ble_edit_str"; then
-			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" > "$request" 2>/dev/null || return 0
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			# >| for noclobber, as for the grey text
+			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" >| "$request" 2>/dev/null || return 0
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
 			status=$?
 			if ((status == 148)); then
 				# typing interrupted: ask again at the next redraw
