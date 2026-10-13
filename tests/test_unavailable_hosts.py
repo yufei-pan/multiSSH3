@@ -437,8 +437,16 @@ def test_skipped_host_is_printed_with_the_failures(monkeypatch, tmp_path, capsys
 	assert "mock-b" not in out
 
 
-def _unreachable_after_run(monkeypatch, tmp_path, host, cached=()):
-	'''Let processRunOnHosts record a finished host; returns the hosts it then counts as unreachable.'''
+def _unreachable_after_run(monkeypatch, tmp_path, host, cached=(), ssh_config_hostnames=None):
+	'''
+	Let processRunOnHosts record a finished host; returns the hosts it then counts as unreachable.
+
+	ssh_config_hostnames maps names to the HostName ssh -G gives them (default: the name itself).
+	'''
+	hostnames = ssh_config_hostnames or {}
+	# ssh -G is stubbed: the test does not need an installed ssh (the Docker test images have none)
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname: {"hostname": hostnames.get(hostname, hostname.lower())})
 	expiry = int(multiSSH3.time.monotonic() + 300)
 	unavailable = {name: expiry for name in cached}
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", dict(unavailable))
@@ -450,18 +458,50 @@ def _unreachable_after_run(monkeypatch, tmp_path, host, cached=()):
 	return set(unavailable)
 
 
-@pytest.mark.parametrize("line", [
-	"ssh: connect to host web1 port 22: No route to host",
-	"ssh: connect to host 10.0.0.5 port 2222: Connection timed out",
+@pytest.mark.parametrize("name, line", [
+	("web1", "ssh: connect to host web1 port 22: No route to host"),
+	("root@Web1", "ssh: connect to host web1 port 22: No route to host"),  # ssh lowercases the name
+	("web1", "ssh: connect to host 10.0.0.5 port 2222: Connection timed out"),
+	("web1", "ssh: connect to host web1.corp.example port 22: Connection timed out"),  # CanonicalizeHostname
 	# a ProxyJump host that cannot reach the target (older OpenSSH prints this)
-	"channel 0: open failed: connect failed: No route to host",
+	("web1", "channel 0: open failed: connect failed: No route to host"),
 ])
-def test_ssh_failing_to_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path, line):
-	host = fake_host("mock-a", "true")
+def test_ssh_failing_to_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path, name, line):
+	host = fake_host(name, "true", ip="10.0.0.5")
 	host.returncode = 255
 	host.stderr = [line]
 
-	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {name}
+
+
+def test_ssh_failing_to_connect_to_the_ssh_config_hostname_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path):
+	host = fake_host("db", "true", ip="10.0.0.9")
+	host.returncode = 255
+	host.stderr = ["ssh: connect to host db-primary.corp.example port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host,
+		ssh_config_hostnames={"db": "db-primary.corp.example"}) == {"db"}
+
+
+def test_remote_ssh_failing_to_reach_another_host_does_not_mark_the_host(fake_host, monkeypatch, tmp_path):
+	# mssh hostA 'ssh backup ...' with backup down: the remote ssh exits 255 with its own error
+	host = fake_host("hosta", "ssh backup tar c /data", ip="10.0.0.7")
+	host.returncode = 255
+	host.stderr = ["ssh: connect to host backup port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["hosta"]) == set()
+
+
+def test_ssh_naming_the_host_itself_needs_no_ssh_config_lookup(fake_host, monkeypatch, tmp_path):
+	looked_up = []
+	host = fake_host("web1", "true", ip="10.0.0.5")
+	host.returncode = 255
+	host.stderr = ["ssh: connect to host web1 port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"web1"}
+	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname: looked_up.append(hostname))
+	multiSSH3._found_unreachable(host)
+	assert looked_up == []
 
 
 @pytest.mark.parametrize("returncode, line", [
@@ -482,6 +522,56 @@ def test_remote_errors_mentioning_routes_or_timeouts_do_not_mark_the_host_unreac
 	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
 
 
+
+
+def test_file_copy_that_could_not_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path):
+	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits 1 when ssh cannot
+	# connect; mssh falls back to scp after rsync failed, so scp's result is the host's
+	host = fake_host("mock-a", "/tmp/", files=["f.txt"])
+	host.returncode = 1
+	host.stderr = ["ssh: connect to host mock-a port 22: No route to host", "lost connection"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+
+
+def test_command_exiting_1_after_ssh_connect_words_does_not_mark_the_host(fake_host, monkeypatch, tmp_path):
+	# only a file copy's scp exits 1 for a connect failure, a command's ssh exits 255
+	host = fake_host("mock-a", "true")
+	host.returncode = 1
+	host.stderr = ["ssh: connect to host mock-a port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
+
+
+@pytest.mark.parametrize("returncode, files, stderr", [
+	(124, None, ["Resolved name: mock-a", "Running command: ssh -- mock-a sleep 9", "Timeout!"]),
+	(255, None, ["Resolved name: mock-a", "Running command: ssh -- mock-a true",
+		"ssh: connect to host mock-a port 22: No route to host"]),
+	# --debug keeps the failed rsync attempt's lines before scp's
+	(1, ["f.txt"], ["Resolved name: mock-a", "Running command: rsync -ahlX f.txt mock-a:/tmp/",
+		"ssh: connect to host mock-a port 22: No route to host", "rsync: connection unexpectedly closed",
+		"Rsync connection failed! Trying SCP connection...", "Resolved name: mock-a",
+		"Running command: scp -rp f.txt mock-a:/tmp/", "ssh: connect to host mock-a port 22: No route to host",
+		"lost connection"]),
+])
+def test_debug_lines_do_not_hide_an_unreachable_host(fake_host, monkeypatch, tmp_path, returncode, files, stderr):
+	# with --debug mssh writes its own lines to stderr before the command's
+	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
+	host = fake_host("mock-a", "/tmp/" if files else "true", files=files)
+	host.returncode = returncode
+	host.stderr = stderr
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+
+
+def test_debug_lines_do_not_count_as_the_command_printing(fake_host, monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
+	host = fake_host("mock-a", "true")
+	host.returncode = 124
+	host.stderr = ["Resolved name: mock-a", "Running command: ssh -- mock-a make", "make: warning: jobserver unavailable",
+		"Timeout!"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
 
 def test_ssh_connect_error_splits_only_ssh_own_line():
 	# the same helper as patch/ssh-error-text's, so the two merge into one
