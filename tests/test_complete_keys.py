@@ -444,8 +444,11 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
 
 
-def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY):
-	'''zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late).'''
+def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, rc_before='', rc_after=''):
+	'''
+	zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late);
+	rc_before and rc_after: the operator's own rc lines before and after the glue.
+	'''
 	pre = ''
 	if zas:
 		import os
@@ -460,7 +463,7 @@ def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_
 	(home / '.zsh_history').write_text(shell_history)
 	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
 	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
-		pre=history if after else pre + '\n' + history, extra=pre if after else '')
+		pre=(history if after else pre + '\n' + history) + '\n' + rc_before, extra=(pre if after else '') + '\n' + rc_after)
 
 
 @pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
@@ -703,5 +706,159 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15')
 		assert printed(session, 'ls\x12') == 'FISHPREV'
+	finally:
+		session.close()
+
+
+# ---------------------------------------------------------------- the operator's own aliases and functions
+
+# What operators put in their rc files under the names of commands a glue could run, before the mssh
+# block (bash and zsh expand aliases as they read a function) or after it (functions, and the aliases
+# bash and zsh expand in a command substitution as it runs). GREP_OPTIONS: old greps read it. A
+# function is defined as "function name": an alias of that name is there already (the one above, or
+# a system rc file's grep), and would be expanded in "name() {".
+OPERATOR_BASH = '\n'.join([
+	"alias grep='grep --color=always' egrep='egrep --color=always' fgrep='fgrep --color=always'",
+	"alias ls='ls --color=always -F' cat='cat -A' sed='sed -E' rm='rm -i' sort='sort -r' head='head -n 1' tr='tr -d x'",
+	'export GREP_OPTIONS=--color=always',
+	'function grep { command grep --color=always -n "$@"; }',
+	'function sed { command sed -E "$@"; }',
+	'function cd { builtin cd "$@" && echo "cd $PWD"; }',
+	'function command_not_found_handle { echo "not found: $1"; return 127; }',
+])
+
+OPERATOR_ZSH = '\n'.join([
+	"alias grep='grep --color=always' ls='ls --color=always' cat='cat -A' sed='sed -E' rm='rm -i' sort='sort -r' head='head -n 1'",
+	# as oh-my-zsh and prezto define them, global aliases included
+	"alias fc='noglob fc' history='fc -il 1' _='sudo ' -- -='cd -' 1='cd -1'",
+	"alias -g ...='../..' G='| grep' L='| less' H='| head' T='| tail' C='| wc -l' X='| xargs' NE='2>/dev/null'",
+	'function grep { command grep --color=always -n "$@" }',
+	'function sed { command sed -E "$@" }',
+	'function cd { builtin cd "$@" && print -r -- "cd $PWD" }',
+	'function command_not_found_handler { print -r -- "not found: $1"; return 127 }',
+])
+
+# fish's aliases are functions; the history one makes fish's --show-time permanent
+OPERATOR_FISH = '\n'.join([
+	"alias grep 'grep --color=always'",
+	"alias cat 'cat -A'",
+	"alias history 'history --show-time=\"%F %T \"'",
+	'function timeout; echo TIMEOUT; end',
+	'function cd; builtin cd $argv; and echo "cd $PWD"; end',
+	'function fish_command_not_found; echo "not found: $argv[1]"; end',
+])
+
+
+def operator_rc(where, lines, **rc):
+	'''rc keyword arguments putting the operator's lines before or after the glue (adding to rc's).'''
+	key = 'pre' if where == 'before' else 'extra'
+	rc[key] = rc.get(key, '') + '\n' + lines
+	return rc
+
+
+@pytest.mark.parametrize('where', ['before', 'after'])
+def test_bash_keys_ignore_the_operators_aliases_and_functions(home, where):
+	env, home = home
+	known(env, gpu017='invalid')
+	editor = bash_version(env) >= 44
+	rc = operator_rc(where, OPERATOR_BASH, extra=FAKE_MSSH)
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'), **rc)
+	try:
+		# readline's TAB and Ctrl-R (a leading space keeps the line out of the editor)
+		assert session.line_after(' mssh -u r') == ' mssh -u root '
+		session.send(' mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		if editor:
+			# the mssh line editor: grey text, and why a word is marked
+			session.send('\x15mssh gp')
+			grey = '\x1b[38;5;244mu[01-16] "nvidia-smi"'
+			assert grey in session.read_until(grey.encode(), 10)
+			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+			session.send('\x15mssh gpu017 ')
+			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		output = plain(session.output.decode('utf-8', 'replace'))
+		assert 'not found' not in output and 'GREP_OPTIONS' not in output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('where', ['before', 'after'])
+def test_blesh_ignores_the_operators_aliases_and_functions(home, where):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = blesh_session(home, env, glue_file(home, 'bash'), **operator_rc(where, OPERATOR_BASH))
+	try:
+		assert words(session.line_after('mssh -u r')) == ['mssh', '-u', 'root']
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+		session.send('\x15mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		session.send('\x15mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('where', ['before', 'after'])
+def test_zsh_ignores_the_operators_aliases_and_functions(home, where):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home, **{'rc_' + where: OPERATOR_ZSH})
+	try:
+		assert session.line_after('mssh -u r') == 'mssh -u root '
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		assert words(printed(session, RIGHT)) == PICKED
+		session.send('\x15mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		session.send('\x15mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('where', ['before', 'after'])
+def test_fish_ignores_the_operators_functions(home, where):
+	env, home = home
+	known(env, gpu017='invalid')
+	# lines only fish's own history has: a local command, and an mssh line
+	data = home / '.local' / 'share' / 'fish'
+	data.mkdir(parents=True)
+	(data / 'fish_history').write_text('- cmd: echo three\n  when: 1790000000\n- cmd: mssh zzq9 fishonly\n  when: 1790000001\n')
+	config = home / '.config' / 'fish'
+	(config / 'completions').mkdir(parents=True)
+	(config / 'completions' / 'mssh.fish').write_text(mc.render_glue('fish', ENGINE))
+	# fish loads a command's completions only when the command exists
+	pre = 'function mssh; end'
+	if where == 'before':
+		# conf.d runs in name order: before the mssh glue
+		(config / 'conf.d').mkdir()
+		(config / 'conf.d' / '00-operator.fish').write_text(OPERATOR_FISH + '\n')
+	else:
+		pre += '\n' + OPERATOR_FISH
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)
+	try:
+		# TAB, from mssh's history and from fish's
+		assert printed(session, 'mssh -u r\t') == 'mssh -u root '
+		assert words(printed(session, '\x15mssh h "echo th\t')) == ['mssh', 'h', 'echo three']
+		# the picker's history tab holds the line fish's history has
+		session.send('\x15mssh zzq9 ')
+		time.sleep(0.5)
+		session.send('\x12')
+		session.read_until(b'commands for', 10)
+		assert printed(session, '\tfishonly\r') == 'mssh zzq9 fishonly'
+		if fish_major() >= 4:
+			session.send('\x15mssh gpu017 ')
+			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
 	finally:
 		session.close()
