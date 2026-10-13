@@ -3236,7 +3236,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		help_window.idlok(True)
 		help_window.box()
 		_curses_add_string_to_window(window=help_window,y=0,line='Help', color_pair_list=[-1,-1,1], centered=True, fill_char='─', lead_str='┌', box_ansi_color=box_ansi_color)
-		_curses_add_string_to_window(window=help_window,y=1,line='?       : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=1,line='? or F1 : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=2,line='_ or +  : Change window hight', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=3,line='{ or }  : Change window width', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=4,line='< or >  : Change host index', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
@@ -3323,8 +3323,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == curses.KEY_EXIT or (key == 27 and lineToDisplay == -1 and not __keyPressesIn[-1]): # 27 is the key code for ESC
 					# exit the display on KEY_EXIT, or on ESC when the input line is empty. ESC with input clears the line below
 					return
-				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
-					# if the key is help, we will display the help message
+				elif key == curses.KEY_HELP or (key == 63 and not __keyPressesIn[-1]) or key == curses.KEY_F1: # 63 is the key code for ?
+					# if the key is help, we will display the help message. Like the other one-character keys, ? toggles
+					# it only on an empty input line: after text it is typed (a prompt's answer may need it). F1 always works
 					if not help_shown:
 						help_panel.show()
 						help_shown = True

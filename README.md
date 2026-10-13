@@ -316,7 +316,7 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 
 > It is also possible to modify the window size within curses display by pressing keys:
 > ```
-> ?       : Toggle Help Menu   
+> ? or F1 : Toggle Help Menu   
 > _ or +  : Change window hight
 > { or }  : Change window width
 > < or >  : Change host index  
@@ -331,6 +331,7 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 > ```
 > `Esc` clears the input line. On an empty input line it hides the live view; the commands keep running and their output is printed when they finish.
 > You can also toggle this help in curses by pressing `?` or `F1`.
+> The one-character keys (`?`, `_`, `+`, `{`, `}`, `<`, `>`, `|`) act only on an empty input line; after you have typed something they are typed like any other character, so a `?` can still reach the hosts. `F1` toggles the help at any time.
 
 ### Command String Replacement
 

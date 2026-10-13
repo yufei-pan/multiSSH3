@@ -646,3 +646,18 @@ def test_keypad_enter_sends_the_line(stub_curses_harness, fake_host, monkeypatch
 	_type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("y"), curses.KEY_ENTER])
 
 	assert multiSSH3.__keyPressesIn == [list("y\n"), []]  # it used to type chr(343), "ŗ"
+
+
+def test_question_mark_is_typed_once_the_input_line_has_text(stub_curses_harness, fake_host, monkeypatch):
+	result = _type_keys(stub_curses_harness, fake_host, monkeypatch, b"is it?")
+
+	assert multiSSH3.__keyPressesIn == [list("is it?")]  # sent to the hosts, e.g. answering a prompt
+	assert result[5] is False  # the help stays closed
+	assert "show" not in stub_curses_harness.panels[-1].calls
+
+
+def test_f1_toggles_help_while_the_input_line_has_text(stub_curses_harness, fake_host, monkeypatch):
+	result = _type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("a"), 265])  # 265: F1
+
+	assert multiSSH3.__keyPressesIn == [list("a")]
+	assert result[5] is True
