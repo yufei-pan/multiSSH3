@@ -351,15 +351,15 @@ def test_copy_id_never_shows_the_password(monkeypatch, tmp_path, capsys, json):
 	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: argvs.append(argv) or _FakeProc(argv))
 
 	# as on the command line: the output of every host, its command included
-	with pytest.raises(SystemExit):
-		multiSSH3.run_command_on_hosts(hosts="mock-a", copy_id=True, password=secret, json=json, no_watch=True,
-			no_history=True, called=False, will_update_unreachable_hosts=False)
+	multiSSH3.run_command_on_hosts(hosts="mock-a", copy_id=True, password=secret, json=json, no_watch=True,
+		no_history=True, called=False, will_update_unreachable_hosts=False)
 
 	out = capsys.readouterr()
 	assert "Hunter2" not in out.out + out.err
-	assert "ssh-copy-id mock-a" in out.out
+	assert "/bin/ssh-copy-id -o StrictHostKeyChecking=no" in out.out
 	# run with the password as it is: no magic string replaced in it
-	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -p {} /bin/ssh-copy-id mock-a".format(shlex.quote(secret))]]
+	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -p {} /bin/ssh-copy-id -o StrictHostKeyChecking=no "
+		"-o UserKnownHostsFile=/dev/null mock-a".format(shlex.quote(secret))]]
 
 
 def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
