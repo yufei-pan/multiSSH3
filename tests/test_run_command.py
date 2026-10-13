@@ -256,9 +256,7 @@ def test_exit_from_the_tui_stands_when_the_terminal_hung_up(fake_host, monkeypat
 			raise curses.error("nocbreak() returned ERR")
 
 	host = fake_host("mock-a", "sleep 60")
-	monkeypatch.setattr(multiSSH3, "__curses_available", True)
-	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
-	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	_pretend_terminal(monkeypatch)  # the TUI also needs a terminal on stdin
 	finished = threading.Thread(target=lambda: None)
 	finished.start()
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda hosts, **kwargs: [finished])
