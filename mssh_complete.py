@@ -166,6 +166,8 @@ def split_at_cursor(before, after):
 
 #%% ------------ Option spec ----------------
 PASSWORD_DESTS = frozenset(('password', 'ipmi_password'))
+# options naming files mssh reads its hosts and env aliases from, at Enter
+LOOKUP_DESTS = frozenset(('env_file', 'env_files', 'host_file', 'config_file'))
 PATH_DESTS = frozenset(('file', 'file_sync', 'env_file', 'env_files', 'config_file', 'store_config_file', 'host_file', 'history_file'))
 USER_DESTS = frozenset(('username', 'ipmi_username'))
 
@@ -1811,6 +1813,7 @@ def take_probe_queue(directory):
 #%% ------------ Prober ----------------
 PROBE_RUN_LIMIT = 120.0  # seconds one prober run may last; the next query starts another for what is left
 PING_COMMAND = ('ping', '-c2', '-i0.2', '-W1', '-q')
+PING_TIMEOUT = 10   # seconds: PING_COMMAND is done in about one, unless its own name lookup hangs
 DNS_TIMEOUT = 2.0
 
 def _out_of_resources(error):
@@ -1838,15 +1841,16 @@ def probe_parallelism(mssh):
 def ping_host(host):
 	'''
 	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (no permission, a name it
-	cannot resolve). Raises FileNotFoundError without a ping command, OSError when out of
+	cannot resolve) or runs out of time (stuck on its name lookup: a slow DNS server says nothing
+	about the host). Raises FileNotFoundError without a ping command, OSError when out of
 	descriptors or processes.
 	'''
 	import subprocess
 	argv = list(PING_COMMAND) + (['-6'] if ':' in host else []) + [host]
 	try:
-		code = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode
+		code = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=PING_TIMEOUT).returncode
 	except subprocess.TimeoutExpired:
-		return 'silent'
+		return 'none'
 	except FileNotFoundError:
 		raise
 	except OSError as e:
@@ -2395,8 +2399,12 @@ class Engine(object):
 	def _host_diagnostics(self, token, states, now, wanted, reach):
 		'''
 		Unknown hosts, range surprises and unreachable hosts in a hosts word. reach is (the hosts
-		in mssh's unavailable list, whether they are skipped, the ping expiry).
+		in mssh's unavailable list, whether they are skipped, the ping expiry, whether the line
+		names its own lookup files).
 		'''
+		def verdict(host):
+			answer = self._verdict(host, states, now, wanted)
+			return 'unsure' if answer == 'invalid' and self._mssh_may_know(host, reach) else answer
 		found = []
 		for name, (start, end) in _host_parts(token):
 			if not name or _ipv4_range(name):
@@ -2404,7 +2412,7 @@ class Engine(object):
 				continue
 			members = self._host_members(name)
 			if members is None:
-				if self._verdict(name, states, now, wanted) == 'invalid':
+				if verdict(name) == 'invalid':
 					found.append(Diagnostic(start, end, 'unknown', self._unknown_message(name, states, now)))
 				else:
 					why = self._unreachable(name, states.get(name), now, reach)
@@ -2412,7 +2420,7 @@ class Engine(object):
 						found.append(Diagnostic(start, end, 'unreachable', why))
 			elif members:
 				members, total = members
-				verdicts = [self._verdict(member, states, now, wanted) for member in members]
+				verdicts = [verdict(member) for member in members]
 				item = self._range_diagnostic(name, members, verdicts, total, (start, end), states, now, wanted)
 				if item is not None:
 					found.append(item)
@@ -2444,6 +2452,14 @@ class Engine(object):
 				break
 			members.append(member)
 		return (members, total) if members != [name] else None
+
+	def _mssh_may_know(self, name, reach):
+		'''
+		Whether mssh may know a name the prober found nowhere: the line names its own hosts, env or
+		config files (mssh reads them at Enter, from the shell's directory), or the name is a variable
+		of the shell (the prober may have started from another shell).
+		'''
+		return reach[3] or name.rsplit('@', 1)[-1].strip().strip('$') in os.environ
 
 	def _valid_at_once(self, name):
 		'''An IP address or a hosts-file name: valid without DNS.'''
@@ -2508,17 +2524,22 @@ class Engine(object):
 
 	def _line_settings(self, words, roles):
 		'''
-		(whether unreachable hosts are skipped, the ping expiry in seconds) for the options of a line.
+		(whether unreachable hosts are skipped, the ping expiry in seconds, whether the line names
+		its own lookup files) for the options of a line.
 
 		Skipping: the last of -su / -nsu on the line, else the mssh config's default; --script
-		always skips (process_args). Ping expiry: $MSSH_COMPLETE_PING_TTL, else mssh's unreachable
-		host expiry (-uhe on the line, else its default).
+		always skips (process_args); --ipmi never does (mssh reaches the host's BMC). Ping expiry:
+		$MSSH_COMPLETE_PING_TTL, else mssh's unreachable host expiry (-uhe on the line, else its
+		default). Lookup files: --env_file(s), --host_file, --config_file.
 		'''
 		flags = {}
 		expiry = None
+		lookup = False
 		for token, (role, option) in zip(words, roles):
 			if option is None:
 				continue
+			if role == ROLE_OPTION and option.dest in LOOKUP_DESTS:
+				lookup = True
 			if role == ROLE_OPTION and option.nargs == '0' and option.long in self.flag_sets:
 				flags[option.dest] = self.flag_sets[option.long]
 			elif option.dest == 'unavailable_host_expiry':
@@ -2527,18 +2548,18 @@ class Engine(object):
 					expiry = int(value)
 		def flag(dest):
 			return flags.get(dest, self.flag_defaults.get(dest, False))
-		skipping = flag('script') or flag('skip_unreachable')
+		skipping = (flag('script') or flag('skip_unreachable')) and not flag('ipmi')
 		ttl = os.environ.get('MSSH_COMPLETE_PING_TTL', '')
 		if _is_digits(ttl) and int(ttl) > 0:
 			expiry = int(ttl)
 		if expiry is None:
 			default = next((option.default for option in self.spec.options if option.dest == 'unavailable_host_expiry'), '')
 			expiry = int(default) if _is_digits(default) else 600
-		return skipping, expiry
+		return skipping, expiry, lookup
 
 	def _unreachable(self, name, state, now, reach):
 		'''Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering ping.'''
-		unavailable, skipping, expiry = reach
+		unavailable, skipping, expiry, _ = reach
 		if name in unavailable:
 			dash, _ = _punctuation()
 			return '{}: {}unreachable in a recent mssh run'.format(name, 'will be skipped' + dash if skipping else '')

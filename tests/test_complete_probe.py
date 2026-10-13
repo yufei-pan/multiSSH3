@@ -16,6 +16,7 @@ REAL_HOST_VALIDITY = multiSSH3.host_validity
 FAKE_PING = '''#!/bin/sh
 for host; do :; done
 echo "$host" >> "$FAKE_PING_LOG"
+case " $FAKE_PING_HANG " in *" $host "*) exec sleep 30 ;; esac
 case " $FAKE_PING_UP " in *" $host "*) exit 0 ;; esac
 exit "${FAKE_PING_SILENT:-1}"
 '''
@@ -82,6 +83,17 @@ def test_without_a_working_ping_hosts_get_none(env, monkeypatch, ping):
 	mc.queue_probes(env.directory, ['node3', 'node4'])
 	mc.run_probe(env.directory, now=lambda: NOW)
 	assert {host: state[1] for host, state in states(env).items()} == {'node3': 'none', 'node4': 'none'}
+
+
+def test_a_ping_that_does_not_finish_says_nothing(env, monkeypatch):
+	# ping -W1 is done in about a second: one that runs out of time is stuck on its own name lookup
+	# (a slow DNS server), which says nothing about the host
+	monkeypatch.setattr(mc, 'PING_TIMEOUT', 0.5, raising=False)
+	monkeypatch.setenv('FAKE_PING_HANG', 'node3')
+	mc.write_host_states(env.directory, {'node3': mc.HostState('valid', NOW, 'answer', NOW, NOW)})
+	mc.queue_probes(env.directory, ['node3'])
+	mc.run_probe(env.directory, now=lambda: NOW + 90)
+	assert states(env)['node3'] == ('valid', 'none', NOW + 90, NOW)
 
 
 def test_parallelism_follows_mssh_and_backs_off_under_load(monkeypatch):

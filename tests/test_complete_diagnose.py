@@ -58,6 +58,21 @@ def test_an_unknown_host_is_marked_with_the_host_it_was_meant_to_be(engine):
 	assert warnings(engine, 'mssh gpu017 nvidia-smi') == ([('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')], False)
 
 
+@pytest.mark.parametrize('options', ['--env_files lab.env ', '-ef lab.env ', '--host_file lab.hosts ', '--config_file lab.json '])
+def test_a_line_with_its_own_lookup_files_calls_no_host_unknown(engine, options):
+	# mssh reads those files at Enter, from the shell's directory: the prober cannot see what they define
+	seed(engine, LABGPUS='invalid', gpu017='invalid')
+	assert warnings(engine, 'mssh {}LABGPUS,gpu017 uptime'.format(options))[0] == []
+
+
+@pytest.mark.parametrize('word', ['LABGPUS', 'root@LABGPUS'])
+def test_a_variable_of_the_shell_is_not_an_unknown_host(engine, monkeypatch, word):
+	# mssh expands an exported variable named by the hosts word; the prober may run with another environment
+	monkeypatch.setenv('LABGPUS', 'node01,node02')
+	seed(engine, LABGPUS='invalid')
+	assert warnings(engine, 'mssh {} uptime'.format(word))[0] == []
+
+
 def test_the_word_being_typed_is_left_alone(engine):
 	seed(engine, gpu017='invalid')
 	assert warnings(engine, 'mssh gpu017')[0] == []
@@ -198,6 +213,19 @@ def test_when_skipping_is_off_by_default_only_su_skips(skipping):
 	unavailable(skipping, 'node05')
 	assert warnings(skipping, 'mssh node05 uptime')[0][0][2] == 'node05: unreachable in a recent mssh run'
 	assert warnings(skipping, 'mssh -su node05 uptime')[0][0][2] == 'node05: will be skipped — unreachable in a recent mssh run'
+
+
+@pytest.mark.parametrize('options', ['--ipmi ', '-su --ipmi ', '--script --ipmi '])
+def test_with_ipmi_unreachable_hosts_are_not_skipped(skipping, options):
+	# mssh skips them only without --ipmi: powering on a host that is down is what --ipmi is for
+	unavailable(skipping, 'node05')
+	assert warnings(skipping, 'mssh {}node05 power on'.format(options))[0] == [('node05', 'unreachable', 'node05: unreachable in a recent mssh run')]
+
+
+def test_with_ipmi_on_by_default_unreachable_hosts_are_not_skipped(skipping):
+	skipping.flag_defaults['ipmi'] = True
+	unavailable(skipping, 'node05')
+	assert warnings(skipping, 'mssh node05 power on')[0][0][2] == 'node05: unreachable in a recent mssh run'
 
 
 @pytest.mark.parametrize('boot, left', [('boot-b', 300), ('boot-a', -5)], ids=['another_boot', 'expired'])
