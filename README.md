@@ -412,7 +412,7 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 | `MSSH_COMPLETE_PING_TTL` | Seconds a host that answered ping is expected to keep answering (default: mssh's unreachable host expiry, 600) |
 | `MSSH_COMPLETE_DEBUG` | `1` logs errors to `complete.log` in the cache directory |
 
-> Tested with bash 4.2 to 5.2, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
+> Tested with bash 4.2 to 5.3, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
 
 > After upgrading mssh, run `mssh --completion install` again to get the new shell glue. Glue from an older mssh keeps working, without the newer features.
 
