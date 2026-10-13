@@ -370,6 +370,9 @@ def assign_roles(words, spec, current=None):
 			roles.append((ROLE_COMMAND, None))
 	return roles
 
+# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
+_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+
 def split_hosts(text):
 	'''Split a hosts argument into host words, on the separators mssh accepts.'''
 	for separator in ',\n\r\t;|/&':
@@ -1413,7 +1416,9 @@ def build_index(directory, now=None, mssh=None):
 	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
 	hosts = {}
 	def add(name, source, address=''):
-		if not name or not safe_field(name) or any(char in name for char in ' \t,'):
+		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
+		# systemd's ssh config) is never one host
+		if not name or not safe_field(name) or any(char in _HOST_SEPARATORS for char in name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -1982,9 +1987,6 @@ class Diagnostic(object):
 def _punctuation():
 	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
 	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
-
-# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
-_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
 
 def _host_parts(token):
 	'''

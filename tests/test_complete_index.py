@@ -59,6 +59,21 @@ def test_build_index_collects_every_source(home):
 	assert index.header['history_offset'] == str(os.path.getsize(str(home / '.mssh_history')))
 
 
+def test_names_mssh_cannot_take_as_one_host_are_not_collected(home):
+	'''mssh splits a hosts word on , ; | / & and whitespace, so a name holding one (machine/.host from
+	systemd's ssh config) is never one host; ssh config patterns are no hosts at all.'''
+	(home / '.ssh' / 'config').write_text('Host .host machine/.host\nHost unix/* vsock/* !neg web?\n'
+		'Host semi;colon pipe|name amp&name\nHost good-name good.dot\n')
+	(home / '.ssh' / 'known_hosts').write_text('vsock/3,known1 ssh-ed25519 AAAA\n')
+	index, directory = build()
+	names = set(mc.HostTable(index).names)
+	assert {'.host', 'good-name', 'good.dot', 'known1'} <= names
+	assert [name for name in names if set(name) & set(',;|/& \t\r\n')] == []
+	assert not names & {'unix/*', 'vsock/*', '!neg', 'neg', 'web?'}
+	response = mc.answer(mc.Request('bash', 'mssh machine/', '', ''), directory=directory, now=NOW)
+	assert [candidate.text for candidate in response.candidates] == []
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:

@@ -226,7 +226,7 @@ Only records reachable through the line's features are decoded, which keeps the 
 |---|---|
 | Parser spec | `multiSSH3.get_parser()` |
 | Config | Effective config-chain defaults: history file, host file, env files, `DEFAULT_HOSTS` |
-| Hosts | Configured host file (`/etc/hosts`); ssh config `Host` entries from `~/.ssh/config` and `/etc/ssh/ssh_config` including `Include` (wildcard patterns skipped); unhashed `~/.ssh/known_hosts` entries (`[host]:port` stripped, `\|1\|` hashed entries skipped); ARP (`/proc/net/arp` on Linux, `arp -an` on macOS); every host token in mssh history |
+| Hosts | Configured host file (`/etc/hosts`); ssh config `Host` entries from `~/.ssh/config` and `/etc/ssh/ssh_config` including `Include` (wildcard patterns skipped); unhashed `~/.ssh/known_hosts` entries (`[host]:port` stripped, `\|1\|` hashed entries skipped); ARP (`/proc/net/arp` on Linux, `arp -an` on macOS); every host token in mssh history. A name holding a character mssh separates hosts with (`, ; \| / &`, whitespace; e.g. `machine/.host` in systemd's ssh config) is skipped: mssh would split it |
 | Host groups | `compact_hostnames(verify=True)` over the host set |
 | Aliases | Env-file aliases via mssh's trust-checked `readEnvFromFile()`, expanded with `expand_hostnames_local()`; environment variables only if their name has been used as a host token in mssh history |
 | Reachability | `unavailable_hosts.csv` (rank penalty only) |
