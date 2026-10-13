@@ -253,6 +253,24 @@ def test_no_brace_warning_without_a_second_word(engine, line):
 	assert warnings_if_all_unknown(engine, line) == []
 
 
+def test_a_sequence_too_long_to_count_in_a_word(engine):
+	# more words than len() takes: the other warnings of the line stay
+	seed(engine, gpu017='invalid')
+	word = 'gpu017,n{1..99999999999999999999}'
+	assert warnings(engine, 'mssh {} uptime'.format(word))[0] == [
+		('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?'),
+		(word, 'range', '{}: the shell makes 99999999999999999999 words of this; mssh would run gpu017,n2 as the command'.format(word))]
+	assert warnings(engine, 'mssh n{1..99999999999999999999}{a,b} uptime')[0][0][2].startswith('n{1..99999999999999999999}{a,b}: the shell makes 199999999999999999998 words of this; mssh would run n1b as')
+
+
+def test_a_failing_brace_warning_leaves_the_other_warnings(engine, monkeypatch):
+	def fail(token, shell):
+		raise ValueError('odd braces')
+	monkeypatch.setattr(mc, '_brace_split', fail)
+	seed(engine, gpu017='invalid')
+	assert warnings(engine, 'mssh gpu017,n{1,2} uptime')[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+
+
 def test_braces_the_shell_leaves_alone_are_checked_as_hosts(engine):
 	assert warnings_if_all_unknown(engine, 'mssh node{1} uptime') == [('node{1}', 'unknown', 'node{1}: unknown host')]
 	assert warnings_if_all_unknown(engine, 'mssh "node{1,2}" uptime')[0][:2] == ('"node{1,2}"', 'unknown')

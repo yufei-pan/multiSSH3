@@ -2235,6 +2235,12 @@ def _brace_values(text, marks, start, end, shell):
 		return None, 0
 	return _brace_sequence(text[start + 1:end - 1], shell) or (None, 0)
 
+def _count(values):
+	'''How many values a list or range holds: len() of a range stops at sys.maxsize ({1..99999999999999999999}).'''
+	if isinstance(values, list):
+		return len(values)
+	return max(0, (values.stop - values.start - (1 if values.step > 0 else -1)) // values.step + 1)
+
 def _closed_brackets(text):
 	'''Whether every [ of text closes before another opens: mssh pairs its [ ] as typed when more are added around it.'''
 	inside = False
@@ -2274,7 +2280,7 @@ def _brace_split(token, shell):
 	pieces = [text[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
 	count = 1
 	for _, _, values, _ in groups:
-		count *= len(values)
+		count *= _count(values)
 	# the shell drops an empty word: what it leaves is not worked out
 	if count < 2 or (not ''.join(pieces) and any('' in values for _, _, values, _ in groups if isinstance(values, list))):
 		return None
@@ -2293,7 +2299,7 @@ def _brace_split(token, shell):
 		'''Word number (0: the first) of those the shell makes: bash and zsh vary the last braces fastest, fish the first.'''
 		chosen = {}
 		for index in (range(len(groups)) if shell == 'fish' else range(len(groups) - 1, -1, -1)):
-			number, chosen[index] = divmod(number, len(groups[index][2]))
+			number, chosen[index] = divmod(number, _count(groups[index][2]))
 		return pieces[0] + ''.join(value(groups[index], chosen[index]) + pieces[index + 1] for index in range(len(groups)))
 
 	dash, _ = _punctuation()
@@ -2717,7 +2723,12 @@ class Engine(object):
 				if users is not None:
 					# mssh skips unreachable hosts by the name it runs them under, user@ included: unknown here
 					found.extend(item for item in self._host_diagnostics(users, states, now, wanted, reach) if item.kind != 'unreachable')
-				split = _brace_split(token, request.shell)
+				try:
+					split = _brace_split(token, request.shell)
+				except Exception as e:
+					# a word of odd braces must not cost the line its other warnings
+					_debug('brace warning failed: {!r}'.format(e))
+					split = None
 				if split is not None:
 					found.append(split)
 		found.extend(self._option_diagnostics(options))
