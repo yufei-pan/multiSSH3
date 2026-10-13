@@ -317,3 +317,11 @@ def test_ansi_c_quoted_command_words_are_offered_as_typed(monkeypatch):
 	knowledges = [memory([recorded(NOW - number, 'web1', "echo $'a\\tb'") for number in range(3)])]
 	assert texts(query('mssh web1 echo ', knowledges=knowledges)) == ["\\$\\'a\\\\tb\\'"]
 	assert mssh_runs("mssh web1 echo \\$\\'a\\\\tb\\'", monkeypatch) == ["echo $'a\\tb'"]
+
+
+def test_blesh_gets_candidates_unescaped():
+	# ble.sh quotes what it inserts itself, as zsh and fish do: escaped text would be escaped twice
+	knowledges = [memory([recorded(NOW - number, 'web1', "systemctl status 'ssh*'", 'echo $HOME') for number in range(3)])]
+	assert texts(query('mssh web1 systemctl status ', knowledges=knowledges, flags={'ble': '1'})) == ["'ssh*'"]
+	assert texts(query('mssh web1 echo ', knowledges=knowledges, flags={'ble': '1'})) == ['$HOME']
+	assert texts(query('mssh web1 echo ', knowledges=knowledges)) == ['\\$HOME']

@@ -329,3 +329,17 @@ def test_command_words_are_inserted_with_their_quotes(tmp_path, shell):
 			assert words(session.line_after(line)) == words(line)[:4] + ["'ssh*'"], line
 	finally:
 		session.close()
+
+
+def test_bash_with_blesh_loaded_but_not_attached_gets_escaped_words(tmp_path):
+	# readline completes, not ble.sh: the words must come escaped as for plain bash
+	env, home = make_home(tmp_path, QUOTED_WORD_HISTORY)
+	build_index(env)
+	empty = tmp_path / 'empty'
+	empty.mkdir()
+	extra = "BLE_VERSION=0.4.0; BLE_ATTACHED=; cd '{}'".format(empty)
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
+	try:
+		assert words(session.line_after('mssh web1 nosuchcmd status ')) == ['mssh', 'web1', 'nosuchcmd', 'status', "'ssh*'"]
+	finally:
+		session.close()

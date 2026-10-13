@@ -2865,8 +2865,9 @@ class Engine(object):
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
 		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
+		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do.
 		'''
-		literal = request.shell == 'bash' or request.flags.get('insert') == '1'
+		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		word = _shell_word(request)
@@ -4228,7 +4229,8 @@ _mssh_complete() {
 		_mssh_complete_icase=0
 		[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_icase=1
 	fi
-	[[ -n ${BLE_VERSION-} ]] && ble=1
+	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
+	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
 	flags="nosort=0 icase=$_mssh_complete_icase ble=$ble term=${TERM-}"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		flags="nosort=1 ${flags#nosort=0 }"

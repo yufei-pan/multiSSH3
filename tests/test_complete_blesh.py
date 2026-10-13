@@ -87,3 +87,20 @@ def test_blesh_start_shows_nothing_from_the_glue(setup):
 	glued.close()
 	strip = lambda output: ESCAPES.sub('', output.decode('utf-8', 'replace'))
 	assert strip(glued.output) == strip(alone.output)
+
+
+def test_blesh_inserts_command_words_as_history_ran_them(tmp_path):
+	# as mssh records `mssh web1 "nosuchcmd status 'ssh*'"` and `mssh web1 'othercmd $HOME/notes'`: the
+	# local words must hold what mssh passes on to the remote shell, quoted once by ble.sh
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\tweb1\t\'nosuchcmd status \'"\'"\'ssh*\'"\'"\'\'',
+		"1790000000\t/x/multiSSH3.py\t-su\tweb1\t'othercmd $HOME/notes'"])
+	build_index(env)
+	# an empty working directory: bash adds its files to the words of a remote command
+	empty = tmp_path / 'empty'
+	empty.mkdir()
+	session = blesh_session(home, env, glue_file(home), extra="cd '{}'".format(empty))
+	try:
+		assert words(session.line_after('mssh web1 nosuchcmd status ')) == ['mssh', 'web1', 'nosuchcmd', 'status', "'ssh*'"]
+		assert words(session.line_after('mssh web1 othercmd ')) == ['mssh', 'web1', 'othercmd', '$HOME/notes']
+	finally:
+		session.close()
