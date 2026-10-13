@@ -971,13 +971,12 @@ DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.6
 SSH_STRICT_HOST_KEY_CHECKING = False
 FORCE_TRUECOLOR = False
 ERROR_MESSAGES_TO_IGNORE = [
-	'Pseudo-terminal will not be allocated because stdin is not a terminal',
-	'Connection to .* closed',
-	'Warning: Permanently added',
-	'mux_client_request_session',
-	'disabling multiplexing',
-	'Killed by signal',
-	'Connection reset by peer',
+	r'^Pseudo-terminal will not be allocated because stdin is not a terminal',
+	r'^Connection to \S+ closed( by remote host)?\.$',
+	r'^Warning: Permanently added ',
+	r'^mux_client_request_session: ',
+	r'^ControlSocket .* already exists, disabling multiplexing$',
+	r'^Killed by signal \d+\.$',
 ]
 __DEFAULT_COLOR_PALETTE = {
 	'cyan': (86, 173, 188),
@@ -1018,6 +1017,8 @@ __DEBUG_MODE = False
 > `_DEFAULT_NO_START` is somewhat analogous to "demo mode" where mssh will return Host objects without actually allocating and starting the execution threads. Although they still can be started using `start_run_on_hosts()` but you should really be looking for `return_unfinished` instead for asynchronicity.
 
 > `_etc_hosts` is a custom dict to use instead of reading /etc/hosts file for hostname resolution.
+
+> `ERROR_MESSAGES_TO_IGNORE` lists regexes for ssh's own notices, which mssh leaves out of each host's stderr (also in `--json` and `--greppable` output). Each regex is searched anywhere in every stderr line, so anchor yours with `^` and `$` to match whole lines (in the JSON config file, write a regex backslash as `\\`). The defaults are anchored to the lines OpenSSH prints, so a remote program's error that uses the same words, such as curl's `Recv failure: Connection reset by peer`, is kept. Connection resets are not hidden: `kex_exchange_identification: read: Connection reset by peer` is how sshd's `MaxStartups` turns away connections opened at once. Config files that `--store_config_file` or `--generate_config_file` wrote before 6.20 hold a copy of the old, unanchored defaults; mssh ignores such an unchanged copy and uses the current defaults.
 
 > `__ERROR_MESSAGES_TO_IGNORE_REGEX` is the compiled regex pattern for error messages to ignore. If custom defined, mssh will ignore `ERROR_MESSAGES_TO_IGNORE` and use supplied regex pattern instead.
 
