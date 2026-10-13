@@ -275,23 +275,24 @@ def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_
 	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
 	monkeypatch.delitem(multiSSH3._binPaths, "sshpass", raising=False)
+	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", False)
 	commands = []
-	monkeypatch.setattr(multiSSH3.os, "system", commands.append)
+	monkeypatch.setattr(multiSSH3.os, "system", lambda command: commands.append(command) or 0)
 
-	with pytest.raises(multiSSH3.MultiSSHError):
-		multiSSH3.run_command_on_hosts(
-			hosts="mock-a",
-			copy_id=True,
-			username="bob",
-			identity_file="~/my key",
-			no_watch=True,
-			quiet=True,
-			no_history=True,
-			called=True,
-			will_update_unreachable_hosts=False,
-		)
+	multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		copy_id=True,
+		username="bob",
+		identity_file="~/my key",
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+	)
 
-	assert commands == ["ssh-copy-id -i '{}' bob@mock-a".format(os.path.expanduser("~/my key"))]
+	assert commands == ["ssh-copy-id -i '{}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null bob@mock-a".format(
+		os.path.expanduser("~/my key"))]
 
 
 def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
@@ -299,23 +300,24 @@ def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
 	monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
+	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", False)
 	started = []
 	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: started.extend(kwargs["hosts"]))
 
-	with pytest.raises(multiSSH3.MultiSSHError):
-		multiSSH3.run_command_on_hosts(
-			hosts="mock-a",
-			copy_id=True,
-			username="bob",
-			password="p@ss word;",
-			no_watch=True,
-			quiet=True,
-			no_history=True,
-			called=True,
-			will_update_unreachable_hosts=False,
-		)
+	multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		copy_id=True,
+		username="bob",
+		password="p@ss word;",
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+	)
 
-	assert [h.command for h in started] == ["sshpass -p 'p@ss word;' ssh-copy-id bob@mock-a"]
+	assert [h.command for h in started] == [
+		"sshpass -p 'p@ss word;' ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null bob@mock-a"]
 
 
 def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
