@@ -1,5 +1,11 @@
 '''Warnings before Enter: what the engine says about the words of an mssh line already typed.'''
+import argparse
+import contextlib
+import io
 import os
+import string
+import sys
+import types
 
 import pytest
 
@@ -337,3 +343,275 @@ def test_settings_used_by_default_are_not_flagged(no_effect):
 	# the mssh config turns --ipmi on
 	no_effect.flag_defaults['ipmi'] = True
 	assert warnings(no_effect, 'mssh -iu admin node01 true')[0] == []
+
+
+# mssh parses its options among its positionals (parse_intermixed_args): in an unquoted remote command,
+# a word naming an mssh option is that option, and any other word starting with '-' stops mssh
+STOPS = sys.version_info >= (3, 7)  # Python 3.6 mssh passes unknown options on to the commands
+
+
+@pytest.mark.parametrize('line, marked, message', [
+	('mssh web1 journalctl -u slurmd', '-u', "-u is mssh's --username here — quote the command: 'journalctl -u slurmd'"),
+	('mssh web1 tail -f /var/log/x', '-f', "-f is mssh's --file here — quote the command: 'tail -f /var/log/x'"),
+	('mssh web1 curl -s http://x/', '-s', "-s is mssh's --file_sync here — quote the command: 'curl -s http://x/'"),
+	('mssh web1 hostname -I ', '-I', "-I is mssh's --no_history here — quote the command: 'hostname -I'"),
+	('mssh web1 df -h ', '-h', "-h is mssh's --help here — quote the command: 'df -h'"),
+	# combined short flags: -aux is -a -u x
+	('mssh web1 ps -aux ', '-aux', "-aux is mssh's --no_skip_unreachable and --username here — quote the command: 'ps -aux'"),
+	# a short option with its value attached
+	('mssh web1 find . -exec cat {} +', '-exec', "-exec is mssh's --encoding here — quote the command: 'find . -exec cat {} +'"),
+	# a long name
+	('mssh web1 jq --json . f', '--json', "--json is an mssh option here — quote the command: 'jq --json . f'"),
+	# options of mssh given after the hosts but before the command are mssh's, as meant
+	('mssh web1 -q journalctl -u slurmd', '-u', "-u is mssh's --username here — quote the command: 'journalctl -u slurmd'"),
+	# quoting one word does not help: mssh gets the same word
+	("mssh web1 ls '-I' /tmp", "'-I'", "-I is mssh's --no_history here — quote the command: \"ls '-I' /tmp\""),
+])
+def test_a_remote_command_word_mssh_reads_as_its_own_option(engine, line, marked, message):
+	assert warnings(engine, line, probe=False)[0] == [(marked, 'command', message)]
+
+
+@pytest.mark.parametrize('line, marked', [
+	('mssh web1 ls -la /tmp', '-la'),
+	('mssh web1 head -5 /x', '-5'),
+	('mssh web1 ls --color=auto /tmp', '--color=auto'),
+	# -q then -n, which mssh does not have
+	('mssh web1 foo -qn x', '-qn'),
+])
+def test_a_remote_command_word_mssh_does_not_know(engine, line, marked):
+	name = marked.partition('=')[0]
+	expected = [(marked, 'command', '{} is not an mssh option (mssh stops with an error) — quote the command: {!r}'.format(
+		name, line[len('mssh web1 '):]))]
+	if marked != '-qn' and not STOPS:
+		expected = []
+	assert warnings(engine, line, probe=False)[0] == expected
+
+
+def test_an_abbreviation_is_read_as_mssh_reads_it(engine):
+	# argparse takes -c for -ci (--copy_id); taking full names only, mssh stops at it with an error
+	found = warnings(engine, "mssh web1 bash -c 'echo hi'", probe=False)[0]
+	if mc._takes_abbreviations(SPEC):
+		assert found == [('-c', 'command', "-c is mssh's --copy_id here — quote the command: \"bash -c 'echo hi'\"")]
+	else:
+		assert found == ([('-c', 'command', "-c is not an mssh option (mssh stops with an error) — quote the command: \"bash -c 'echo hi'\"")]
+			if STOPS else [])
+
+
+@pytest.mark.parametrize('line', [
+	"mssh web1 'journalctl -u slurmd'",
+	# after a quoted command, options are mssh's (and the completer offers mssh's)
+	"mssh web1 'uptime' -q -u root",
+	'mssh -q -u root web1 uptime',
+	# after --, every word is a command word
+	'mssh web1 -- journalctl -u slurmd',
+	'mssh web1 journalctl -- -u slurmd',
+	# the shell's: what follows an operator is not mssh's
+	'mssh web1 uptime | grep -v load',
+	'mssh web1 uptime|grep -v load',
+	'mssh web1 uptime; ls -la',
+	'mssh web1 uptime && ls -la',
+	'mssh web1 uptime > out -la',
+	'mssh web1 echo $(date -u)',
+	'mssh web1 echo `date -u`',
+	'mssh web1 echo #HOST# -u',
+	# with -f, -s or -G the commands are paths, and options after them are meant for mssh
+	'mssh -f ./data web1 /tmp/ -q',
+	'mssh -s=/etc/hosts web1 /etc/ -q',
+	'mssh -G web1 ./logs -q',
+	# a word with a space in it and no option name is a positional (argparse)
+	'mssh web1 echo "-n hello" x',
+	# the shell expands it: what mssh gets is not known here
+	'mssh web1 ls -$OPTS x',
+	'mssh web1 ls -* x',
+])
+def test_words_mssh_does_not_read_as_options_are_left_alone(engine, line):
+	assert warnings(engine, line, probe=False)[0] == []
+
+
+def test_the_option_being_typed_is_left_alone(engine):
+	assert warnings(engine, 'mssh web1 journalctl -u', probe=False)[0] == []
+	assert warnings(engine, 'mssh web1 journalctl -u slurmd', cursor=len('mssh web1 journalctl -'), probe=False)[0] == []
+	# its value being typed: the option is finished
+	assert [marked for marked, _, _ in warnings(engine, 'mssh web1 journalctl -u slu', probe=False)[0]] == ['-u']
+
+
+@pytest.mark.parametrize('line, marked, message', [
+	# -print is -p rint: the warning names -p, never the value, and quotes no command
+	('mssh web1 find . -print ', '-print', "-p is mssh's --password here — quote the command"),
+	('mssh web1 find . -qprint ', '-qprint', "-qp is mssh's --no_watch and --password here — quote the command"),
+	('mssh web1 mysql --password=secret db', '--password=secret', "--password is an mssh option here — quote the command"),
+	('mssh web1 sshpass -p secret ssh x', '-p', "-p is mssh's --password here — quote the command"),
+])
+def test_a_password_is_never_shown(engine, line, marked, message):
+	assert warnings(engine, line, probe=False)[0] == [(marked, 'command', message)]
+
+
+def test_every_other_option_of_a_command_with_a_password_quotes_nothing(engine):
+	found = warnings(engine, 'mssh web1 sshpass -p secret ssh -q x', probe=False)[0]
+	assert [marked for marked, _, _ in found] == ['-p', '-q']
+	assert not any('secret' in message for _, _, message in found)
+
+
+@pytest.mark.parametrize('line, example', [
+	# single quotes inside: the command is shown in double quotes
+	("mssh web1 grep -r 'a b' /etc", '"grep -r \'a b\' /etc"'),
+	# both kinds of quotes, or a $: no example
+	("mssh web1 grep -r 'a b' \"c\" /etc", None),
+	("mssh web1 grep -r 'a b' \\$x /etc", None),
+	# too long for the reason line
+	('mssh web1 grep -r ' + 'x' * 150, None),
+])
+def test_the_quoted_command_is_shown_when_it_can_be(engine, line, example):
+	message = warnings(engine, line, probe=False)[0][0][2]
+	assert message == "-r is mssh's --repeat here — quote the command" + (': ' + example if example else '')
+
+
+def test_a_command_word_read_as_an_option_comes_first(engine):
+	seed(engine, gpu017='invalid')
+	found = warnings(engine, 'mssh -su -nsu gpu017 journalctl -u slurmd', probe=False)[0]
+	assert [kind for _, kind, _ in found] == ['command', 'unknown', 'options']
+
+
+def test_an_ascii_terminal_gets_an_ascii_dash(engine, monkeypatch):
+	monkeypatch.setattr(mc, '_unicode_terminal', lambda: False)
+	assert warnings(engine, 'mssh web1 df -h ', probe=False)[0][0][2] == "-h is mssh's --help here - quote the command: 'df -h'"
+
+
+# words remote commands take, and the forms argparse reads in a way of its own
+ORACLE_WORDS = ['-' + letter for letter in string.ascii_letters + string.digits] + [
+	'-', '-la', '-al', '-lh', '-ltr', '-rf', '-fr', '-ef', '-aux', '-sh', '-hT', '-nr', '-tulpn', '-name', '-type', '-exec',
+	'-print', '-br', '-10', '-11', '-111', '-11x', '-1x', '-1.5', '-.5', '-ci', '-nw', '-no', '-nh', '-su', '-nsu', '-ns', '-qj',
+	'-qI', '-Sj', '-xq', '-xa', '-su5', '-pr', '-uh', '-mp', '-ir', '-irl', '-mpr', '-qpr', '-qn', '-qc', '-qu=x', '-a-b', '-Vq',
+	'-uroot', '-u=root', '-u=', '-f=', '-q=', '-qj=', '-ipx', '-iux', '-kx', '-ss', '-sx', '-fq', '-Dfoo=bar', '-Xmx2g', '-é',
+	'-e hello', '-n hello', '--no pager', '--user x',
+	'--help', '--he', '--help=x', '--version', '--ver', '--all', '--color=auto', '--no-pager', '--follow', '--lines=5',
+	'--force', '--user', '--user=root', '--user=', '--usernam', '--now', '--quiet', '--json', '--json=x', '--file', '--time',
+	'--no', '--s', '--scr', '--host', '--interval', '--in', '--k', '--key', '--ide', '--identity', '--p', '--pass=x',
+	'--ipmi', '--ipmi_', '--ipmi_p', '--c', '--co', '--c=y', '--=x', '--conf', '--config', '--config_file', '--config_file=y',
+	'--comp', '--completion', '--generate', '--store', '--add', '--table', '--ta', '--max', '--rep', '--no_w', '--single',
+	'--skip', '--return', '--enc', '--gather',
+]
+
+
+def mssh_reads(word, parser):
+	'''
+	What mssh's own parsing makes of `web1 cmd WORD x`: process_args reads --config_file first with a
+	parser of its own, then parses the rest intermixed (parse_known_args on Python 3.6). Values are
+	not converted and exclusive options are allowed, so only how words are read decides.
+
+	Returns:
+		tuple: (the dests of the options argparse took, in order; whether x was an option's value; the
+			exit code, None when parsing went through; the words left over (Python 3.6))
+	'''
+	taken = []
+
+	def recording(parser):
+		for action in parser._actions:
+			if action.option_strings:
+				base = type(action)
+
+				def call(self, parser, namespace, values, option_string=None, base=base):
+					taken.append(self.dest)
+					return base.__call__(self, parser, namespace, values, option_string)
+				action.type = None
+				action.__class__ = type(base.__name__, (base,), {'__call__': call})
+		parser._mutually_exclusive_groups = []
+		return parser
+
+	recording(parser)
+	first = type(parser)(add_help=False)
+	first.add_argument('--config_file', type=str, nargs='?', const='multiSSH3.config.json', default=None)
+	recording(first)
+	extras = []
+	try:
+		with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+			_, rest = first.parse_known_args(['web1', 'cmd', word, 'x'])
+			if hasattr(parser, 'parse_intermixed_args'):
+				namespace = parser.parse_intermixed_args(rest)
+			else:
+				namespace, extras = parser.parse_known_args(rest)
+	except SystemExit as e:
+		return taken, None, e.code, extras
+	except Exception:
+		# older Pythons crash on some words ("-q="): mssh stops all the same
+		return taken, None, 'crash', extras
+	return taken, 'x' not in namespace.commands and 'x' not in extras, None, extras
+
+
+def agrees(word, verdict, readings, outcome):
+	'''Whether the engine's reading of a word is what argparse did with it.'''
+	taken, took_x, code, extras = outcome
+	if verdict == 'positional':
+		return (taken, took_x, code) == ([], False, None)
+	if verdict == 'unknown':
+		return code == 2 if STOPS else (not taken and code is None and word in extras)
+	if verdict == 'error':
+		return code in (2, 'crash')
+	if verdict == 'unsure':
+		return True
+	dests = []
+	for option, attached, _ in readings:
+		dests.append(option.dest)
+		if option.dest in ('help', 'version'):
+			# mssh prints it and exits: the rest of the word is never acted on
+			return taken == dests and code == 0
+	option, attached, _ = readings[-1]
+	return (taken, took_x, code) == (dests, attached is None and option.nargs != '0', None)
+
+
+def disagreements(parser_factory, abbreviations):
+	found = []
+	for word in ORACLE_WORDS:
+		verdict, readings = mc.read_option_word(word, SPEC, abbreviations)
+		outcome = mssh_reads(word, parser_factory())
+		if not agrees(word, verdict, readings, outcome):
+			found.append((word, verdict, [(option.dest, attached) for option, attached, _ in readings], outcome))
+	return found
+
+
+def test_words_are_read_as_mssh_reads_them():
+	assert disagreements(multiSSH3.get_parser, mc._takes_abbreviations(SPEC)) == []
+
+
+def test_abbreviations_are_taken_as_mssh_takes_them():
+	# the spec looks names up as mssh does: abbreviations are read only when mssh reads them
+	assert mc._takes_abbreviations(SPEC) is (mssh_reads('--usernam', multiSSH3.get_parser())[0] == ['username'])
+
+
+class FullNamesParser(argparse.ArgumentParser):
+	'''argparse taking option names in full only, as mssh's parser does on patch/no-option-abbrev.'''
+	def _get_option_tuples(self, option_string):
+		readings = super(FullNamesParser, self)._get_option_tuples(option_string)
+		name = option_string.partition('=')[0]
+		if any(reading[1] in (name, option_string[:2]) for reading in readings):
+			return readings
+		return []
+
+
+def test_words_are_read_as_mssh_reads_them_when_it_takes_full_names_only(monkeypatch):
+	# multiSSH3's argparse with that parser (argparse's own code must keep its own ArgumentParser)
+	full_names = types.ModuleType('argparse')
+	full_names.__dict__.update(argparse.__dict__)
+	full_names.ArgumentParser = FullNamesParser
+	monkeypatch.setattr(multiSSH3, 'argparse', full_names)
+	assert disagreements(multiSSH3.get_parser, False) == []
+
+
+@pytest.mark.parametrize('word', ['-q=j', '-h=x', '-hz', '-Vz', '-pr=x', "'-q x'", '-qci'])
+def test_words_pythons_read_differently_are_left_alone(engine, word):
+	# a flag then "=" (-q=j: -q -j on older Pythons, an error on newer ones), help then a letter mssh does
+	# not have (-hz: an error, or the help), a name with "=" that abbreviates another (-pr=x: -p r=x, or
+	# ambiguous), what follows a letter mssh does not have read again as a word (3.11: -q, "- x" a
+	# positional; -q -ci)
+	text = mc.lex(word)[0].text
+	assert mc.read_option_word(text, SPEC, True)[0] == mc.read_option_word(text, SPEC, False)[0] == 'unsure'
+	assert warnings(engine, 'mssh web1 cmd {} x'.format(word), probe=False)[0] == []
+
+
+def test_the_oracle_covers_every_reading():
+	abbreviations = mc._takes_abbreviations(SPEC)
+	verdicts = [mc.read_option_word(word, SPEC, abbreviations)[0] for word in ORACLE_WORDS]
+	assert {'positional', 'options', 'unknown', 'error'} <= set(verdicts)
+	# -qc: -q then -c, an abbreviation of -ci that Python 3.11 reads again (when mssh takes abbreviations)
+	unsure = ['-qc'] if abbreviations else []
+	assert [word for word, verdict in zip(ORACLE_WORDS, verdicts) if verdict == 'unsure'] == unsure

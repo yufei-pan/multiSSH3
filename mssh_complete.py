@@ -302,6 +302,121 @@ def _flag_values(fields):
 			values[name] = value == '1'
 	return values
 
+def _negative_number(text):
+	'''Whether argparse takes a word for a negative number: -5, -1.5 (from Python 3.14: any -<digit> or -.<digit> start).'''
+	if text[:1] != '-':
+		return False
+	rest = text[1:]
+	if sys.version_info >= (3, 14):
+		return rest[:1].isdecimal() or (rest[:1] == '.' and rest[1:2].isdecimal())
+	whole, dot, fraction = rest.partition('.')
+	return whole.isdecimal() if not dot else (whole == '' or whole.isdecimal()) and fraction.isdecimal()
+
+def _takes_abbreviations(spec):
+	'''
+	Whether mssh reads an abbreviation alone ("--user") as the option it abbreviates, as argparse does
+	by default. The spec looks names up the way mssh does, so it is asked about a long name cut short.
+	'''
+	strings = spec.by_string
+	for string, option in strings.items():
+		short = string[:-1]
+		if string.startswith('--') and len(short) > 2 and short not in strings and all(
+				strings[other] is option for other in strings if other.startswith(short)):
+			return spec.lookup(short)[0] is option
+	return False
+
+def read_option_word(text, spec, abbreviations=True):
+	'''
+	How mssh's argument parsing reads one word: argparse's _parse_optional and consume_optional, after
+	process_args has read --config_file with a parser of its own.
+
+	A word names an option in full, as "name=value", as a short option with its value attached
+	("-uroot") or followed by more short flags ("-aux" is -a -u x), or as an abbreviation when
+	abbreviations is true (argparse's default; see _takes_abbreviations).
+
+	Returns:
+		tuple: (verdict, readings). verdict: 'positional'; 'options' (readings: (OptionSpec, the value
+			attached or None, where the option's name ends in the word) in order); 'unknown' (no such
+			option: mssh stops with an error, on Python 3.6 it passes the word on to the commands);
+			'error' (mssh stops with an error: ambiguous, a flag given a value); 'unsure' (Pythons
+			read it differently)
+	'''
+	strings = spec.by_string
+	if len(text) < 2 or text[0] != '-':
+		return 'positional', []
+	name, sep, value = text.partition('=')
+	value = value if sep else None
+	double = text[1] == '-'
+	# the options a name abbreviates (the two-character word itself is a short option, not one of them)
+	longer = [string for string in strings if string.startswith(name) and string != text[:2]]
+	if abbreviations and double and text != '--':
+		# process_args first reads --config_file with a parser that knows no other option: there any
+		# abbreviation of it is unique ("--c", even "--=x")
+		for string in longer:
+			if strings[string].dest == 'config_file':
+				return _read_attached(spec, abbreviations, string, value, len(name), bool(sep))
+	if text in strings:
+		return 'options', [(strings[text], None, len(text))]
+	if sep and name in strings:
+		return _read_attached(spec, abbreviations, name, value, len(name), True)
+	# argparse's _get_option_tuples: a short option with the rest of the word attached, and every option
+	# the word (up to "=") abbreviates. Taking full names only, abbreviations count only next to a full
+	# name (as on patch/no-option-abbrev: "-pr" stays "-p r" or "-pre", ambiguous)
+	short = not double and text[:2] in strings
+	if not abbreviations and not short:
+		longer = []
+	if not double and sep and longer:
+		# older Pythons abbreviate the whole word, "=" included (so nothing), newer ones the name before it
+		return 'unsure', []
+	if short + len(longer) > 1:
+		return 'error', []
+	if short:
+		return _read_attached(spec, abbreviations, text[:2], text[2:], 2, False)
+	if longer:
+		return _read_attached(spec, abbreviations, longer[0], value, len(name), bool(sep))
+	if _negative_number(text) and not any(_negative_number(string) for string in strings):
+		return 'positional', []
+	if ' ' in text:
+		return 'positional', []
+	return 'unknown', []
+
+def _read_attached(spec, abbreviations, string, attached, end, with_sign):
+	'''
+	argparse's consume_optional for read_option_word: string is the option string the word matched,
+	attached the text after it (with_sign: after "="), end where the name ends in the word. A short flag
+	with text after it reads the next letter as another short option.
+	'''
+	strings = spec.by_string
+	option = strings[string]
+	readings = []
+	while True:
+		if attached is None or option.nargs != '0':
+			readings.append((option, attached, end))
+			return 'options', readings
+		# a flag with text after it
+		if string[1] == '-' or attached == '' or attached[0] == '-':
+			# "--json=x", "-a-b" and "-q=" stop mssh with an error (older Pythons crash on "-q=")
+			return 'error', []
+		if with_sign:
+			# "-q=j" is -q -j on older Pythons, an error on newer ones
+			return 'unsure', []
+		readings.append((option, None, end))
+		string = '-' + attached[0]
+		option = strings.get(string)
+		if option is None:
+			# older Pythons stop at once; newer ones first act on the flags read so far (help, version), and
+			# some (3.11) read the rest as a word of its own ("-q x" leaves "- x", a positional)
+			if any(item[0].dest in ('help', 'version') for item in readings):
+				return 'unsure', []
+			rest = read_option_word('-' + attached, spec, abbreviations)[0]
+			return ('error' if rest in ('unknown', 'error') else 'unsure'), []
+		end += 1
+		attached = attached[1:] or None
+		if attached is not None and attached[0] == '=':
+			if option.nargs == '0':
+				return 'error', []
+			attached = attached[1:]
+
 #%% ------------ Context ----------------
 ROLE_OPTION = 'option'
 ROLE_VALUE = 'value'
@@ -1962,7 +2077,7 @@ def spawn_probe(directory):
 	return _spawn_detached(directory, PROBE_LOCK_NAME, 'probe')
 
 #%% ------------ Diagnostics ----------------
-DIAGNOSTIC_KINDS = ('unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
+DIAGNOSTIC_KINDS = ('command', 'unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
 MAX_MESSAGE = 160
 WARNING_ASKS = (0.3, 1.0, 3.0)  # seconds after an answer with the prober still working when a frontend asks again
 
@@ -1982,6 +2097,73 @@ class Diagnostic(object):
 def _punctuation():
 	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
 	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
+
+def _shell_operator(raw):
+	'''
+	Where a word as typed holds an unquoted shell operator, parenthesis or backtick, or starts a
+	comment: the shell's, not part of the word mssh gets (-1: none).
+	'''
+	if raw.startswith('#'):
+		return 0
+	index = 0
+	while index < len(raw):
+		char = raw[index]
+		if char == '\\':
+			index += 2
+		elif char == "'" or (char == '$' and raw[index + 1:index + 2] == "'"):
+			# '...' ends at the next quote, $'...' at the next one not escaped
+			index = raw.find("'", index + 1) if char == "'" else index + 2
+			while char == '$' and 0 <= index < len(raw) and raw[index] != "'":
+				index += 2 if raw[index] == '\\' else 1
+			if index < 0 or index >= len(raw):
+				return -1
+			index += 1
+		elif char == '"':
+			index += 1
+			while index < len(raw) and raw[index] != '"':
+				index += 2 if raw[index] == '\\' else 1
+			index += 1
+		elif char in '|&;<>()`':
+			return index
+		else:
+			index += 1
+	return -1
+
+def _mssh_argv(line, tokens, start):
+	'''
+	The words the shell gives the mssh at tokens[start]: up to the first unquoted shell operator,
+	command substitution, comment or line break. A word holding an operator ("-aux|grep") keeps what
+	comes before it, unless that is a redirection's descriptor ("2>/dev/null").
+	'''
+	argv = []
+	end = tokens[start].start + len(tokens[start].raw)
+	for token in tokens[start + 1:]:
+		if token.start < 0 or '\n' in line[end:token.start]:
+			break
+		cut = _shell_operator(token.raw)
+		if cut < 0:
+			argv.append(token)
+			end = token.start + len(token.raw)
+			continue
+		head = token.raw[:cut]
+		if head and not (token.raw[cut] in '<>' and head.isdecimal()):
+			word = lex(head)[0]
+			argv.append(Token(word.text, word.raw, word.quoted, word.open_quote, token.start))
+		break
+	return argv
+
+def _quoted_command(text):
+	'''text in single quotes, or in double quotes when it holds single quotes and nothing double quotes expand; None otherwise.'''
+	if any(char < ' ' for char in text):
+		return None
+	if "'" not in text:
+		return "'" + text + "'"
+	if not any(char in text for char in '"$`\\!'):
+		return '"' + text + '"'
+	return None
+
+# words the shell may expand into other words: what mssh gets from them is not known here
+_EXPANDED = frozenset('$`*?[{~')
 
 # what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
 _HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
@@ -2412,6 +2594,7 @@ class Engine(object):
 			if role == ROLE_HOSTS:
 				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
 		found.extend(self._option_diagnostics(options))
+		found.extend(self._command_diagnostics(_mssh_argv(line, tokens, start), typing))
 		wanted = _unique(wanted)
 		if probe and wanted and self.directory:
 			try:
@@ -2543,6 +2726,82 @@ class Engine(object):
 					applies = not any(other in on_line or self._on_by_default(other) for other in others)
 				if applies:
 					found.append(Diagnostic(span[0], span[1], 'options', '{} does nothing: {}'.format(name, why)))
+		return found
+
+	def _command_diagnostics(self, argv, typing):
+		'''
+		Words of a remote command typed unquoted that mssh reads as its own options: mssh parses its
+		options among its positionals, so in `mssh web1 journalctl -u slurmd` -u is its --username, and
+		a word starting with '-' that names none stops it with an error. After an unquoted command word,
+		such words are the remote command's, as the completer takes them; with -f, -s or -G before them
+		the command words are paths, and nothing is said. argv: mssh's words (_mssh_argv).
+		'''
+		abbreviations = _takes_abbreviations(self.spec)
+		have_hosts = False
+		run = None        # where the unquoted remote command starts in argv
+		pending = None    # nargs of an option still taking the words that follow as values
+		paths = False
+		read = []
+		stop = len(argv)
+		for index, token in enumerate(argv):
+			if token.text == '--':
+				stop = index
+				break
+			if token.text.startswith('-') and any(char in _EXPANDED for char in token.raw):
+				verdict, readings = 'unsure', []
+			else:
+				verdict, readings = read_option_word(token.text, self.spec, abbreviations)
+			if verdict == 'positional':
+				if pending is not None:
+					pending = pending if pending == '+' else None
+				elif not have_hosts:
+					have_hosts = True
+				elif run is None and not token.quoted:
+					if paths:
+						return []
+					run = index
+				continue
+			pending = None
+			if verdict == 'options':
+				option, attached, _ = readings[-1]
+				if attached is None and option.nargs != '0':
+					pending = option.nargs
+				if run is None and any(option.dest in ('file', 'file_sync', 'gather_mode') for option, _, _ in readings):
+					paths = True
+			if run is not None:
+				read.append((token, verdict, readings))
+		if not read:
+			return []
+		# the remote command as it should have been typed; never with a password mssh would take from it
+		example = _quoted_command(' '.join(token.raw for token in argv[run:stop]))
+		if any(verdict == 'unsure' or any(option.dest in PASSWORD_DESTS for option, _, _ in readings) for _, verdict, readings in read):
+			example = None
+		dash, _ = _punctuation()
+		found = []
+		for token, verdict, readings in read:
+			if typing(token) or verdict == 'unsure' or (verdict == 'unknown' and sys.version_info < (3, 7)):
+				continue
+			text = token.text
+			if verdict == 'options':
+				names = []
+				for option, _, _ in readings:
+					names.append(option.long)
+					if option.dest in ('help', 'version'):
+						# mssh prints it and exits: the rest of the word is never acted on
+						break
+				names = _unique(names)
+				ends = [end for option, _, end in readings if option.dest in PASSWORD_DESTS]
+				subject = text[:min(ends)] if ends else text
+				if names == [subject]:
+					message = '{} is an mssh option here'.format(subject)
+				else:
+					message = "{} is mssh's {} here".format(subject, names[0] if len(names) == 1 else '{} and {}'.format(', '.join(names[:-1]), names[-1]))
+			else:
+				message = '{} is not an mssh option (mssh stops with an error)'.format(text.partition('=')[0])
+			message += dash + 'quote the command'
+			if example and len(message) + 2 + len(example) <= MAX_MESSAGE:
+				message += ': ' + example
+			found.append(Diagnostic(token.start, token.start + len(token.raw), 'command', message))
 		return found
 
 	def _on_by_default(self, string):
