@@ -362,7 +362,7 @@ mssh --completion bash        # or print the script (bash, zsh or fish)
 
 - **Hosts:** host strings you typed before, env file aliases, `/etc/hosts`, ssh config `Host` entries, `known_hosts` and the ARP table. Large clusters are offered as ranges (`node[0001-2000]`) until what you typed narrows them down. Hosts mssh recently found unreachable come last.
 - **Options and values:** option names, and values you used before (`-u`, `-t`, ...). Paths complete as files. Passwords are never completed.
-- **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`), and the magic strings (`#HOST#`, ...).
+- **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`), and the magic strings (`#HOST#`, ...). A command typed as separate words gets the next words of commands you ran, never a word holding a space: mssh runs each word as its own command when one of them holds a space, so type such a command in quotes (`mssh grp "grep 'connection refused' /var/log/syslog"`).
 
 Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[01-16] "` the commands you run on those hosts come first, and in the hosts of `mssh ▮ "systemctl restart slurmd"` the hosts you restarted slurmd on come first.
 

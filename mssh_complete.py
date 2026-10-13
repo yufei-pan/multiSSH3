@@ -2316,6 +2316,13 @@ def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
+def _joinable(word):
+	'''
+	Whether a command word keeps unquoted command words one command. mssh joins its command words
+	into one command only when none of them holds whitespace; else it runs each as its own command.
+	'''
+	return len(word.split()) == 1
+
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
 	def __init__(self, spec, knowledges=(), hosts=None, users=()):
@@ -2726,6 +2733,7 @@ class Engine(object):
 		'''
 		Suggestion for a command typed as unquoted words: the rest of the most likely past command
 		whose words start with the typed ones, each word escaped so the remote command is the same.
+		Never a word holding whitespace: mssh would run each command word as its own command.
 		'''
 		typed = context.command_words
 		commands = {}
@@ -2746,10 +2754,10 @@ class Engine(object):
 		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
 		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
 		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
-		if more and share >= T_LINE:
+		if more and share >= T_LINE and all(_joinable(extra) for extra in top[len(typed) - 1:]):
 			return Ghost('line', rest + more, share)
 		word_rest = _shell_escape(shell, word[len(typed[-1]):], True)
-		if word_rest and word_share >= T_WORD:
+		if word_rest and word_share >= T_WORD and _joinable(word):
 			return Ghost('word', word_rest, word_share)
 		return None
 
@@ -3042,14 +3050,16 @@ class Engine(object):
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
+			# a word holding whitespace would make mssh run each command word as its own command
 			if not typed:
 				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline).items():
-					out.append(Candidate(feature[2:], '', 'history', score))
+					if _joinable(feature[2:]):
+						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
 				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline).items():
 					words = [token.text for token in lex(feature[2:])]
-					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial):
+					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
 		if context.mode == 'plain' and context.command_words is not None:
