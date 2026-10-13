@@ -584,6 +584,36 @@ def test_zsh_picker_leaves_keys_typed_after_the_choice(home):
 
 # ---------------------------------------------------------------- fish
 
+def fish_major():
+	output = subprocess.run([require_shell('fish'), '--version'], stdout=subprocess.PIPE, universal_newlines=True).stdout
+	return int(re.search(r'(\d+)\.', output).group(1))
+
+
+def test_fish_says_why_a_host_is_unknown_once(home):
+	if fish_major() < 4:
+		pytest.skip('fish 3 keeps its space key (self-insert does nothing next to a function): warnings only in the picker')
+	env, home = home
+	known(env, gpu017='invalid')
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE))
+	try:
+		session.send('mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		# the space was typed, and the same warning is not printed again at the next one
+		assert printed(session, 'uptime ') == 'mssh gpu017 uptime '
+		assert plain(session.output.decode('utf-8', 'replace')).count('gpu017: unknown host') == 1
+	finally:
+		session.close()
+
+
+def test_fish_space_still_expands_abbreviations(home):
+	env, home = home
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre="abbr -a gg 'git grep'")
+	try:
+		assert printed(session, 'gg ') == 'git grep '
+	finally:
+		session.close()
+
+
 def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 	env, home = home
 	pre = "bind \\cr 'commandline -r FISHPREV'"
