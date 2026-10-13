@@ -701,6 +701,19 @@ Host *
 - Print the version of multiSSH3 and exit.
 - Will also print the found system binary for calling when setting up connections.
 
+## Exit Codes
+
+mssh exits with the number of failed hosts, so `0` means every host ran the command and returned 0. A failed host is one that:
+- returned non-zero ( counted once, however many commands or `-r, --repeat` runs it failed ),
+- was skipped because it was unreachable in a recent run ( see `-x, --skip_unreachable` ),
+- or is a host name that does not resolve, or a host you gave that names no host ( like `node[10-1]` ).
+
+The count stops at 255, as an exit status only has 8 bits. `-Z, --return_zero` makes it 0. When no host is left to run on ( every host you gave is one of the last kind ), mssh stops with `Exiting: no hosts to run on` and the same count. If `-X, --skip_hosts` excludes every host, nothing runs, mssh warns and exits 0.
+
+Before anything runs, mssh can also stop with: 2 for a bad option, 66 when the `-f, --file` sources are not found, 255 when `-11, --oneonone` gets a different number of commands and hosts, and 1 for Ctrl-C.
+
+The return code shown for each host is the command's own, or: 255 when ssh could not connect ( or the host was skipped as unreachable ), 124 when `-t, --timeout` stopped it, and -1 for an error in mssh itself.
+
 ## Usage
 
 Use ```mssh --help``` for more info.
