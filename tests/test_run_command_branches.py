@@ -493,6 +493,8 @@ MSSH_SSH_OPTIONS = ["ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile
 @pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
 def test_rsync_hands_ssh_options_from_extraargs_to_ssh(fake_host, monkeypatch, extraargs, ssh_words, rsync_words, gather):
 	# rsync read -ea "-o ConnectTimeout=5" as --owner and a file to copy named ConnectTimeout=5
+	# a host run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
+	monkeypatch.setattr(multiSSH3, "_ssh_cannot_ask", lambda host, passwds: False)
 	monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
 	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, gatherMode=gather)
 
@@ -509,6 +511,8 @@ def test_rsync_hands_ssh_options_from_extraargs_to_ssh(fake_host, monkeypatch, e
 	("-l 8192", ["-l", "8192"]),  # scp's bandwidth limit
 ], ids=["p", "p_attached", "P", "o_J", "limit"])
 def test_scp_gets_ssh_options_from_extraargs_its_way(fake_host, monkeypatch, extraargs, scp_words):
+	# a host run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
+	monkeypatch.setattr(multiSSH3, "_ssh_cannot_ask", lambda host, passwds: False)
 	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, scp=True)
 
 	argv = calls[0]
@@ -516,6 +520,8 @@ def test_scp_gets_ssh_options_from_extraargs_its_way(fake_host, monkeypatch, ext
 
 
 def test_ssh_command_gets_extraargs_as_given(fake_host, monkeypatch):
+	# a host run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
+	monkeypatch.setattr(multiSSH3, "_ssh_cannot_ask", lambda host, passwds: False)
 	calls = []
 	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
 	host = fake_host("mock-a", "uptime", extraargs="-p 2222 -o ConnectTimeout=5")
