@@ -4061,6 +4061,14 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 	return clean
 
 
+def _stream_is_terminal(stream):
+	'''True when stream is an open terminal: False when it is redirected, closed, or None (its fd was closed at start).'''
+	try:
+		return bool(stream is not None and stream.isatty())
+	except (AttributeError, ValueError, OSError):
+		return False
+
+
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
@@ -4068,7 +4076,10 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
-	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
+	# The TUI needs a screen and a keyboard. When stdin is not a terminal (< file, a pipe, a while-read loop,
+	# xargs) nobody can type: commands would wait forever on a stdin pipe, and curses would read what stdin
+	# holds (the loop's next lines) as key presses. Without the TUI, commands get /dev/null as stdin.
+	use_tui = bool(__curses_available and not no_watch and not return_unfinished and _stream_is_terminal(sys.stdout) and _stream_is_terminal(sys.stdin) and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
 	global _commands_started

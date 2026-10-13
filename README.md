@@ -303,6 +303,8 @@ mssh www bash
 ```
 mssh cache all inputs and send them to all hosts when they are ready to receive inputs.
 
+Input is typed into the curses display, so it needs a terminal on stdin as well as on stdout. When stdin is redirected (`< file`, a pipe, a `while read` loop, `xargs`), mssh shows no curses display, leaves stdin unread, and commands get `/dev/null` as their input, as with `--no_watch`.
+
 ### Curses Window Size Control
 
 By default, it will try to fit everything inside your window. 

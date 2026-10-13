@@ -179,6 +179,24 @@ def test_run_command_stderr_captured(fake_host, monkeypatch):
 	assert any("boom" in line for line in host.stderr)
 
 
+class _Stream:
+	"""A stand-in for sys.stdin that only answers isatty()."""
+
+	def __init__(self, tty):
+		self.tty = tty
+
+	def isatty(self):
+		return self.tty
+
+
+def _pretend_terminal(monkeypatch, stdin_is_terminal=True):
+	"""Make processRunOnHosts see a terminal on stdout (and, unless told otherwise, on stdin)."""
+	monkeypatch.setattr(multiSSH3, "__curses_available", True)
+	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
+	monkeypatch.setattr(multiSSH3.sys, "stdin", _Stream(stdin_is_terminal))
+	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+
+
 def _process(hosts, **overrides):
 	kwargs = dict(timeout=5, password=None, max_connections=2, hosts=hosts, return_unfinished=False, no_watch=True,
 		json=False, no_output=True, greppable=False, unavailableHosts={}, will_update_unreachable_hosts=False,
@@ -213,15 +231,60 @@ def test_tui_keeps_stdin_open_for_key_presses(fake_host, monkeypatch):
 		return []
 
 	host = fake_host("mock-a", "cat")
-	monkeypatch.setattr(multiSSH3, "__curses_available", True)
-	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
-	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	_pretend_terminal(monkeypatch)
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", fake_start)
 	monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)
 
 	_process([host], no_watch=False)
 
 	assert seen == [True]
+
+
+@pytest.mark.parametrize("stdin", [_Stream(False), None], ids=["redirected", "closed"])
+def test_no_tui_and_no_stdin_pipe_when_stdin_is_not_a_terminal(fake_host, monkeypatch, stdin):
+	seen = []
+
+	def fake_start(hosts, **kwargs):
+		for host in hosts:
+			seen.append(host.interactive_stdin)
+			host.returncode = 0
+		return []
+
+	host = fake_host("mock-a", "cat")
+	_pretend_terminal(monkeypatch)
+	monkeypatch.setattr(multiSSH3.sys, "stdin", stdin)  # mssh ... < file, a pipe, or fd 0 closed
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", fake_start)
+
+	_process([host], no_watch=False)
+
+	assert seen == [False]  # nobody can type: commands get /dev/null, as without the TUI
+
+
+def test_command_reading_stdin_ends_when_stdin_is_not_a_terminal(fake_host, monkeypatch):
+	import curses
+	import time
+
+	if "sh" not in multiSSH3._binPaths:
+		pytest.skip("needs sh")
+	host = fake_host("localhost", "cat", shell=True)
+	tui_runs = []
+
+	def tui(*args, **kwargs):
+		# the live view stays up while commands run; without a keyboard nobody can type into it
+		tui_runs.append(args)
+		deadline = time.monotonic() + 3
+		while host.returncode is None and time.monotonic() < deadline:
+			time.sleep(0.01)
+
+	_pretend_terminal(monkeypatch, stdin_is_terminal=False)
+	monkeypatch.setattr(curses, "wrapper", tui)
+	started = time.monotonic()
+
+	_process([host], no_watch=False)
+
+	assert tui_runs == []  # curses would read stdin (a while-read loop's next lines) as key presses
+	assert host.returncode == 0
+	assert time.monotonic() - started < 3
 
 
 def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
@@ -243,9 +306,7 @@ def test_stdin_closes_when_the_tui_exits_early(fake_host, monkeypatch):
 	if "sh" not in multiSSH3._binPaths:
 		pytest.skip("needs sh")
 	host = fake_host("localhost", "sleep 0.3; cat", shell=True)
-	monkeypatch.setattr(multiSSH3, "__curses_available", True)
-	monkeypatch.setattr(multiSSH3.sys.stdout, "isatty", lambda: True)
-	monkeypatch.setattr(multiSSH3.os, "get_terminal_size", lambda *args: os.terminal_size((120, 40)))
+	_pretend_terminal(monkeypatch)
 	monkeypatch.setattr(curses, "wrapper", lambda *args, **kwargs: None)  # e.g. the user pressed ESC
 	started = time.monotonic()
 
