@@ -226,7 +226,7 @@ Only records reachable through the line's features are decoded, which keeps the 
 |---|---|
 | Parser spec | `multiSSH3.get_parser()` |
 | Config | Effective config-chain defaults: history file, host file, env files, `DEFAULT_HOSTS` |
-| Hosts | Configured host file (`/etc/hosts`); ssh config `Host` entries from `~/.ssh/config` and `/etc/ssh/ssh_config` including `Include` (wildcard patterns skipped); unhashed `~/.ssh/known_hosts` entries (`[host]:port` stripped, `\|1\|` hashed entries skipped); ARP (`/proc/net/arp` on Linux, `arp -an` on macOS); every host token in mssh history |
+| Hosts | Configured host file (`/etc/hosts`); ssh config `Host` entries from `~/.ssh/config` and `/etc/ssh/ssh_config` including `Include` (wildcard patterns skipped); unhashed `~/.ssh/known_hosts` entries (`[host]:port` stripped, `\|1\|` hashed entries skipped); ARP (`/proc/net/arp` on Linux, `arp -an` on macOS); every host token in mssh history. A name holding a character mssh separates hosts with (`, ; \| / &`, whitespace; e.g. `machine/.host` in systemd's ssh config) is skipped: mssh would split it |
 | Host groups | `compact_hostnames(verify=True)` over the host set |
 | Aliases | Env-file aliases via mssh's trust-checked `readEnvFromFile()`, expanded with `expand_hostnames_local()`; environment variables only if their name has been used as a host token in mssh history |
 | Reachability | `unavailable_hosts.csv` (rank penalty only) |
@@ -336,7 +336,7 @@ Two TAB policies are simulated:
 - **bash:** TAB inserts the longest common prefix of the candidates; on a unique candidate it also appends the trailing space or closing quote unless `nospace` applies.
 - **ranked:** TAB accepts the top candidate (zsh menu completion; later SP2 ghost suggestions).
 
-For each intended token, a TAB is simulated at every prefix length. A TAB is *useful* when what it inserts (including any appended space or quote) matches the intended continuation, and *divergent* when it inserts anything else. The report gives:
+For each intended token, a TAB is simulated at every prefix length. A TAB is *useful* when what it inserts (including any appended space or quote) matches the intended continuation, and *divergent* when it inserts anything else. An option name is intended in any of its spellings: every string of the argparse action typed (`--username` for `-u`, `--skip_unreachable` for `-su`) is a hit, and the simulated operator takes a TAB toward one and types on from there; an option of another action is a miss even when it shares the dest (`-nsu` and `-su`). A value written into its option word (`-uroot`, `-u=root`) is replayed as the option and the value apart, as argparse reads it. The report gives:
 
 - **keystrokes saved** relative to typing every character, for an operator who presses TAB at the first prefix where it is useful (typed characters + TAB presses; an unwanted appended space or quote counts as the keystrokes needed to fix it);
 - top-1 and top-3 hit rate and mean reciprocal rank of the intended token, per slot and per source;

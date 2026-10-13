@@ -109,6 +109,33 @@ def test_ssh_config_lines_are_split_as_ssh_splits_them(tmp_path):
 	assert users == {'bob', 'al=ice', 'carol'}
 
 
+def test_names_mssh_cannot_take_as_one_host_are_not_collected(home):
+	'''mssh splits a hosts word on , ; | / & and whitespace, so a name holding one (machine/.host from
+	systemd's ssh config) is never one host; ssh config patterns are no hosts at all.'''
+	(home / '.ssh' / 'config').write_text('Host .host machine/.host\nHost unix/* vsock/* !neg web?\n'
+		'Host semi;colon pipe|name amp&name\nHost good-name good.dot\n')
+	(home / '.ssh' / 'known_hosts').write_text('vsock/3,known1 ssh-ed25519 AAAA\n')
+	index, directory = build()
+	names = set(mc.HostTable(index).names)
+	assert {'.host', 'good-name', 'good.dot', 'known1'} <= names
+	assert [name for name in names if set(name) & set(',;|/& \t\r\n')] == []
+	assert not names & {'unix/*', 'vsock/*', '!neg', 'neg', 'web?'}
+	response = mc.answer(mc.Request('bash', 'mssh machine/', '', ''), directory=directory, now=NOW)
+	assert [candidate.text for candidate in response.candidates] == []
+
+
+def test_ssh_config_lines_in_the_index_are_split_as_ssh_splits_them(home):
+	'''A trailing comment holds no host and no user, quotes make one pattern of two words, a tab or
+	"=" may follow the keyword, and ssh rejects a line with an open quote.'''
+	(home / '.ssh' / 'config').write_text('Host zzweb1 # the zzserver\n  User ops # deploy user\nHost\tzztabbed\n'
+		'Host=zzequals\nHost "zztwo zzwords" zzquoted\nHost "zzopen\nHost zz#hash\n')
+	index, _ = build()
+	names = set(mc.HostTable(index).names)
+	assert {'zzweb1', 'zztabbed', 'zzequals', 'zzquoted', 'zz#hash'} <= names
+	assert not names & {'#', 'the', 'zzserver', 'zztwo', 'zzwords', '"zztwo', 'zzwords"', 'zzopen', '"zzopen'}
+	assert index.row('config', 0) == ['users', 'ops']
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:

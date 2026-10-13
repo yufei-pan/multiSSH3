@@ -425,6 +425,9 @@ def assign_roles(words, spec, current=None):
 			roles.append((ROLE_COMMAND, None))
 	return roles
 
+# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
+_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+
 def split_hosts(text):
 	'''Split a hosts argument into host words, on the separators mssh accepts.'''
 	for separator in ',\n\r\t;|/&':
@@ -699,11 +702,17 @@ def parse_history_line(line, spec):
 		index += 1
 		if option is None:
 			continue
+		name = text
+		if attached is not None:
+			# the option string without the value written into its word: -u=root and -uroot are -u
+			name = text[:len(text) - len(attached)]
+			if name.endswith('='):
+				name = name[:-1]
 		if attached is None and option.nargs in ('1', '+') and index < len(tokens):
 			attached = tokens[index].text
 			index += 1
 		options.append((option, attached))
-		texts.append(text.partition('=')[0] if attached is not None and '=' in text else text)
+		texts.append(name)
 	host_tokens = lex(fields[3])
 	hosts = host_tokens[0].text if host_tokens else ''
 	if hosts == 'EMPTY_HOSTS':
@@ -1528,7 +1537,9 @@ def build_index(directory, now=None, mssh=None):
 	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
 	hosts = {}
 	def add(name, source, address=''):
-		if not name or not safe_field(name) or any(char in name for char in ' \t,'):
+		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
+		# systemd's ssh config) is never one host
+		if not name or not safe_field(name) or any(char in _HOST_SEPARATORS for char in name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -2249,9 +2260,6 @@ class Diagnostic(object):
 def _punctuation():
 	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
 	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
-
-# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
-_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
 
 def _host_parts(token):
 	'''
@@ -5948,12 +5956,15 @@ def _tab(candidates, typed, policy, quoted, nospace):
 	suffix = ('"' if quoted else '') + ' ' if unique and not nospace else ''
 	return choice[len(typed):], suffix
 
-def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', shell='zsh'):
+def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', shell='zsh', equivalents=()):
 	'''
 	Simulate an operator typing intended after before (with after behind the cursor), using TAB.
 
 	The operator types a character at a time and presses TAB whenever it inserts the intended
 	continuation. An appended space or quote that the operator then has to delete costs one key.
+	equivalents are texts that do what intended does (the other strings of an option): a candidate
+	that is one of them ranks as intended does, and a TAB toward one is taken, the operator typing
+	on to its end.
 
 	Returns:
 		dict: keys, chars, rank (of intended at the start, 0 if absent), visited and divergent
@@ -5961,24 +5972,28 @@ def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', 
 			extending what was typed: must stay 0), suffix_cost
 	'''
 	result = {'keys': 0, 'chars': len(intended), 'rank': 0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0}
+	targets = [intended] + [text for text in equivalents if text != intended]
+	target = intended
 	position = 0
-	while position < len(intended):
-		typed = intended[:position]
+	while position < len(target):
+		typed = target[:position]
 		response = engine.query(Request(shell, before + typed, after, typed))
 		candidates = response.candidates
 		result['visited'] += 1
 		if position == 0:
 			for number, candidate in enumerate(candidates):
-				if candidate.text == intended:
+				if candidate.text in targets:
 					result['rank'] = number + 1
 					break
 		result['altered'] += sum(1 for candidate in candidates if not candidate.text.startswith(typed))
 		inserted, suffix = _tab(candidates, typed, policy, quoted, 'nospace' in response.directives)
-		remaining = intended[position:]
+		if inserted and not target.startswith(typed + inserted):
+			target = next((text for text in targets if text.startswith(typed + inserted)), target)
+		remaining = target[position:]
 		if inserted and remaining.startswith(inserted):
 			result['keys'] += 1
 			position += len(inserted)
-			if suffix and position < len(intended):
+			if suffix and position < len(target):
 				result['keys'] += 1
 				result['suffix_cost'] += 1
 			continue
@@ -6114,6 +6129,13 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 		for slot, before, after, intended, quoted, ahead in slot_cases(entry):
 			if not intended:
 				continue
+			equivalents = ()
+			if slot == 'option':
+				# every string of the option typed does what it does (-u, --username): offering another
+				# is no miss. Strings of one action, not of one dest: -su and -nsu share their dest
+				option, _ = spec.lookup('-' + intended)
+				if option is not None:
+					equivalents = tuple(string[1:] for string in option.strings)
 			for policy in policies:
 				if policy == 'ghost':
 					# suggestions need the cursor at the end of the line: replay the slot typed last
@@ -6125,7 +6147,7 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 					for key in ('keys', 'chars', 'visited', 'shown', 'divergent', 'altered'):
 						total[key] += result[key]
 					continue
-				result = simulate_slot(engine, before, after, intended, quoted, policy)
+				result = simulate_slot(engine, before, after, intended, quoted, policy, equivalents=equivalents)
 				total = totals.setdefault((policy, slot), {'cases': 0, 'keys': 0, 'chars': 0, 'top1': 0, 'top3': 0,
 					'mrr': 0.0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0})
 				total['cases'] += 1
