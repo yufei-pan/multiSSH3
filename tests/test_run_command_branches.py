@@ -447,9 +447,10 @@ def _rsync_split(command):
 	'/home/u/"quoted" \\back/id',
 	"~/.ssh/id_ed25519",
 ])
-def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, monkeypatch, identity_file):
+def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, monkeypatch, tmp_path, identity_file):
 	# rsync splits --rsh on spaces: an identity path with a space became two arguments, and the
 	# configured ssh was ignored for a plain "ssh"
+	monkeypatch.setenv("HOME", str(tmp_path))  # a ~ key is expanded from HOME, where there is none
 	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
 	calls = []
 	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
@@ -462,7 +463,7 @@ def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, mo
 
 	rsh = calls[0][calls[0].index("--rsh") + 1]
 	assert _rsync_split(rsh) == ["/opt/open ssh/bin/ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
-		"-i", identity_file]
+		"-i", os.path.expanduser(identity_file)]
 
 
 MSSH_SSH_OPTIONS = ["ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null"]

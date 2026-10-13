@@ -317,7 +317,8 @@ def test_ctrl_c_is_not_tried_again(monkeypatch):
 
 	multiSSH3.run_command(host, threading.Semaphore(1), 30)
 
-	assert host.returncode == 255
+	# a command Ctrl C stopped ends with 130 (ssh-small-fixes), whatever ssh exited with
+	assert host.returncode == 130
 	assert not any("dropped the connection before login" in line for line in host.output)
 
 
