@@ -524,6 +524,45 @@ def test_remote_errors_mentioning_routes_or_timeouts_do_not_mark_the_host_unreac
 
 
 
+
+@pytest.mark.parametrize("returncode, files, stderr", [
+	(255, None, ["Connection timed out during banner exchange", "Connection to 10.0.0.5 port 22 timed out"]),
+	# through a ProxyJump ssh has no address for the far end
+	(255, None, ["Connection timed out during banner exchange", "Connection to UNKNOWN port 65535 timed out"]),
+	# legacy-protocol scp exits with 1
+	(1, ["f.txt"], ["Connection timed out during banner exchange", "Connection to 10.0.0.5 port 22 timed out",
+		"lost connection"]),
+])
+def test_a_host_whose_sshd_never_answered_is_unreachable(fake_host, monkeypatch, tmp_path, returncode, files, stderr):
+	# ssh's ConnectTimeout ran out after the host took the connection, before its sshd said a word
+	host = fake_host("web1", "/tmp/" if files else "true", files=files, ip="10.0.0.5")
+	host.returncode = returncode
+	host.stderr = stderr
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"web1"}
+
+
+@pytest.mark.parametrize("stderr", [
+	# the remote command's own ssh gave up on another host
+	["Connection timed out during banner exchange", "Connection to 10.9.9.9 port 22 timed out"],
+	["Connection timed out during banner exchange"],
+])
+def test_a_banner_timeout_not_naming_the_host_does_not_mark_it(fake_host, monkeypatch, tmp_path, stderr):
+	host = fake_host("web1", "ssh other true", ip="10.0.0.5")
+	host.returncode = 255
+	host.stderr = stderr
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["web1"]) == set()
+
+
+def test_a_host_that_stopped_answering_during_its_command_is_not_unreachable(fake_host, monkeypatch, tmp_path):
+	# ssh's ServerAlive*: it answered, ran the command for a while, then went away
+	host = fake_host("web1", "sleep 100", ip="10.0.0.5")
+	host.returncode = 255
+	host.stderr = ["Timeout, server web1 not responding."]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["web1"]) == set()
+
 def test_file_copy_that_could_not_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path):
 	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits 1 when ssh cannot
 	# connect; mssh falls back to scp after rsync failed, so scp's result is the host's

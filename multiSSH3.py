@@ -4079,6 +4079,10 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 _SSH_UNREACHABLE_REASONS = ('No route to host', 'Connection timed out')
 # older OpenSSH's message when a ProxyJump host cannot reach the target
 _SSH_JUMP_UNREACHABLE = re.compile(r'channel \d+: open failed: connect failed: (?:No route to host|Connection timed out)')
+# OpenSSH 8.2+ when ssh's ConnectTimeout runs out after the host took the connection but before its
+# sshd said a word; the next line names the address (UNKNOWN through a ProxyJump)
+_SSH_BANNER_TIMEOUT = 'Connection timed out during banner exchange'
+_SSH_TIMED_OUT_ADDRESS = re.compile(r'Connection to (\S+) port \S+ timed out')
 
 def _last_run_stderr(host):
 	'''
@@ -4097,8 +4101,8 @@ def _last_run_stderr(host):
 
 def _connect_error_names_host(host, connect_host):
 	'''
-	Whether connect_host, the host in ssh's connect error, is the one mssh had ssh connect to, not
-	another host the remote command tried with an ssh of its own (mssh hostA 'ssh backup ...').
+	Whether connect_host, the host or address ssh's error names, is the one mssh had ssh connect to,
+	not another host the remote command tried with an ssh of its own (mssh hostA 'ssh backup ...').
 
 	ssh names, lowercased, the HostName it connects to: the address mssh gave it (or its FQDN when
 	ssh canonicalizes names), or the HostName the ssh config gives it. Only that last case asks
@@ -4120,9 +4124,10 @@ def _found_unreachable(host):
 	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
 
 	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
-	cannot be reached (scp's legacy protocol exits with 1); a remote command printing the same
-	words (curl: ... No route to host) did reach its host, and so did one whose own ssh could not
-	reach another host. A command stopped by the timeout (-t) counts too if nothing at all came
+	cannot be reached, or that its sshd never answered within ssh's ConnectTimeout (scp's legacy
+	protocol exits with 1); a remote command printing the same words (curl: ... No route to host)
+	did reach its host, and so did one whose own ssh could not reach another host, as ssh's error
+	names that host. A command stopped by the timeout (-t) counts too if nothing at all came
 	back before it: a host that never answers looks like that, but so does a command that was
 	quiet from the start, which mssh cannot tell apart. Output means the host answered.
 	'''
@@ -4136,6 +4141,11 @@ def _found_unreachable(host):
 			return _connect_error_names_host(host, connect_error[0])
 		if _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
 			return True
+		if first_line == _SSH_BANNER_TIMEOUT and len(stderr) > 1:
+			timed_out = _SSH_TIMED_OUT_ADDRESS.fullmatch(stderr[1].strip())
+			if timed_out:
+				# a remote command's own ssh names the address it tried
+				return timed_out.group(1) == 'UNKNOWN' or _connect_error_names_host(host, timed_out.group(1))
 	if host.returncode != 124 or host.stdout or not stderr:
 		return False
 	# a stderr line before the timeout's means the host answered, lines after it come from stopping the command
