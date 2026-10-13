@@ -5534,6 +5534,28 @@ def _remove_rc_block(rc, messages):
 		_write_rc(rc, text)
 		messages.append('removed the mssh block from ' + _shown(rc))
 
+def _bash_login_note(home, rc):
+	'''
+	A note for when bash login shells (ssh logins, macOS terminals) do not load rc, else None.
+
+	They read the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists and is readable,
+	not ~/.bashrc; most of those load ~/.bashrc (the distributions' own do), but not all.
+	'''
+	line = '[ -f ~/.bashrc ] && . ~/.bashrc'
+	for name in ('.bash_profile', '.bash_login', '.profile'):
+		login = os.path.join(home, name)
+		try:
+			with open(login, encoding='utf-8', errors='replace') as f:
+				if 'bashrc' in f.read():
+					return None
+		except (FileNotFoundError, PermissionError):
+			continue
+		except OSError:
+			return None
+		return 'note: bash login shells (ssh logins, macOS terminals) read {}, which does not load {}; for autocomplete there too, add this line to it: {}'.format(login, rc, line)
+	return ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile, and there is none to load {1};'
+		' for autocomplete there too, create {0}/.bash_profile holding: {2}').format(home, rc, line)
+
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
 	# fish's own configuration directory: $XDG_CONFIG_HOME/fish, else ~/.config/fish
@@ -5588,6 +5610,10 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 			if editor and shell == 'bash':
 				body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
 			_add_rc_block(paths['rc'], body, messages)
+			if shell == 'bash':
+				note = _bash_login_note(home, paths['rc'])
+				if note:
+					messages.append(note)
 	except InstallError as error:
 		return 1, messages + list(error.args)
 	return (0 if written else 1), messages

@@ -161,7 +161,8 @@ def test_install_turns_the_editor_on_and_keeps_it_on(tmp_path):
 	code, messages = mc.install('bash', home=str(home), environ=env)
 	text = rc.read_text()
 	assert 'export MSSH_COMPLETE_EDITOR=1\n' in text and text.count('# >>> mssh completion >>>') == 1
-	assert messages[-2:] == ['kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)', '{} already loads it'.format(rc)]
+	# after the glue file it wrote, before the note about login shells
+	assert messages[1:3] == ['kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)', '{} already loads it'.format(rc)]
 	mc.uninstall('bash', home=str(home), environ=env)
 	mc.install('bash', home=str(home), environ=env)
 	assert 'MSSH_COMPLETE_EDITOR' not in rc.read_text()
@@ -240,6 +241,47 @@ def test_bash_always_loads_from_bashrc(tmp_path, monkeypatch):
 	assert glue.read_text().startswith('# MSSH_COMPLETE_GLUE')
 	assert mc.RC_BEGIN_CREATED in (home / '.bashrc').read_text()
 	assert not (home / '.local' / 'share' / 'bash-completion').exists()
+
+
+LOGIN_LINE = '[ -f ~/.bashrc ] && . ~/.bashrc'
+
+@pytest.mark.parametrize('files, reads', [
+	({}, None),
+	({'.profile': 'PATH=$HOME/bin:$PATH\n'}, '.profile'),
+	({'.profile': 'if [ -n "$BASH_VERSION" ]; then . "$HOME/.bashrc"; fi\n'}, ''),
+	({'.bash_login': LOGIN_LINE + '\n'}, ''),
+	# bash reads the first of the three that exists
+	({'.bash_profile': 'export EDITOR=vi\n', '.profile': LOGIN_LINE + '\n'}, '.bash_profile'),
+])
+def test_bash_install_says_when_login_shells_do_not_load_bashrc(tmp_path, files, reads):
+	# login shells (ssh logins, macOS terminals) read ~/.bash_profile, ~/.bash_login or ~/.profile,
+	# not ~/.bashrc: most of those load ~/.bashrc, and where none does the glue never loads there
+	env, home = make_home(tmp_path)
+	for name, text in files.items():
+		(home / name).write_text(text)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	if reads is None:
+		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile,'
+			' and there is none to load {0}/.bashrc; for autocomplete there too, create {0}/.bash_profile holding: {1}').format(home, LOGIN_LINE)
+	elif reads:
+		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {}, which does not load {};'
+			' for autocomplete there too, add this line to it: {}').format(home / reads, home / '.bashrc', LOGIN_LINE)
+	else:
+		assert messages[-1] == 'added a block loading it to {}'.format(home / '.bashrc')
+
+
+def test_the_line_the_login_note_suggests_loads_the_glue(tmp_path):
+	path = require_shell('bash')
+	env, home = make_home(tmp_path)
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[1][-1].endswith(LOGIN_LINE)
+	def loaded():
+		result = subprocess.run([path, '-l', '-i', '-c', 'type -t _mssh_complete || :'], env=env, cwd=str(home),
+			stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+		return result.stdout.decode().strip() == 'function'
+	assert not loaded()
+	(home / '.bash_profile').write_text(LOGIN_LINE + '\n')
+	assert loaded()
 
 
 # one install or uninstall in a child process that cannot write a file past a size limit, as a full
@@ -403,8 +445,8 @@ def test_rc_files_that_are_links_stay_links(tmp_path):
 	rc = home / '.bashrc'
 	os.symlink(os.path.join('dotfiles', 'bashrc'), str(rc))
 	shown = '{} (a link to {})'.format(rc, target)
-	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[1][-1] == 'added a block loading it to ' + shown
-	assert mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)[1][-1] == 'updated the mssh block in ' + shown
+	assert 'added a block loading it to ' + shown in mc.install('bash', home=str(home), environ=env, command=ENGINE)[1]
+	assert 'updated the mssh block in ' + shown in mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)[1]
 	assert rc.is_symlink() and 'export MSSH_COMPLETE_EDITOR=1\n' in target.read_text()
 	assert stat.S_IMODE(target.stat().st_mode) == 0o640
 	assert mc.uninstall('bash', home=str(home), environ=env) == (0, [
