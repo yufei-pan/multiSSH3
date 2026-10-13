@@ -385,7 +385,8 @@ def test_zsh_installs_where_zsh_reads_its_rc_file(tmp_path, zdotdir):
 	env = dict(env, ZDOTDIR=str(directory) if zdotdir == 'set' else '')
 	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
 	assert code == 0
-	assert messages[-1] == 'added a block loading it to {}'.format(rc)
+	# other notes may follow it
+	assert 'added a block loading it to {}'.format(rc) in messages
 	assert mc.RC_BEGIN in rc.read_text()
 	assert sorted(name for name in os.listdir(str(home)) if name.startswith('.zsh')) == (['.zshrc'] if zdotdir == 'empty' else [])
 	mc.uninstall('zsh', home=str(home), environ=env)
