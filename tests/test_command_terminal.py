@@ -60,8 +60,13 @@ def _run_on_new_terminal(code, env, keys=(), timeout=30):
 	is its controlling terminal. keys are (seconds, bytes) typed on that terminal; bytes may also be a
 	function returning them (or None to wait). Returns (exit code, everything shown on the terminal).
 	'''
+	import fcntl
 	import pty
+	import struct
+	import termios
 	master, slave = pty.openpty()
+	# a real terminal has a size (a new pty is 0x0)
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 	starter = "import fcntl, sys, termios; fcntl.ioctl(0, termios.TIOCSCTTY, 0); del fcntl, termios; exec(sys.argv[1])"
 	proc = subprocess.Popen([sys.executable, "-c", starter, code], stdin=slave, stdout=slave, stderr=slave,
 		env=env, cwd=str(Path(env["HOME"]).parent), start_new_session=True)
@@ -319,6 +324,83 @@ def test_no_note_unless_ssh_wanted_a_password_it_could_not_ask_for(fake_host, mo
 	else:
 		kwargs["no_output"] = True
 	assert "Note:" not in _run_and_note(fake_host, monkeypatch, capsys, stderr, **kwargs)
+
+
+# ssh stand-in: runs the command locally, `exec` keeps the pid it records the pid of mssh's child
+_FAKE_SSH = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break;;
+    -G) shift; echo "hostname $1"; exit 0;;
+    -i|-o|-p|-l) shift; shift;;
+    *) shift;;
+  esac
+done
+shift
+exec sh -c "$*"
+"""
+
+
+def _cli_env_with_fake_ssh(tmp_path):
+	'''Environment running the mssh CLI with a local ssh stand-in, in a scratch home and runtime dir.'''
+	import json
+	env = _scratch_env(tmp_path)
+	ssh = tmp_path / "ssh"
+	ssh.write_text(_FAKE_SSH)
+	ssh.chmod(0o755)
+	config = Path(env["HOME"]) / ".multiSSH3.config.json"
+	config.write_text(json.dumps({"_{}Path".format(name): str(ssh) for name in ("ssh", "scp", "rsync", "sshpass", "ssh-copy-id")}))
+	config.chmod(0o600)
+	(tmp_path / "hosts").write_text("")
+	return env
+
+
+def _process_running(pid):
+	'''True while the process exists and is not a zombie.'''
+	try:
+		with open("/proc/{}/stat".format(pid)) as stat:
+			return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+	except OSError:
+		return False
+
+
+@_needs_pty
+@pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="reads /proc")
+def test_ctrl_c_on_the_terminal_stops_commands_in_their_own_sessions(tmp_path):
+	# the terminal's Ctrl C no longer reaches commands in a session of their own: mssh must stop them
+	import signal
+	env = _cli_env_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	# each command records its pid and its session id (field 6 of /proc/PID/stat), then waits
+	command = "read -r _ _ _ _ _ sid _ < /proc/$$/stat; echo $$ $sid >> {}; exec sleep 60".format(pids)
+	args = ["--no_history", "--no_skip_unreachable", "-ef", "/dev/null", "--host_file", str(tmp_path / "hosts"),
+		"-nw", "127.0.0.[1-3]", command]
+	code = "import sys\nsys.path.insert(0, {!r})\nimport multiSSH3\nmultiSSH3.main({!r})\n".format(ROOT, args)
+
+	def ctrl_c_once_all_run():
+		lines = pids.read_text().splitlines() if pids.exists() else []
+		return b"\x03" if len(lines) >= 3 else None
+
+	children = []
+	try:
+		returncode, shown = _run_on_new_terminal(code, env, keys=[(0, ctrl_c_once_all_run)], timeout=30)
+		records = [line.split() for line in pids.read_text().splitlines()]
+		children = [int(pid) for pid, _ in records]
+		assert all(pid == sid for pid, sid in records)  # each in a session of its own: no terminal to ask on
+		assert "Ctrl C caught" in shown
+		deadline = time.monotonic() + 5
+		while time.monotonic() < deadline and any(_process_running(pid) for pid in children):
+			time.sleep(0.05)
+		assert [pid for pid in children if _process_running(pid)] == []
+		assert returncode == 3, shown  # the three stopped hosts count as failed, as before
+	finally:
+		for pid in children:
+			try:
+				with open("/proc/{}/cmdline".format(pid), "rb") as cmdline:
+					if cmdline.read().split(b"\0")[:2] == [b"sleep", b"60"]:
+						os.kill(pid, signal.SIGKILL)
+			except OSError:
+				pass
 
 
 def test_the_note_reads_hostile_remote_output_in_linear_time(fake_host):
