@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 import argparse
+import codecs
 import errno
 import functools
 import getpass
@@ -3758,12 +3759,19 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
 	if threshold > 0.5:
-		samples = itertools.islice(line_bag1, max(int(len(line_bag1) * (1 - threshold)),1))
-		if not line_bag2.intersection(samples):
+		# quick reject when none of a few items of the smaller bag is in the other. Taking one item more
+		# than the smaller bag may lack and still merge, the answer is always the count's below, whichever
+		# items the set yields first (an order that changes from run to run)
+		smaller, larger = (line_bag1, line_bag2) if len(line_bag1) <= len(line_bag2) else (line_bag2, line_bag1)
+		sample_count = len(smaller) - math.ceil(len(smaller) * threshold) + 1
+		if not larger.intersection(itertools.islice(smaller, sample_count)):
 			return False
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
+	# indexes keeps the hosts in natural order: min() below takes the first of the hosts furthest
+	# behind, so lines only some hosts printed come in host order, not in the random order of a set
+	merging_hostnames = sorted(merging_hostnames, key=_natural_sort_key)
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
@@ -3801,7 +3809,10 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
 		defer = False
-		golden_hostname = min(working_index_keys, key=indexes.get)
+		if len(working_index_keys) == len(indexes):
+			golden_hostname = min(indexes, key=indexes.get)
+		else:
+			golden_hostname = min(filter(working_index_keys.__contains__, indexes), key=indexes.get)
 		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
 		buddy = currentLines[lineToAdd].copy()
@@ -3854,10 +3865,11 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 	output.append(color_line+'─'*(line_length)+color_reset)
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
-	for merging_hostnames in merge_groups:
+	# groups, then the hosts that merged with none, each in natural host order (node2 before node10)
+	for merging_hostnames in sorted(merge_groups, key=lambda group: min(map(_natural_sort_key, group))):
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append(color_line+'─'*(line_length)+color_reset)
-	for hostname in remaining_hostnames:
+	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
@@ -3999,7 +4011,8 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 	merge_groups = []
 	remaining_hostnames = set()
 	for lbl_i, line_bag_len in enumerate(sorted_hostnames_by_line_bag_len_keys):
-		for this_hostname in hostnames_by_line_bag_len.get(line_bag_len, set()).copy():
+		# in natural order, not a set's: which hosts form a group depends on the host it starts from
+		for this_hostname in sorted(hostnames_by_line_bag_len.get(line_bag_len, ()), key=_natural_sort_key):
 			# if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
 			# 	continue
 			try:
@@ -4082,7 +4095,14 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			if not hostAdded:
 				rtnList.append([host.name,f"rc: {host.returncode}",'N/A','<EMPTY>'])
 			rtnList.append(['','','',''])
-		rtnStr += pretty_format_table(rtnList)
+		# the table pads the first three columns only: padded to the longest output line, every other line
+		# and divider was written out to its length (seq 1 10000 and one 5000 character line: 50 MB of spaces)
+		table = pretty_format_table([rtnList[0]] + [row[:3] + [''] for row in rtnList[1:]]).split('\n')
+		tableLines = table[:2]
+		for line, row in zip(table[2:], rtnList[1:]):
+			# a divider row stays as it is
+			tableLines.append(line.rstrip(' ') + ' ' + row[3] if any(row) else line)
+		rtnStr += '\n'.join(tableLines) + '\n'
 		rtnStr += '*'*80+'\n'
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
@@ -4143,8 +4163,41 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		host.output.clear()
 	rtnStr = generate_output(hosts,usejson,greppable,encoding=_encoding,keyPressesIn=__keyPressesIn,errors_only=__global_suppress_printout)
 	if not quiet:
-		print(rtnStr)
+		try:
+			# flushed now: a reader that is gone fails here, not in the flush at exit
+			print(rtnStr, flush=True)
+		except BrokenPipeError:
+			_stdout_reader_gone()
 	return rtnStr
+
+def _stdout_reader_gone():
+	'''
+	Stop quietly when whatever reads stdout has gone (mssh ... | head, or q in less).
+
+	Like a program SIGPIPE ends: no traceback, and no more commands or repeats start. What ran
+	still counts towards the exit code, as after a Ctrl-C between runs. stdout, and stderr when
+	it is the same pipe (2>&1), are pointed at devnull as the Python docs suggest, so later
+	writes and the flush at exit do not fail again.
+	'''
+	global _emo
+	_emo = True
+	try:
+		stdout_fd = sys.stdout.fileno()
+		fds = [stdout_fd]
+		try:
+			if os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (an embedding program's stream): nothing to redirect
+		pass
 
 #%% ------------ Run / Process Hosts Block ----------------
 def _private_dir(path, create=True):
@@ -5642,10 +5695,49 @@ def _summary_host_list(names):
 	as_given = sorted((name for name in names if __expand_hostname(name, validate=False) != {name}), key=_natural_sort_key)
 	return ','.join(compact_hostnames_local(names.difference(as_given)) + as_given)
 
+def _escape_or_restore_bytes(error):
+	'''
+	Encoding error handler for our output: what came in as undecodable bytes (an argument or path read
+	with surrogateescape, as Python does in the C locale) goes out as those bytes, anything else the
+	encoding lacks as a backslash escape (\\u2713).
+	'''
+	try:
+		return codecs.lookup_error('surrogateescape')(error)
+	except UnicodeError:
+		return codecs.lookup_error('backslashreplace')(error)
+
+_OUTPUT_ERRORS = 'multissh3-escape'
+
+def _escape_unencodable_output():
+	'''
+	Make stdout and stderr print what their encoding lacks as escapes instead of failing.
+
+	With an ASCII stdout (the C locale on Python 3.6, e.g. cron on CentOS 7) or PYTHONIOENCODING=latin-1,
+	printing the results raised UnicodeEncodeError after the commands had run, and their output was lost.
+	Python's stderr already escapes; streams set to another lenient handler are left alone.
+	'''
+	codecs.register_error(_OUTPUT_ERRORS, _escape_or_restore_bytes)
+	for name in ('stdout', 'stderr'):
+		stream = getattr(sys, name, None)
+		if getattr(stream, 'errors', None) not in ('strict', 'surrogateescape'):
+			continue
+		try:
+			if hasattr(stream, 'reconfigure'):
+				stream.reconfigure(errors=_OUTPUT_ERRORS)
+			elif isinstance(stream, io.TextIOWrapper) and stream is getattr(sys, '__{}__'.format(name), None):
+				# Python 3.6 has no reconfigure: a new wrapper on the same buffer. The old one stays
+				# referenced as sys.__stdout__, so it is never collected (which would close the buffer)
+				stream.flush()
+				setattr(sys, name, io.TextIOWrapper(stream.buffer, encoding=stream.encoding, errors=_OUTPUT_ERRORS,
+					line_buffering=stream.line_buffering))
+		except (AttributeError, OSError, ValueError):
+			pass
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
+	_escape_unencodable_output()
 	args = process_args(args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))
