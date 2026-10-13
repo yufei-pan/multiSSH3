@@ -259,13 +259,67 @@ def signal_handler(sig, frame):
 		_emo = True
 	else:
 		eprint('Ctrl C caught again, exiting immediately!')
-		# only kill the subprocesses this process started
+		_kill_commands_for_exit()
+		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
+
+def _kill_commands_for_exit():
+	'''
+	Kill the commands this process started (only those) and start no more: mssh exits right after.
+	'''
+	global _emo
+	global _stopping
+	_emo = True
+	# hosts waiting for a connection slot start nothing now
+	_stopping = True
+	for attempt in range(2):
+		if attempt:
+			# a command that was starting when the signal came is listed a moment later
+			time.sleep(0.05)
 		for proc in list(__running_procs):
 			try:
 				proc.kill()
 			except Exception:
 				pass
-		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
+
+def _stop_signal_handler(sig, frame):
+	'''
+	Handle SIGTERM and SIGHUP (kill, a batch scheduler or service manager stopping mssh, the terminal
+	closing) like a second Ctrl C: kill the running commands and exit with 128 + the signal number.
+
+	The exit unwinds curses.wrapper on the main thread, which restores the terminal.
+	'''
+	_kill_commands_for_exit()
+	try:
+		eprint('Exiting: {} received, the running commands were killed'.format(signal.Signals(sig).name))
+	except Exception:
+		# the terminal is gone (SIGHUP): nowhere to say it
+		pass
+	# not _exit_with_code: --return_zero is for failed hosts, a stopped mssh did not succeed
+	raise SystemExit(128 + sig)
+
+def _exit_replaced_by(error):
+	'''The SystemExit that error replaced while it was being raised, None if there is none.'''
+	while error is not None:
+		if isinstance(error, SystemExit):
+			return error
+		error = error.__context__
+	return None
+
+def _install_signal_handlers():
+	'''
+	Install the command line's signal handlers: Ctrl C stops the commands (pressed again: kills them),
+	SIGTERM and SIGHUP kill them and exit.
+
+	Only on the main thread, the only one Python lets set them. SIGTERM and SIGHUP only when not
+	ignored: `nohup mssh ...` must keep running when its terminal closes.
+	'''
+	if threading.current_thread() is not threading.main_thread():
+		return
+	signal.signal(signal.SIGINT, signal_handler)
+	for name in ('SIGTERM', 'SIGHUP'):
+		number = getattr(signal, name, None)
+		if number is not None and signal.getsignal(number) == signal.SIG_DFL:
+			signal.signal(number, _stop_signal_handler)
 
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
 	"""
@@ -594,6 +648,8 @@ __keyPressesIn = [[]]
 _emo = False
 # set once the first command starts: before that, Ctrl-C has nothing to stop and exits
 _commands_started = False
+# set when mssh exits now (a second Ctrl C, SIGTERM, SIGHUP): no command may start any more
+_stopping = False
 __curses_global_color_pairs = {(-1,-1):1}
 __curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
 __curses_color_table = {}
@@ -2514,6 +2570,11 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 		retry_after_emfile = False
 		proc = None
 		with sem:
+			if _stopping:
+				# mssh is exiting (SIGTERM, SIGHUP, a second Ctrl C): a host waiting for its turn does not start
+				host.output.append('Not started: mssh is exiting')
+				host.returncode = -1
+				return True, retry_limit, attempt_line_starts
 			try:
 				host.output.append('Running command: '+' '.join(formatedCMD))
 				if __DEBUG_MODE:
@@ -4089,7 +4150,12 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			if any([host.returncode is None for host in hosts]):
 				try:
 					curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
-				except Exception:
+				except Exception as error:
+					exiting = _exit_replaced_by(error)
+					if exiting is not None:
+						# mssh was exiting (SIGHUP, SIGTERM) and curses failed to restore the terminal, which
+						# hung up: exit as asked, drawing on it again would fail the same way
+						raise exiting
 					try:
 						os.environ['TERM'] = 'xterm-256color'
 						curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
@@ -4492,6 +4558,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __global_suppress_printout
 	global _no_env
 	global _emo
+	global _stopping
 	global __DEBUG_MODE
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
@@ -4499,6 +4566,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if called:
 		# a library call starts fresh; on the CLI a Ctrl-C (e.g. in an earlier --repeat run) stands
 		_emo = False
+		_stopping = False
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
@@ -5024,8 +5092,7 @@ def process_args(args = None):
 	except Exception:
 		pass
 	parser = get_parser()
-	# We handle the signal
-	signal.signal(signal.SIGINT, signal_handler)
+	_install_signal_handlers()
 	# We parse the arguments
 	# if python version is 3.7 or higher, use parse_intermixed_args
 	try:
@@ -5173,6 +5240,7 @@ def process_control_master_config(args):
 
 def set_global_with_args(args):
 	global _emo
+	global _stopping
 	global _no_env
 	global _env_files
 	global _explicit_env_files
@@ -5183,6 +5251,7 @@ def set_global_with_args(args):
 	global FORCE_TRUECOLOR
 	global DEFAULT_HOST_FILE
 	_emo = False
+	_stopping = False
 	if args.env_file:
 		_env_files = [args.env_file]
 	else:

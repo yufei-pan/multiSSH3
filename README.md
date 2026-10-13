@@ -565,6 +565,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-Z, -rz, --return_zero` | _`DEFAULT_RETURN_ZERO`_
 - Return 0 even if there are errors.
 - Useful in scripting when failure is expected and bash is set to exit when error occurs.
+- Not when mssh itself is stopped: SIGTERM (`kill`, a batch scheduler, a service manager) or SIGHUP (the terminal closing, unless started with `nohup`) kills the running commands, starts no more and exits with 143 or 129.
 
 ### `-C, --no_env` | _`DEFAULT_NO_ENV`_
 - Do not load the command line environment variables for hostname resolution.

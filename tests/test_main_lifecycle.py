@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 import multiSSH3
@@ -84,6 +86,54 @@ def test_signal_handler_second_interrupt_kills_only_own_children(monkeypatch):
 	assert exc_info.value.code == 1
 	assert child.killed
 	assert commands == []
+
+
+def test_second_interrupt_starts_no_waiting_host(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_emo", True)
+	monkeypatch.setattr(multiSSH3, "_commands_started", True)
+	monkeypatch.setattr(multiSSH3, "__running_procs", set())
+
+	with pytest.raises(SystemExit):
+		multiSSH3.signal_handler(None, None)
+
+	assert multiSSH3._stopping is True  # hosts waiting for a connection slot see it and do not start
+
+
+def test_cli_arguments_can_be_processed_off_the_main_thread():
+	# Python sets signal handlers only on the main thread: an embedder parsing elsewhere must not fail
+	import threading
+
+	errors = []
+
+	def parse():
+		try:
+			multiSSH3.process_args(["127.0.0.1", "true"])
+		except Exception as error:
+			errors.append(error)
+
+	thread = threading.Thread(target=parse)
+	thread.start()
+	thread.join()
+
+	assert errors == []
+
+
+def test_signal_handlers_leave_an_ignored_sigterm_alone(monkeypatch):
+	import signal
+
+	installed = {}
+	current = {signal.SIGINT: signal.default_int_handler, signal.SIGTERM: signal.SIG_IGN}
+	if hasattr(signal, "SIGHUP"):
+		current[signal.SIGHUP] = signal.SIG_DFL
+	monkeypatch.setattr(multiSSH3.signal, "getsignal", lambda number: current[number])
+	monkeypatch.setattr(multiSSH3.signal, "signal", lambda number, handler: installed.update({number: handler}))
+
+	multiSSH3._install_signal_handlers()
+
+	assert installed[signal.SIGINT] is multiSSH3.signal_handler
+	assert signal.SIGTERM not in installed  # e.g. started by something that wants mssh to outlive it
+	if hasattr(signal, "SIGHUP"):
+		assert installed[signal.SIGHUP] is multiSSH3._stop_signal_handler
 
 
 def test_input_with_timeout_returns_inline_input(monkeypatch):
@@ -378,3 +428,262 @@ def test_ctrl_c_during_the_first_command_skips_the_next(monkeypatch):
 		no_history=True, called=False, will_update_unreachable_hosts=False)
 
 	assert ran == ["first"]
+
+
+# ssh stand-in for the signal tests: runs the command locally. `exec` keeps the pid the command records
+# the pid of mssh's child, the process that must not outlive mssh.
+_FAKE_SSH = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break;;
+    -G) shift; echo "hostname $1"; exit 0;;
+    -i|-o|-p|-l) shift; shift;;
+    *) shift;;
+  esac
+done
+shift
+exec sh -c "$*"
+"""
+
+
+def _cli_with_fake_ssh(tmp_path):
+	'''Environment running mssh with a local ssh stand-in, in a scratch home and runtime dir.'''
+	import json
+	bin_dir = tmp_path / "bin"
+	bin_dir.mkdir()
+	ssh = bin_dir / "ssh"
+	ssh.write_text(_FAKE_SSH)
+	ssh.chmod(0o755)
+	config_dir = tmp_path / "home" / ".config" / "multiSSH3"
+	config_dir.mkdir(parents=True)
+	config = config_dir / "multiSSH3.config.json"
+	config.write_text(json.dumps({"_{}Path".format(name): str(ssh) for name in ("ssh", "scp", "rsync", "sshpass", "ipmitool", "redfishtool", "ssh-copy-id")}))
+	config.chmod(0o600)
+	(tmp_path / "run").mkdir(mode=0o700)
+	env = dict(os.environ, HOME=str(tmp_path / "home"), XDG_RUNTIME_DIR=str(tmp_path / "run"),
+		PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1")
+	return env
+
+
+def _hermetic_args(tmp_path):
+	'''Arguments keeping a CLI run off the machine's env files, hosts file and history.'''
+	hosts = tmp_path / "hosts"
+	if not hosts.exists():
+		hosts.write_text("")
+	return ["--no_history", "--no_skip_unreachable", "-ef", "/dev/null", "--host_file", str(hosts)]
+
+
+def _process_running(pid):
+	'''True while the process exists and is not a zombie: a killed child is reaped only after mssh exits.'''
+	try:
+		with open("/proc/{}/stat".format(pid)) as stat:
+			return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+	except OSError:
+		return False
+
+
+def _parent_pid(pid):
+	with open("/proc/{}/stat".format(pid)) as stat:
+		return int(stat.read().rsplit(")", 1)[1].split()[1])
+
+
+def _wait_for_lines(path, count, timeout=15):
+	import time
+	deadline = time.monotonic() + timeout
+	while time.monotonic() < deadline:
+		if path.exists():
+			lines = path.read_text().split()
+			if len(lines) >= count:
+				return [int(line) for line in lines]
+		time.sleep(0.05)
+	raise AssertionError("{} never had {} lines".format(path, count))
+
+
+def _wait_until_gone(pids, timeout=5):
+	import time
+	deadline = time.monotonic() + timeout
+	while time.monotonic() < deadline and any(_process_running(pid) for pid in pids):
+		time.sleep(0.05)
+	return [pid for pid in pids if _process_running(pid)]
+
+
+def _kill_leftovers(pids):
+	'''Kill the test commands mssh left running, and only them: a pid may have been reused since.'''
+	import signal
+	for pid in pids:
+		try:
+			with open("/proc/{}/cmdline".format(pid), "rb") as cmdline:
+				if cmdline.read().split(b"\0")[:2] != [b"sleep", b"60"]:
+					continue
+			os.kill(pid, signal.SIGKILL)
+		except OSError:
+			pass
+
+
+_needs_proc = pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="reads /proc")
+
+
+@_needs_proc
+@pytest.mark.parametrize("signal_name, exit_code", [("SIGTERM", 143), ("SIGHUP", 129)])
+def test_sigterm_and_sighup_kill_the_running_commands(tmp_path, signal_name, exit_code):
+	# kill, batch schedulers and service managers stop mssh with SIGTERM: the ssh children must not outlive it
+	import signal
+	import subprocess
+	import sys
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	proc = subprocess.Popen([sys.executable, multiSSH3.__file__] + _hermetic_args(tmp_path) + [
+		"127.0.0.[1-3]", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 3)
+		assert all(_parent_pid(pid) == proc.pid for pid in children)
+		proc.send_signal(getattr(signal, signal_name))
+		proc.communicate(timeout=15)
+		assert (proc.returncode, _wait_until_gone(children)) == (exit_code, [])
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_sigterm_starts_none_of_the_waiting_hosts(tmp_path):
+	# hosts waiting for a free connection slot must not start once mssh is being stopped
+	import signal
+	import subprocess
+	import sys
+	from pathlib import Path
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	started = tmp_path / "started"
+	script = tmp_path / "mssh_logging_starts.py"
+	# log each command as it starts: one killed at once never gets to record its own pid
+	script.write_text(
+		"import subprocess, sys\n"
+		"sys.path.insert(0, {root!r})\n"
+		"import multiSSH3\n"
+		"popen = subprocess.Popen\n"
+		"def logged(argv, **kwargs):\n"
+		"    if '--' in argv:\n"
+		"        with open({started!r}, 'a') as log:\n"
+		"            log.write(argv[argv.index('--') + 1] + '\\n')\n"
+		"    return popen(argv, **kwargs)\n"
+		"multiSSH3.subprocess.Popen = logged\n"
+		"multiSSH3.main(sys.argv[1:])\n".format(root=str(Path(multiSSH3.__file__).resolve().parent), started=str(started)))
+	proc = subprocess.Popen([sys.executable, str(script)] + _hermetic_args(tmp_path) + ["-m", "2",
+		"127.0.0.[1-8]", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 2)
+		proc.send_signal(signal.SIGTERM)
+		proc.communicate(timeout=15)
+		assert (proc.returncode, sorted(started.read_text().split())) == (143, ["127.0.0.1", "127.0.0.2"])
+		assert _wait_until_gone(children) == []
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_sighup_stays_ignored_under_nohup(tmp_path):
+	# `nohup mssh ...` must keep running when the terminal goes away
+	import signal
+	import subprocess
+	import sys
+	import time
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	proc = subprocess.Popen([sys.executable, multiSSH3.__file__] + _hermetic_args(tmp_path) + [
+		"127.0.0.1", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path),
+		preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 1)
+		proc.send_signal(signal.SIGHUP)
+		time.sleep(0.5)
+		assert proc.poll() is None
+		assert all(_process_running(pid) for pid in children)
+		proc.send_signal(signal.SIGTERM)
+		proc.communicate(timeout=15)
+		assert proc.returncode == 143
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_sigterm_with_the_tui_up_kills_the_commands_and_restores_the_terminal(tmp_path):
+	# curses' own SIGTERM handler restored the terminal but exited 1, leaving the commands running
+	import re
+	import shlex
+	import signal
+	import subprocess
+	import sys
+	import threading
+	import time
+
+	pytest.importorskip("curses")
+	pty = pytest.importorskip("pty")
+	import fcntl
+	import struct
+	import termios
+	if not hasattr(termios, "TIOCSCTTY"):
+		pytest.skip("needs TIOCSCTTY")
+
+	env = dict(_cli_with_fake_ssh(tmp_path), TERM="xterm")
+	pids = tmp_path / "pids"
+	mssh = [sys.executable, multiSSH3.__file__] + _hermetic_args(tmp_path) + [
+		"127.0.0.[1-3]", "echo $$ >> {}; exec sleep 60".format(pids)]
+	master, slave = pty.openpty()
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+	terminal_before = termios.tcgetattr(slave)
+
+	def controlling_terminal():
+		os.setsid()
+		fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+	# a shell leads the session as in a terminal window: were mssh the leader, its exit would hang up its children
+	shell = subprocess.Popen(["sh", "-c", " ".join(shlex.quote(arg) for arg in mssh) + "; echo mssh-exited-$?; sleep 30"],
+		stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(tmp_path), preexec_fn=controlling_terminal)
+	screen = bytearray()
+
+	def read_screen():
+		while True:
+			try:
+				data = os.read(master, 65536)
+			except OSError:
+				return
+			if not data:
+				return
+			screen.extend(data)
+
+	threading.Thread(target=read_screen, daemon=True).start()
+	children = []
+	try:
+		children = _wait_for_lines(pids, 3)
+		mssh_pid = _parent_pid(children[0])
+		deadline = time.monotonic() + 10
+		while termios.tcgetattr(slave)[3] & termios.ICANON and time.monotonic() < deadline:
+			time.sleep(0.05)  # curses switches the terminal out of line mode
+		if termios.tcgetattr(slave)[3] & termios.ICANON:
+			pytest.skip("the TUI did not start: {!r}".format(bytes(screen[-300:])))
+		time.sleep(0.3)
+		os.kill(mssh_pid, signal.SIGTERM)
+		deadline = time.monotonic() + 15
+		while not re.search(rb"mssh-exited-\d+\r?\n", bytes(screen)) and time.monotonic() < deadline:
+			time.sleep(0.05)
+		exited = re.search(rb"mssh-exited-(\d+)", bytes(screen))
+		assert (exited and exited.group(1), _wait_until_gone(children)) == (b"143", [])
+		assert termios.tcgetattr(slave) == terminal_before
+	finally:
+		_kill_leftovers(children)
+		os.killpg(shell.pid, signal.SIGKILL)  # the shell leads its own process group
+		shell.wait()
+		os.close(slave)
+		os.close(master)
