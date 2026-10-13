@@ -22,6 +22,7 @@ HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.form
 SHELL_HISTORY = 'echo aa1\necho aa2\necho bb\n'
 FAKE_MSSH = 'mssh() { printf "@@RAN[%s]@@\\n" "$*"; }'
 RIGHT = '\x1b[C'
+LEFT = '\x1b[D'
 UP = '\x1b[A'
 
 
@@ -565,6 +566,56 @@ def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
 		time.sleep(1)
 		session.read_until(b'@@never@@', 0.5)
 		assert not [row for row in screen(session) if 'unknown host' in row]
+	finally:
+		session.close()
+
+
+def line_styles(session, text):
+	"""The SGR parameters of each character on the screen row holding text."""
+	grid = rendered(session)
+	row = next(row for row, line in enumerate(grid.lines()) if text in line)
+	return grid.styles(row)
+
+
+@pytest.mark.parametrize('typed, fixes, line', [
+	# a typo fixed: backspace over "17 ", then "1 " (gpu01 is fine)
+	('mssh gpu017 ', ['\x7f\x7f\x7f', '1 uptime'], 'mssh gpu01 uptime'),
+	# fixed inside the word (delete its 0), then the word left
+	('mssh gpu017 uptime', [LEFT * 9 + '\x7f', '\x05'], 'mssh gpu17 uptime'),
+], ids=['typo-retyped', 'fixed-in-place'])
+def test_zsh_underline_goes_away_when_the_host_is_fixed(home, typed, fixes, line):
+	# zsh rewrites the style of a mark (fg=red,underline) and moves the mark along with the text the
+	# operator edits: the glue still finds its marks
+	env, home = home
+	known(env, gpu017='invalid', gpu01='valid', gpu17='valid')
+	session = zsh_with(env, home)
+	try:
+		session.send(typed)
+		session.read_until('unknown host'.encode(), 10)
+		time.sleep(0.5)
+		for keys in fixes:
+			session.send(keys)
+			time.sleep(0.3)
+		time.sleep(1)
+		session.read_until(b'@@never@@', 0.2)
+		assert not [style for style in line_styles(session, line) if '4' in style.split(';')], screen(session)[:2]
+	finally:
+		session.close()
+
+
+def test_zsh_accepted_grey_text_is_not_grey(home):
+	# a character of the grey text typed first: zsh moved the grey highlight along with it
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.send('u')
+		time.sleep(0.5)
+		session.send(RIGHT)
+		time.sleep(0.5)
+		session.read_until(b'@@never@@', 0.2)
+		assert not [style for style in line_styles(session, 'nvidia-smi') if '244' in style.split(';')]
 	finally:
 		session.close()
 

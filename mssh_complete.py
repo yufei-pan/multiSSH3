@@ -4809,13 +4809,18 @@ _zsh_autosuggest_strategy_mssh() {
 	return 0
 }
 
+_mssh_complete_ghost_unmark() {
+	# drop the grey text's highlights, found by their style: zsh moves a highlight along with the text
+	# typed before it, so it is no longer where it was put
+	[[ -n $_mssh_complete_drawn ]] && region_highlight=("${(@)region_highlight:#<-> <-> ${(b)_mssh_complete_drawn}}")
+}
+
 _mssh_complete_ghost_clear() {
 	# drop the grey text (inside a widget)
 	[[ -n $_mssh_complete_shown ]] || return 0
 	POSTDISPLAY=
-	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
+	_mssh_complete_ghost_unmark
 	_mssh_complete_shown=
-	_mssh_complete_highlight=
 }
 
 _mssh_complete_ghost_show() {
@@ -4824,8 +4829,9 @@ _mssh_complete_ghost_show() {
 	[[ -n $1 ]] || return 0
 	POSTDISPLAY=$1
 	_mssh_complete_shown=$1
-	_mssh_complete_highlight="$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style"
-	region_highlight+=("$_mssh_complete_highlight")
+	region_highlight+=("$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style")
+	# the style as zsh reports it, to find the highlight again
+	_mssh_complete_drawn=${region_highlight[-1]#<-> <-> }
 }
 
 _mssh_complete_ghost_cancel() {
@@ -4903,8 +4909,8 @@ _mssh_complete_ghost_handover() {
 	add-zle-hook-widget -d line-finish _mssh_complete_ghost_finish
 	_mssh_complete_ghost_cancel
 	[[ -n $_mssh_complete_shown && $POSTDISPLAY == "$_mssh_complete_shown" ]] && POSTDISPLAY=
-	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
-	_mssh_complete_shown= _mssh_complete_highlight= _mssh_complete_last=
+	_mssh_complete_ghost_unmark
+	_mssh_complete_shown= _mssh_complete_last=
 }
 
 _mssh_complete_ghost_finish() {
@@ -4944,9 +4950,10 @@ _mssh_complete_ghost_setup() {
 	[[ -n $TERM && $TERM != dumb ]] || return 0
 	zmodload zsh/zleparameter zsh/system 2>/dev/null || return 0
 	local widget key
-	typeset -g _mssh_complete_fd= _mssh_complete_asked= _mssh_complete_last= _mssh_complete_shown= _mssh_complete_highlight=
+	typeset -g _mssh_complete_fd= _mssh_complete_asked= _mssh_complete_last= _mssh_complete_shown= _mssh_complete_drawn=
 	typeset -g _mssh_complete_style=fg=8
 	[[ $TERM == *256col* ]] && _mssh_complete_style=fg=244
+	(( _mssh_complete_memo )) && _mssh_complete_style+=' memo=mssh-ghost'
 	zle -N _mssh_complete_ghost_answer
 	zle -N _mssh_complete_ghost_redraw
 	zle -N _mssh_complete_ghost_finish
@@ -4964,12 +4971,11 @@ _mssh_complete_ghost_setup() {
 }
 
 _mssh_complete_warn_unmark() {
-	# drop our marks (others' highlights stay)
-	local mark
-	for mark in "${_mssh_complete_warn_marks[@]}"; do
-		region_highlight=("${(@)region_highlight:#${(b)mark}}")
-	done
-	_mssh_complete_warn_marks=()
+	# drop our marks, found by their style: zsh moves a mark along with the text edited before it, so
+	# it is no longer where it was put (from zsh 5.9 the style holds memo=mssh-warn; before, another
+	# plugin's highlight in just that style goes too)
+	[[ -n $_mssh_complete_warn_drawn ]] && region_highlight=("${(@)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}}")
+	_mssh_complete_warn_drawn=
 }
 
 _mssh_complete_warn_clear() {
@@ -5055,11 +5061,13 @@ _mssh_complete_warn_answer() {
 	local pending=$1 reason=$2 mark style=underline,fg=red
 	shift 2
 	[[ -n ${NO_COLOR-} ]] && style=underline
+	(( _mssh_complete_memo )) && style+=' memo=mssh-warn'
 	_mssh_complete_warn_unmark
 	for mark in "$@"; do
-		_mssh_complete_warn_marks+=("$mark $style")
+		region_highlight+=("$mark $style")
 	done
-	region_highlight+=("${_mssh_complete_warn_marks[@]}")
+	# the style as zsh reports it (fg=red,underline), to find the marks again
+	(( $# )) && _mssh_complete_warn_drawn=${region_highlight[-1]#<-> <-> }
 	# one zle -M in a widget: after a second one zsh draws the line a row too high
 	if [[ -n $reason ]]; then
 		_mssh_complete_warn_reason=$reason
@@ -5089,8 +5097,8 @@ _mssh_complete_warn_setup() {
 	autoload -Uz is-at-least add-zle-hook-widget
 	is-at-least 5.3 || return 0
 	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
-	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason=
-	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
+	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason= _mssh_complete_warn_drawn=
+	typeset -ga _mssh_complete_warn_delays
 	zle -N _mssh_complete_warn_answer
 	zle -N _mssh_complete_warn_redraw
 	zle -N _mssh_complete_warn_finish
@@ -5103,8 +5111,10 @@ _mssh_complete_setup() {
 	# Ctrl-R, warnings, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
 	add-zsh-hook -d precmd _mssh_complete_setup
 	autoload -Uz is-at-least
-	typeset -gi _mssh_complete_fork=0
+	typeset -gi _mssh_complete_fork=0 _mssh_complete_memo=0
 	is-at-least 5.8 || _mssh_complete_fork=1
+	# from zsh 5.9 a highlight can carry a memo: the glue's own are then told apart from other plugins'
+	is-at-least 5.9 && _mssh_complete_memo=1
 	_mssh_complete_take_ctrl_r
 	_mssh_complete_warn_setup
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
