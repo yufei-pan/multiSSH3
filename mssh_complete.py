@@ -2111,22 +2111,6 @@ def _padded_range(name):
 		return None
 	return '{}[{}-{}]{}'.format(name[:start], low.zfill(len(high)), high, name[end + 1:])
 
-def _strip_zeros(name):
-	'''name with leading zeros dropped from every run of digits: gpu017 -> gpu17.'''
-	out = []
-	index = 0
-	while index < len(name):
-		end = index
-		while end < len(name) and name[end] in _DIGITS:
-			end += 1
-		if end > index:
-			out.append(name[index:end].lstrip('0') or '0')
-			index = end
-		else:
-			out.append(name[index])
-			index += 1
-	return ''.join(out)
-
 def _one_edit(typed, other):
 	'''Whether other is one insertion, deletion, substitution or swap of adjacent characters away from typed.'''
 	if typed == other:
@@ -2141,6 +2125,77 @@ def _one_edit(typed, other):
 		return False
 	short, long_ = (typed, other) if len(typed) < len(other) else (other, typed)
 	return any(long_[:index] + long_[index + 1:] == short for index in range(len(long_)))
+
+# Did-you-mean searches the sorted host names by bisecting: with 50k hosts, stripping or comparing
+# every name cost 33 ms per unknown host, and a line with a dozen of them outlasted the shells' wait.
+
+def _holds(names, name, lo=0, hi=None):
+	'''Whether the sorted list names holds name (between lo and hi).'''
+	index = bisect_left(names, name, lo, len(names) if hi is None else hi)
+	return index < len(names) and names[index] == name
+
+def _starts_some(names, prefix):
+	'''Whether a name of the sorted list names starts with prefix.'''
+	index = bisect_left(names, prefix)
+	return index < len(names) and names[index].startswith(prefix)
+
+def _zero_variants(names, name):
+	'''
+	The names of the sorted list names equal to name once leading zeros are dropped from every run
+	of digits (gpu017 -> gpu17; 000 -> 0), name itself included, in sorted order. They differ from
+	name only in how many zeros lead each run, so they are found run by run, never stripping a name.
+	'''
+	runs = []   # (the text before a run of digits, the run without its leading zeros)
+	text_start = index = 0
+	while index < len(name):
+		if name[index] not in _DIGITS:
+			index += 1
+			continue
+		end = index
+		while end < len(name) and name[end] in _DIGITS:
+			end += 1
+		runs.append((name[text_start:index], name[index:end].lstrip('0') or '0'))
+		text_start = index = end
+	tail = name[text_start:]
+	prefixes = ['']
+	for text, digits in runs:
+		grown = []
+		for prefix in prefixes:
+			head = prefix + text
+			zeros = ''
+			while _starts_some(names, head + zeros):
+				if _starts_some(names, head + zeros + digits):
+					grown.append(head + zeros + digits)
+				zeros += '0'
+		prefixes = grown
+	return sorted(prefix + tail for prefix in prefixes if _holds(names, prefix + tail))
+
+def _one_edit_names(names, name):
+	'''
+	The names of the sorted list names one edit away from name (_one_edit), in sorted order. A
+	changed or added character follows a part of name that some names start with: for each such
+	part only the characters that follow it in names are tried, each block of names found by bisecting.
+	'''
+	found = set()
+	for index in range(len(name) - 1):
+		found.add(name[:index] + name[index + 1] + name[index] + name[index + 2:])
+	for index in range(len(name)):
+		found.add(name[:index] + name[index + 1:])
+	found = {candidate for candidate in found if _holds(names, candidate)}
+	for index in range(len(name) + 1):
+		head = name[:index]
+		block = bisect_left(names, head)
+		if block < len(names) and names[block] == head:
+			block += 1
+		while block < len(names) and names[block].startswith(head):
+			char = names[block][index]
+			# names starting with head + char are names[block:end]
+			end = bisect_left(names, head + chr(ord(char) + 1), block) if ord(char) < sys.maxunicode else len(names)
+			for candidate in (head + char + name[index + 1:], head + char + name[index:]):
+				if _holds(names, candidate, block, end):
+					found.add(candidate)
+			block = end
+	return sorted(candidate for candidate in found if _one_edit(name, candidate))
 
 def _option_name(text, attached):
 	'''An option word without the value given with it: -ip=secret -> -ip, -uroot -> -u.'''
@@ -2610,14 +2665,12 @@ class Engine(object):
 		def possible(candidate):
 			state = states.get(candidate)
 			return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
-		stripped = _strip_zeros(name)
-		same = [candidate for candidate in self.hosts.names if candidate != name and _strip_zeros(candidate) == stripped and possible(candidate)]
+		same = [candidate for candidate in _zero_variants(self.hosts.names, name) if possible(candidate)]
 		if same:
 			return same[0] if len(same) == 1 else None
 		if len(name) < 4:
 			return None
-		close = [candidate for candidate in self.hosts.names
-			if abs(len(candidate) - len(name)) <= 1 and _one_edit(name, candidate) and possible(candidate)]
+		close = [candidate for candidate in _one_edit_names(self.hosts.names, name) if possible(candidate)]
 		return close[0] if len(close) == 1 else None
 
 	def _range_diagnostic(self, name, members, verdicts, total, span, states, now, wanted):

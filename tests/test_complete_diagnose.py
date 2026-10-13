@@ -119,6 +119,110 @@ def test_a_host_known_not_to_exist_is_never_suggested(engine):
 	assert warnings(engine, 'mssh gpu017 uptime')[0][0][2] == 'gpu017: unknown host'
 
 
+def strip_zeros(name):
+	'''name with leading zeros dropped from every run of digits: gpu017 -> gpu17.'''
+	out = []
+	index = 0
+	while index < len(name):
+		end = index
+		while end < len(name) and name[end] in '0123456789':
+			end += 1
+		if end > index:
+			out.append(name[index:end].lstrip('0') or '0')
+			index = end
+		else:
+			out.append(name[index])
+			index += 1
+	return ''.join(out)
+
+
+def did_you_mean_by_scan(names, name, states, now):
+	'''What mssh_complete 0.4 suggested, looking at every host name: the reference for the faster search.'''
+	def possible(candidate):
+		state = states.get(candidate)
+		return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
+	stripped = strip_zeros(name)
+	same = [candidate for candidate in names if candidate != name and strip_zeros(candidate) == stripped and possible(candidate)]
+	if same:
+		return same[0] if len(same) == 1 else None
+	if len(name) < 4:
+		return None
+	close = [candidate for candidate in names if abs(len(candidate) - len(name)) <= 1 and mc._one_edit(name, candidate) and possible(candidate)]
+	return close[0] if len(close) == 1 else None
+
+
+def engine_with_names(names):
+	engine = mc.Engine(SPEC, [], mc.HostTable())
+	engine.hosts.names = sorted(set(names))
+	return engine
+
+
+def mistype(rng, name, chars):
+	'''name with one random slip: a character changed, added, dropped or swapped, or zeros added or dropped.'''
+	at = rng.randrange(len(name) + 1)
+	slip = rng.randrange(6)
+	if slip == 0 and at < len(name):
+		return name[:at] + rng.choice(chars) + name[at + 1:]
+	if slip == 1:
+		return name[:at] + rng.choice(chars) + name[at:]
+	if slip == 2 and at < len(name):
+		return name[:at] + name[at + 1:]
+	if slip == 3 and at + 1 < len(name):
+		return name[:at] + name[at + 1] + name[at] + name[at + 2:]
+	if slip == 4:
+		return name[:at] + '0' * rng.randint(1, 3) + name[at:]
+	return name.replace('0', '', 1)
+
+
+def test_did_you_mean_finds_what_a_scan_of_every_name_finds():
+	import random
+	# few characters, many zeros and digit runs: many names are close to each other; the last ones
+	# are non-ASCII, a non-ASCII digit (not a digit for mssh), a surrogate and the highest code point
+	chars = 'ab-.' + '0' * 6 + '123' + 'é٣\udcff\U0010ffff'
+	for seed_number in range(40):
+		rng = random.Random(seed_number)
+		names = [''.join(rng.choice(chars) for _ in range(rng.randint(1, 9))) for _ in range(rng.randint(20, 300))]
+		names += ['{}{:0{}d}{}'.format(rng.choice(['n', 'gpu', '', 'r1n']), rng.randrange(120), rng.randint(1, 4), rng.choice(['', '-b', '.x0']))
+			for _ in range(rng.randint(0, 200))]
+		engine = engine_with_names(names)
+		states = {name: mc.HostState(rng.choice(['invalid', 'valid']), NOW - rng.choice([0, 10000])) for name in rng.sample(names, len(names) // 5)}
+		for _ in range(300):
+			typed = rng.choice(names)
+			for _ in range(rng.randint(0, 2)):
+				typed = mistype(rng, typed, chars)
+			if rng.random() < 0.1:
+				typed = ''.join(rng.choice(chars) for _ in range(rng.randint(0, 8)))
+			assert engine._did_you_mean(typed, states, NOW) == did_you_mean_by_scan(engine.hosts.names, typed, states, NOW), (seed_number, typed)
+
+
+class CountingNames(list):
+	'''A sorted list of host names that counts how many times its names are looked at.'''
+	looked = 0
+
+	def __getitem__(self, index):
+		item = list.__getitem__(self, index)
+		self.looked += len(item) if isinstance(index, slice) else 1
+		return item
+
+	def __iter__(self):
+		for item in list.__iter__(self):
+			self.looked += 1
+			yield item
+
+
+@pytest.mark.parametrize('typed', ['nodx01234', 'node1234', 'node001234', 'node0123x', 'node12345', 'gpu017', 'rack7', 'zz'])
+def test_did_you_mean_does_not_look_at_every_known_host(typed):
+	# with 50k hosts, looking at each one took 33 ms per unknown host: a line with a dozen of them
+	# outlasted the shells' 0.3 s and showed no warning at all
+	names = ['node{:05d}'.format(number) for number in range(50000)] + ['gpu{}'.format(number) for number in range(1, 17)] + ['login1']
+	engine = engine_with_names(names)
+	counting = engine.hosts.names = CountingNames(engine.hosts.names)
+	meant = engine._did_you_mean(typed, {}, NOW)
+	looked = counting.looked
+	assert looked < 5000
+	assert meant == did_you_mean_by_scan(list(counting), typed, {}, NOW)
+
+
 def test_each_host_of_a_list_is_marked_on_its_own(engine):
 	seed(engine, gpu017='invalid')
 	assert warnings(engine, 'mssh root@node01,root@gpu017 uptime')[0] == [('root@gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
