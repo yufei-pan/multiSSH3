@@ -162,3 +162,78 @@ def test_greppable_lines_keep_the_spaces_the_output_ends_with(fake_host):
 	lines = _greppable(fake_host, ["two spaces  ", "x" * 100])
 
 	assert "127.0.0.1 | rc: 0       | stdout      | two spaces  " in lines
+
+
+# Runs two commands on 127.0.0.[1-4] (.2 and .4 fail) through main, with ssh replaced; each command run is logged
+_CLI_SCRIPT = (
+	"import sys\n"
+	"sys.path.insert(0, {root!r})\n"
+	"import multiSSH3\n"
+	"def fake_run(host, sem, timeout=60, passwds=None, **kwargs):\n"
+	"\twith open({ran!r}, 'a') as ran:\n"
+	"\t\tran.write(host.command + '\\n')\n"
+	"\thost.stdout.extend({stdout!r})\n"
+	"\thost.returncode = 1 if host.name in ('127.0.0.2', '127.0.0.4') else 0\n"
+	"multiSSH3.run_command = fake_run\n"
+	"multiSSH3.main(['127.0.0.[1-4]', 'echo first', 'echo second', '--no_watch', '--no_history'])\n"
+)
+
+
+def _run_cli_script(tmp_path, stdout_lines, **popen_args):
+	run_dir = tmp_path / "run"
+	run_dir.mkdir(mode=0o700)
+	ran = tmp_path / "ran"
+	script = tmp_path / "mssh_cli.py"
+	script.write_text(_CLI_SCRIPT.format(root=ROOT, ran=str(ran), stdout=list(stdout_lines)))
+	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(run_dir))
+	result = subprocess.run([sys.executable, str(script)], env=env, cwd=str(tmp_path), timeout=60, **popen_args)
+	return result, ran.read_text().splitlines() if ran.exists() else []
+
+
+def _closed_pipe():
+	"""A pipe nobody reads: its write end, the read end already closed (like head that exited)."""
+	read_fd, write_fd = os.pipe()
+	os.close(read_fd)
+	return write_fd
+
+
+def test_a_closed_stdout_ends_the_run_quietly_with_its_own_status(tmp_path):
+	write_fd = _closed_pipe()
+	try:
+		result, ran = _run_cli_script(tmp_path, ["line %d" % k for k in range(2000)], stdout=write_fd, stderr=subprocess.PIPE)
+	finally:
+		os.close(write_fd)
+	stderr = result.stderr.decode("utf-8", "replace")
+
+	assert "Traceback" not in stderr
+	assert "BrokenPipeError" not in stderr
+	# the two failed hosts, as if stdout had been read
+	assert result.returncode == 2, stderr
+	# like a program SIGPIPE ends, the second command does not start
+	assert ran == ["echo first"] * 4
+
+
+def test_a_closed_stdout_and_stderr_pipe_ends_the_run_with_its_own_status(tmp_path):
+	# mssh ... 2>&1 | head: the flush at exit must not fail on stderr either (Python would exit 120)
+	write_fd = _closed_pipe()
+	try:
+		result, ran = _run_cli_script(tmp_path, ["line %d" % k for k in range(2000)], stdout=write_fd, stderr=write_fd)
+	finally:
+		os.close(write_fd)
+
+	assert result.returncode == 2
+	assert ran == ["echo first"] * 4
+
+
+def test_output_that_fits_the_pipe_buffer_still_ends_quietly(tmp_path):
+	# a short output waits in stdout's buffer: the failed write must not wait for the flush at exit
+	write_fd = _closed_pipe()
+	try:
+		result, ran = _run_cli_script(tmp_path, ["short"], stdout=write_fd, stderr=subprocess.PIPE)
+	finally:
+		os.close(write_fd)
+	stderr = result.stderr.decode("utf-8", "replace")
+
+	assert "Traceback" not in stderr and "BrokenPipeError" not in stderr
+	assert result.returncode == 2, stderr
+	assert ran == ["echo first"] * 4

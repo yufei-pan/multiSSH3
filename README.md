@@ -303,6 +303,14 @@ mssh www bash
 ```
 mssh cache all inputs and send them to all hosts when they are ready to receive inputs.
 
+### Piping the Output
+
+The output is printed when the commands finish, so it can be piped like any command's:
+```bash
+mssh all 'dmesg' | less
+```
+If the reader exits before reading all of it (`| head`, or `q` in `less`), mssh stops quietly as other command line tools do: no further commands or `--repeat` runs start, and the exit code still counts the hosts that failed in what ran.
+
 ### Curses Window Size Control
 
 By default, it will try to fit everything inside your window. 

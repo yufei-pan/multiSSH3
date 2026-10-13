@@ -3884,8 +3884,41 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		host.output.clear()
 	rtnStr = generate_output(hosts,usejson,greppable,encoding=_encoding,keyPressesIn=__keyPressesIn,errors_only=__global_suppress_printout)
 	if not quiet:
-		print(rtnStr)
+		try:
+			# flushed now: a reader that is gone fails here, not in the flush at exit
+			print(rtnStr, flush=True)
+		except BrokenPipeError:
+			_stdout_reader_gone()
 	return rtnStr
+
+def _stdout_reader_gone():
+	'''
+	Stop quietly when whatever reads stdout has gone (mssh ... | head, or q in less).
+
+	Like a program SIGPIPE ends: no traceback, and no more commands or repeats start. What ran
+	still counts towards the exit code, as after a Ctrl-C between runs. stdout, and stderr when
+	it is the same pipe (2>&1), are pointed at devnull as the Python docs suggest, so later
+	writes and the flush at exit do not fail again.
+	'''
+	global _emo
+	_emo = True
+	try:
+		stdout_fd = sys.stdout.fileno()
+		fds = [stdout_fd]
+		try:
+			if os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (an embedding program's stream): nothing to redirect
+		pass
 
 #%% ------------ Run / Process Hosts Block ----------------
 def _private_dir(path, create=True):
