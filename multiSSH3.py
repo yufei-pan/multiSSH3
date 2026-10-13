@@ -2466,6 +2466,17 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				else:
 					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}',f'-P {ipmi_definition.get("password",passwds)}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
 			elif ipmi_definition.get('ipmi_method') == 'redfish':
+				if 'redfishtool' not in _binPaths:
+					# this definition cannot run on this machine: the next one may
+					host.output.append('Error: redfishtool not found on the local machine!')
+					if not ipmi_definitions_list:
+						host.stderr.append('Error: redfishtool not found on the local machine!')
+						host.returncode = 1
+						return attempt('stop')
+					host.output.append('Trying the next ipmi definition...')
+					if __DEBUG_MODE:
+						host.stderr.append('Error: redfishtool not found on the local machine! Trying the next ipmi definition...')
+					return attempt('rebuild')
 				if host.command.startswith('redfishtool '):
 					host.command = host.command.replace('redfishtool ','')
 				elif host.command.startswith(_binPaths['redfishtool']):
