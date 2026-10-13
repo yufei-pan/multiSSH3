@@ -2523,7 +2523,7 @@ class Engine(object):
 		number = self.hosts.alias_index(name)
 		if number is not None:
 			members = self.hosts.alias_members(number)
-			return members, len(members)
+			return members[:RANGE_MEMBERS_LIMIT], len(members)
 		if '[' not in name:
 			return None
 		total = _range_count(name)

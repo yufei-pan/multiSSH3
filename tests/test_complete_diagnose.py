@@ -264,6 +264,16 @@ def test_a_huge_range_is_checked_up_to_the_member_limit(engine, monkeypatch):
 		'host[1-100000]', 'range', 'host[1-100000]: 1 of 100000 checked, 1 unknown so far')], True)
 
 
+def test_a_huge_alias_is_checked_up_to_the_member_limit(engine, tmp_path, monkeypatch):
+	# as a range is: ALLN=node[00000-49999] in ~/.bashrc queued all 50,000 hosts for DNS, ssh -G and ping
+	monkeypatch.setattr(mc, 'RANGE_MEMBERS_LIMIT', 4)
+	members = ['gpu{}'.format(number) for number in range(1, 9)]
+	engine.hosts = mc.HostTable(index(tmp_path, {member: HISTORY for member in members}, {'gpus': members}))
+	seed(engine, gpu1='invalid')
+	assert warnings(engine, 'mssh gpus uptime') == ([('gpus', 'range', 'gpus: 1 of 8 checked, 1 unknown so far')], True)
+	assert sorted(mc.take_probe_queue(engine.directory)) == ['gpu2', 'gpu3', 'gpu4']
+
+
 def test_ipv4_ranges_hold_only_addresses(engine):
 	# mssh's IPv4 range syntax: ranges, x, * or ? in an octet (found replaying real history)
 	assert warnings(engine, 'mssh 127.0.0.1-20,10.0.[1-2].x,10.1.1.* uptime')[0] == []
