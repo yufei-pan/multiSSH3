@@ -5623,29 +5623,61 @@ def _remove_rc_block(rc, messages):
 		_write_rc(rc, text, by_hand)
 		messages.append('removed the mssh block from ' + _shown(rc))
 
+def _login_text(path):
+	'''
+	The text of a login file, or None when there is none, or it is not a regular file (a FIFO
+	would wait for a writer); raises OSError when it cannot be read.
+	'''
+	import stat
+	try:
+		if not stat.S_ISREG(os.stat(path).st_mode):
+			return None
+	except FileNotFoundError:
+		return None
+	with open(path, encoding='utf-8', errors='replace') as f:
+		return f.read()
+
+def _loads_bashrc(home, text):
+	'''Whether a login file's text loads ~/.bashrc: itself, or through a file in home it sources (one level).'''
+	import re
+	if 'bashrc' in text:
+		return True
+	for line in text.splitlines():
+		if line.lstrip().startswith('#'):
+			continue
+		# `. ~/.profile`, `source "$HOME/.profile"`, `. "$HOME"/.profile`, `[ -f ~/.profile ] && . ~/.profile`
+		for name in re.findall(r'''(?:^|[\s;&|(])(?:\.|source)\s+["']?(?:~|\$HOME|\$\{HOME\})["']?/([^\s"';&|)]+)''', line):
+			try:
+				sourced = _login_text(os.path.join(home, name))
+			except OSError:
+				continue
+			if sourced is not None and 'bashrc' in sourced:
+				return True
+	return False
+
 def _bash_login_note(home, rc):
 	'''
-	A note for when bash login shells (ssh logins, macOS terminals) do not load rc, else None.
+	A note for when bash login shells (ssh logins, macOS terminals) do not seem to load rc, else None.
 
 	They read the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists and is readable,
 	not ~/.bashrc; most of those load ~/.bashrc (the distributions' own do), but not all.
 	'''
-	import stat
 	line = '[ -f ~/.bashrc ] && . ~/.bashrc'
 	for name in ('.bash_profile', '.bash_login', '.profile'):
 		login = os.path.join(home, name)
+		if not os.path.exists(login):
+			continue
 		try:
-			if not stat.S_ISREG(os.stat(login).st_mode):
-				# a FIFO would wait for a writer: no telling what it holds
-				return None
-			with open(login, encoding='utf-8', errors='replace') as f:
-				if 'bashrc' in f.read():
-					return None
-		except (FileNotFoundError, PermissionError):
+			text = _login_text(login)
+		except PermissionError:
+			# bash skips a login file it cannot read
 			continue
 		except OSError:
 			return None
-		return 'note: bash login shells (ssh logins, macOS terminals) read {}, which does not load {}; for autocomplete there too, add this line to it: {}'.format(login, rc, line)
+		if text is None or _loads_bashrc(home, text):
+			# no telling what a FIFO holds
+			return None
+		return 'note: bash login shells (ssh logins, macOS terminals) read {}, which does not seem to load {}; for autocomplete there too, add this line to it: {}'.format(login, rc, line)
 	return ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile, and there is none to load {1};'
 		' for autocomplete there too, create {0}/.bash_profile holding: {2}').format(home, rc, line)
 

@@ -253,6 +253,11 @@ LOGIN_LINE = '[ -f ~/.bashrc ] && . ~/.bashrc'
 	({'.bash_login': LOGIN_LINE + '\n'}, ''),
 	# bash reads the first of the three that exists
 	({'.bash_profile': 'export EDITOR=vi\n', '.profile': LOGIN_LINE + '\n'}, '.bash_profile'),
+	# a login file that sources another one which loads ~/.bashrc (one level deep)
+	({'.bash_profile': '. ~/.profile\n', '.profile': LOGIN_LINE + '\n'}, ''),
+	({'.bash_profile': '[ -f "$HOME/.profile" ] && source "$HOME/.profile"\n', '.profile': 'if [ -n "$BASH_VERSION" ]; then . "$HOME/.bashrc"; fi\n'}, ''),
+	({'.bash_profile': '# . ~/.profile\n', '.profile': LOGIN_LINE + '\n'}, '.bash_profile'),
+	({'.bash_profile': '. ~/.profile\n', '.profile': 'PATH=$HOME/bin:$PATH\n'}, '.bash_profile'),
 ])
 def test_bash_install_says_when_login_shells_do_not_load_bashrc(tmp_path, files, reads):
 	# login shells (ssh logins, macOS terminals) read ~/.bash_profile, ~/.bash_login or ~/.profile,
@@ -266,7 +271,7 @@ def test_bash_install_says_when_login_shells_do_not_load_bashrc(tmp_path, files,
 		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile,'
 			' and there is none to load {0}/.bashrc; for autocomplete there too, create {0}/.bash_profile holding: {1}').format(home, LOGIN_LINE)
 	elif reads:
-		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {}, which does not load {};'
+		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {}, which does not seem to load {};'
 			' for autocomplete there too, add this line to it: {}').format(home / reads, home / '.bashrc', LOGIN_LINE)
 	else:
 		assert messages[-1] == 'added a block loading it to {}'.format(home / '.bashrc')
