@@ -802,9 +802,11 @@ class MemoryKnowledge(object):
 	Records held in memory: identical invocations share one record whose weight sums their uses.
 
 	Used for the history tail not yet in the index, the shell's history, the replay evaluation,
-	and by the builder to aggregate records before writing them.
+	and by the builder to aggregate records before writing them. shell: it holds the shell's
+	history, where most runs are also in mssh's.
 	'''
 	def __init__(self):
+		self.shell = False
 		self.records = []
 		self._by_features = {}
 		self._postings = {}
@@ -2272,6 +2274,7 @@ def shell_history_knowledge(lines, spec):
 	other lines as local commands.
 	'''
 	memory = MemoryKnowledge()
+	memory.shell = True
 	count = len(lines)
 	for position, line in enumerate(lines):
 		line = line.strip()
@@ -2762,8 +2765,8 @@ class Engine(object):
 				count += knowledge.feature_uses(key)[0]
 		return count
 
-	def usage(self, context, value):
-		'''(times used, last used unix time) of a value of the current slot, over all knowledge.'''
+	def usage(self, context, value, knowledges=None):
+		'''(times used, last used unix time) of a value of the current slot, over all knowledge (or the given knowledges).'''
 		if context.slot == SLOT_HOSTS:
 			segment = value.rpartition(',')[2].rpartition('@')[2]
 			features = ['h:' + value, 't:' + segment]
@@ -2778,7 +2781,7 @@ class Engine(object):
 		for feature in features:
 			count = 0
 			last = 0
-			for knowledge in self.knowledges:
+			for knowledge in self.knowledges if knowledges is None else knowledges:
 				key = knowledge.feature_key(feature)
 				if key is not None and hasattr(knowledge, 'feature_uses'):
 					uses, when = knowledge.feature_uses(key)
@@ -3632,9 +3635,119 @@ def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
 	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
 
+def _run_key(options, hosts, commands, engine):
+	'''
+	What tells one mssh run from another however its line was written: the hosts, the commands, and
+	the options that change something, in any order and spelling. A flag counts by the value it
+	leaves when that is not the default (mssh's history has -su on every line), a value unless it is
+	the default (mssh leaves those out).
+
+	Args:
+		options (list): (OptionSpec, value or None) pairs
+		hosts (str): The hosts argument
+		commands (list): The command strings
+		engine (Engine): Its flag_sets and flag_defaults say what the flags do
+	'''
+	flags = {}
+	changes = []
+	for option, value in options:
+		if option.nargs == '0' and option.long in engine.flag_sets:
+			flags[option.dest] = engine.flag_sets[option.long]
+		elif value is None:
+			changes.append(('option', option.dest))
+		elif value != option.default:
+			changes.append(('value', option.dest, value))
+	changes.extend(('flag', dest, str(on)) for dest, on in flags.items() if on != engine.flag_defaults.get(dest, False))
+	return hosts, tuple(commands), tuple(sorted(changes))
+
+def _typed_run(line, engine):
+	'''(run key, features) of a shell line running mssh, or None when the history tab cannot offer it.'''
+	tokens = lex(line)
+	if not tokens or os.path.basename(tokens[0].text) not in MSSH_NAMES or _has_control(line):
+		return None
+	words = tokens[1:]
+	roles = assign_roles(words, engine.spec)
+	if any(option is not None and option.dest in PASSWORD_DESTS for _, option in roles):
+		return None
+	options, hosts, commands = _collect(words, roles)
+	commands = _join_commands(commands)
+	return _run_key(options, hosts, commands, engine), make_features(options, hosts, commands)
+
+def _history_items(request, engine, history_lines, name, features):
+	'''
+	The history tab: the past invocations, those most like the line first, then the newest.
+
+	A run is in mssh's history and, as typed, in the shell's: the shell's lines add the rows and
+	the uses mssh's history does not hold (runs with -I, and those it no longer holds).
+
+	Returns:
+		tuple: (PickItem list, MemoryKnowledge of the runs only the shell's history holds)
+	'''
+	entries = []   # [features shared with the line, unix time, text, uses]
+	numbers = {}   # text -> its number in entries
+	parsed = []    # (number in entries, hosts, commands, line) of mssh's history
+	for line in reversed(history_lines):
+		fields = line.rstrip('\r\n').split('\t')
+		if len(fields) != 5:
+			continue
+		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
+		text = ' '.join([name] + parts)
+		if text in numbers:
+			# the same text passed the checks already: count it without parsing it again
+			entries[numbers[text]][3] += 1
+			continue
+		if len(entries) >= HISTORY_LIMIT or not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
+			continue
+		entry = parse_history_line(line, engine.spec)
+		numbers[text] = len(entries)
+		if entry is None:
+			entries.append([0, 0, text, 1])
+			continue
+		parsed.append((len(entries), entry.hosts, tuple(entry.commands), line))
+		entries.append([len(features & set(entry.features())), entry.ts, text, 1])
+	unrecorded = MemoryKnowledge()
+	if len(entries) < HISTORY_LIMIT:
+		typed = {}  # run key -> [times in the shell's history, its features, its newest line]
+		runs = []   # the run keys, newest first
+		keys = {}   # line -> run key (None: not offered), so a line typed often is read once
+		for line in request.history[::-1] if request.shell != 'fish' else request.history:
+			line = line.strip()
+			if line not in keys:
+				found = _typed_run(line, engine)
+				keys[line] = found[0] if found is not None else None
+				if found is not None and found[0] not in typed:
+					typed[found[0]] = [0, found[1], line]
+					runs.append(found[0])
+			if keys[line] is not None:
+				typed[keys[line]][0] += 1
+		# the entries of mssh's history for those runs (most differ in their hosts or commands already)
+		recorded = {}
+		wanted = set(key[:2] for key in runs)
+		for number, hosts, commands, line in parsed:
+			if (hosts, commands) in wanted:
+				entry = parse_history_line(line, engine.spec)
+				key = _run_key(entry.options, hosts, commands, engine)
+				if key in typed:
+					recorded.setdefault(key, []).append(number)
+		for key in runs:
+			count, run_features, line = typed[key]
+			if key in recorded:
+				# mssh's history holds this many of the shell's lines; any more are runs it does not hold
+				count -= sum(entries[number][3] for number in recorded[key])
+				if count > 0:
+					entries[recorded[key][0]][3] += count
+			elif len(entries) < HISTORY_LIMIT:
+				# the newest spelling of a run only the shell's history holds
+				entries.append([len(features & set(run_features)), 0, line, count])
+			for _ in range(count):
+				unrecorded.add(run_features, 0.0)
+	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
+	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order], unrecorded
+
 def picker_items(request, engine, history_lines, now=None):
 	'''
-	What the picker offers for a request.
+	What the picker offers for a request. A row's uses count runs of mssh: one in mssh's history
+	and the shell's is one use, a local command none.
 
 	Returns:
 		tuple: (slot items, slot title, history items, word): word is the text before the cursor the
@@ -3642,6 +3755,12 @@ def picker_items(request, engine, history_lines, now=None):
 	'''
 	now = time.time() if now is None else now
 	context = parse_context(request.before, request.after, engine.spec)
+	name = 'mssh'
+	tokens = lex(request.before)
+	if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES:
+		name = tokens[0].raw
+	features = set(context.features) if context is not None else set()
+	history, unrecorded = _history_items(request, engine, history_lines, name, features)
 	slot = []
 	title = ''
 	word = None
@@ -3654,52 +3773,17 @@ def picker_items(request, engine, history_lines, now=None):
 			if tokens and tokens[-1].text == word and request.before.endswith(tokens[-1].raw):
 				asked = tokens[-1].raw
 		response = engine.query(Request(request.shell, request.before, request.after, asked, request.shell_version, dict(request.flags, insert='1')))
+		# the shell's history counts only for runs mssh's history does not hold
+		counted = [knowledge for knowledge in engine.knowledges if not getattr(knowledge, 'shell', False)] + [unrecorded]
 		for candidate in response.candidates:
 			value = (candidate.raw or candidate.text)[context.value_start:]
-			uses, last = engine.usage(context, value)
+			uses, last = engine.usage(context, value, counted)
 			slot.append(PickItem(candidate.text, candidate.description, uses, last))
 		title = {SLOT_HOSTS: 'hosts', SLOT_OPTION: 'options'}.get(context.slot, '')
 		if context.slot == SLOT_VALUE:
 			title = context.option.long
 		elif context.slot == SLOT_COMMAND:
 			title = 'commands for ' + context.hosts if context.hosts else 'commands'
-	name = 'mssh'
-	tokens = lex(request.before)
-	if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES:
-		name = tokens[0].raw
-	features = set(context.features) if context is not None else set()
-	seen = {}
-	entries = []
-	for line in reversed(history_lines):
-		fields = line.rstrip('\r\n').split('\t')
-		if len(fields) != 5:
-			continue
-		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
-		text = ' '.join([name] + parts)
-		if text in seen:
-			# the same text passed the checks already: count it without parsing it again
-			seen[text][1] += 1
-			continue
-		if len(entries) >= HISTORY_LIMIT or not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
-			continue
-		entry = parse_history_line(line, engine.spec)
-		overlap = len(features & set(entry.features())) if entry is not None else 0
-		ts = entry.ts if entry is not None else 0
-		seen[text] = [len(entries), 1]
-		entries.append([overlap, ts, text])
-	shell_lines = request.history[::-1] if request.shell != 'fish' else request.history
-	for line in shell_lines:
-		if len(entries) >= HISTORY_LIMIT:
-			break
-		line = line.strip()
-		if line in seen:
-			continue
-		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
-			seen[line] = [len(entries), 1]
-			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
-	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
-	history = [PickItem(entries[number][2], '', seen[entries[number][2]][1], entries[number][1]) for number in order]
 	return slot, title, history, word
 
 def apply_pick(request, picker, word, context):

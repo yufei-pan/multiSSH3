@@ -192,6 +192,84 @@ def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	assert mc.apply_pick(req, picker, None, None) == (texts[0], len(texts[0]))
 
 
+FLAGS = mc.flag_settings(multiSSH3.get_parser())
+
+
+def shell_engine(history, shell, defaults=None):
+	'''An engine as the shells get one: mssh's history, the shell's lines of the request, mssh's flags.'''
+	memory = mc.MemoryKnowledge()
+	memory.add_history(history, SPEC, NOW)
+	built = mc.Engine(SPEC, [memory, mc.shell_history_knowledge(shell, SPEC)])
+	built.flag_sets, built.flag_defaults = FLAGS[0], dict(FLAGS[1], **(defaults or {}))
+	return built
+
+
+def offered(history, shell, before='mssh ', defaults=None):
+	'''The picker's slot rows and history rows as (text, uses).'''
+	built = shell_engine(history, shell, defaults)
+	slot, _, rows, _ = mc.picker_items(request(before, history=shell), built, history, NOW)
+	return [(item.text, item.uses) for item in slot], [(item.text, item.uses) for item in rows]
+
+
+def runs(count, options, hosts, command):
+	'''count runs as mssh records them, a minute apart, the newest last.'''
+	return [line(NOW - 60 * (count - number), options, hosts, command) for number in range(count)]
+
+
+def test_a_run_in_both_histories_is_used_once():
+	# mssh records `mssh gpu[01-16] nvidia-smi` its own way (short options, -su always, its quoting);
+	# the shell keeps the line as typed: one run all the same
+	assert offered(runs(1, '-su', "'gpu[01-16]'", 'nvidia-smi'), ['mssh gpu[01-16] nvidia-smi']) == (
+		[('gpu[01-16]', 1)], [("mssh -su 'gpu[01-16]' nvidia-smi", 1)])
+
+
+def test_each_run_is_counted_once():
+	history = runs(3, '-su', "'gpu[01-16]'", 'nvidia-smi')
+	expected = ([('gpu[01-16]', 3)], [("mssh -su 'gpu[01-16]' nvidia-smi", 3)])
+	assert offered(history, ['mssh gpu[01-16] nvidia-smi'] * 3) == expected
+	# the shell may keep fewer of them (ignoredups, its tail), or more: runs mssh's history no longer holds
+	assert offered(history, ['mssh gpu[01-16] nvidia-smi']) == expected
+	assert offered(history[-1:], ['mssh gpu[01-16] nvidia-smi'] * 3) == expected
+
+
+def test_a_line_mssh_did_not_record_counts_each_time():
+	# mssh records no -I run: the shell's history is all there is
+	assert offered([], ['mssh -I login1 w'] * 2) == ([('login1', 2)], [('mssh -I login1 w', 2)])
+
+
+def test_spellings_of_one_run_are_one_row():
+	# the program's name and path, option spellings, their order and quoting
+	shell = ['mssh3 -u root -t 5 storage1 "df -h /data"', "multissh storage1 --timeout=5 --username root 'df -h /data'",
+		'/usr/local/bin/mssh -t5 -u=root storage1 df\\ -h\\ /data']
+	assert offered(runs(3, '-u=root -t=5 -su', 'storage1', "'df -h /data'"), shell) == (
+		[('storage1', 3)], [("mssh -u=root -t=5 -su storage1 'df -h /data'", 3)])
+	# mssh runs unquoted words as one command
+	assert offered(runs(1, '-su', 'node1', "'df /data'"), ['mssh node1 df /data'])[1] == [("mssh -su node1 'df /data'", 1)]
+
+
+def test_runs_that_differ_stay_apart():
+	history = runs(1, '-nsu', 'node1', 'uptime') + runs(1, '-su', 'node1', 'uptime')
+	slot, rows = offered(history, ['mssh -nsu node1 uptime', 'mssh node1 uptime', 'mssh -q node1 uptime'])
+	assert slot == [('node1', 3)]
+	assert rows == [('mssh -su node1 uptime', 1), ('mssh -nsu node1 uptime', 1), ('mssh -q node1 uptime', 1)]
+	# with -nsu the default of mssh's config, mssh records it on every line
+	assert offered(runs(1, '-nsu', 'node1', 'uptime'), ['mssh node1 uptime'], defaults={'skip_unreachable': False})[1] == [
+		('mssh -nsu node1 uptime', 1)]
+
+
+def test_local_commands_are_not_mssh_uses():
+	slot, _ = offered(runs(1, '-su', 'node1', 'uptime'), ['uptime', 'uptime', 'mssh node1 uptime'], 'mssh node1 up')
+	assert slot == [('uptime', 1)]
+
+
+def test_a_line_typed_many_times_is_read_once(monkeypatch):
+	lex = mc.lex
+	parsed = []
+	monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))
+	mc.picker_items(request('mssh ', history=['mssh node1 uptime'] * 500), engine(), [], NOW)
+	assert parsed.count('mssh node1 uptime') == 1
+
+
 def run_engine(args, data, env):
 	'''Run the engine with no controlling terminal.'''
 	import subprocess
