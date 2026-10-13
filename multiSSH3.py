@@ -693,26 +693,30 @@ def _check_config_value(name, value):
 		return None, 'not a setting a config file can change'
 	return None, 'expected {}, got {}'.format(expected, _config_value_text(value))
 
-def _check_config(config, config_file):
+def _check_config(config, config_file, replaced=()):
 	'''
 	The settings of config_file that can be used.
 
 	A value of the wrong type is left out with a warning naming the file and the key, so the
 	setting keeps its built-in (or less specific config file's) value. Keys that are not settings
 	are kept as they are: --store_config_file writes them back.
+
+	Args:
+		replaced (set): Keys a more specific config file sets: a wrong value is left out quietly, it
+			would not be used anyway (and the user may not be able to edit, say, a file in /etc)
 	'''
 	checked = {}
 	for name, value in config.items():
 		if name in _BUILTIN_SETTINGS or _PROGRAM_PATH_KEY.match(name):
 			value, problem = _check_config_value(name, value)
 			if problem:
-				eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
+				if name not in replaced:
+					eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
 				continue
 		checked[name] = value
 	return checked
 
 def load_config_file(config_file, check_trust=True):
-	global __working_config_file
 	'''
 	Load the config file to global variables
 
@@ -724,6 +728,24 @@ def load_config_file(config_file, check_trust=True):
 	Returns:
 		dict: The config, without values of the wrong type (see _check_config)
 	'''
+	return _check_config(_read_config_file(config_file, check_trust), config_file)
+
+def _load_config_chain(chain):
+	'''
+	The settings of the config files in chain (the most specific first, as CONFIG_FILE_CHAIN), merged.
+
+	A wrong value only warns when no more specific file in chain sets that key.
+	'''
+	files = [(path, _read_config_file(path)) for path in (os.path.expanduser(entry) for entry in reversed(chain))]
+	configs = {}
+	for index, (path, config) in enumerate(files):
+		replaced = set().union(*(more_specific for _, more_specific in files[index + 1:]))
+		configs.update(_check_config(config, path, replaced))
+	return configs
+
+def _read_config_file(config_file, check_trust=True):
+	'''The JSON object config_file holds, legacy keys mapped (see load_config_file), or {} when it cannot be used.'''
+	global __working_config_file
 	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
 	try:
@@ -740,7 +762,7 @@ def load_config_file(config_file, check_trust=True):
 		eprint(f"Error: Cannot load config file {config_file!r}: it holds {_json_kind(config)}, not an object of settings")
 		return {}
 	__working_config_file = config_file
-	return _check_config(apply_config_key_compat(config), config_file)
+	return apply_config_key_compat(config)
 
 
 def apply_config_key_compat(configs):
@@ -786,8 +808,7 @@ def _apply_config(configs):
 __configs_from_file = {}
 # where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
 __working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
-for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
-	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
+__configs_from_file.update(_load_config_chain(CONFIG_FILE_CHAIN))
 _apply_config(__configs_from_file)
 
 #%% Load mssh Functional Global Variables

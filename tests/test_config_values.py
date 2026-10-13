@@ -351,3 +351,31 @@ def test_null_hosts_in_a_config_still_means_no_default_hosts(tmp_path, capsys):
 
 	assert multiSSH3.load_config_file(str(path)) == {"DEFAULT_HOSTS": None}
 	assert "Warning" not in capsys.readouterr().err
+
+
+def _import_with_system_config(tmp_path, home_config, system_config, expression):
+	'''Import a copy of multiSSH3 whose /etc config is in tmp_path, HOME at tmp_path/home; print expression.'''
+	system = _write_config(tmp_path / "etc" / "multiSSH3.config.json", system_config)
+	home = tmp_path / "home"
+	_write_config(home / ".multiSSH3.config.json", home_config)
+	source = MULTISSH3_PY.read_text()
+	assert source.count("'/etc/multiSSH3.config.json'") == 1
+	(tmp_path / "relocated.py").write_text(source.replace("'/etc/multiSSH3.config.json'", repr(str(system))))
+	code = "import sys; sys.path.insert(0, {!r}); import relocated; print({})".format(str(tmp_path), expression)
+	result = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+		universal_newlines=True, env=dict(os.environ, HOME=str(home)), cwd=str(tmp_path), timeout=60)
+	return system, result
+
+
+def test_a_bad_value_a_more_specific_config_replaces_does_not_warn(tmp_path):
+	# a user cannot edit /etc: its value they replace in their own config must not warn on every run
+	system, result = _import_with_system_config(tmp_path,
+		{"DEFAULT_TIMEOUT": 20, "DEFAULT_PASSWORD": None},
+		{"DEFAULT_TIMEOUT": "abc", "DEFAULT_WINDOW_WIDTH": "wide", "DEFAULT_PASSWORD": "from-etc"},
+		"relocated.DEFAULT_TIMEOUT, repr(relocated.DEFAULT_PASSWORD), relocated.DEFAULT_WINDOW_WIDTH")
+
+	assert result.stdout.split() == ["20", "''", "40"], result.stderr
+	assert "DEFAULT_TIMEOUT" not in result.stderr
+	# a bad value nothing replaces still warns
+	assert "DEFAULT_WINDOW_WIDTH" in result.stderr
+	assert str(system) in result.stderr
