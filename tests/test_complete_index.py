@@ -197,3 +197,11 @@ def test_an_index_of_the_previous_format_is_not_read(home):
 		f.write(mc.INDEX_MAGIC + '\0' + '1' + data[len(mc.INDEX_MAGIC) + 1 + len(mc.INDEX_FORMAT):])
 	with pytest.raises(mc.IndexCorrupt):
 		mc.NsvIndex.load(path)
+
+
+def test_the_index_records_what_flags_do_and_their_defaults(home, monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_SKIP_UNREACHABLE', False)
+	index, directory = build()
+	engine = mc.engine_for(mc.Request('bash', 'mssh ', '', ''), directory, NOW)
+	assert engine.flag_sets['--no_skip_unreachable'] is False and engine.flag_sets['--skip_unreachable'] is True
+	assert engine.flag_defaults['skip_unreachable'] is False and engine.flag_defaults['ipmi'] is multiSSH3.DEFAULT_IPMI

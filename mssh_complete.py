@@ -272,6 +272,34 @@ def spec_from_parser(parser):
 			groups.get(id(action), ''), _one_line(default), _one_line(action.help or '')))
 	return ParserSpec(options)
 
+def flag_settings(parser):
+	'''
+	What the flags of an argparse parser do (index builder side): ({long string: the value it
+	sets}, {dest: its default}). The defaults follow the mssh config the parser was made with.
+	'''
+	import argparse
+	sets = {}
+	defaults = {}
+	for action in parser._actions:
+		if action.option_strings and isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+			sets[OptionSpec(action.dest, action.option_strings).long] = bool(action.const)
+			defaults[action.dest] = bool(parser.get_default(action.dest))
+	return sets, defaults
+
+def _flag_rows(sets, defaults):
+	'''flag_settings as index config rows.'''
+	return [['flag_sets'] + ['{}={}'.format(string, int(value)) for string, value in sorted(sets.items())],
+		['flag_defaults'] + ['{}={}'.format(dest, int(value)) for dest, value in sorted(defaults.items())]]
+
+def _flag_values(fields):
+	'''The 'name=0|1' fields of an index config row as name -> bool.'''
+	values = {}
+	for field in fields:
+		name, sep, value = field.rpartition('=')
+		if sep and value in ('0', '1'):
+			values[name] = value == '1'
+	return values
+
 #%% ------------ Context ----------------
 ROLE_OPTION = 'option'
 ROLE_VALUE = 'value'
@@ -1372,7 +1400,8 @@ def build_index(directory, now=None, mssh=None):
 	'''
 	now = time.time() if now is None else now
 	mssh = mssh or _import_mssh()
-	spec = spec_from_parser(mssh.get_parser())
+	parser = mssh.get_parser()
+	spec = spec_from_parser(parser)
 	history_path = os.path.expanduser(mssh.DEFAULT_HISTORY_FILE)
 	lines, offset, inode = read_history(history_path)
 	memory = MemoryKnowledge()
@@ -1450,7 +1479,7 @@ def build_index(directory, now=None, mssh=None):
 	}
 	sections = [
 		('spec', spec.to_rows()),
-		('config', [['users'] + sorted(user for user in users if safe_field(user))]),
+		('config', [['users'] + sorted(user for user in users if safe_field(user))] + _flag_rows(*flag_settings(parser))),
 		('sources', source_rows),
 		('features', [features]),
 		('fweights', [fweights]),
@@ -1691,6 +1720,32 @@ def write_host_states(directory, states):
 		except OSError:
 			pass
 		raise
+
+def read_unavailable(directory):
+	'''
+	The hosts mssh's unavailable_hosts.csv lists now: failed in a recent run of this boot, their
+	expiry (time.monotonic() seconds) not passed.
+	'''
+	try:
+		with open(os.path.join(directory, 'unavailable_hosts.csv'), encoding='utf-8', errors='replace') as f:
+			lines = f.read().split('\n')
+	except OSError:
+		return frozenset()
+	now = time.monotonic()
+	written = None
+	hosts = set()
+	for line in lines:
+		fields = line.strip().split(',')
+		if len(fields) != 2:
+			continue
+		if fields[0] == '#boot_id':
+			written = fields[1]
+		elif fields[0] and _is_digits(fields[1]) and int(fields[1]) > now:
+			hosts.add(fields[0])
+	current = boot_id()
+	if current and written and current != written:
+		return frozenset()
+	return frozenset(hosts)
 
 def _queueable(host):
 	return bool(host) and '\t' not in host and not _has_control(host)
@@ -2209,6 +2264,9 @@ class Engine(object):
 		self.users = list(users)
 		# the runtime directory: host states, the probe queue; None runs without them
 		self.directory = None
+		# what mssh's flags set ({long string: value}) and their defaults ({dest: value}): flag_settings
+		self.flag_sets = {}
+		self.flag_defaults = {}
 
 	def query(self, request, deadline=None):
 		ghost = request.flags.get('ghost') == '1'
@@ -2266,15 +2324,18 @@ class Engine(object):
 			return [], False
 		cursor = len(request.before)
 		words = tokens[start + 1:]
+		roles = assign_roles(words, self.spec)
 		states = self.host_states()
+		unavailable = read_unavailable(self.directory) if self.directory else frozenset()
+		reach = (unavailable,) + self._line_settings(words, roles)
 		wanted = []
 		found = []
-		for token, (role, _) in zip(words, assign_roles(words, self.spec)):
+		for token, (role, _) in zip(words, roles):
 			if token.start <= cursor <= token.start + len(token.raw):
 				# still being typed
 				continue
 			if role == ROLE_HOSTS:
-				found.extend(self._host_diagnostics(token, states, now, wanted))
+				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
 		wanted = _unique(wanted)
 		if probe and wanted and self.directory:
 			try:
@@ -2285,8 +2346,11 @@ class Engine(object):
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
 		return found, bool(wanted)
 
-	def _host_diagnostics(self, token, states, now, wanted):
-		'''Unknown hosts and range surprises in a hosts word.'''
+	def _host_diagnostics(self, token, states, now, wanted, reach):
+		'''
+		Unknown hosts, range surprises and unreachable hosts in a hosts word. reach is (the hosts
+		in mssh's unavailable list, whether they are skipped, the ping expiry).
+		'''
 		found = []
 		for name, (start, end) in _host_parts(token):
 			if not name:
@@ -2295,10 +2359,22 @@ class Engine(object):
 			if members is None:
 				if self._verdict(name, states, now, wanted) == 'invalid':
 					found.append(Diagnostic(start, end, 'unknown', self._unknown_message(name, states, now)))
+				else:
+					why = self._unreachable(name, states.get(name), now, reach)
+					if why:
+						found.append(Diagnostic(start, end, 'unreachable', why))
 			elif members:
-				item = self._range_diagnostic(name, members[0], members[1], (start, end), states, now, wanted)
+				members, total = members
+				verdicts = [self._verdict(member, states, now, wanted) for member in members]
+				item = self._range_diagnostic(name, members, verdicts, total, (start, end), states, now, wanted)
 				if item is not None:
 					found.append(item)
+				down = [member for member, verdict in zip(members, verdicts)
+					if verdict != 'invalid' and self._unreachable(member, states.get(member), now, reach)]
+				if down:
+					_, more = _punctuation()
+					shown = ', '.join(down[:3] + ([more] if len(down) > 3 else []))
+					found.append(Diagnostic(start, end, 'unreachable', '{}: {} unreachable ({})'.format(name, len(down), shown)))
 		return found
 
 	def _host_members(self, name):
@@ -2341,6 +2417,47 @@ class Engine(object):
 			wanted.append(name)
 		return state.fresh_validity(now) if state is not None else ''
 
+	def _line_settings(self, words, roles):
+		'''
+		(whether unreachable hosts are skipped, the ping expiry in seconds) for the options of a line.
+
+		Skipping: the last of -su / -nsu on the line, else the mssh config's default; --script
+		always skips (process_args). Ping expiry: $MSSH_COMPLETE_PING_TTL, else mssh's unreachable
+		host expiry (-uhe on the line, else its default).
+		'''
+		flags = {}
+		expiry = None
+		for token, (role, option) in zip(words, roles):
+			if option is None:
+				continue
+			if role == ROLE_OPTION and option.nargs == '0' and option.long in self.flag_sets:
+				flags[option.dest] = self.flag_sets[option.long]
+			elif option.dest == 'unavailable_host_expiry':
+				value = token.text if role == ROLE_VALUE else self.spec.lookup(token.text)[1]
+				if value is not None and _is_digits(value):
+					expiry = int(value)
+		def flag(dest):
+			return flags.get(dest, self.flag_defaults.get(dest, False))
+		skipping = flag('script') or flag('skip_unreachable')
+		ttl = os.environ.get('MSSH_COMPLETE_PING_TTL', '')
+		if _is_digits(ttl) and int(ttl) > 0:
+			expiry = int(ttl)
+		if expiry is None:
+			default = next((option.default for option in self.spec.options if option.dest == 'unavailable_host_expiry'), '')
+			expiry = int(default) if _is_digits(default) else 600
+		return skipping, expiry
+
+	def _unreachable(self, name, state, now, reach):
+		'''Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering ping.'''
+		unavailable, skipping, expiry = reach
+		if name in unavailable:
+			dash, _ = _punctuation()
+			return '{}: {}unreachable in a recent mssh run'.format(name, 'will be skipped' + dash if skipping else '')
+		if (state is not None and state.fresh_ping(now) == 'silent' and state.answered_at
+				and now - state.answered_at <= expiry):
+			return '{}: no answer to ping (answered {} min ago)'.format(name, max(1, int((now - state.answered_at) // 60)))
+		return None
+
 	def _unknown_message(self, name, states, now):
 		dash, _ = _punctuation()
 		meant = self._did_you_mean(name, states, now)
@@ -2365,12 +2482,11 @@ class Engine(object):
 			if abs(len(candidate) - len(name)) <= 1 and possible(candidate) and _one_edit(name, candidate)]
 		return close[0] if len(close) == 1 else None
 
-	def _range_diagnostic(self, name, members, total, span, states, now, wanted):
-		'''The warning for a range or an alias with members mssh would reject, or None.'''
+	def _range_diagnostic(self, name, members, verdicts, total, span, states, now, wanted):
+		'''The warning for a range or an alias with members mssh would reject (verdicts: theirs, in order), or None.'''
 		unknown = []
 		checked = 0
-		for member in members:
-			verdict = self._verdict(member, states, now, wanted)
+		for member, verdict in zip(members, verdicts):
 			if verdict:
 				checked += 1
 				if verdict == 'invalid':
@@ -2869,9 +2985,12 @@ def engine_for(request, directory=Ellipsis, now=None):
 		knowledges.append(SnapshotKnowledge(index, now))
 		config = {row[0]: row[1:] for row in (index.row('config', number) for number in range(index.count('config'))) if row}
 		users = config.get('users', ())
+		flags = (_flag_values(config.get('flag_sets', ())), _flag_values(config.get('flag_defaults', ())))
 	else:
 		# degraded: no index, so options come from mssh's parser and history is not ranked
-		spec = spec_from_parser(_import_mssh().get_parser())
+		parser = _import_mssh().get_parser()
+		spec = spec_from_parser(parser)
+		flags = flag_settings(parser)
 	if tail:
 		memory = MemoryKnowledge()
 		memory.add_history(tail, spec, now)
@@ -2883,6 +3002,7 @@ def engine_for(request, directory=Ellipsis, now=None):
 	engine = Engine(spec, knowledges, HostTable(index), users)
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	engine.directory = directory
+	engine.flag_sets, engine.flag_defaults = flags
 	return engine
 
 #%% ------------ Terminal ----------------

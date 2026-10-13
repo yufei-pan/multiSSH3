@@ -1,4 +1,6 @@
 '''Warnings before Enter: what the engine says about the words of an mssh line already typed.'''
+import os
+
 import pytest
 
 import multiSSH3
@@ -155,3 +157,82 @@ def test_diag_requests_answer_with_w_records(engine, monkeypatch):
 	text = mc.format_response(response, nul=False).decode()
 	assert 'W 5\t11\tunknown\tgpu017: unknown host — did you mean gpu17?\n' in text
 	assert 'D pending\n' in text
+
+
+def unavailable(engine, *hosts, boot='boot-a', left=300):
+	'''mssh's unavailable_hosts.csv, as a run that failed on hosts writes it.'''
+	expiry = int(mc.time.monotonic()) + left
+	with open(os.path.join(engine.directory, 'unavailable_hosts.csv'), 'w') as f:
+		f.write('#boot_id,{}\n'.format(boot) + ''.join('{},{}\n'.format(host, expiry) for host in hosts))
+
+
+@pytest.fixture
+def skipping(engine):
+	'''Skipping unreachable hosts on by default, as mssh ships.'''
+	engine.flag_sets, engine.flag_defaults = mc.flag_settings(multiSSH3.get_parser())
+	engine.flag_defaults['skip_unreachable'] = True
+	return engine
+
+
+@pytest.mark.parametrize('options, message', [
+	('', 'node05: will be skipped — unreachable in a recent mssh run'),
+	('-nsu ', 'node05: unreachable in a recent mssh run'),
+	# --script skips unreachable hosts whatever else is given
+	('--script -nsu ', 'node05: will be skipped — unreachable in a recent mssh run'),
+])
+def test_a_host_that_failed_in_a_recent_run(skipping, options, message):
+	unavailable(skipping, 'node05')
+	assert warnings(skipping, 'mssh {}node05 uptime'.format(options))[0] == [('node05', 'unreachable', message)]
+
+
+def test_when_skipping_is_off_by_default_only_su_skips(skipping):
+	skipping.flag_defaults['skip_unreachable'] = False
+	unavailable(skipping, 'node05')
+	assert warnings(skipping, 'mssh node05 uptime')[0][0][2] == 'node05: unreachable in a recent mssh run'
+	assert warnings(skipping, 'mssh -su node05 uptime')[0][0][2] == 'node05: will be skipped — unreachable in a recent mssh run'
+
+
+@pytest.mark.parametrize('boot, left', [('boot-b', 300), ('boot-a', -5)], ids=['another_boot', 'expired'])
+def test_old_failures_are_forgotten(skipping, boot, left):
+	unavailable(skipping, 'node05', boot=boot, left=left)
+	assert warnings(skipping, 'mssh node05 uptime')[0] == []
+
+
+def pinged(engine, host, ping, pinged_ago, answered_ago=None):
+	mc.write_host_states(engine.directory, {host: mc.HostState('valid', NOW, ping, NOW - pinged_ago, 0.0 if answered_ago is None else NOW - answered_ago)})
+
+
+def test_a_host_that_stopped_answering_ping(skipping):
+	pinged(skipping, 'login1', 'silent', 10, answered_ago=240)
+	assert warnings(skipping, 'mssh login1 uptime') == ([('login1', 'unreachable', 'login1: no answer to ping (answered 4 min ago)')], False)
+
+
+@pytest.mark.parametrize('pinged_ago, answered_ago', [
+	(10, None),   # never answered: ping may be blocked, ssh may still work
+	(10, 700),    # answered longer ago than the ping expiry (600 s)
+	(90, 120),    # the silent ping is older than a minute: asked again
+])
+def test_ping_silence_alone_says_nothing(skipping, pinged_ago, answered_ago):
+	pinged(skipping, 'login1', 'silent', pinged_ago, answered_ago)
+	assert warnings(skipping, 'mssh login1 uptime')[0] == []
+
+
+def test_the_ping_expiry_follows_mssh_or_the_environment(skipping, monkeypatch):
+	pinged(skipping, 'login1', 'silent', 10, answered_ago=700)
+	monkeypatch.setenv('MSSH_COMPLETE_PING_TTL', '900')
+	assert warnings(skipping, 'mssh login1 uptime')[0][0][2] == 'login1: no answer to ping (answered 11 min ago)'
+	monkeypatch.delenv('MSSH_COMPLETE_PING_TTL')
+	# -uhe on the line is mssh's expiry for this run
+	assert warnings(skipping, 'mssh -uhe 900 login1 uptime')[0][0][2] == 'login1: no answer to ping (answered 11 min ago)'
+
+
+def test_unreachable_members_of_a_range(skipping):
+	unavailable(skipping, 'node03')
+	mc.write_host_states(skipping.directory, {'node07': mc.HostState('valid', NOW, 'silent', NOW - 5, NOW - 60)})
+	assert warnings(skipping, 'mssh node[01-08] uptime')[0] == [('node[01-08]', 'unreachable', 'node[01-08]: 2 unreachable (node03, node07)')]
+
+
+def test_an_unknown_host_is_not_also_unreachable(skipping):
+	seed(skipping, gpu017='invalid')
+	unavailable(skipping, 'gpu017')
+	assert [kind for _, kind, _ in warnings(skipping, 'mssh gpu017 uptime')[0]] == ['unknown']
