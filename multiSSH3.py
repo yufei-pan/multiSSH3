@@ -5625,8 +5625,8 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	when it is on, a value when it is not the CLI's default (the parser's, config files applied: a
 	replay gets the same one). Values are attached with "=", so none is read as a host or command.
 
-	Not listed: -ip (an IPMI password is not spread further; -p is, by design: README), the options
-	that do something besides the run (--generate_config_file, --store_config_file,
+	Not listed: -ip (an IPMI password is not spread further; -p is, by design: README) and, when it is
+	given, the other IPMI options, the options that do something besides the run (--generate_config_file, --store_config_file,
 	--add_control_master_config), and those main() folds into others: -T into -t, -uk and -k DIR into
 	-k FILE, --script into its options, -s PATH into -f PATH -fs.
 	'''
@@ -5661,11 +5661,15 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	# always listed, comes after it
 	flag('file_sync', '--file_sync', '-fs')
 	flag('ipmi', '--ipmi')
-	option('ipmi_interface_ip_prefix', '--ipmi_interface_ip_prefix', '-mpre')
-	option('ipmi_username', '--ipmi_username', '-iu')
-	option('ipmi_args', '--ipmi_args', '-ia')
-	option('ipmi_method', '--ipmi_method', '-im')
-	option('ipmi_retry_lockout_time', '--ipmi_retry_lockout_time', '-irlt')
+	if kwargs.get('ipmi_password', defaults.get('ipmi_password')) == defaults.get('ipmi_password'):
+		# with -ip, left out, these would make with the configured password a login nobody gave, tried
+		# first on every BMC: a failed login each, towards locking the account. A replay without them
+		# tries the configured logins, as a plain --ipmi run
+		option('ipmi_interface_ip_prefix', '--ipmi_interface_ip_prefix', '-mpre')
+		option('ipmi_username', '--ipmi_username', '-iu')
+		option('ipmi_args', '--ipmi_args', '-ia')
+		option('ipmi_method', '--ipmi_method', '-im')
+		option('ipmi_retry_lockout_time', '--ipmi_retry_lockout_time', '-irlt')
 	option('interface_ip_prefix', '--interface_ip_prefix', '-pre')
 	flag('scp', '--scp')
 	flag('gather_mode', '--gather_mode', '-gm')
@@ -5680,7 +5684,10 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	option('env_file', '--env_file', '-ef')
 	# only env files given explicitly: listing the defaults would make a replayed line trust them all
 	options('env_files', '--env_files', '-efs')
-	option('host_file', '--host_file')
+	host_file = kwargs.get('host_file')
+	if host_file is not None and host_file != defaults.get('host_file'):
+		# absolute (mssh does not expand ~ in it): a replay in another directory reads the same hosts
+		argsList.append('--host_file={}'.format(_shell_quote(os.path.abspath(host_file) if host_file else host_file)))
 	if kwargs.get('config_file'):
 		# a config file can set any global (even the ssh binary): a replay elsewhere must load this one,
 		# not one a relative path finds in the directory it runs in
@@ -5733,8 +5740,13 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 	if commandArgKwargs.get('files'):
 		commandArgKwargs['file'] = list(commandArgKwargs.get('file') or []) + list(commandArgKwargs['files'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
-	commandStr = ' '.join(_shell_quote(command) for command in format_commands(commands))
+	commands = format_commands(commands)
+	commandStr = ' '.join(_shell_quote(command) for command in commands)
 	hostStr = _shell_quote(hostStr)
+	if any(command.startswith('-') for command in commands):
+		# else read as an mssh option. After the hosts, where it is typed: every Python's argparse reads
+		# "HOSTS -- -x" so, while 3.11 and older read -x as an option in "-- HOSTS -x"
+		hostStr += ' --'
 	filePath = os.path.abspath(__file__)
 	programName = _shell_quote(filePath) if filePath else 'mssh'
 	if tabSeperated:
