@@ -1997,7 +1997,11 @@ _consulted_env = {}
 
 def _consult_env(name):
 	'''os.environ.get(name), remembering the value so the caches refresh when it changes.'''
-	value = os.environ.get(name)
+	try:
+		value = os.environ.get(name)
+	except UnicodeEncodeError:
+		# a name the locale cannot encode (Python 3.6 in the C locale) cannot be a variable either
+		return None
 	_consulted_env.setdefault(name, value)
 	return value
 

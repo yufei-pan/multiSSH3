@@ -1317,6 +1317,13 @@ def _is_ip(text):
 	except ValueError:
 		return False
 
+def _in_environ(name):
+	'''Whether name is an environment variable. A name the locale cannot encode (Python 3.6 in the C locale) is none.'''
+	try:
+		return name in os.environ
+	except UnicodeEncodeError:
+		return False
+
 _ALIAS_VALUE_CHARS = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-,[]@*?:$')
 
 def collect_aliases(mssh, history_tokens, known):
@@ -1344,7 +1351,7 @@ def collect_aliases(mssh, history_tokens, known):
 		if name in history_tokens or ',' in value or '[' in value or all(_is_ip(member) or member in known for member in members):
 			aliases[name] = ('env_file', members)
 	for name in history_tokens:
-		if name in aliases or not name.isidentifier() or name not in os.environ:
+		if name in aliases or not name.isidentifier() or not _in_environ(name):
 			continue
 		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
 		if members and members != [name]:
@@ -2487,7 +2494,7 @@ class Engine(object):
 		config files (mssh reads them at Enter, from the shell's directory), or the name is a variable
 		of the shell (the prober may have started from another shell).
 		'''
-		return reach[3] or name.rsplit('@', 1)[-1].strip().strip('$') in os.environ
+		return reach[3] or _in_environ(name.rsplit('@', 1)[-1].strip().strip('$'))
 
 	def _valid_at_once(self, name):
 		'''An IP address or a hosts-file name: valid without DNS.'''

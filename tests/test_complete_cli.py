@@ -195,3 +195,58 @@ def test_a_shell_that_cannot_be_told_is_asked_for(capsys, monkeypatch):
 
 	assert mc.completion_command(['install']) == 2
 	assert 'cannot tell which shell to set up' in capsys.readouterr().err
+
+
+# Python 3.6 in the C locale (cron, containers, ssh without LANG on CentOS 7 / RHEL 8): os.environ holds
+# ASCII names only, and looking up a name with another character raised UnicodeEncodeError. Later
+# Pythons behave so with -X utf8=0.
+C_LOCALE_PYTHON = [sys.executable, '-I', '-X', 'utf8=0']
+
+
+def _c_locale_env(env):
+	env = dict(env, LC_ALL='C', LANG='C')
+	encoding = subprocess.run(C_LOCALE_PYTHON + ['-c', 'import sys; print(sys.getfilesystemencoding())'], env=env,
+		stdout=subprocess.PIPE, timeout=30).stdout.decode().strip()
+	if encoding not in ('ascii', 'ANSI_X3.4-1968'):
+		pytest.skip('the C locale here encodes file names as {}'.format(encoding))
+	return env
+
+
+def test_a_non_ascii_word_in_the_history_does_not_stop_the_index_build(tmp_path):
+	env, _ = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\u00e9llo\t"uptime"'])
+
+	result = subprocess.run(C_LOCALE_PYTHON + [str(REPO / 'mssh_complete.py'), 'rebuild'], env=_c_locale_env(env),
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+
+	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+
+
+_HOST_SCRIPT = '''
+import sys, time
+sys.path.insert(0, {repo!r})
+import multiSSH3, mssh_complete as mc
+host = 'h\\u00e9llo'
+print(ascii(multiSSH3.expand_hostnames_local([host])))
+# the warnings for a line naming it, once the prober has found it invalid
+mc.spawn_probe = lambda directory: True
+engine = mc.Engine(mc.spec_from_parser(multiSSH3.get_parser()), [])
+engine.directory = {directory!r}
+now = time.time()
+mc.write_host_states(engine.directory, {{host: mc.HostState('invalid', now)}})
+found, _ = engine.diagnose(mc.Request('bash', 'mssh ' + host + ' uptime', '', ''), now=now)
+print(ascii([(item.kind, item.message) for item in found]))
+'''
+
+
+def test_a_host_name_the_locale_cannot_encode_is_no_variable(tmp_path):
+	env, _ = make_home(tmp_path)
+	directory = tmp_path / 'states'
+	directory.mkdir(mode=0o700)
+	script = tmp_path / 'hosts.py'
+	script.write_text(_HOST_SCRIPT.format(repo=str(REPO), directory=str(directory)))
+
+	result = subprocess.run(C_LOCALE_PYTHON + [str(script)], env=_c_locale_env(env), stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE, timeout=60)
+
+	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+	assert result.stdout.decode().splitlines() == ["(['h\\xe9llo'], ['h\\xe9llo'])", "[('unknown', 'h\\xe9llo: unknown host')]"]
