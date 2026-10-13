@@ -267,7 +267,9 @@ def test_oneonone_unreachable_host_keeps_its_command_slot(monkeypatch, tmp_path)
 
 	hosts = _oneonone(monkeypatch, tmp_path, "mock-a,mock-b", ["ca", "cb"], skip_unreachable=True)
 
-	assert [(h.name, h.command) for h in hosts] == [("mock-b", "cb")]
+	# the unreachable host is returned with its command, not run and failed
+	assert [(h.name, h.command, h.skipped, h.returncode) for h in hosts] == [
+		("mock-a", "ca", True, 255), ("mock-b", "cb", False, None)]
 
 
 def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_path):

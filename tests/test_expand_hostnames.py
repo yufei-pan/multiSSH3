@@ -395,3 +395,20 @@ def test_lookups_still_run_when_no_thread_can_be_started(monkeypatch):
 	multiSSH3._run_in_threads(done.append, ["a", "b", "c"])
 
 	assert sorted(done) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("token", [
+	"node[1-3]", "node[3-1]", "root@node[3-1]", "10.0.0.1-3", "10.0.0.20-10", "plainname",
+	"MSSH_TEST_EMPTY", "MSSH_TEST_NESTED_EMPTY", "MSSH_TEST_GROUP", "$MSSH_TEST_EMPTY", "MSSH_TEST_EMPTY[1-2]",
+])
+def test_names_a_host_agrees_with_local_expansion(monkeypatch, tmp_path, token):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	monkeypatch.setenv("MSSH_TEST_EMPTY", "")
+	monkeypatch.setenv("MSSH_TEST_EMPTY1", "")
+	monkeypatch.setenv("MSSH_TEST_EMPTY2", "node[2-1]")
+	monkeypatch.setenv("MSSH_TEST_NESTED_EMPTY", "MSSH_TEST_EMPTY, node[9-8]")
+	monkeypatch.setenv("MSSH_TEST_GROUP", "MSSH_TEST_EMPTY,10.0.0.1")
+	multiSSH3._refresh_expansion_caches()
+
+	assert multiSSH3._names_a_host(token) == bool(multiSSH3.expand_hostnames_local(token)[0])

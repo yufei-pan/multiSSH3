@@ -293,6 +293,8 @@ mssh testrig[1-10] lsblk
 mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
 ```
 
+A host you give that names no host at all, such as a range counting down ( `node[10-1]`, `10.0.0.20-10` ) or an empty alias, is an error like a name that does not resolve: mssh says why, counts it as a failed host and lists it in `failed_hosts`. When none of the hosts you gave names a host, mssh stops with `Exiting: no hosts to run on` without running anything. Empty groups inside an alias ( like `eu=''` in the example above ) are fine. If `-X, --skip_hosts` excludes every host, mssh warns.
+
 ## Misc Features
 
 ### Interactive Inputs
@@ -607,9 +609,10 @@ mssh -f ./data/ allServers /tmp/data/
 
 ### `-x, -su, --skip_unreachable` | _`DEFAULT_SKIP_UNREACHABLE`_
 - Skip unreachable hosts.
-- Note: Timedout Hosts are considered unreachable.
+- Note: a host whose command hits `-t, --timeout` before printing anything is considered unreachable: mssh cannot tell a host that never answers from a command that is quiet from the start. A host that printed something answered, so it is not.
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
+- A skipped host is not run and counts as a failed host: it shows return code 255 ( what ssh returns when it cannot connect ) with a line saying it was skipped, and the summary lists it after `failed_hosts:` as `Skipped N hosts unreachable in a recent run, without trying them: ...`. So mssh does not exit 0 or print `Success` when it skipped a host.
 - mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in `$XDG_RUNTIME_DIR/multiSSH3/`, or else in a private `multiSSH3-<uid>` folder in the system temp folder ( cleared at reboot ). If neither can be used, they are only kept for the current run.
 - To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
 
@@ -698,6 +701,19 @@ Host *
 - Print the version of multiSSH3 and exit.
 - Will also print the found system binary for calling when setting up connections.
 
+## Exit Codes
+
+mssh exits with the number of failed hosts, so `0` means every host ran the command and returned 0. A failed host is one that:
+- returned non-zero ( counted once, however many commands or `-r, --repeat` runs it failed ),
+- was skipped because it was unreachable in a recent run ( see `-x, --skip_unreachable` ),
+- or is a host name that does not resolve, or a host you gave that names no host ( like `node[10-1]` ).
+
+The count stops at 255, as an exit status only has 8 bits. `-Z, --return_zero` makes it 0. When no host is left to run on ( every host you gave is one of the last kind ), mssh stops with `Exiting: no hosts to run on` and the same count. If `-X, --skip_hosts` excludes every host, nothing runs, mssh warns and exits 0.
+
+Before anything runs, mssh can also stop with: 2 for a bad option, 66 when the `-f, --file` sources are not found, 255 when `-11, --oneonone` gets a different number of commands and hosts, and 1 for Ctrl-C.
+
+The return code shown for each host is the command's own, or: 255 when ssh could not connect ( or the host was skipped as unreachable ), 124 when `-t, --timeout` stopped it, and -1 for an error in mssh itself.
+
 ## Usage
 
 Use ```mssh --help``` for more info.
@@ -774,9 +790,9 @@ options:
   -P, -g, --greppable, --table
                         Output in greppable table. (default: False)
   -x, -su, --skip_unreachable
-                        Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: True)
+                        Skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: True)
   -a, -nsu, --no_skip_unreachable
-                        Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: False)
+                        Do not skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: False)
   -uhe, --unavailable_host_expiry UNAVAILABLE_HOST_EXPIRY
                         Time in seconds to expire the unavailable hosts (default: 600)
   -X, -sh, --skip_hosts SKIP_HOSTS
@@ -843,7 +859,11 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
+		self.skipped = False # True when mssh did not run the command: the host was unreachable in a recent run
 ```
+
+A host skipped because it was unreachable in a recent run ( see `-x, --skip_unreachable` ) is in the returned list without being run: its `skipped` is `True`, its `returncode` is 255 and its `stderr` says why. `start_run_on_hosts()` does not start it.
 
 ### Example:
 
