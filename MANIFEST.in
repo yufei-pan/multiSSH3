@@ -1,0 +1,6 @@
+# The sdist carries the whole test suite and its pytest.ini, so pytest runs in an unpacked sdist.
+# File types are listed rather than grafting tests/: no bytecode slips in, and no exclude rule warns when there is none.
+# tests/test_packaging.py fails if a file under tests/ is left out.
+include README.md
+include pytest.ini
+recursive-include tests *.py *.json *.sh Dockerfile.*
