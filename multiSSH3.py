@@ -5,6 +5,7 @@
 # ///
 import argparse
 import codecs
+import copy
 import errno
 import functools
 import getpass
@@ -55,6 +56,8 @@ CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 ERRORS = []
 
 #%% ------------ User Defined Global Variables ----------------
+# the names defined before this section, to tell the settings below apart (see _BUILTIN_SETTINGS)
+_names_before_settings = set(globals())
 AUTHOR = 'Yufei Pan'
 AUTHOR_EMAIL = 'pan@zopyr.us'
 DEFAULT_HOSTS = 'all'
@@ -164,15 +167,25 @@ _etc_hosts_lock = threading.Lock()
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
-def _setting_type(value):
-	'''(type, item type) of a built-in setting, the item type when it is a list whose items share one.'''
+#%% ------------ Settings a config file can change ----------------
+# the settings above whose name starts with _: any other such name there is mssh's own state
+_UNDERSCORE_SETTINGS = ('__DEFAULT_COLOR_PALETTE', '_DEFAULT_CALLED', '_DEFAULT_RETURN_UNFINISHED',
+	'_DEFAULT_UPDATE_UNREACHABLE_HOSTS', '_DEFAULT_NO_START', '_etc_hosts', '__ERROR_MESSAGES_TO_IGNORE_REGEX', '__DEBUG_MODE')
+# the settings (what config files can change) with their built-in values, to check config values against: what
+# the section above defines that is public or listed in _UNDERSCORE_SETTINGS and a JSON value (not a function)
+_BUILTIN_SETTINGS = {name: copy.deepcopy(globals()[name]) for name in sorted(set(globals()) - _names_before_settings)
+	if (not name.startswith('_') or name in _UNDERSCORE_SETTINGS)
+	and isinstance(globals()[name], (str, int, float, bool, type(None), list, dict))}
+del _names_before_settings
+
+def _setting_type(name):
+	'''(type, item type) of setting name: the item type when its built-in value is a list whose items share one.'''
+	value = _BUILTIN_SETTINGS[name]
+	if name == '_etc_hosts':
+		# host name -> address, empty by default
+		return dict, str
 	item_types = {type(item) for item in value} if isinstance(value, list) else set()
 	return type(value), (item_types.pop() if len(item_types) == 1 else None)
-
-# the settings above (what config files can change) with the type of their built-in values,
-# to check the values config files give them against
-_SETTING_TYPES = {name: _setting_type(value) for name, value in list(globals().items())
-	if not (name.startswith('__') and name.endswith('__')) and not callable(value) and not isinstance(value, type(os))}
 
 #%% ------------ Pre Helper Functions ----------------
 def cache_decorator(user_function):
@@ -803,20 +816,24 @@ def _check_config_value(name, value):
 	Returns:
 		tuple: (value, None) when it can be used, else (None, why not)
 	'''
-	if name not in _SETTING_TYPES:
+	if name not in _BUILTIN_SETTINGS:
 		# a program path such as _sshPath: null or empty for the one on PATH
 		if value is None or isinstance(value, str):
 			return value, None
 		return None, 'expected the path to the program, got {}'.format(_config_value_text(value))
-	kind, item_kind = _SETTING_TYPES[name]
+	kind, item_kind = _setting_type(name)
 	list_of_strings = isinstance(value, list) and all(isinstance(item, str) for item in value)
 	if name in ('DEFAULT_HOSTS', 'DEFAULT_SKIP_HOSTS') and list_of_strings:
 		return ','.join(value), None
 	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
 		return value, None
-	if value is None and (kind is type(None) or name == 'DEFAULT_MAX_CONNECTIONS'):
-		# --store_config_file writes null for the built-in max_connections
+	if value is None and (kind is type(None) or name in ('DEFAULT_MAX_CONNECTIONS', 'DEFAULT_HOSTS')):
+		# --store_config_file writes null for the built-in max_connections; null hosts runs a command
+		# typed without hosts on none (not on the built-in "all"), as it always did
 		return None, None
+	if value is None and kind is str:
+		# a string setting mssh ran with as null before values were checked: null reads as "not set"
+		return _BUILTIN_SETTINGS[name], None
 	if kind is bool:
 		if isinstance(value, bool):
 			return value, None
@@ -858,33 +875,41 @@ def _check_config_value(name, value):
 		else:
 			return value, None
 	elif kind is dict:
-		if isinstance(value, dict):
+		if not isinstance(value, dict):
+			expected = 'an object'
+		elif item_kind and not all(isinstance(item, item_kind) for item in value.values()):
+			odd = next(item for item in value.values() if not isinstance(item, item_kind))
+			return None, 'expected an object of strings, got one holding {}'.format(_json_kind(odd))
+		else:
 			return value, None
-		expected = 'an object'
 	else:
 		return None, 'not a setting a config file can change'
 	return None, 'expected {}, got {}'.format(expected, _config_value_text(value))
 
-def _check_config(config, config_file):
+def _check_config(config, config_file, replaced=()):
 	'''
 	The settings of config_file that can be used.
 
 	A value of the wrong type is left out with a warning naming the file and the key, so the
 	setting keeps its built-in (or less specific config file's) value. Keys that are not settings
 	are kept as they are: --store_config_file writes them back.
+
+	Args:
+		replaced (set): Keys a more specific config file sets: a wrong value is left out quietly, it
+			would not be used anyway (and the user may not be able to edit, say, a file in /etc)
 	'''
 	checked = {}
 	for name, value in config.items():
-		if name in _SETTING_TYPES or _PROGRAM_PATH_KEY.match(name):
+		if name in _BUILTIN_SETTINGS or _PROGRAM_PATH_KEY.match(name):
 			value, problem = _check_config_value(name, value)
 			if problem:
-				eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
+				if name not in replaced:
+					eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
 				continue
 		checked[name] = value
 	return checked
 
 def load_config_file(config_file, check_trust=True):
-	global __working_config_file
 	'''
 	Load the config file to global variables
 
@@ -896,6 +921,24 @@ def load_config_file(config_file, check_trust=True):
 	Returns:
 		dict: The config, without values of the wrong type (see _check_config)
 	'''
+	return _check_config(_read_config_file(config_file, check_trust), config_file)
+
+def _load_config_chain(chain):
+	'''
+	The settings of the config files in chain (the most specific first, as CONFIG_FILE_CHAIN), merged.
+
+	A wrong value only warns when no more specific file in chain sets that key.
+	'''
+	files = [(path, _read_config_file(path)) for path in (os.path.expanduser(entry) for entry in reversed(chain))]
+	configs = {}
+	for index, (path, config) in enumerate(files):
+		replaced = set().union(*(more_specific for _, more_specific in files[index + 1:]))
+		configs.update(_check_config(config, path, replaced))
+	return configs
+
+def _read_config_file(config_file, check_trust=True):
+	'''The JSON object config_file holds, legacy keys mapped (see load_config_file), or {} when it cannot be used.'''
+	global __working_config_file
 	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
 	try:
@@ -912,7 +955,7 @@ def load_config_file(config_file, check_trust=True):
 		eprint(f"Error: Cannot load config file {config_file!r}: it holds {_json_kind(config)}, not an object of settings")
 		return {}
 	__working_config_file = config_file
-	return _check_config(apply_config_key_compat(config), config_file)
+	return apply_config_key_compat(config)
 
 
 # The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.18,
@@ -957,7 +1000,7 @@ def _apply_config(configs):
 	global DEFAULT_ENV_FILES
 	for name, value in configs.items():
 		# the config holds the pattern, the global its compiled form
-		if name in _SETTING_TYPES and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+		if name in _BUILTIN_SETTINGS and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
 			globals()[name] = value
 	pattern = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX')
 	if pattern:
@@ -975,8 +1018,7 @@ def _apply_config(configs):
 __configs_from_file = {}
 # where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
 __working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
-for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
-	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
+__configs_from_file.update(_load_config_chain(CONFIG_FILE_CHAIN))
 _apply_config(__configs_from_file)
 
 #%% Load mssh Functional Global Variables
