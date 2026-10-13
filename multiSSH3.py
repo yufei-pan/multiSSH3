@@ -521,6 +521,20 @@ def _open_trusted_file(path, explicit_flag, errors=None):
 	eprint('Warning: Ignoring {!r} because {}; {}'.format(path, reason, fix))
 	return None
 
+def _json_kind(value):
+	'''What value is, in JSON terms, for messages about config files.'''
+	if value is None:
+		return 'null'
+	if isinstance(value, bool):
+		return 'true' if value else 'false'
+	if isinstance(value, (int, float)):
+		return 'a number'
+	if isinstance(value, str):
+		return 'a string'
+	if isinstance(value, list):
+		return 'a list'
+	return 'an object'
+
 def load_config_file(config_file, check_trust=True):
 	global __working_config_file
 	'''
@@ -542,10 +556,14 @@ def load_config_file(config_file, check_trust=True):
 			return {}
 		with f:
 			config = json.load(f)
-		__working_config_file = config_file
 	except Exception as e:
 		eprint(f"Error: Cannot load config file {config_file!r}: {e}")
 		return {}
+	if not isinstance(config, dict):
+		# null or a list would break every run (and -V) at import, the rest of the chain still applies
+		eprint(f"Error: Cannot load config file {config_file!r}: it holds {_json_kind(config)}, not an object of settings")
+		return {}
+	__working_config_file = config_file
 	return config
 
 
