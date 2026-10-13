@@ -748,3 +748,157 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 		assert printed(session, 'ls\x12') == 'FISHPREV'
 	finally:
 		session.close()
+
+
+# ---------------------------------------------------------------- pasting into the picker
+
+FISH_FAKE_MSSH = 'function mssh; printf "@@RAN[%s]@@\\n" "$argv"; end'
+ZSH_FAKE_MSSH = 'mssh() { print -r -- "@@RAN[$*]@@" }'
+
+
+def pasted(text, form):
+	'''text as a terminal sends a paste of it: between bracketed paste marks, or unmarked (the mode is off) with its line breaks as Enter.'''
+	if form == 'bracketed':
+		return '\x1b[200~' + text + '\x1b[201~'
+	return text.replace('\n', '\r')
+
+
+def paste_only_filters(session, form):
+	'''
+	Paste two lines into the picker: they only filter (nothing runs, Esc keeps the line). Then one line
+	with its line break: Enter (typed, or the pasted one when the paste is unmarked, as when typed)
+	chooses what it filtered, and nothing else reaches the line.
+	'''
+	session.send('mssh ')
+	time.sleep(0.5)
+	session.send('\x12')
+	session.read_until(b'type to filter', 10)
+	session.send(pasted('stor\necho INJECTED\n', form))
+	assert 'stor echo INJECTED' in read_until_shown(session, 'stor echo INJECTED')
+	assert printed(session, '\x1b') == 'mssh '
+	session.send('\x12')
+	session.read_until(b'type to filter', 10)
+	session.send(pasted('stor\n', form))
+	time.sleep(0.5)
+	assert printed(session, '\r' if form == 'bracketed' else '') == 'mssh storage1 '
+	assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+
+
+@pytest.mark.parametrize('form', ['bracketed', 'unmarked'])
+def test_bash_paste_into_the_picker_only_filters(home, form):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		paste_only_filters(session, form)
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('form', ['bracketed', 'unmarked'])
+def test_editor_paste_into_the_picker_only_filters(home, form):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		paste_only_filters(session, form)
+	finally:
+		session.close()
+
+
+def test_editor_hands_a_paste_to_readline(home):
+	# outside the picker a paste is readline's, as before the editor: its line breaks run nothing
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		if b'\x1b[?2004h' not in session.output:
+			pytest.skip('this bash does not turn bracketed paste on')
+		session.send('mssh ')
+		time.sleep(0.5)
+		line = printed(session, pasted('gpu01 uptime\nhost2', 'bracketed'))
+		assert line is not None and line.replace('\r\n', '\n') == 'mssh gpu01 uptime\nhost2'
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('form', ['bracketed', 'unmarked'])
+def test_zsh_paste_into_the_picker_only_filters(home, form):
+	env, home = home
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKE_MSSH)
+	try:
+		paste_only_filters(session, form)
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('form', ['bracketed', 'unmarked'])
+def test_fish_paste_into_the_picker_only_filters(home, form):
+	# fish 4 turns bracketed paste off while the picker runs (fish 3 leaves it on)
+	env, home = home
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=FISH_FAKE_MSSH)
+	try:
+		paste_only_filters(session, form)
+	finally:
+		session.close()
+
+
+ENTER_FORMS = [
+	# CR LF (newline mode, serial consoles set to send it) and CR NUL (telnet) are one Enter: no LF is
+	# left for the shell to run the line with
+	('\r\n', 'mssh storage1 '), ('\r\x00', 'mssh storage1 '),
+	# keys typed right after Enter (fast typing, a slow link) follow the choice, as the shell puts them
+	('\r-q', 'mssh storage1 -q'),
+]
+
+
+def enter_chooses(session, keys):
+	'''Filter the picker, then press Enter as keys sends it; the line the shell prints after.'''
+	session.send('mssh ')
+	time.sleep(0.5)
+	session.send('\x12')
+	session.read_until(b'type to filter', 10)
+	session.send('stor')
+	time.sleep(0.3)
+	return printed(session, keys)
+
+
+@pytest.mark.parametrize('keys, line', ENTER_FORMS, ids=['cr-lf', 'cr-nul', 'typed-after'])
+def test_bash_picker_enter_however_it_comes(home, keys, line):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		assert enter_chooses(session, keys) == line
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('keys, line', ENTER_FORMS, ids=['cr-lf', 'cr-nul', 'typed-after'])
+def test_editor_picker_enter_however_it_comes(home, keys, line):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		assert enter_chooses(session, keys) == line
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('keys, line', ENTER_FORMS, ids=['cr-lf', 'cr-nul', 'typed-after'])
+def test_zsh_picker_enter_however_it_comes(home, keys, line):
+	env, home = home
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKE_MSSH)
+	try:
+		assert enter_chooses(session, keys) == line
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+def test_blesh_paste_into_the_picker_only_filters(home):
+	# ble.sh turns bracketed paste off while the picker runs: the paste comes unmarked
+	env, home = home
+	session = blesh_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		paste_only_filters(session, 'unmarked')
+	finally:
+		session.close()

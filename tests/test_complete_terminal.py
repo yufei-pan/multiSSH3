@@ -5,6 +5,7 @@ import pty
 import struct
 import termios
 import threading
+import time
 
 import pytest
 
@@ -22,6 +23,8 @@ from vt_grid import Grid
 	(b'\x1b[15~', [('unknown', b'\x1b[15~')]),
 	(b'\r\t\x7f\x08\x12\x03', [('enter', b'\r'), ('tab', b'\t'), ('backspace', b'\x7f'), ('backspace', b'\x08'), ('ctrl-r', b'\x12'), ('ctrl-c', b'\x03')]),
 	('é漢'.encode('utf-8'), [('é', 'é'.encode('utf-8')), ('漢', '漢'.encode('utf-8'))]),
+	# bracketed paste: the terminal marks where pasted text starts and ends
+	(b'\x1b[200~a\r\x1b[201~', [('paste', b'\x1b[200~'), ('a', b'a'), ('enter', b'\r'), ('paste-end', b'\x1b[201~')]),
 ])
 def test_decode_keys(data, expected):
 	assert mc.decode_keys(data) == expected
@@ -204,6 +207,80 @@ def test_the_picker_cancels_on_esc_ctrl_g_and_ctrl_c_however_they_are_sent(tty_p
 	finally:
 		enter.cancel()
 		enter.join()
+
+
+def test_terminal_reads_a_paste_to_its_end_and_no_further(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~line one\r\n\tl\xc3\xa9ne \x1b[Atwo\n\x1b[201~XY')
+		assert term.read_key(timeout=1) == ('paste', b'\x1b[200~')
+		# all of the paste, line breaks and escape sequences in it included
+		assert term.read_paste() == 'line one\r\n\tléne \x1b[Atwo\n'
+		# keys typed after the paste stay in the terminal
+		assert term.read_key(timeout=1) == ('X', b'X')
+		assert os.read(term.fd, 10) == b'Y'
+
+
+def test_terminal_reads_a_paste_whose_end_comes_later(tty_pair):
+	# the terminal (or the network) may split a paste anywhere, its end mark too
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~abc\x1b[2')
+		timer = threading.Timer(0.1, os.write, (master, b'01~Z'))
+		timer.start()
+		try:
+			assert term.read_key(timeout=1)[0] == 'paste'
+			assert term.read_paste() == 'abc'
+			assert term.read_key(timeout=1) == ('Z', b'Z')
+		finally:
+			timer.join()
+
+
+def test_terminal_reads_a_long_paste_whole_but_keeps_its_start(tty_pair):
+	# what is past the limit is read all the same: none of the paste may reach the shell as typed keys
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~' + b'x\r' * 1000 + b'\x1b[201~Z')
+		assert term.read_key(timeout=1)[0] == 'paste'
+		assert term.read_paste(limit=10) == 'x\r' * 5
+		assert term.read_key(timeout=1) == ('Z', b'Z')
+
+
+def test_terminal_ends_a_paste_that_never_says_so(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~abc')
+		assert term.read_key(timeout=1)[0] == 'paste'
+		start = time.monotonic()
+		assert term.read_paste(idle=0.1) == 'abc'
+		assert time.monotonic() - start < 1
+
+
+def test_terminal_waits_for_input_when_asked(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		assert not term.has_input()
+		assert not term.has_input(0.05)
+		timer = threading.Timer(0.05, os.write, (master, b'a'))
+		timer.start()
+		try:
+			assert term.has_input(2)
+		finally:
+			timer.join()
+		assert term.has_input()
+
+
+def test_terminal_reads_line_breaks_as_sent(tty_pair):
+	# zsh runs its widgets with INLCR and ICRNL on, and Python's raw mode before 3.12 kept INLCR:
+	# a CR LF Enter then came as CR CR (a paste's line breaks)
+	master, slave, path = tty_pair
+	mode = termios.tcgetattr(slave)
+	mode[0] |= termios.INLCR | termios.ICRNL | termios.IGNCR
+	termios.tcsetattr(slave, termios.TCSANOW, mode)
+	with mc.Terminal(path) as term:
+		os.write(master, b'\r\n')
+		assert [term.read_key(timeout=1), term.read_key(timeout=1)] == [('enter', b'\r'), ('enter', b'\n')]
+	assert termios.tcgetattr(slave)[0] & termios.INLCR
 
 
 def test_terminal_restores_the_mode(tty_pair):

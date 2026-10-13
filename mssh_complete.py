@@ -4069,6 +4069,8 @@ _KEY_SEQUENCES = {
 	'\x1b[1;5C': 'ctrl-right', '\x1b[1;5D': 'ctrl-left', '\x1b[5C': 'ctrl-right', '\x1b[5D': 'ctrl-left',
 	'\x1bOc': 'ctrl-right', '\x1bOd': 'ctrl-left',
 	'\x1b[1;3C': 'alt-right', '\x1b[1;3D': 'alt-left', '\x1b\x1b[C': 'alt-right', '\x1b\x1b[D': 'alt-left',
+	# bracketed paste (the shell turned it on): what comes between these was pasted, not typed
+	'\x1b[200~': 'paste', '\x1b[201~': 'paste-end',
 }
 _KEY_NAMES = {'\r': 'enter', '\n': 'enter', '\t': 'tab', '\x7f': 'backspace', '\x08': 'backspace', '\x00': 'ctrl-space'}
 # keys the kitty keyboard protocol numbers by the byte legacy terminals send for them, and its modifier bits
@@ -4244,6 +4246,9 @@ def ghost_style(term):
 		return '\x1b[38;5;244m'
 	return '\x1b[2m'
 
+# bytes of a paste kept at most: all of it is read (none may reach the shell as typed keys), the rest dropped
+PASTE_KEEP = 65536
+
 class Terminal(object):
 	'''The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on SIGTERM / SIGHUP.'''
 	def __init__(self, path='/dev/tty'):
@@ -4260,6 +4265,12 @@ class Terminal(object):
 			self._handlers[number] = signal.signal(number, self._interrupted)
 		# TCSANOW: TCSAFLUSH (the default) would drop keys typed while the program started
 		tty.setraw(self.fd, termios.TCSANOW)
+		# line breaks as sent: raw mode before Python 3.12 keeps INLCR and IGNCR, and zsh runs its
+		# widgets with INLCR on (a CR LF Enter would come as CR CR, two line breaks)
+		mode = termios.tcgetattr(self.fd)
+		if mode[0] & (termios.INLCR | termios.IGNCR):
+			mode[0] &= ~(termios.INLCR | termios.IGNCR)
+			termios.tcsetattr(self.fd, termios.TCSANOW, mode)
 		return self
 
 	def _interrupted(self, number, frame):
@@ -4307,10 +4318,31 @@ class Terminal(object):
 			return None
 		return os.read(self.fd, 1) or None
 
-	def has_input(self):
-		'''Whether more typed keys are waiting.'''
+	def has_input(self, timeout=0):
+		'''Whether more typed keys are waiting, or arrive within timeout seconds.'''
 		import select
-		return bool(select.select([self.fd], [], [], 0)[0])
+		return bool(select.select([self.fd], [], [], timeout)[0])
+
+	def read_paste(self, limit=PASTE_KEEP, idle=0.5):
+		'''
+		After the paste key: the pasted text, read up to the mark that ends the paste and no further
+		(keys typed after it stay in the terminal). All of the paste is read, so none of it reaches the
+		shell as typed keys, but only its first limit bytes are kept. A paste whose end mark does not
+		come within idle seconds of its last byte is taken as ended there.
+		'''
+		end = b'\x1b[201~'
+		kept = bytearray()
+		tail = b''
+		while tail != end:
+			byte = self._byte(idle)
+			if byte is None:
+				break
+			tail = (tail + byte)[-len(end):]
+			if len(kept) < limit + len(end):
+				kept += byte
+		if kept.endswith(end):
+			del kept[-len(end):]
+		return bytes(kept[:limit]).decode('utf-8', 'replace')
 
 	def read_key(self, timeout=None):
 		'''
@@ -4382,6 +4414,10 @@ def text_layout(text, width, row=0, column=0):
 #%% ------------ Picker ----------------
 PICKER_ROWS = 10       # candidate rows the picker shows at most
 HISTORY_LIMIT = 5000   # distinct past invocations the history tab offers
+# characters a paste brings to the filter at most: the filter is matched against every row at every key
+PICKER_FILTER_LIMIT = 1000
+# seconds: keys that come closer together than this came together (a paste, not typing)
+PASTE_GAP = 0.05
 
 class PickItem(object):
 	'''A picker row: text replaces the word (slot tab) or the whole line (history tab).'''
@@ -4449,6 +4485,8 @@ class Picker(object):
 		self.offset = 0
 		self.now = time.time() if now is None else now
 		self.unicode = _unicode_terminal() if unicode is None else unicode
+		# text typed right behind the Enter that chose: it goes after the choice (apply_pick)
+		self.typed_after = ''
 
 	def matches(self):
 		'''The rows of the current tab that match the filter, best first.'''
@@ -4491,6 +4529,64 @@ class Picker(object):
 			self.query += name
 			self.selected = self.offset = 0
 		return None
+
+	def paste(self, text):
+		'''
+		Add pasted text to the filter. Its line breaks, tabs and other control characters only part
+		words (a run of them is one space); escape sequences in it are left out.
+		'''
+		import re
+		text = re.sub('[\\s\\x00-\\x1f\\x7f]+', ' ', strip_escapes(text))
+		if not self.query or self.query.endswith(' '):
+			text = text.lstrip(' ')
+		self.query += text[:max(PICKER_FILTER_LIMIT - len(self.query), 0)]
+		self.selected = self.offset = 0
+
+	def _enter_with_keys_behind(self, term, raw):
+		'''
+		Enter (raw: its bytes) with more keys right behind it: read them all, each within PASTE_GAP of
+		the last. Another line break among them makes it a paste the terminal did not mark (bracketed
+		paste off): all of it filters, as choosing would leave the rest to the shell, which runs it.
+		Else Enter chooses, and the text typed behind it (fast typing, keys a slow link brought
+		together) goes after the choice, where the shell would have put it; other keys are left out.
+		An LF or NUL right after a CR is the same Enter (CR LF and CR NUL terminals).
+
+		Returns:
+			str: 'choose', 'cancel', or None (it was a paste)
+		'''
+		parts = []
+		size = 0
+		pasted = False
+		first = True
+		while term.has_input(PASTE_GAP):
+			name, more = term.read_key()
+			joined = first and raw == b'\r' and more in (b'\n', b'\x00')
+			first = False
+			if joined:
+				continue
+			if name == 'paste':
+				text = term.read_paste()
+				pasted = True
+			elif name == 'enter':
+				text = '\n'
+				pasted = True
+			elif name == 'tab':
+				text = '\t'
+			elif len(name) == 1 and name >= ' ':
+				text = name
+			else:
+				continue
+			if size < PASTE_KEEP:
+				parts.append(text)
+				size += len(text)
+		text = ''.join(parts)
+		if pasted:
+			self.paste('\n' + text)
+			return None
+		outcome = self.handle('enter')
+		if outcome == 'choose':
+			self.typed_after = text.replace('\t', '')
+		return outcome
 
 	def chosen(self):
 		matches = self.matches()
@@ -4584,15 +4680,32 @@ class Picker(object):
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		try:
 			draw = True
+			# A choice in the middle of a paste leaves the rest of it to the shell, which runs it (its
+			# line breaks are Enter there): what comes right behind an Enter is looked at first. Not
+			# behind one typed ahead (read before the picker first waited for a key) unless text came
+			# right before it: keys typed ahead after a choice are for the shell, as they come.
+			live = not term.has_input()
+			after_text = False
 			while True:
 				if draw:
 					menu = self.render(width - 1, height)
 					term.write(''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
-				outcome = self.handle(term.read_key()[0])
-				if outcome:
-					return outcome
+				name, raw = term.read_key()
+				if name == 'paste':
+					# the terminal marks the paste: all of it filters
+					self.paste(term.read_paste())
+				elif name == 'enter' and (live or after_text) and term.has_input(PASTE_GAP):
+					outcome = self._enter_with_keys_behind(term, raw)
+					if outcome:
+						return outcome
+				else:
+					outcome = self.handle(name)
+					if outcome:
+						return outcome
+				after_text = len(name) == 1 and name >= ' '
 				# keys already typed are handled before the menu is drawn again
 				draw = not term.has_input()
+				live = live or draw
 		finally:
 			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
 
@@ -4818,16 +4931,16 @@ def picker_items(request, engine, history_lines, now=None):
 	return slot, title, history, word
 
 def apply_pick(request, picker, word, context):
-	'''The new line and cursor after a choice: (line, cursor).'''
+	'''The new line and cursor after a choice: (line, cursor); text typed right behind the Enter that chose follows it.'''
 	item = picker.chosen()
 	if picker.tab == 'history':
-		return item.text, len(item.text)
+		return item.text + picker.typed_after, len(item.text) + len(picker.typed_after)
 	suffix = ' '
 	if context is not None and context.open_quote:
 		suffix = ('"' if context.open_quote == '"' else "'") + ' '
 	elif item.text.endswith('/'):
 		suffix = ''
-	before = request.before[:len(request.before) - len(word)] + item.text + suffix
+	before = request.before[:len(request.before) - len(word)] + item.text + suffix + picker.typed_after
 	return before + request.after, len(before)
 
 #%% ------------ Line editor ----------------
