@@ -1495,13 +1495,15 @@ def __compact_hostnames(Hostnames):
 			rtnSet.add(''.join(hostnameList))
 	return frozenset(rtnSet)
 
-def compact_hostnames(Hostnames,verify = True):
+def compact_hostnames(Hostnames,verify = True, hosts_only = False):
 	"""
 	Compact a list of hostnames.
 	Compact numeric numbers into ranges.
 
 	Args:
 		Hostnames (list): A list of hostnames.
+		hosts_only (bool): The names are hosts mssh expanded already, to be shown: one that is
+			also an alias's name (web="web,web-b") is that host, not the alias.
 
 	Returns:
 		list: A list of comapcted hostname list.
@@ -1525,14 +1527,14 @@ def compact_hostnames(Hostnames,verify = True):
 	# 	hostSet = frozenset(Hostnames)
 	# else:
 	# 	hostSet = Hostnames
-	hostSet = frozenset(expand_hostnames(
+	hostSet = frozenset(expand_hostnames((
 		hostname.strip()
 		for hostnames_str in Hostnames
 		for hostname in hostnames_str.split(',')
-	))
+	), hosts_only=hosts_only))
 	compact_hosts = __compact_hostnames(hostSet)
 	if verify:
-		if frozenset(expand_hostnames(compact_hosts)) != hostSet:
+		if frozenset(expand_hostnames(compact_hosts, hosts_only=hosts_only)) != hostSet:
 			if not __global_suppress_printout:
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 			compact_hosts = hostSet
@@ -1682,6 +1684,16 @@ def _validate_host(hostname, loop=None):
 		__mainReturnCode += 1
 		counted.add(hostname)
 	return []
+
+def _validate_shown_hostname(hostname):
+	'''
+	__validate_expand_hostname for a host name mssh expanded already: an alias's name there is
+	the host of that name, which an alias inside its own expansion stands for (_alias_members).
+	'''
+	hostname = hostname.strip().strip('$')
+	if _local_hostname_source(hostname) in ('env', 'env_file'):
+		return [hostname]
+	return __validate_expand_hostname(hostname)
 
 def _alias_value(name, source):
 	'''The hosts string an alias holds: source 'env' (an environment variable) or 'env_file'.'''
@@ -1960,12 +1972,13 @@ def _run_in_threads(function, items, max_workers=32):
 			thread.join(0.1)
 
 @cache_decorator
-def __expand_hostnames(hosts) -> dict:
+def __expand_hostnames(hosts, hosts_only=False) -> dict:
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
+		hosts_only (bool): Names that are also an alias's name are hosts (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -2002,8 +2015,9 @@ def __expand_hostnames(hosts) -> dict:
 			iplist = hostSetToAdd
 		else:
 			# validate the names expanded (and cached) for the prefetch instead of expanding again
+			validate = _validate_shown_hostname if hosts_only else __validate_expand_hostname
 			hostSetToAdd = sorted(set(itertools.chain.from_iterable(
-				__validate_expand_hostname(name) for name in __expand_hostname(host, validate=False))))
+				validate(name) for name in __expand_hostname(host, validate=False))))
 			for host in hostSetToAdd:
 				iplist.append(getIP(host,local=False))
 		if username:
@@ -2016,12 +2030,14 @@ def __expand_hostnames(hosts) -> dict:
 			[expandedhosts.update({host:ip}) for host,ip in zip(hostSetToAdd,iplist)]
 	return expandedhosts
 
-def expand_hostnames(hosts):
+def expand_hostnames(hosts, hosts_only=False):
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
+		hosts_only (bool): The names are hosts mssh expanded already: one that is also an
+			alias's name is that host (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -2031,6 +2047,8 @@ def expand_hostnames(hosts):
 	# change data type to frozenset if it is not hashable
 	if not isinstance(hosts, frozenset):
 		hosts = frozenset(hosts)
+	if hosts_only:
+		return __expand_hostnames(hosts, hosts_only=True)
 	return __expand_hostnames(hosts)
 
 def expand_hostnames_local(hosts):
@@ -3661,7 +3679,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				working_index_keys -= buddy
 		if not defer:
 			if buddy != previousBuddies:
-				hostnameStr = ','.join(compact_hostnames(buddy))
+				hostnameStr = ','.join(compact_hostnames(buddy, hosts_only=True))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
@@ -3707,7 +3725,7 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append(color_line+'─'*(line_length)+color_reset)
 	for hostname in remaining_hostnames:
-		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
+		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname], hosts_only=True)))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
 		output.extend(hostnameLines)
@@ -3734,7 +3752,7 @@ def pre_merge_hosts(hosts):
 		identity = host.get_output_hash()
 		output_groups[identity].append(host)
 	for group in output_groups.values():
-		group[0].name = ','.join(compact_hostnames(host.name for host in group))
+		group[0].name = ','.join(compact_hostnames((host.name for host in group), hosts_only=True))
 		for i in range(1,len(group)):
 			hosts.remove(group[i])
 	return hosts
@@ -4684,7 +4702,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
-		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
+		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet, hosts_only=True))}\"")
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
@@ -5378,13 +5396,13 @@ def main(args = None):
 	if __mainReturnCode > 0:
 		if not __global_suppress_printout: 
 			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
-			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts))}')
+			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts, hosts_only=True))}')
 	else:
 		if not __global_suppress_printout: 
 			eprint('Complete. All hosts returned 0.')
 	
 	if args.success_hosts and not __global_suppress_printout:
-		eprint(f'succeeded_hosts: {",".join(compact_hostnames(succeededHosts))}')
+		eprint(f'succeeded_hosts: {",".join(compact_hostnames(succeededHosts, hosts_only=True))}')
 
 	if threading.active_count() > 1 and not __global_suppress_printout: 
 		eprint(f'Remaining active thread: {threading.active_count()}')

@@ -138,3 +138,50 @@ def test_generate_output_errors_only_false_overrides_quiet_false(fake_host):
 	out = multiSSH3.generate_output([ok], usejson=True, quiet=False, errors_only=False)
 	assert "ok" in out
 	assert "127.0.0.1" in out
+
+
+def _hosts_sharing_an_alias_name(fake_host, monkeypatch, tmp_path, outputs):
+	'''Hosts web and web-b (DNS knows both) with outputs, and the alias web="web,web-b".'''
+	real_getip = multiSSH3.getIP
+	hosts = []
+	for name, (lines, returncode) in outputs.items():
+		host = fake_host(name, "uptime")
+		host.stdout, host.stderr, host.returncode = list(lines), [], returncode
+		hosts.append(host)
+	monkeypatch.setattr(multiSSH3, "getIP", real_getip)  # fake_host makes every name an IP address
+	env_file = tmp_path / "hosts.env"
+	env_file.write_text('web="web,web-b"\n')
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(env_file)])
+	monkeypatch.setattr(multiSSH3, "_explicit_env_files", {str(env_file)})
+	monkeypatch.setattr(multiSSH3, "_no_env", True)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_HOST_FILE", str(tmp_path / "no-hosts"))
+	monkeypatch.setattr(multiSSH3, "_etc_hosts", {})
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", {"web": "10.0.0.1", "web-b": "10.0.0.2"}.get)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	multiSSH3._refresh_expansion_caches()
+	assert sorted(multiSSH3.expand_hostnames(["web"])) == ["web", "web-b"]  # typed, web is the alias
+	return hosts
+
+
+def test_a_host_sharing_an_alias_name_is_shown_by_its_own_name(fake_host, monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "get_terminal_color_capability", lambda: "None")
+	hosts = _hosts_sharing_an_alias_name(fake_host, monkeypatch, tmp_path, {"web": (["up 5 days"], 0), "web-b": (["up 1 day"], 0)})
+
+	assert [host.name for host in multiSSH3.pre_merge_hosts(list(hosts))] == ["web", "web-b"]
+	outputs, line_bags, by_len, sorted_keys, width = multiSSH3.get_host_raw_output(hosts, terminal_width=80)
+	merge_groups, remaining = multiSSH3.form_merge_groups({k: set(v) for k, v in by_len.items()}, list(sorted_keys), dict(line_bags), 0.9)
+	text = "\n".join(multiSSH3.mergeOutputs(outputs, merge_groups, remaining, 0.9, width))
+	assert "web,web-b" not in text and "web-[b]" not in text
+
+
+def test_failed_hosts_list_a_host_sharing_an_alias_name_alone(fake_host, monkeypatch, tmp_path, capsys):
+	import pytest
+
+	hosts = _hosts_sharing_an_alias_name(fake_host, monkeypatch, tmp_path, {"web": (["down"], 1), "web-b": (["up"], 0)})
+	monkeypatch.setattr(multiSSH3, "run_command_on_hosts", lambda **kwargs: hosts)
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(["--no_history", "-w", "-ef", str(tmp_path / "hosts.env"), "web", "uptime"])
+
+	err = capsys.readouterr().err
+	assert "failed_hosts: web\n" in err and "succeeded_hosts: web-b\n" in err
