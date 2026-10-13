@@ -49,7 +49,7 @@ https://github.com/user-attachments/assets/5121bb20-4b32-4000-8081-2ad39571781e
 ![IPMI Support](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/ipmi_support.png "IPMI Support")
 > Note: `DB6` in image does not have IPMI over ethernet connection. It had failed back to running `ipmitool` over ssh.
 
-#### *Running `date; df -h` on host group `all` showing the N-Host Diff (default threshold at 0.6)* 
+#### *Running `date; df -h` on host group `all` showing the N-Host Diff (threshold 0.6, the default then; it is 0.9 now)* 
 ![N-Host Diff](https://raw.githubusercontent.com/yufei-pan/multiSSH3/refs/heads/main/docs/n_host_diff.png "N-Host Diff")
 
 #### *Running `echo hi` on host range `<hostname>[10-20]*`* 
@@ -125,6 +125,8 @@ multissh
 multissh3
 multiSSH3
 ```
+It also installs `mssh-complete`, the shell autocomplete engine behind `mssh --completion` (see [Autocomplete](#autocomplete)).
+
 Need Python 3.6+
 
 ## Configuration
@@ -157,13 +159,11 @@ To store / generate a config file with the current command line options, you can
 ```bash
 mssh --store_config_file [STORE_CONFIG_FILE_PATH]
 ```
-> `--store_config_file [STORE_CONFIG_FILE]`<br/>
-> is equivalent to <br/>
-> `--generate_config_file --config_file [CONFIG_FILE]` <br/>
-> and <br/>
-> `--generate_config_file > [STORE_CONFIG_FILE_PATH]`.
+> `--generate_config_file` prints the same config (the built-in defaults, the config files mssh loaded and the command line options) as JSON to stdout and writes no file. `--generate_config_file > PATH` saves it, but with your shell's file mode (often readable by everyone), while `--store_config_file` writes it readable by you only.
 >
->`--generate_config_file` will output to stdout if `--config_file` is not specified. 
+> `--config_file PATH` does not choose where `--generate_config_file` writes: it only names a config file to load. A `PATH` that does not exist gets `Warning: Config file 'PATH' not found, ignoring it.` and the config is still printed to stdout.
+>
+> When the file exists, `--store_config_file` asks whether to overwrite it, move it to `PATH.bak` first (the answer after 10 seconds) or stop. Given `--generate_config_file` as well, it overwrites the file without asking and without a backup.
 
 > Without a path, `--store_config_file` writes to the config file mssh loaded, or to `~/.multiSSH3.config.json` if none was loaded.
 
@@ -183,6 +183,18 @@ into `~/.multiSSH3.config.json` (or the config file mssh loaded)
 > If you want to store password, it will be a plain text password in this config file. This will be better to supply it everytime as a CLI argument but you should really consider setting up public-key authentication.
 
 >On some systems, scp / rsync will require you use public-key authentication to work.<br/>
+
+### Host Key Checking
+
+**By default mssh does not check host keys.** Every `ssh`, `scp` and `rsync` (through `--rsh`) it runs gets `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`: any host key is accepted and none is remembered, so a key that changes goes unnoticed (ssh's `Warning: Permanently added ...` line is left out of the output). This keeps large or often reinstalled fleets from stopping at host key questions, but mssh cannot tell a host from a machine pretending to be it. Someone who can redirect the connection (a forged DNS or ARP answer, a taken-over IP address) receives the commands you run and answers them, and with `-p` (sshpass) receives the password itself.
+
+To have host keys checked, add this to your config file:
+```json
+"SSH_STRICT_HOST_KEY_CHECKING": true
+```
+mssh then passes neither option, and ssh checks host keys against `~/.ssh/known_hosts` as your ssh config says (`StrictHostKeyChecking`, `ask` by default in OpenSSH). Since mssh talks to many hosts at once, add their keys to `~/.ssh/known_hosts` beforehand (after checking the fingerprints), or set `StrictHostKeyChecking accept-new` in `~/.ssh/config` to trust a host's key on the first connection and refuse a different one later. There is no command line option for it; `--store_config_file` keeps the setting once it is in a config file. A script that imports multiSSH3 can set `multiSSH3.SSH_STRICT_HOST_KEY_CHECKING = True`.
+
+> `--copy_id` runs `ssh-copy-id` without these options, so it checks host keys as your ssh config says.
 
 ### SSH ControlMaster Configuration
 
@@ -234,7 +246,7 @@ First, mssh will expand [a-b] ranges in the hostname strings.
 
 When hostname need to be resolved, mssh will check in the following order:
 - Return if it is an ipv4 address
-- Return if hostname is in /etc/hosts
+- Return if hostname is in /etc/hosts (or the file given with `--host_file`)
 - If `-C, --no_env` is not specified and hostname is in current terminal environment variables
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
@@ -290,7 +302,7 @@ mssh is also able to recognize ip blocks / number blocks / hex blocks / characte
 For example:
 ```bash
 mssh testrig[1-10] lsblk
-mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
+mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d" /etc/fstab' 'cat /etc/fstab'
 ```
 
 ## Misc Features
@@ -368,7 +380,7 @@ Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[0
 
 Completion never removes what you typed, prints nothing, and falls back to the shell's normal completion when anything is slow or missing.
 
-It learns from an index of your history and hosts, kept in mssh's private cache directory (`$XDG_RUNTIME_DIR/multiSSH3` or `/tmp/multiSSH3-<uid>`) and rebuilt in the background when its sources change. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
+It learns from an index of your history and hosts, kept in mssh's private runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or `multiSSH3-<uid>` in the temp dir) and rebuilt in the background when its sources change. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
 
 ### Grey suggestions
 
@@ -389,6 +401,8 @@ While you type an mssh line, the most likely rest of it shows in grey after the 
 ### Ctrl-R
 
 Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations. Type to filter, ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
+
+In plain bash, mssh takes over Ctrl-R only when it can call the old binding on other lines. It leaves Ctrl-R alone when Ctrl-R is unbound, and on bash 4.2 when Ctrl-R runs a shell command bound with `bind -x` (fzf's key bindings do this), as bash 4.2 cannot list such bindings. Ctrl-R then does what it did before on every line, mssh lines included: there is no menu, and without the line editor (bash 4.4 or later) the warnings are not shown either. TAB completion works as usual. On bash 4.2, Ctrl-R bound to readline's search or to a macro is taken over as on newer versions.
 
 ### Warnings before Enter
 
@@ -420,13 +434,14 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 
 ## Options
 
-Here details the options for multiSSH3 6.02 @ 2025-11-10
+Here details the options for multiSSH3 6.31 @ 2026-10-13
 
 ### `-u, --username USERNAME` | _`DEFAULT_USERNAME`_
 - You can specify the username for all hosts using this option and / or specifying username@hostname per host in the host list.
 
 ### `-p, --password PASSWORD` | _`DEFAULT_PASSWORD`_
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
+- Warning: by default mssh does not check host keys, so the password goes to whichever machine answers at the host's address. See [Host Key Checking](#host-key-checking).
 - Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed. mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
@@ -498,14 +513,20 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-i, --interval INTERVAL` | _`DEFAULT_INTERVAL`_
 - Interval between command repeats in seconds.
 - Only effective when `REPEAT` is greater than 1.
-- Note: will wait for `INTERVAL` seconds before first run if `REPEAT` is greater than 1.
+- mssh waits only between repeats: the first run starts at once, and nothing waits after the last one.
 
 ### `-M, --ipmi` | _`DEFAULT_IPMI`_
 - Use ipmitool to run the command instead of ssh.
-- Will strip `ipmitool` from the start of the command if it is present.
+- Will strip `ipmitool` from the start of the command if it is present. Without a command, runs `power status`.
 - Will replace the host's resolved IP address header with `DEFAULT_IPMI_INTERFACE_IP_PREFIX` in this mode
 - Ex: `10.0.0.1` + `DEFAULT_IPMI_INTERFACE_IP_PREFIX='192.168'` -> `192.168.0.1`
-- Will retry using original ip and run `ipmitool` over ssh if ipmi connection had failed. ( Will append ipmitool to the command if not present )
+- If a login fails, mssh tries the next IPMI definition that applies to the host (see `DEFAULT_IPMI_DEFINITIONS` in [All Changable Config Options](#all-changable-config-options--global-variables-)), then falls back to ssh: it logs in to the host itself (with `-u` / `-p` when given, at the `-pre` address rather than the `-mpre` one) and runs `ipmitool <command>` there. Without `ipmitool` on this machine it goes to ssh at once.
+
+> **IPMI logins default to `admin` / `admin`.** Unless `-iu` / `-ip` or a config file say otherwise, mssh runs `ipmitool -U admin -P admin` against every host's BMC. `-u` / `-p` (`DEFAULT_USERNAME` / `DEFAULT_PASSWORD`) are not used for IPMI logins, only for the ssh fallback. A wrong password can count towards a BMC's lockout, so give the right ones:
+> - on the command line: `mssh -M -iu USER -ip PASSWORD ...` (tried before any other definition), or
+> - stored: `mssh -iu USER -ip PASSWORD --store_config_file`, which writes `DEFAULT_IPMI_USERNAME`, `DEFAULT_IPMI_PASSWORD` and a matching `DEFAULT_IPMI_DEFINITIONS`.
+>
+> A config file written by hand needs all three of those keys (`"DEFAULT_IPMI_DEFINITIONS": []` when you need no other definitions). With only the first two, the built-in `admin` / `admin` definition is still tried first; with only the list, `admin` / `admin` is tried after its definitions.
 
 ### `-mpre, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX` | _`DEFAULT_IPMI_INTERFACE_IP_PREFIX`_
 - The prefix of the IPMI interfaces. Will replace the resolved IP address with the given prefix when using ipmi mode.
@@ -518,14 +539,30 @@ mssh -f ./data/ allServers /tmp/data/
 - Ex: `10.0.0.1` + `-pre '172.30'` -> `172.30.0.1`
 
 ### `-iu, --ipmi_username IPMI_USERNAME` | _`DEFAULT_IPMI_USERNAME`_
-- The username to use to connect to the hosts via ipmi.
-- This will be used when `--ipmi` is specified.
-- If this is not specified, `DEFAULT_USERNAME` will be used in ipmi mode.
+- The username ipmitool (or redfishtool) logs in to the hosts' BMCs with, in `--ipmi` mode.
+- Defaults to `admin`. It does not fall back to `-u` / `DEFAULT_USERNAME`: see the note under `-M, --ipmi`.
+- With `-im ssh_ipmitool` it is the ssh login name instead.
 
 ### `-ip, --ipmi_password IPMI_PASSWORD` | _`DEFAULT_IPMI_PASSWORD`_
-- The password to use to connect to the hosts via ipmi.
-- This will be used when `--ipmi` is specified.
-- If this is not specified, `DEFAULT_PASSWORD` will be used in ipmi mode.
+- The password ipmitool (or redfishtool) logs in to the hosts' BMCs with, in `--ipmi` mode.
+- Defaults to `admin`. It does not fall back to `-p` / `DEFAULT_PASSWORD`: see the note under `-M, --ipmi`.
+- With `-im ssh_ipmitool` it is the ssh password instead (sent with sshpass).
+
+### `-ia, --ipmi_args IPMI_ARGS` | _`DEFAULT_IPMI_ARGS`_
+- Extra arguments for ipmitool (or redfishtool) in `--ipmi` mode, in one string, placed as they are before the command. `-ea` arguments only go to ssh / scp / rsync.
+- Ex: `mssh -M -ia='-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -P <password> -I lanplus power status`. Use `=`, as the value starts with `-`.
+
+### `-im, --ipmi_method IPMI_METHOD` | _`DEFAULT_IPMI_METHOD`_
+- How `--ipmi` reaches a host:
+  - `ipmitool` (default): runs `ipmitool -H <address> -U <user> -P <password> [IPMI_ARGS] <command>` on this machine.
+  - `redfish`: runs `redfishtool -S Always -a -r <address> -u <user> -p <password> [IPMI_ARGS] <command>` on this machine (`Systems` without a command).
+  - `ssh_ipmitool`: logs in to the host over ssh with the IPMI username and password (`-iu` / `-ip`, so `admin` / `admin` unless set) and runs `ipmitool <command>` there.
+- Any other value fails with `IPMI method ... not supported!`.
+
+### `-irlt, --ipmi_retry_lockout_time IPMI_RETRY_LOCKOUT_TIME` | _`DEFAULT_IPMI_RETRY_LOCKOUT_TIME`_
+- Seconds to wait after a failed login that reached the BMC before the next attempt on that host (the next IPMI definition or the ssh fallback), so a BMC that locks an account after failed logins can unlock it first.
+- Failures that never reached a BMC (timeouts, no route, connection refused, ...) do not wait.
+- `-1` (default) or `0`: never wait.
 
 ### `-S, -q, -nw, --no_watch` | _`DEFAULT_NO_WATCH`_
 - Disable the curses terminal display and only print the output.
@@ -536,13 +573,13 @@ mssh -f ./data/ allServers /tmp/data/
 - The minimum character length of the curses window.
 - Default is 40 characters.
 - Will try to fit as many hosts as possible in the terminal window while leaving at least this many characters for each host display.
-- You can modify this value in curses display by pressing `_` or `+`.
+- You can modify this value in curses display by pressing `{` or `}`.
 
 ### `-wh, --window_height WINDOW_HEIGHT` | _`DEFAULT_WINDOW_HEIGHT`_
 - The minimum line height of the curses window.
 - Default is 1 line.
 - Will try to fit as many hosts as possible in the terminal window while leaving at least this many lines for each host display.
-- You can modify this value in curses display by pressing `{` or `}`.
+- You can modify this value in curses display by pressing `_` or `+`.
 - Terminal will overflow if it is smaller than ww * wh.
 
 ### `-B, -sw, --single_window` | _`DEFAULT_SINGLE_WINDOW`_
@@ -610,7 +647,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Note: Timedout Hosts are considered unreachable.
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
-- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in `$XDG_RUNTIME_DIR/multiSSH3/`, or else in a private `multiSSH3-<uid>` folder in the system temp folder ( cleared at reboot ). If neither can be used, they are only kept for the current run.
+- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in mssh's private runtime directory: `$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>`, or a `multiSSH3-<uid>` folder in the system temp folder (the first that only you can write to). If none can be used, they are only kept for the current run.
 - To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
 
 ### `-a, -nsu, --no_skip_unreachable` | not _`DEFAULT_SKIP_UNREACHABLE`_
@@ -622,7 +659,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The expiry time in seconds for unreachable hosts stored in the temperary unavailable hosts file.
 - Default is 600 seconds ( 10 minutes ).
 - Note: because mssh stores a hostname: expire_time pair in the unavailable hosts file, opeartor is able to use different expiry time for different runs to control how long unreachable hosts are skipped and they will be expired at the correct time.
-- Note: because mssh stores the expire time in monotonic time. In most systems, this means the expiry time will not persist across system reboots. ( and also the fact it is store in the system temp folder ) although the unavailable hosts can accidentally persist across reboots if the system is rebooted often and the `unavailable_host_expiry` is set to a very large value.
+- Note: mssh stores the expire time in monotonic time, which restarts at every boot, so the file also records the boot it was written in and a file from an earlier boot is ignored (the temp folder can survive a reboot). Without a boot id to compare, a file holding an entry that expires further away than `unavailable_host_expiry` is taken to be from an earlier boot.
 
 ### `-X, -sh, --skip_hosts SKIP_HOSTS` | _`DEFAULT_SKIP_HOSTS`_
 - A comma separated list of hosts to skip. 
@@ -630,19 +667,19 @@ mssh -f ./data/ allServers /tmp/data/
 - Useful when you want to skip some hosts temporarily without modifying the host list.
 
 ### `--generate_config_file` | False
-- Generate a config file with the current command line options.
-- Outputs to stdout if `--config_file` is not specified.
+- Print the config (the built-in defaults, the config files mssh loaded and the current command line options) as JSON to stdout, and exit when no command is given. No file is written.
+- With `--store_config_file`, writes that file instead, overwriting an existing one without asking and without a backup.
 
 ### `--config_file [CONFIG_FILE]` | None
 - Additional config file path to load options from.
 - Will be loaded last thus overwriting other config file values.
 - Use without value to use `multiSSH3.config.json` in the current working directory.
-- Also used with `--generate_config_file` to specify output path.
+- It only names a file to read, also with `--generate_config_file`, which still prints to stdout. A `CONFIG_FILE` that does not exist gets `Warning: Config file 'CONFIG_FILE' not found, ignoring it.` and is not created.
 
 ### `--store_config_file [STORE_CONFIG_FILE]` | None
-- Store the current command line options to a config file.
-- Equivalent to `--generate_config_file --config_file [STORE_CONFIG_FILE]`
+- Store the current command line options to a config file: what `--generate_config_file` prints, readable by you only (`0600`, or `0644` for the `/etc` locations).
 - Without a path, writes to the config file mssh loaded, or to `~/.multiSSH3.config.json` if none was loaded.
+- If the file exists, asks whether to overwrite it, move it to `STORE_CONFIG_FILE.bak` first (the answer after 10 seconds) or stop.
 
 ### `--debug` | False
 - Enable debug mode.
@@ -672,11 +709,12 @@ mssh -f ./data/ allServers /tmp/data/
 - Default is `utf-8`.
 
 ### `-dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD` | _`DEFAULT_DIFF_DISPLAY_THRESHOLD`_
-- The threshold of different lines to total lines ratio to trigger N-body diff display mode.
-- When the output difference ratio exceeds this threshold, mssh will display the diff between outputs instead of the full outputs.
+- How alike the outputs of hosts must be (0 to 1, roughly the share of lines they have in common) to be shown as one block in N-body diff display mode: the lines they share are shown once, and the lines only some of them printed are shown under the names of those hosts.
+- Hosts with the same output are always shown once. Default `0.9`.
 - Useful when the outputs are large and mostly similar.
-- Set to 1.0 to always use diff display mode.
-- Set to 0.0 to never use diff display mode.
+- Set to 0.0 to always use diff display mode.
+- Set to 1.0 to never use diff display mode (only the same outputs are merged).
+- Only for the normal output, not `-j` or `-P`.
 - Note: This uses custom N-body diff algorithm. Uses some memory.
 
 ### `--force_truecolor` | _`DEFAULT_FORCE_TRUECOLOR`_
@@ -694,6 +732,14 @@ Host *
   ControlPersist 3600
 ```
 
+### `--host_file HOST_FILE` | _`DEFAULT_HOST_FILE`_
+- The hosts file mssh looks host names up in, before DNS, instead of `/etc/hosts` (the default).
+- Same format as `/etc/hosts`: an IP address followed by the names it has, one address per line; lines starting with `#` are skipped.
+- It is for mssh's own lookups (which hosts exist, `#IP#`, `-pre`); ssh is still given the name (unless `-pre` turns it into an address) and resolves it its own way.
+
+### `--completion ARG [ARG ...]` | None
+- Shell autocomplete: `install [SHELL] [editor]`, `uninstall [SHELL]`, or print the glue for `bash`, `zsh` or `fish`. See [Autocomplete](#autocomplete).
+
 ### `-V, --version` | False
 - Print the version of multiSSH3 and exit.
 - Will also print the found system binary for calling when setting up connections.
@@ -702,11 +748,20 @@ Host *
 
 Use ```mssh --help``` for more info.
 
-Below is a sample help message output from multiSSH3 6.02 @ 2025-11-10
+Below is a sample help message output from multiSSH3 6.31 @ 2026-10-13 (no config file, 120 columns; the lines after the options list the programs found on that machine)
 
 ```bash
 $ mssh -h
-usage: multiSSH3.py [-h] [-u USERNAME] [-p PASSWORD] [-k [IDENTITY_FILE]] [-uk] [-ea EXTRAARGS] [-11] [-f FILE] [-s [FILE_SYNC]] [-W] [-G] [-t TIMEOUT] [-T] [-r REPEAT] [-i INTERVAL] [-M] [-mpre IPMI_INTERFACE_IP_PREFIX] [-pre INTERFACE_IP_PREFIX] [-iu IPMI_USERNAME] [-ip IPMI_PASSWORD] [-S] [-ww WINDOW_WIDTH] [-wh WINDOW_HEIGHT] [-B] [-R] [-Q] [-Z] [-C] [-ef ENV_FILE] [-efs ENV_FILES] [-m MAX_CONNECTIONS] [-j] [-w] [-P] [-x | -a] [-uhe UNAVAILABLE_HOST_EXPIRY] [-X SKIP_HOSTS] [--generate_config_file] [--config_file [CONFIG_FILE]] [--store_config_file [STORE_CONFIG_FILE]] [--debug] [-ci] [-I] [-hf HISTORY_FILE] [--script] [-e ENCODING] [-dt DIFF_DISPLAY_THRESHOLD] [--force_truecolor] [--add_control_master_config] [-V] [hosts] [commands ...]
+usage: mssh [-h] [-u USERNAME] [-p PASSWORD] [-k [IDENTITY_FILE]] [-uk] [-ea EXTRAARGS] [-11] [-f FILE]
+            [-s [FILE_SYNC]] [-W] [-G] [-t TIMEOUT] [-T] [-r REPEAT] [-i INTERVAL] [-M]
+            [-mpre IPMI_INTERFACE_IP_PREFIX] [-pre INTERFACE_IP_PREFIX] [-iu IPMI_USERNAME] [-ip IPMI_PASSWORD]
+            [-ia IPMI_ARGS] [-im IPMI_METHOD] [-irlt IPMI_RETRY_LOCKOUT_TIME] [-S] [-ww WINDOW_WIDTH]
+            [-wh WINDOW_HEIGHT] [-B] [-R] [-Q] [-Z] [-C] [-ef ENV_FILE] [-efs ENV_FILES] [-m MAX_CONNECTIONS] [-j]
+            [-w] [-P] [-x | -a] [-uhe UNAVAILABLE_HOST_EXPIRY] [-X SKIP_HOSTS] [--generate_config_file]
+            [--config_file [CONFIG_FILE]] [--store_config_file [STORE_CONFIG_FILE]] [--debug] [-ci] [-I]
+            [-hf HISTORY_FILE] [--script] [-e ENCODING] [-dt DIFF_DISPLAY_THRESHOLD] [--force_truecolor]
+            [--add_control_master_config] [--host_file HOST_FILE] [--completion ARG [ARG ...]] [-V]
+            [hosts] [commands ...]
 
 Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.
 
@@ -717,21 +772,21 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -u, --username USERNAME
-                        The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: None)
+                        The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: None)
   -p, --password PASSWORD
-                        The password to use to connect to the hosts, (default: )
+                        The password to use to connect to the hosts via ssh, (default: )
   -k, --identity_file, --key, --identity [IDENTITY_FILE]
                         The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use ~/.ssh/ (default: None)
   -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
   -ea, --extraargs EXTRAARGS
-                        Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: None)
+                        Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: None)
   -11, --oneonone       Run one corresponding command on each host. (default: False)
   -f, --file FILE       The file to be copied to the hosts. Use -f multiple times to copy multiple files
   -s, -fs, --file_sync [FILE_SYNC]
                         Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: False)
   -W, --scp             Use scp for copying files instead of rsync. Need to use this on windows. (default: False)
   -G, -gm, --gather_mode
-                        Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS> (default: False)
+                        Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)
   -t, --timeout TIMEOUT
                         Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: 0)
   -T, --use_script_timeout
@@ -745,9 +800,15 @@ options:
   -pre, --interface_ip_prefix INTERFACE_IP_PREFIX
                         The prefix of the for the interfaces (default: None)
   -iu, --ipmi_username IPMI_USERNAME
-                        The username to use to connect to the hosts via ipmi. (default: ADMIN)
+                        The username to use to connect to the hosts via ipmi. (default: admin)
   -ip, --ipmi_password IPMI_PASSWORD
-                        The password to use to connect to the hosts via ipmi. (default: )
+                        The password to use to connect to the hosts via ipmi. (default: admin)
+  -ia, --ipmi_args IPMI_ARGS
+                        The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: )
+  -im, --ipmi_method IPMI_METHOD
+                        The method to use to connect to the hosts via ipmi. (default: ipmitool)
+  -irlt, --ipmi_retry_lockout_time IPMI_RETRY_LOCKOUT_TIME
+                        The time in seconds to retry the lockout of the hosts via ipmi. (default: -1)
   -S, -q, -nw, --no_watch
                         Quiet mode, no curses watch, only print the output. (default: False)
   -ww, --window_width WINDOW_WIDTH
@@ -766,7 +827,7 @@ options:
   -ef, --env_file ENV_FILE
                         Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)
   -efs, --env_files ENV_FILES
-                        The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: ['/etc/profile.d/hosts.sh', '~/.bashrc', '~/.zshrc', '~/host.env', '~/hosts.env'])
+                        The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: [])
   -m, --max_connections MAX_CONNECTIONS
                         Max number of connections to use (default: 4 * cpu_count)
   -j, --json            Output in json format. (default: False)
@@ -782,11 +843,11 @@ options:
   -X, -sh, --skip_hosts SKIP_HOSTS
                         Skip the hosts in the list. (default: None)
   --generate_config_file
-                        Store / generate the default config file from command line argument and current config at --config_file / stdout
+                        Restore / generate using the build-in default configs with default config file chain and command line argument to write to --store_config_file / stdout
   --config_file [CONFIG_FILE]
-                        Additional config file to use, will pioritize over config chains. When using with store_config_file, will store the resulting config file at this location. Use without a path will use multiSSH3.config.json
+                        Load additional config file to apply, Warning: will over write CLI options. Use without a path will use multiSSH3.config.json
   --store_config_file [STORE_CONFIG_FILE]
-                        Store the default config file from command line argument and current config. Same as --store_config_file --config_file=<path>
+                        Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: /home/user/.multiSSH3.config.json
   --debug               Print debug information
   -ci, --copy_id        Copy the ssh id to the hosts
   -I, -nh, --no_history
@@ -797,13 +858,41 @@ options:
   -e, --encoding ENCODING
                         The encoding to use for the output. (default: utf-8)
   -dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD
-                        The threshold of lines to display the diff when files differ. {0-1} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: 0.6)
+                        The threshold of lines to display the diff when files differ. {0-1} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: 0.9)
   --force_truecolor     Force truecolor output even when not in a truecolor terminal. (default: False)
   --add_control_master_config
                         Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.
+  --host_file HOST_FILE
+                        File containing list of hosts to run the command on, one host per line. Default:/etc/hosts
+  --completion ARG [ARG ...]
+                        Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL] [editor]" / "uninstall [SHELL]" it for the current user ("editor": the plain-bash mssh line editor)
   -V, --version         show program's version number and exit
+
+Terminal color capability: 24bit
+Found bins: 
+{'/usr/bin/ipmitool',
+ '/usr/bin/rsync',
+ '/usr/bin/scp',
+ '/usr/bin/sh',
+ '/usr/bin/ssh',
+ '/usr/bin/ssh-copy-id',
+ '/usr/bin/sshpass'}
+Missing bins: 
+{'redfishtool'}
+Config file chain: 
+['~/multiSSH3.config.json',
+ '~/.multiSSH3.config.json',
+ '~/.config/multiSSH3/multiSSH3.config.json',
+ '/etc/multiSSH3.d/multiSSH3.config.json',
+ '/etc/multiSSH3.config.json']
+Hosts Env files searched:
+['/etc/profile.d/hosts.sh',
+ '~/.bashrc',
+ '~/.zshrc',
+ '~/host.env',
+ '~/hosts.env']
 ```
-Note: The default values can be modified / updated in the [Config file](#config).
+Note: The default values can be modified / updated in the [Config file](#configuration).
 
 ## Importing as a Module
 
@@ -940,9 +1029,22 @@ DEFAULT_REPEAT = 1
 DEFAULT_INTERVAL = 0
 DEFAULT_IPMI = False
 DEFAULT_IPMI_INTERFACE_IP_PREFIX = ''
+DEFAULT_IPMI_USERNAME = 'admin'
+DEFAULT_IPMI_PASSWORD = 'admin'
+DEFAULT_IPMI_ARGS=''
+DEFAULT_IPMI_METHOD = 'ipmitool'
+DEFAULT_IPMI_RETRY_LOCKOUT_TIME = -1
+def get_default_ipmi_definition():
+	return {'interface_ip_prefix': DEFAULT_IPMI_INTERFACE_IP_PREFIX,
+	'username': DEFAULT_IPMI_USERNAME,
+	'password': DEFAULT_IPMI_PASSWORD,
+	'args': DEFAULT_IPMI_ARGS,
+	'ipmi_method': DEFAULT_IPMI_METHOD,
+	'hostname_keyword': '',
+	'retry_lockout_time': DEFAULT_IPMI_RETRY_LOCKOUT_TIME,
+}
+DEFAULT_IPMI_DEFINITIONS = [get_default_ipmi_definition()]
 DEFAULT_INTERFACE_IP_PREFIX = None
-DEFAULT_IPMI_USERNAME = 'ADMIN'
-DEFAULT_IPMI_PASSWORD = ''
 DEFAULT_NO_WATCH = False
 DEFAULT_WINDOW_WIDTH = 40
 DEFAULT_WINDOW_HEIGHT = 1
@@ -957,17 +1059,21 @@ DEFAULT_ENV_FILES = ['/etc/profile.d/hosts.sh',
 					 '~/.zshrc',
 					 '~/host.env',
 					 '~/hosts.env',
-					 ]
+					 ]  # no current-directory files (could redirect host aliases), use --env_files
 DEFAULT_NO_HISTORY = False
 DEFAULT_HISTORY_FILE = '~/.mssh_history'
-DEFAULT_MAX_CONNECTIONS = 4 * os.cpu_count()
+def _cpu_count():
+	# os.cpu_count() returns None when the count cannot be determined
+	return os.cpu_count() or 1
+DEFAULT_MAX_CONNECTIONS = 4 * _cpu_count()
 DEFAULT_JSON_MODE = False
 DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
+DEFAULT_HOST_FILE = '/etc/hosts'
 DEFAULT_ENCODING = 'utf-8'
-DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.6
+DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
 SSH_STRICT_HOST_KEY_CHECKING = False
 FORCE_TRUECOLOR = False
 ERROR_MESSAGES_TO_IGNORE = [
@@ -979,6 +1085,7 @@ ERROR_MESSAGES_TO_IGNORE = [
 	'Killed by signal',
 	'Connection reset by peer',
 ]
+POSSIBLE_SSH_KEY_FILES = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
 __DEFAULT_COLOR_PALETTE = {
 	'cyan': (86, 173, 188),
 	'green': (114, 180, 43),
@@ -1005,6 +1112,20 @@ _etc_hosts = {}
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 ```
+> `SSH_STRICT_HOST_KEY_CHECKING = False` (the default) passes `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` to every ssh / scp / rsync, so host keys are not checked. See [Host Key Checking](#host-key-checking).
+
+> `DEFAULT_IPMI_DEFINITIONS` lists the IPMI logins `--ipmi` tries on each host, in order, until one works. Each is a dict with any of `interface_ip_prefix`, `username`, `password`, `args`, `ipmi_method` and `retry_lockout_time` (what `-mpre`, `-iu`, `-ip`, `-ia`, `-im` and `-irlt` set; missing keys come from the `DEFAULT_IPMI_*` values), and `hostname_keyword`: a definition with one is only tried on hosts whose name contains it. mssh adds one more definition, made of the `DEFAULT_IPMI_*` values as changed by those options: it is tried first when the command line changes any of them, otherwise last (and not twice when the list already ends with it). The built-in list holds one definition with the built-in values (`admin` / `admin`). For example
+> ```json
+> "DEFAULT_IPMI_USERNAME": "ADMIN",
+> "DEFAULT_IPMI_PASSWORD": "bmc-password",
+> "DEFAULT_IPMI_DEFINITIONS": [
+>     {"hostname_keyword": "gpu", "username": "root", "password": "gpu-bmc-password", "args": "-I lanplus"}
+> ]
+> ```
+> makes mssh try `root` (with `-I lanplus`), then `ADMIN`, on hosts whose name contains `gpu`, and only `ADMIN` on the others. After the definitions, a host still failing gets the ssh fallback described under `-M, --ipmi`.
+
+> `DEFAULT_HOST_FILE` is the hosts file (`/etc/hosts` format) mssh looks host names up in before DNS; `--host_file` sets it for one run. Autocomplete offers the names in the one a config file sets.
+
 > Note: If color palette need to be changed, please change the `COLOR_PALETTE` values instead of the __DEFAULT_COLOR_PALETTE as if values are missing from __DEFAULT_COLOR_PALETTE, mssh may raise errors.
 
 > When imported and calling as a module, `called` will be set to _DEFAULT_CALLED.<br/>
