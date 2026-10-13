@@ -3508,8 +3508,12 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
 	if threshold > 0.5:
-		samples = itertools.islice(line_bag1, max(int(len(line_bag1) * (1 - threshold)),1))
-		if not line_bag2.intersection(samples):
+		# quick reject when none of a few items of the smaller bag is in the other. Taking one item more
+		# than the smaller bag may lack and still merge, the answer is always the count's below, whichever
+		# items the set yields first (an order that changes from run to run)
+		smaller, larger = (line_bag1, line_bag2) if len(line_bag1) <= len(line_bag2) else (line_bag2, line_bag1)
+		sample_count = len(smaller) - math.ceil(len(smaller) * threshold) + 1
+		if not larger.intersection(itertools.islice(smaller, sample_count)):
 			return False
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 

@@ -90,3 +90,45 @@ def test_lines_only_some_hosts_print_come_in_natural_host_order():
 	text = renders.pop()
 	only_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("only ")]
 	assert only_lines == ["only 127.0.0.1", "only 127.0.0.2", "only 127.0.0.3", "only 127.0.0.10"]
+
+
+class _YieldsFirst(set):
+	"""A set that yields one chosen item first, like a string hash seed could make a real set do."""
+
+	def __init__(self, items, first):
+		super().__init__(items)
+		self.first = first
+
+	def __iter__(self):
+		yield self.first
+		for item in set.__iter__(self):
+			if item != self.first:
+				yield item
+
+
+def _line_bags(fake_host, *return_codes):
+	hosts = []
+	for i, returncode in enumerate(return_codes, 1):
+		host = fake_host("127.0.0.%d" % i, "cmd")
+		host.stdout = ["line %d" % k for k in range(5)]
+		host.returncode = returncode
+		hosts.append(host)
+	_outputs, line_bags, _by_len, _keys, _width = multiSSH3.get_host_raw_output(hosts, terminal_width=80)
+	return [line_bags[host.name] for host in hosts]
+
+
+def test_outputs_over_the_merge_threshold_merge_whatever_the_set_order(fake_host):
+	# the same 5 lines with return codes 0 and 1: 12 of 13 items shared, over the 0.9 threshold
+	ok_bag, failed_bag = _line_bags(fake_host, 0, 1)
+	assert len(ok_bag & failed_bag) >= 0.9 * len(ok_bag)
+	(only_in_ok,) = ok_bag - failed_bag
+
+	assert multiSSH3.can_merge(_YieldsFirst(ok_bag, only_in_ok), failed_bag, 0.9)
+	assert multiSSH3.can_merge(_YieldsFirst(failed_bag, (only_in_ok[0], "1")), ok_bag, 0.9)
+
+
+def test_a_larger_first_bag_merges_whatever_the_set_order(fake_host):
+	(bag,) = _line_bags(fake_host, 0)
+	larger = set(bag) | {"one more line"}
+
+	assert multiSSH3.can_merge(_YieldsFirst(larger, "one more line"), bag, 0.9)
