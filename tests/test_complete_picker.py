@@ -1,4 +1,6 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
+import time
+
 import pytest
 
 import multiSSH3
@@ -262,6 +264,86 @@ def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
 	for history in (b'', b'ls\n\xff\xfe\n'):
 		edit = run_engine(['edit', 'mssh '], history, env)
 		assert (edit.returncode, edit.stdout, edit.stderr) == (3, b'', b'')
+
+
+def start_on_a_terminal(args, data, env, listening):
+	'''
+	Start the engine with a pseudo-terminal as its controlling terminal, the request on stdin and
+	stdout a pipe; listening False: nobody reads that pipe any more (the shell stopped waiting).
+	Returns (process, the terminal's master side, the pipe's read end or None).
+	'''
+	import os
+	import pty
+	import subprocess
+	from complete_shell_harness import ENGINE
+	master, slave = pty.openpty()
+	name = os.ttyname(slave)
+	read_end, write_end = os.pipe()
+	# a new session that opens the terminal gets it as its controlling terminal
+	process = subprocess.Popen(ENGINE + args, stdin=subprocess.PIPE, stdout=write_end, stderr=subprocess.DEVNULL, env=env,
+		start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
+	os.close(write_end)
+	os.close(slave)
+	if not listening:
+		os.close(read_end)
+		read_end = None
+	process.stdin.write(data)
+	process.stdin.close()
+	return process, master, read_end
+
+
+def terminal_output(fd, seconds, until=None):
+	'''What the program wrote to fd (the terminal, or a pipe) in that many seconds, or until it wrote until.'''
+	import os
+	import select
+	out = b''
+	end = time.monotonic() + seconds
+	while time.monotonic() < end and not (until and until in out):
+		if select.select([fd], [], [], 0.05)[0]:
+			try:
+				chunk = os.read(fd, 1 if until else 65536)
+			except OSError:
+				break
+			if not chunk:
+				break
+			out += chunk
+	return out
+
+
+READY_PICK = b'\0'.join([b'MSSHC1', b'bash', b'5.2', b'pick=1 ready=1 redraw=1 expand=0 term=xterm', b'mssh gpu[01-16] ', b'', b'', b''])
+
+
+@pytest.mark.parametrize('args, data', [(['pick'], READY_PICK), (['edit', '--ready', '--', 'mssh '], b'')], ids=['pick', 'edit'])
+def test_pick_and_edit_say_ready_before_they_take_the_terminal(tmp_path, args, data):
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	process, master, read_end = start_on_a_terminal(args, data, env, listening=True)
+	try:
+		first = terminal_output(read_end, 5.0, until=b'\n')
+		drawn = terminal_output(master, 1.0)
+		assert first == b'ready\n' and (b'type to filter' if args[0] == 'pick' else b'mssh ') in drawn
+		os.write(master, b'\x1b' if args[0] == 'pick' else b'\r')
+		assert process.wait(10) in (0, 1)
+	finally:
+		process.kill()
+		os.close(master)
+		os.close(read_end)
+
+
+@pytest.mark.parametrize('args, data, status', [(['pick'], READY_PICK, 2), (['edit', '--ready', '--', 'mssh '], b'', 3)], ids=['pick', 'edit'])
+def test_pick_and_edit_leave_the_terminal_alone_when_nobody_waits_any_more(tmp_path, args, data, status):
+	# the shell gave up on an engine slow to start: drawing now would fight readline for the terminal
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	process, master, _ = start_on_a_terminal(args, data, env, listening=False)
+	try:
+		assert process.wait(10) == status
+		assert terminal_output(master, 0.3) == b''
+	finally:
+		process.kill()
+		os.close(master)
 
 
 @pytest.mark.parametrize('shell', ['zsh', 'fish'])

@@ -4402,17 +4402,71 @@ _mssh_complete_apply() {
 	_mssh_complete_set "$text" "$cursor"
 }
 
+_mssh_complete_start() {
+	# run the engine's picker or editor ("$@" prints its answer and returns its exit status): wait
+	# MSSH_COMPLETE_START_TIMEOUT seconds (2) at most for it to say "ready", just before it takes the
+	# terminal, then as long as the operator takes. Sets _mssh_complete_resp to its answer and
+	# _mssh_complete_status to its exit status, 124 when it was not ready in time, 130 when Ctrl-C
+	# came first. An engine ready too late finds nobody reading and leaves the terminal alone.
+	local line= rest= got=142 waited=0 tenths=20 trapped= _mssh_complete_interrupted=0
+	_mssh_complete_resp=
+	_mssh_complete_status=124
+	# in tenths of a second: bash counts in integers
+	[[ ${MSSH_COMPLETE_START_TIMEOUT:-2} =~ ^([0-9]*)\.?([0-9]?)[0-9]*$ ]] && tenths=$(( 10#0${BASH_REMATCH[1]} * 10 + 10#0${BASH_REMATCH[2]} ))
+	if [[ -z ${BLE_VERSION-} ]]; then
+		# Ctrl-C while waiting comes back here (bash would drop the line, and wait for an engine that
+		# does not die of it); ble.sh reads Ctrl-C as a key
+		trapped=$(trap -p INT)
+		trap '_mssh_complete_interrupted=1' INT
+	fi
+	{
+		# in short reads: a trapped Ctrl-C does not end a read
+		while (( got > 128 && !_mssh_complete_interrupted && waited++ < tenths )); do
+			IFS= read -r -t 0.1 line && got=0 || got=$?
+		done
+		(( got > 128 )) || IFS= read -r -d '' rest || :
+	} < <("$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
+	if [[ -z ${BLE_VERSION-} ]]; then
+		if [[ -n $trapped ]]; then eval "$trapped"; else trap - INT; fi
+	fi
+	if [[ $line == ready ]]; then
+		# it had the terminal: as cancelled unless it says otherwise
+		_mssh_complete_status=1
+	elif (( _mssh_complete_interrupted )); then
+		_mssh_complete_status=130
+		return 0
+	elif (( got > 128 )); then
+		return 0
+	else
+		rest=$line$'\n'$rest
+	fi
+	rest=${rest%$'\n'}
+	line=${rest##*$'\n'}
+	if [[ $line =~ ^S\ ([0-9]+)$ ]]; then
+		_mssh_complete_status=${BASH_REMATCH[1]}
+		rest=${rest%"$line"}
+	fi
+	_mssh_complete_resp=${rest%$'\n'}
+	return 0
+}
+
+_mssh_complete_run_pick() {
+	# the picker, for _mssh_complete_start, on _mssh_complete_pick's line
+	_mssh_complete_request "pick=1 ready=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null
+	return "${PIPESTATUS[1]}"
+}
+
 _mssh_complete_pick() {
-	# the picker for the mssh line in READLINE_LINE; fails when it is unavailable
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand resp status
+	# the picker for the mssh line in READLINE_LINE; fails when it is unavailable or too slow to start
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_resp _mssh_complete_status
 	local _mssh_complete_action _mssh_complete_keys
 	_mssh_complete_cut
 	_mssh_complete_prompt
-	resp=$(_mssh_complete_request "pick=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null)
-	status=$?
-	(( status == 0 )) && _mssh_complete_apply "$resp"
-	(( status <= 1 ))
+	_mssh_complete_start _mssh_complete_run_pick
+	(( _mssh_complete_status == 0 )) && _mssh_complete_apply "$_mssh_complete_resp"
+	# cancelled, or Ctrl-C before it opened: the line stays as it is
+	(( _mssh_complete_status <= 1 || _mssh_complete_status == 130 ))
 }
 
 _mssh_complete_ctrl_r() {
@@ -4480,10 +4534,17 @@ _mssh_complete_previous() {
 	return 1
 }
 
+_mssh_complete_run_edit() {
+	# the editor, for _mssh_complete_start, on _mssh_complete_space's line
+	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null
+	return "${PIPESTATUS[1]}"
+}
+
 _mssh_complete_space() {
 	# space ("\C-x\C-t\C-x\C-y"): after an mssh name alone, the mssh line editor; else a space
-	local resp _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
-	local _mssh_complete_before _mssh_complete_after
+	local shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
 	local -a expand=()
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
@@ -4491,9 +4552,15 @@ _mssh_complete_space() {
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
 				_mssh_complete_prompt
 				(( _mssh_complete_expand )) && expand=(--expand)
-				resp=$(fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-					MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null)
-				if _mssh_complete_apply "$resp"; then
+				_mssh_complete_start _mssh_complete_run_edit
+				if (( _mssh_complete_status == 130 )); then
+					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
+					shown=${_mssh_complete_ps1##*$'\n'}
+					printf '\r%s%s ^C\e[J\r\n' "${shown//[$'\001\002']/}" "$READLINE_LINE"
+					READLINE_LINE= READLINE_POINT=0
+					return 0
+				fi
+				if (( _mssh_complete_status == 0 )) && _mssh_complete_apply "$_mssh_complete_resp"; then
 					case $_mssh_complete_action in
 						# the editor left the line and ^C on screen: readline draws a fresh prompt below
 						abandon) READLINE_LINE= READLINE_POINT=0 ;;
@@ -5947,11 +6014,24 @@ def _prompt_from_flags(flags):
 		prompt = expand_prompt(prompt)
 	return prompt.rsplit('\n', 1)[-1].replace('\x01', '').replace('\x02', '')
 
+def _ready():
+	'''
+	Say "ready" on stdout, just before taking the terminal (pick with ready=1, edit --ready): the shell
+	waits only so long for it. False when nobody reads any more: the shell went on without the picker
+	or the editor, and the terminal must be left alone.
+	'''
+	try:
+		os.write(1, b'ready\n')
+		return True
+	except OSError:
+		return False
+
 def _cmd_pick():
 	'''
 	mssh-complete pick: the Ctrl-R picker. Reads a request on stdin, draws on /dev/tty, prints the new
 	line (MSSHC1, L <cursor>\\t<line>, E; no NUL: shells read it with command substitution). Exit 0
-	chosen, 1 cancelled, 2 unavailable (the shell then does what Ctrl-R did before).
+	chosen, 1 cancelled, 2 unavailable (the shell then does what Ctrl-R did before). With the flag
+	ready=1, "ready" comes first, before the terminal is taken.
 	'''
 	data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
 	try:
@@ -5972,6 +6052,8 @@ def _cmd_pick():
 		line = before = None
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
+		if request.flags.get('ready') == '1' and not _ready():
+			return 2
 		with Terminal() as term:
 			outcome = picker.run(term, line, before)
 	except Exception as e:
@@ -6040,11 +6122,13 @@ def _cmd_edit(args):
 	The prompt to redraw is in $MSSH_COMPLETE_PROMPT (PS1 itself with --expand); stdin holds the
 	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
 	replays keys, written as a readline key sequence; abandon: drop the line), E. Exit 3 when the
-	editor cannot start; the shell then goes on as if it had not been asked.
+	editor cannot start; the shell then goes on as if it had not been asked. With --ready, "ready"
+	comes first, before the terminal is taken.
 	'''
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
 	parser.add_argument('--expand', action='store_true')
+	parser.add_argument('--ready', action='store_true')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
 	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
@@ -6084,6 +6168,11 @@ def _cmd_edit(args):
 		return engine.diagnose(Request('bash', text[:cursor], text[cursor:], ''))
 
 	editor = LineEditor(options.text, suggest, complete, pick, diagnose)
+	# the suggestion and the warnings it opens with: asked before the shell hears "ready"
+	editor.refresh()
+	editor.refresh_warnings()
+	if options.ready and not _ready():
+		return 3
 	try:
 		with term:
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
