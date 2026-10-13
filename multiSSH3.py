@@ -4133,7 +4133,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			__globalUnavailableHosts.update(canonical_unavailable)
 			if __DEBUG_MODE:
 				print(f'Unreachable hosts: {unavailableHosts}')
-		if pre_merge:
+		if pre_merge and not json and not greppable:
+			# only the default output merges: json and greppable output name each host, scripts grep and parse them.
 			# merge copies, the caller's hosts must keep one entry per real host for failure counts
 			hosts = pre_merge_hosts([host.copy() for host in hosts])
 		if not no_output:
@@ -4482,7 +4483,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
 		no_history (bool): Do not record command history. Default: True.
 		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.
-		pre_merge_hosts (bool): Pre-merge all hosts with identical outputs. Default: not called.
+		pre_merge_hosts (bool): In the printed default output, show hosts with identical outputs once (json and greppable output list every host). Default: not called.
 		no_output (bool): If True, do not print output after execution. Default: called.
 
 	Returns:
