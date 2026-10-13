@@ -3816,7 +3816,14 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			if not hostAdded:
 				rtnList.append([host.name,f"rc: {host.returncode}",'N/A','<EMPTY>'])
 			rtnList.append(['','','',''])
-		rtnStr += pretty_format_table(rtnList)
+		# the table pads the first three columns only: padded to the longest output line, every other line
+		# and divider was written out to its length (seq 1 10000 and one 5000 character line: 50 MB of spaces)
+		table = pretty_format_table([rtnList[0]] + [row[:3] + [''] for row in rtnList[1:]]).split('\n')
+		tableLines = table[:2]
+		for line, row in zip(table[2:], rtnList[1:]):
+			# a divider row stays as it is
+			tableLines.append(line.rstrip(' ') + ' ' + row[3] if any(row) else line)
+		rtnStr += '\n'.join(tableLines) + '\n'
 		rtnStr += '*'*80+'\n'
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]

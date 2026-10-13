@@ -132,3 +132,33 @@ def test_a_larger_first_bag_merges_whatever_the_set_order(fake_host):
 	larger = set(bag) | {"one more line"}
 
 	assert multiSSH3.can_merge(_YieldsFirst(larger, "one more line"), bag, 0.9)
+
+
+def _greppable(fake_host, *stdouts):
+	hosts = []
+	for i, stdout in enumerate(stdouts, 1):
+		host = fake_host("127.0.0.%d" % i, "cmd")
+		host.stdout = list(stdout)
+		host.returncode = 0
+		hosts.append(host)
+	return multiSSH3.generate_output(hosts, greppable=True).split("\n")
+
+
+def test_greppable_lines_are_not_padded_to_the_longest_output_line(fake_host):
+	long_line = "x" * 5000
+	lines = _greppable(fake_host, ["1", "2", long_line], ["short"])
+
+	assert "127.0.0.1 | rc: 0       | stdout      | 1" in lines
+	assert "127.0.0.1 | rc: 0       | stdout      | " + long_line in lines
+	assert "127.0.0.2 | rc: 0       | stdout      | short" in lines
+	assert [line for line in lines if line.endswith(" ")] == []
+	# the dividers between hosts do not stretch to the long line either
+	dividers = [line for line in lines if line.startswith("---")]
+	assert len(dividers) == 3
+	assert max(map(len, dividers)) <= 80
+
+
+def test_greppable_lines_keep_the_spaces_the_output_ends_with(fake_host):
+	lines = _greppable(fake_host, ["two spaces  ", "x" * 100])
+
+	assert "127.0.0.1 | rc: 0       | stdout      | two spaces  " in lines
