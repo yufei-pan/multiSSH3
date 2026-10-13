@@ -1,5 +1,7 @@
 import os
 import subprocess
+import sys
+import threading
 import time
 
 import pytest
@@ -153,6 +155,49 @@ def test_concurrent_first_query_waits_for_the_running_build(home, monkeypatch):
 	monkeypatch.setattr(mc, 'FIRST_BUILD_BUDGET', 0.2)
 	assert mc.load_for_query(directory, time.time()) == (None, [])
 	assert started == []
+
+
+def test_a_query_answers_before_its_deadline_while_the_first_build_runs(home, monkeypatch):
+	# the shell gives up at its deadline: a first build that takes longer must not cost the answer
+	directory = mc.cache_dir()
+	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
+	# a wide reserve, so a loaded machine cannot make the answer late
+	monkeypatch.setattr(mc, 'FIRST_BUILD_RESERVE', 0.4)
+	started = time.monotonic()
+	response = mc.answer(mc.Request('bash', 'mssh --no_wa', '', '--no_wa'), started + 0.6, directory=directory)
+	assert time.monotonic() - started < 0.6
+	# without the index: options from mssh's parser
+	assert [candidate.text for candidate in response.candidates] == ['--no_watch']
+
+
+def test_a_query_still_waits_for_a_first_build_that_ends_in_time(home, monkeypatch):
+	directory = mc.cache_dir()
+	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
+	# the running build: done shortly after the query starts
+	other = os.path.join(str(home), 'other')
+	os.mkdir(other)
+	built = mc.build_index(other, mssh=multiSSH3)
+	finish = threading.Timer(0.02, os.replace, (built, os.path.join(directory, mc.INDEX_NAME)))
+	finish.start()
+	try:
+		response = mc.answer(mc.Request('bash', 'mssh jum', '', 'jum'), time.monotonic() + 2.0, directory=directory)
+	finally:
+		finish.join()
+	assert [candidate.text for candidate in response.candidates] == ['jump1', 'jump2']
+
+
+def test_the_query_command_answers_in_time_while_the_first_build_runs(home):
+	directory = mc.cache_dir()
+	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	request = '\0'.join([mc.PROTOCOL, 'bash', '5.2', '', 'mssh --no_wa', '', '--no_wa']) + '\0'
+	started = time.monotonic()
+	result = subprocess.run([sys.executable, '-I', mc.__file__, 'query'], input=request.encode(), stdout=subprocess.PIPE, timeout=30)
+	took = time.monotonic() - started
+	assert 'C --no_watch\t' in result.stdout.decode()
+	# the shells wait 0.3 s by default; the answer used to come after the 2 s first-build budget
+	assert took < 1.0
 
 
 

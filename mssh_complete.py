@@ -1509,7 +1509,8 @@ TAIL_LIMIT_ENTRIES = 500
 ARP_TTL = 300.0
 LOCK_NAME = 'complete-index.lock'
 LOCK_STALE = 60.0
-FIRST_BUILD_BUDGET = 2.0
+FIRST_BUILD_BUDGET = 2.0    # seconds the picker and the editor (no deadline) wait for the first index
+FIRST_BUILD_RESERVE = 0.1   # a query stops waiting for the first index this long before its deadline
 
 def check_freshness(index, now):
 	'''
@@ -1605,11 +1606,14 @@ def _load_index(path):
 		_debug('index not usable: {!r}'.format(e))
 		return None
 
-def load_for_query(directory, now):
+def load_for_query(directory, now, deadline=None):
 	'''
 	The index to answer from and the history lines it is missing.
 
-	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one.
+	Starts a rebuild when the index is stale. Without an index, starts the first build and waits for
+	it up to FIRST_BUILD_BUDGET; with a deadline (time.monotonic()), only until FIRST_BUILD_RESERVE
+	before it: the shell stops waiting at its deadline, so the query then answers without the index
+	while the build goes on.
 
 	Returns:
 		tuple: (NsvIndex or None, history tail lines)
@@ -1619,8 +1623,13 @@ def load_for_query(directory, now):
 	if index is None:
 		spawn_rebuild(directory)
 		until = time.monotonic() + FIRST_BUILD_BUDGET
-		while index is None and time.monotonic() < until:
-			time.sleep(0.05)
+		if deadline is not None:
+			until = min(until, deadline - FIRST_BUILD_RESERVE)
+		while index is None:
+			left = until - time.monotonic()
+			if left <= 0:
+				break
+			time.sleep(min(0.02, left))
 			if os.path.exists(path):
 				index = _load_index(path)
 		if index is None:
@@ -3110,16 +3119,20 @@ def format_response(response, nul=True):
 def answer(request, deadline=None, directory=Ellipsis, now=None):
 	'''
 	Answer a request from the index in directory: mssh's cache dir by default, None for no index
-	(degraded: options from mssh's parser, shell history, no ranking from mssh history).
+	(degraded: options from mssh's parser, shell history, no ranking from mssh history). Before the
+	first index is built, the answer is degraded unless the build ends in time (see load_for_query).
 	'''
-	return engine_for(request, directory, now).query(request, deadline)
+	return engine_for(request, directory, now, deadline).query(request, deadline)
 
-def engine_for(request, directory=Ellipsis, now=None):
-	'''The engine for a request: the index in directory (as for answer), its history tail, the shell's history.'''
+def engine_for(request, directory=Ellipsis, now=None, deadline=None):
+	'''
+	The engine for a request: the index in directory (as for answer), its history tail, the shell's
+	history. deadline limits the wait for a first index (load_for_query).
+	'''
 	now = time.time() if now is None else now
 	if directory is Ellipsis:
 		directory = cache_dir()
-	index, tail = (None, []) if directory is None else load_for_query(directory, now)
+	index, tail = (None, []) if directory is None else load_for_query(directory, now, deadline)
 	knowledges = []
 	users = ()
 	if index is not None:

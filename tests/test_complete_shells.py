@@ -97,6 +97,38 @@ def test_zsh_gives_up_on_a_slow_engine(setup):
 		session.close()
 
 
+@pytest.fixture
+def first_build(tmp_path):
+	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
+	env, home = make_home(tmp_path, HISTORY)
+	assert mc.take_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
+	# more than the engine needs, less than the 2 s it used to wait for the first build
+	return dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+
+
+def test_bash_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
+def test_zsh_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	session = zsh_session(home, env, glue_file(home, 'zsh'))
+	try:
+		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
+def test_fish_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	assert [text for text, _ in fish_complete(env, glue_file(home, 'fish'), 'mssh --no_wa')] == ['--no_watch']
+
+
 def test_fish_completes(setup):
 	env, home = setup
 	glue = glue_file(home, 'fish')
