@@ -301,6 +301,7 @@ It also supports interactive inputs. ( and able to async boardcast to all suppli
 ```bash
 mssh www bash
 ```
+A line typed while a host asks for a password ( its last line ends like `Password:`, `[sudo] password for alice:` or `Enter passphrase for key '...':` ) is sent as typed but not shown: the input line shows a `*` for each character, and the hosts' windows, their output ( `--json` too ) and the `User Inputs` list show `******** (hidden at a password prompt)`.
 mssh cache all inputs and send them to all hosts when they are ready to receive inputs.
 
 ### Curses Window Size Control
