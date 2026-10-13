@@ -3101,10 +3101,10 @@ class Engine(object):
 			alias = self.hosts.alias_index(word)
 			if alias is not None:
 				named = self.hosts.alias_members(alias)
-			elif _range_count(word) is not None:
-				named = _iter_range(word)
 			else:
-				named = expand_ranges(word, limit=RANGE_MEMBERS_LIMIT)
+				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
+				# a range past its limit names no member, and costs nothing to find out
+				named = expand_ranges(word)
 			members.update(itertools.islice(named, room))
 		return members
 

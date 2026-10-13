@@ -176,9 +176,16 @@ def test_skip_hosts_prefers_members_up_to_the_member_limit(tmp_path, monkeypatch
 
 
 def test_skip_hosts_of_a_huge_range_are_not_written_out(tmp_path):
-	# its first members are preferred, as for any range past the member limit
+	# past expand_ranges' limit a range names no member (it wrote out ten million names to find that out)
 	table = _host_table(tmp_path, ['n1', 'n2', 'm1'])
-	assert texts(query('mssh n[1-10000000] -X ', knowledges=[], hosts=table)) == ['n1', 'n2', 'm1']
+	assert texts(query('mssh n[1-10000000] -X ', knowledges=[], hosts=table)) == ['m1', 'n1', 'n2']
+
+
+@pytest.mark.parametrize('hosts', ["'a[[b]c[1-2]]'", 'n[[x]1-2]'])
+def test_skip_hosts_of_a_range_holding_a_bracket(tmp_path, hosts):
+	# a value holding a [ is read again as a range; listing its members raised, and TAB offered nothing
+	table = _host_table(tmp_path, ['n1', 'n2', 'm1'])
+	assert texts(query('mssh {} -X '.format(hosts), knowledges=[], hosts=table)) == ['m1', 'n1', 'n2']
 
 
 def _ranges_typed_before():
