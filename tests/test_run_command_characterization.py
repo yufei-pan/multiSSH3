@@ -36,6 +36,7 @@ def ipmi(**overrides):
 AUTH_FAILURE = (b"", b"Error: Unable to establish IPMI v2 / RMCP+ session\nunauthorized name\n", 1)
 NO_ROUTE = (b"", b"Error: Unable to establish IPMI v2 / RMCP+ session\nno route to host\n", 1)
 OK = (b"ok\n", b"", 0)
+RSYNC_MISSING = (b"", b"bash: line 1: rsync: command not found\nrsync: connection unexpectedly closed (0 bytes received so far) [sender]\n", 12)
 EMFILE = OSError(errno.EMFILE, "Too many open files")
 
 SCENARIOS = {
@@ -67,10 +68,13 @@ SCENARIOS = {
 		bins=bins("ssh", "rsync", "scp"), results=[OK]),
 	"rsync_failure_falls_back_to_scp": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"),
-		results=[(b"", b"rsync: connection unexpectedly closed\n", 12), OK]),
+		results=[RSYNC_MISSING, OK]),
 	"rsync_failure_falls_back_to_scp_debug": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"), debug=True,
-		results=[(b"", b"rsync: connection unexpectedly closed\n", 12), OK]),
+		results=[RSYNC_MISSING, OK]),
+	"rsync_error_keeps_rsync_result": dict(
+		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"),
+		results=[(b"", b'file has vanished: "/src/a/x"\n', 24)]),
 	"scp_requested": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"], scp=True), passwds="pw",
 		bins=bins("ssh", "scp", "sshpass"), results=[OK]),
@@ -136,7 +140,7 @@ SCENARIOS = {
 		host=dict(name="node1", command="true"), bins=bins("ssh"), retry_limit=2, results=[EMFILE] * 5),
 	"too_many_open_files_with_rsync_fallback": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"),
-		retry_limit=2, results=[EMFILE, (b"", b"rsync failed\n", 5), EMFILE, EMFILE]),
+		retry_limit=2, results=[EMFILE, (b"", b"ssh: connect to host node1 port 22: Connection refused\n", 255), EMFILE, EMFILE]),
 	"other_os_error": dict(
 		host=dict(name="node1", command="true"), bins=bins("ssh"),
 		results=[OSError(errno.ENOENT, "No such file or directory")]),

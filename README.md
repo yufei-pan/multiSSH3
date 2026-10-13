@@ -470,7 +470,13 @@ mssh -ea="-o ProxyCommand='ssh -W %h:%p bastion'" allServers uptime
 ### `-f, --file FILE` | None
 - The file to be copied to the hosts. Use -f multiple times to copy multiple files.
 - When file is specified, the command(s) will be treated as the destination path(s) on the remote hosts.
-- By default, rsync will be tried first on linux, scp will be used on windows or if rsync have failed to on linux.
+- A path that exists is copied as written, glob characters in its name included (`report[1].txt`); any other is expanded as a glob, so a quoted glob (`-f '*.log'`) is expanded by mssh.
+- Files are copied with rsync when it is installed on this machine, else with scp as with `-W, --scp`.
+- rsync connects with the same ssh program and options as mssh's other commands, `-k` identity file included. A host given as an IPv6 address is written in brackets for rsync and scp (`root@[fd00::5]:/dest/`).
+- As with rsync, a directory given with a trailing slash (`./data/`) copies its contents into the destination, one without (`./data`) copies the directory itself into it.
+- A host where rsync could not run (rsync is not installed there or could not start, an rsync turned down mssh's options as macOS's rsync 2.6.9 does, or ssh failed to connect) is retried with scp, laying the files out as rsync would have: scp copies the entries of a `./data/` directory, and a lone directory goes inside the destination directory (scp fails if that directory does not exist, instead of creating it). Not retried: an empty `./data/` (scp has nothing to copy), a `./data/` with more entries than scp's command line holds (about 1 MB of names) and, in gather mode, a remote `dir/` source going into a local directory that exists or with other sources (scp would copy the directory itself into it).
+- rsync keeps extended attributes (`-X`). Where the destination cannot keep them (NFSv3, vfat, ...), rsync copies the files and fails with 23; mssh then runs rsync once more without `-X`, a quick pass that ends with the copy's own result, and warns that the attributes were not copied.
+- Any other rsync failure, such as 23 (some files were not transferred) or 24 (some files vanished), is the host's result, with rsync's return code.
 
 ### `-s, -fs, --file_sync [FILE_SYNC]` | _`DEFAULT_FILE_SYNC`_
 - Operate in file sync mode, sync path in `<COMMANDS>` from this machine to `<HOSTS>`.
@@ -489,6 +495,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-W, --scp` | _`DEFAULT_SCP`_
 - Use scp for copying files by default instead of trying rsync.
 - Can speed up operation if we know rsync will not be available on remote hosts.
+- scp's own rules apply: a trailing slash makes no difference, `./data/` copies the directory itself (to `/dest/data` when `/dest` exists).
 
 ### `-G, -gm, --gather_mode` | False
 - Gather files from the hosts instead of sending files to the hosts.

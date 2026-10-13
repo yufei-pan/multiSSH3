@@ -110,7 +110,7 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	assert host.returncode == 0
 	assert rsync_calls[0] == [
 		"rsync", "-ahlX", "--partial", "--inplace", "--info=name",
-		"--rsh", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
 
@@ -138,6 +138,304 @@ def test_run_command_gather_mode_scp(fake_host, monkeypatch):
 		"-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
 		"--", "mock-a:/tmp/remote", "/tmp/local",
 	]
+
+
+# what rsync prints when the remote host has no rsync: the remote shell's words, then rsync's own
+RSYNC_MISSING_BASH = (b"bash: line 1: rsync: command not found\n"
+	b"rsync: connection unexpectedly closed (0 bytes received so far) [sender]\n"
+	b"rsync error: error in rsync protocol data stream (code 12) at io.c(285) [sender=3.5.0]\n")
+
+
+def _copy_with_results(fake_host, monkeypatch, results, files, command="/dest/", **host_kwargs):
+	'''Run one copy to mock-a against fake rsync / scp runs, return the host and the argv of each run.'''
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	results = list(results)
+	calls = []
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		return results.pop(0)
+
+	_patch_popen(monkeypatch, fake_popen)
+	host = fake_host("mock-a", command, files=files, **host_kwargs)
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+	return host, calls
+
+
+@pytest.mark.parametrize("returncode,stderr", [
+	(24, b'file has vanished: "/src/a/tmp.swp"\n'
+		b"rsync warning: some files vanished before they could be transferred (code 24) at main.c(1338) [sender=3.5.0]\n"),
+	(23, b'rsync: [sender] send_files failed to open "/src/a/secret": Permission denied (13)\n'
+		b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1338) [sender=3.5.0]\n"),
+	(11, b"rsync: [receiver] write failed on \"/dest/a\": No space left on device (28)\n"),
+	(5, b"@ERROR: auth failed on module data\n"),
+	(12, b"rsync: connection unexpectedly closed (4521 bytes received so far) [sender]\n"),
+], ids=["vanished", "partial", "disk_full", "auth", "dropped_midway"])
+def test_rsync_error_stands_without_scp_retry(fake_host, monkeypatch, returncode, stderr):
+	# rsync ran and reported on its copy: scp would copy everything again (nested, for a src/ directory)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc(stderr=stderr, returncode=returncode)], ["/src/a"])
+
+	assert [argv[0] for argv in calls] == ["rsync"]
+	assert host.returncode == returncode
+	assert host.scp is False
+
+
+@pytest.mark.parametrize("returncode,stderr", [
+	(12, RSYNC_MISSING_BASH),
+	(12, b"sh: 1: rsync: not found\nrsync: connection unexpectedly closed (0 bytes received so far) [sender]\n"),
+	(12, b"zsh:1: command not found: rsync\n"),
+	(12, b"rsync: Command not found.\n"),
+	(12, b"fish: Unknown command: rsync\n"),
+	(12, b"'rsync' is not recognized as an internal or external command,\noperable program or batch file.\n"),
+	(12, b"bash: rsync: Befehl nicht gefunden.\n"
+		b"rsync: connection unexpectedly closed (0 bytes received so far) [sender]\n"),
+	(127, b"rsync error: remote command not found (code 127) at io.c(232) [sender=3.2.7]\n"),
+	(255, b"ssh: connect to host mock-a port 22: Connection refused\n"
+		b"rsync: connection unexpectedly closed (0 bytes received so far) [sender]\n"),
+	# an rsync older than mssh's options (--info is 3.1, -X 3.0): macOS's stock 2.6.9, openrsync
+	(1, b"rsync: --info=name: unknown option\n"
+		b"rsync error: syntax or usage error (code 1) at /BuildRoot/Library/Caches/com.apple.xbs/Sources/rsync/rsync-55/rsync/main.c(1337) [client=2.6.9]\n"),
+	(1, b"rsync: unrecognized option `--info=name'\nusage: rsync [-0aBCcDEgHIJKkLlmnOoPpRrStuVvWx] [-e program] [--del] source ... directory\n"),
+	(2, b"rsync: -ahlX: unknown option\n"),
+], ids=["bash", "dash", "zsh", "tcsh", "fish", "windows", "localized", "code127", "ssh_failed", "rsync_2.6.9", "openrsync", "code2"])
+def test_rsync_that_never_ran_is_retried_with_scp(fake_host, monkeypatch, returncode, stderr):
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=stderr, returncode=returncode), FakeProc()], ["/src/a"])
+
+	assert [argv[0] for argv in calls] == ["rsync", "scp"]
+	assert calls[1][-3:] == ["--", "/src/a", "mock-a:/dest/"]
+	assert host.returncode == 0
+	assert host.scp is True
+
+
+# what rsync -X says when the destination (NFSv3, vfat, ...) keeps no extended attributes; the data is copied
+RSYNC_XATTRS_UNSUPPORTED = (b'rsync: [receiver] rsync_xal_set: fsetxattr("/dest/a","user.origin") failed: Operation not supported (95)\n'
+	b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n")
+
+
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_rsync_that_cannot_set_xattrs_copies_again_without_them(fake_host, monkeypatch, gather):
+	# mssh adds -X on its own: a destination that cannot keep extended attributes is no failed copy
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_XATTRS_UNSUPPORTED, returncode=23), FakeProc()], ["/src/a"], gatherMode=gather)
+
+	assert [argv[:2] for argv in calls] == [["rsync", "-ahlX"], ["rsync", "-ahl"]]
+	assert calls[0][2:] == calls[1][2:]
+	assert host.returncode == 0
+	assert host.scp is False
+	assert any("extended attributes" in line and "Operation not supported" in line for line in host.stderr)
+
+
+def test_rsync_without_xattrs_keeps_its_other_errors(fake_host, monkeypatch):
+	permission = (b'rsync: [sender] send_files failed to open "/src/a/secret": Permission denied (13)\n'
+		b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n")
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_XATTRS_UNSUPPORTED + permission, returncode=23), FakeProc(stderr=permission, returncode=23)], ["/src/a"])
+
+	assert [argv[:2] for argv in calls] == [["rsync", "-ahlX"], ["rsync", "-ahl"]]
+	assert host.returncode == 23
+
+
+def test_scp_retry_copies_the_contents_of_a_trailing_slash_directory(fake_host, monkeypatch, tmp_path):
+	# rsync puts the contents of src/ into /dest/, scp src/ would make /dest/src
+	src = tmp_path / "src"
+	(src / "sub").mkdir(parents=True)
+	(src / "b.txt").write_text("b")
+	(src / ".hidden").write_text("h")
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()], [str(src) + "/"])
+
+	assert calls[1][-5:] == ["--", str(src) + "/.hidden", str(src) + "/b.txt", str(src) + "/sub", "mock-a:/dest/"]
+	assert host.returncode == 0
+
+
+@pytest.mark.parametrize("command", ["/dest/", "/dest"])
+def test_scp_retry_puts_a_single_directory_inside_the_destination(fake_host, monkeypatch, tmp_path, command):
+	# alone, scp would copy it to the name /dest when /dest does not exist; destination/. fails instead
+	src = tmp_path / "src"
+	src.mkdir()
+	(src / "only.txt").write_text("o")
+	plain = tmp_path / "plain"
+	plain.mkdir()
+	for files, source in (([str(src) + "/"], str(src) + "/only.txt"), ([str(plain)], str(plain))):
+		host, calls = _copy_with_results(fake_host, monkeypatch,
+			[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()], files, command=command)
+
+		assert calls[1][-3:] == ["--", source, "mock-a:/dest/."]
+		assert host.returncode == 0
+
+
+def test_scp_retry_keeps_a_single_file_destination(fake_host, monkeypatch, tmp_path):
+	# copying one file to a new name works the same with both tools
+	source = tmp_path / "a.txt"
+	source.write_text("a")
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()], [str(source)], command="/dest/b.txt")
+
+	assert calls[1][-3:] == ["--", str(source), "mock-a:/dest/b.txt"]
+
+
+def test_scp_retry_skipped_for_an_empty_trailing_slash_directory(fake_host, monkeypatch, tmp_path):
+	empty = tmp_path / "empty"
+	empty.mkdir()
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)], [str(empty) + "/"])
+
+	assert [argv[0] for argv in calls] == ["rsync"]
+	assert host.returncode == 12
+	assert any("scp" in line and str(empty) + "/" in line for line in host.stderr)
+
+
+def test_scp_retry_skipped_when_the_entries_overflow_the_command_line(fake_host, monkeypatch, tmp_path):
+	# 60000 files made scp fail to start (E2BIG) with a traceback; the budget is made small here
+	monkeypatch.setattr(multiSSH3, "_SCP_ARGV_BUDGET", 4096, raising=False)
+	src = tmp_path / "src"
+	src.mkdir()
+	for index in range(50):
+		(src / ("file_%02d_" % index + "x" * 100)).write_text("")
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)], [str(src) + "/"])
+
+	assert [argv[0] for argv in calls] == ["rsync"]
+	assert host.returncode == 12
+	assert any("50 entries" in line and str(src) + "/" in line for line in host.stderr)
+
+
+def test_gather_scp_retry_skipped_for_a_trailing_slash_source_into_an_existing_destination(fake_host, monkeypatch, tmp_path):
+	# the remote directory cannot be listed here, scp would copy it whole into the local destination
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)], ["/var/log/app/"], command=str(tmp_path) + "/", gatherMode=True)
+
+	assert [argv[0] for argv in calls] == ["rsync"]
+	assert host.returncode == 12
+	assert any("scp" in line and "/var/log/app/" in line for line in host.stderr)
+
+
+def test_gather_scp_retry_skipped_for_trailing_slash_sources_together(fake_host, monkeypatch, tmp_path):
+	# several sources go into the destination directory, each one whole
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)],
+		["/var/log/app/", "/etc/hosts"], command=str(tmp_path / "new") + "/", gatherMode=True)
+
+	assert [argv[0] for argv in calls] == ["rsync"]
+	assert host.returncode == 12
+
+
+def test_gather_scp_retry_for_a_trailing_slash_source_into_a_new_destination(fake_host, monkeypatch, tmp_path):
+	# scp creates the missing destination as the copy, which holds the contents, as rsync's does
+	destination = str(tmp_path / "new") + "/"
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()], ["/var/log/app/"], command=destination, gatherMode=True)
+
+	assert calls[1][-3:] == ["--", "mock-a:/var/log/app/", destination]
+	assert host.returncode == 0
+
+
+def test_gather_scp_retry_for_a_plain_source(fake_host, monkeypatch):
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()], ["/etc/hosts"], command="/tmp/mock-a_hosts", gatherMode=True)
+
+	assert calls[1][-3:] == ["--", "mock-a:/etc/hosts", "/tmp/mock-a_hosts"]
+	assert host.returncode == 0
+
+
+def test_requested_scp_copies_a_trailing_slash_directory_itself(fake_host, monkeypatch, tmp_path):
+	# with -W the whole run uses scp's rules, only a retry for rsync copies the way rsync does
+	src = tmp_path / "src"
+	src.mkdir()
+	(src / "b.txt").write_text("b")
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], [str(src) + "/"], scp=True)
+
+	assert calls[0][-3:] == ["--", str(src) + "/", "mock-a:/dest/"]
+
+
+@pytest.mark.parametrize("name,remote", [
+	("root@fd00::5", "root@[fd00::5]"),
+	("fd00::5", "[fd00::5]"),
+	("fe80::1%eth0", "[fe80::1%eth0]"),
+	("root@[fd00::5]", "root@[fd00::5]"),
+	("root@10.0.0.5", "root@10.0.0.5"),
+])
+@pytest.mark.parametrize("scp", [False, True], ids=["rsync", "scp"])
+def test_copy_brackets_an_ipv6_address(fake_host, monkeypatch, name, remote, scp):
+	# rsync and scp take the first colon as the end of the host: fd00::5:/dest/ means host fd00
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	push = fake_host(name, "/dest/", files=["/src/a"], scp=scp)
+	gather = fake_host(name, "/local/", files=["/remote/a"], scp=scp, gatherMode=True)
+
+	multiSSH3.run_command(push, threading.Semaphore(1), timeout=5)
+	multiSSH3.run_command(gather, threading.Semaphore(1), timeout=5)
+
+	assert calls[0][-2:] == ["/src/a", remote + ":/dest/"]
+	assert calls[1][-2:] == [remote + ":/remote/a", "/local/"]
+
+
+def test_ssh_command_keeps_an_ipv6_address_as_given(fake_host, monkeypatch):
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	host = fake_host("root@fd00::5", "uptime")
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert calls[0][-2:] == ["root@fd00::5", "uptime"]
+
+
+def _rsync_split(command):
+	'''Split an rsync --rsh command into words as rsync does (main.c do_cmd): spaces separate words,
+	single or double quotes keep spaces, a doubled quote inside the same quotes is one literal quote,
+	backslashes are not special.'''
+	words = []
+	i = 0
+	while i < len(command):
+		if command[i] == " ":
+			i += 1
+			continue
+		word = []
+		in_quote = ""
+		while i < len(command) and (command[i] != " " or in_quote):
+			char = command[i]
+			if char in "'\"" and not in_quote:
+				in_quote = char
+				i += 1
+				continue
+			if char == in_quote:
+				if command[i + 1:i + 2] == in_quote:
+					word.append(char)
+					i += 2
+				else:
+					in_quote = ""
+					i += 1
+				continue
+			word.append(char)
+			i += 1
+		assert not in_quote, "rsync rejects a missing trailing quote"
+		words.append("".join(word))
+	return words
+
+
+@pytest.mark.parametrize("identity_file", [
+	"/home/u/my keys/id_ed25519",
+	"/home/u/o'brien/id_rsa",
+	'/home/u/"quoted" \\back/id',
+	"~/.ssh/id_ed25519",
+])
+def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, monkeypatch, identity_file):
+	# rsync splits --rsh on spaces: an identity path with a space became two arguments, and the
+	# configured ssh was ignored for a plain "ssh"
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "/opt/open ssh/bin/ssh")
+	host = fake_host("mock-a", "/dest/", files=["/src/a"], identity_file=identity_file)
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	rsh = calls[0][calls[0].index("--rsh") + 1]
+	assert _rsync_split(rsh) == ["/opt/open ssh/bin/ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
+		"-i", identity_file]
 
 
 def test_run_command_ipmitool_local(fake_host, monkeypatch):

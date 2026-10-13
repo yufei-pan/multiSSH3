@@ -2543,6 +2543,108 @@ def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 		return True
 	return True
 
+# how a host without rsync answers: its shell's "not found" (bash and tcsh, dash / busybox / ksh, zsh,
+# fish, mksh, a missing --rsync-path, Windows cmd and PowerShell), or rsync's words for exit code 127
+_RSYNC_MISSING_MARKERS = (
+	'rsync: command not found',
+	'rsync: not found',
+	'command not found: rsync',
+	'unknown command: rsync',
+	'rsync: inaccessible or not found',
+	'rsync: no such file or directory',
+	"'rsync' is not recognized",
+	'remote command not found',
+)
+# how an rsync turns down its command line before copying anything: rsync's popt (macOS's 2.6.9 has
+# neither -X nor --info), openrsync's getopt, and rsync's own words for exit code 1
+_RSYNC_OPTION_MARKERS = (
+	'unknown option',
+	'unrecognized option',
+	'illegal option',
+	'invalid option',
+	'syntax or usage error',
+)
+
+def _rsync_failure_scp_reason(host, line_starts=(0, 0, 0)):
+	'''Return why a failed rsync is worth retrying with scp, or None when rsync's result stands.
+
+	scp helps only when rsync copied nothing: the host has no rsync (127, or its shell's "not found",
+	which rsync reports as 12), an rsync here or there turned down mssh's options (1 or 2, e.g. an
+	rsync older than 3.1), ssh failed (rsync exits 255), or the host never answered rsync ("0 bytes
+	received so far": rsync's own words, which are not translated, unlike the shell's).
+	Any other failure is rsync's verdict on a copy it made (23 partial transfer, 24 files vanished,
+	a connection lost midway, ...), and scp would copy everything again.
+
+	line_starts holds where the failed attempt's lines begin in host.output, host.stdout
+	and host.stderr, so messages left over from earlier attempts are not considered.
+	'''
+	text = '\n'.join(str(line) for line in host.stderr[line_starts[2]:]).lower()
+	if host.returncode == 127 or any(marker in text for marker in _RSYNC_MISSING_MARKERS):
+		return 'Rsync is not available on the host!'
+	if host.returncode in (1, 2) and any(marker in text for marker in _RSYNC_OPTION_MARKERS):
+		return 'Rsync turned down its options!'
+	if host.returncode == 255:
+		return 'Rsync connection failed!'
+	if '(0 bytes received so far)' in text:
+		return 'Rsync could not start on the host!'
+	return None
+
+def _rsync_xattr_error(host, line_starts=(0, 0, 0)):
+	'''Return the failed attempt's first complaint about extended attributes, or None.'''
+	for line in host.stderr[line_starts[2]:]:
+		if 'xattr' in str(line).lower():
+			return str(line).strip()
+	return None
+
+def _scp_sources_like_rsync(files, destination):
+	'''
+	Return (sources, destination) that make scp lay the local files out as rsync does.
+
+	rsync copies only the contents of a directory given with a trailing slash, scp copies the
+	directory itself (destination/name). Such a directory is replaced by its entries, hidden ones
+	too. A lone directory, or the one entry left, is aimed at destination/. : scp then copies it into
+	the destination directory, or fails when there is none, where it would create the destination
+	as a copy of it (rsync creates the destination directory and copies into it).
+
+	Raises OSError when a directory cannot be listed.
+	'''
+	sources = []
+	from_directory = False
+	for path in files:
+		if path.endswith(('/', os.sep)) and os.path.isdir(path):
+			from_directory = True
+			sources.extend(os.path.join(path, name) for name in sorted(os.listdir(path)))
+		else:
+			sources.append(path)
+	if len(sources) == 1 and (from_directory or os.path.isdir(sources[0])) and destination.rstrip('/'):
+		destination = destination.rstrip('/') + '/.'
+	return sources, destination
+
+# bytes the entries of a dir/ may take on scp's command line: half of Linux's usual 2 MiB argument
+# limit (macOS has 1 MiB), the environment and the rest of the command line need their share
+_SCP_ARGV_BUDGET = 1 << 20
+
+def _scp_cannot_copy_like_rsync(host):
+	'''Return why scp cannot copy host.files as rsync would have, or None when it can.'''
+	if host.gatherMode:
+		# a remote dir/ cannot be listed from here; scp copies it whole, which is only its contents
+		# when scp creates the local destination as that copy
+		for path in host.files:
+			if path.endswith('/') and (len(host.files) > 1 or os.path.lexists(host.command)):
+				return f'it would copy {path} whole into {host.command}, rsync copies only its contents (trailing slash).'
+		return None
+	try:
+		sources, _ = _scp_sources_like_rsync(host.files, host.command)
+	except OSError as e:
+		return f'cannot list the directory to copy: {e}'
+	if not sources:
+		return f'{" ".join(host.files)} is empty, it has nothing to copy.'
+	# each argument also takes a pointer and its terminating NUL
+	if sum(len(os.fsencode(path)) + 9 for path in sources) > _SCP_ARGV_BUDGET:
+		directories = ' '.join(path for path in host.files if path.endswith(('/', os.sep)))
+		return f'it would have to list the {len(sources)} entries of {directories} on its command line, more than a command line holds.'
+	return None
+
 _CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
 _CommandAttempt.__doc__ = '''
 What _build_command decided for one attempt.
@@ -2552,7 +2654,7 @@ next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fi
 attempt's state into the retry decisions and the next attempt.
 '''
 
-def _build_command(host, passwds, ipmi_definitions_list):
+def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, rsync_xattrs=True):
 	'''
 	Build the command line for one attempt to run host.command, without running it.
 
@@ -2564,6 +2666,8 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		host (Host): The host object
 		passwds (str): The password for the host
 		ipmi_definitions_list (list): The IPMI definitions left to try, ... for the matching defaults
+		scp_like_rsync (bool): scp stands in for a failed rsync, so it copies what rsync would have
+		rsync_xattrs (bool): rsync copies extended attributes (-X)
 
 	Returns:
 		_CommandAttempt: What to do next
@@ -2581,7 +2685,8 @@ def _build_command(host, passwds, ipmi_definitions_list):
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
-		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(sshLocalExtraArgs)]
+		# rsync splits --rsh on spaces and honours quotes: quoted, an identity path with a space stays one argument
+		rsyncLocalExtraArgs = ['--rsh',' '.join(shlex.quote(arg) for arg in [_binPaths.get('ssh', 'ssh')] + sshLocalExtraArgs)]
 		host.address = host.name
 		if '@' in host.name:
 			username, host.address = host.name.rsplit('@',1)
@@ -2756,14 +2861,21 @@ def _build_command(host, passwds, ipmi_definitions_list):
 					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
 					return attempt('stop')
+				# rsync and scp end the host at the first colon, an IPv6 address goes in brackets
+				remoteName = host.resolvedName
+				if ':' in host.address and not host.address.startswith('['):
+					remoteName = f'{username}@[{host.address}]' if username else f'[{host.address}]'
 				if host.gatherMode:
-					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
+					fileArgs = [f'{remoteName}:{file}' for file in host.files] + [host.command]
+				elif useScp and scp_like_rsync:
+					sources, destination = _scp_sources_like_rsync(host.files, host.command)
+					fileArgs = sources + [f'{remoteName}:{destination}']
 				else:
-					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
+					fileArgs = host.files + [f'{remoteName}:{host.command}']
 				if useScp:
 					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
 				else:
-					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
+					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
@@ -2980,7 +3092,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 	Run the command on the host. Main execution function.
 
 	Builds the command (_build_command), runs it (_execute_command) and retries on failure: the
-	next IPMI definition, or scp after rsync failed. Every retry uses up one of retry_limit.
+	next IPMI definition, rsync without -X when the destination cannot keep extended attributes, or
+	scp when rsync could not run on the host (see _rsync_failure_scp_reason). Every retry uses up one
+	of retry_limit.
 
 	Args:
 		host (Host): The host object
@@ -2994,13 +3108,15 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 	if retry_limit is ...:
 		# resolved at call time, the CLI and config files can add ipmi definitions after import
 		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
+	scp_like_rsync = False
+	rsync_xattrs = True
 	while True:
 		if retry_limit < 0:
 			host.output.append('Error: Retry limit reached!')
 			host.stderr.append('Error: Retry limit reached!')
 			host.returncode = 1
 			return
-		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list)
+		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync, rsync_xattrs)
 		if action == 'stop':
 			return
 		if action == 'rebuild':
@@ -3049,16 +3165,42 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				ipmi_definitions_list.append(ipmi_definition)
 			retry_limit -= 1
 			continue
-		# If transfering files, we will try again using scp if rsync connection is not successful
-		elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
+		# mssh asks rsync for extended attributes on its own: where the destination cannot keep them
+		# (NFSv3, vfat, ...), rsync copies the data and exits 23. Copying again without -X is a quick
+		# pass that ends with the result of the copy itself.
+		elif host.files and not useScp and rsync_xattrs and host.returncode == 23:
+			xattr_error = _rsync_xattr_error(host, attempt_line_starts)
+			if not xattr_error:
+				return
 			host.returncode = None
-			host.output.append('Rsync connection failed! Trying SCP connection...')
+			host.output.append('Rsync could not set extended attributes! Copying again without them...')
 			if __DEBUG_MODE:
-				host.stderr.append('Rsync connection failed! Trying SCP connection...')
+				host.stderr.append('Rsync could not set extended attributes! Copying again without them...')
+			else:
+				host.stderr = []
+			host.stderr.append(f'Warning: copied without extended attributes, rsync could not set them: {xattr_error}')
+			rsync_xattrs = False
+			retry_limit -= 1
+			continue
+		# rsync could not run on the host: try scp, if it can copy what rsync would have
+		elif host.files and not host.scp and not useScp and host.returncode != 0:
+			reason = _rsync_failure_scp_reason(host, attempt_line_starts)
+			if not reason:
+				return
+			problem = _scp_cannot_copy_like_rsync(host)
+			if problem:
+				host.output.append(f'{reason} Not trying scp: {problem}')
+				host.stderr.append(f'{reason} Not trying scp: {problem}')
+				return
+			host.returncode = None
+			host.output.append(f'{reason} Trying SCP connection...')
+			if __DEBUG_MODE:
+				host.stderr.append(f'{reason} Trying SCP connection...')
 			else:
 				host.stdout = []
 				host.stderr = []
 			host.scp = True
+			scp_like_rsync = True
 			retry_limit -= 1
 			continue
 		return
@@ -5314,6 +5456,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if not gather_mode:
 			pathSet = set()
 			for pattern in file:
+				# a path that exists is meant as written: the shell expanded the user's globs already,
+				# and glob would read report[1].txt as report1.txt
+				if os.path.lexists(pattern):
+					pathSet.add(pattern)
+					continue
 				try:
 					pathSet.update(glob.glob(pattern,include_hidden=True,recursive=True))
 				except Exception:

@@ -38,7 +38,7 @@ def test_run_command_ssh_ipmitool_defaults_and_user(fake_host, monkeypatch):
 def test_run_command_rsync_failure_retries_with_scp(fake_host, monkeypatch):
 	host = fake_host("mock-a", "/dest", files=["/source"], scp=False)
 	calls = []
-	procs = iter([ImmediateProc(returncode=1, stderr=b"rsync failed\n"), ImmediateProc(returncode=0)])
+	procs = iter([ImmediateProc(returncode=12, stderr=b"bash: rsync: command not found\n"), ImmediateProc(returncode=0)])
 	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
 	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
