@@ -5208,8 +5208,10 @@ def process_args(args = None):
 	try:
 		cfpa, args = cfp.parse_known_args(args)
 		if cfpa.config_file:
-			if os.path.exists(cfpa.config_file):
-				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
+			# expanded here: the shell leaves a ~ after --config_file= as it is
+			config_file = os.path.expanduser(cfpa.config_file)
+			if os.path.exists(config_file):
+				configs = load_config_file(config_file, check_trust=False)
 				__configs_from_file.update(configs)
 				_apply_config(configs)
 				# the program paths were looked up at import, before this file was read
@@ -5294,7 +5296,8 @@ def process_config_file(args):
 			if args.store_config_file is ...:
 				configFileToWriteTo = __working_config_file
 			else:
-				configFileToWriteTo = args.store_config_file
+				# the shell leaves a ~ after --store_config_file= as it is
+				configFileToWriteTo = os.path.expanduser(args.store_config_file)
 		else:
 			configFileToWriteTo = None
 		written = write_default_config(args,configFileToWriteTo,force=args.generate_config_file)

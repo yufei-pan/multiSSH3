@@ -72,14 +72,18 @@ _DERIVED = ("__configs_from_file", "__working_config_file", "__ERROR_MESSAGES_TO
 	"DEFAULT_ENV_FILES")
 
 
-def _process_args_with_config(monkeypatch, tmp_path, config, *argv):
-	'''process_args with --config_file holding config; every module global it may change is restored afterwards.'''
+def _process_args_with_config(monkeypatch, tmp_path, config, *argv, **options):
+	'''
+	process_args with --config_file holding config; every module global it may change is restored afterwards.
+
+	options: config_arg, how --config_file names the file (default: its full path)
+	'''
 	path = _write_config(tmp_path / "extra.json", config)
 	for name in list(config) + list(_DERIVED):
 		value = getattr(multiSSH3, name, None)
 		# a copy, so changes made in place are undone too (a compiled regex cannot be copied on Python 3.6)
 		monkeypatch.setattr(multiSSH3, name, copy.deepcopy(value) if isinstance(value, (list, dict)) else value, raising=False)
-	return multiSSH3.process_args(["--config_file", str(path)] + list(argv or ["127.0.0.1", "true"]))
+	return multiSSH3.process_args(["--config_file", options.get("config_arg", str(path))] + list(argv or ["127.0.0.1", "true"]))
 
 
 def _fake_ssh(tmp_path, name="FAKESSH"):
@@ -256,3 +260,25 @@ def test_config_file_option_applies_like_the_chain(tmp_path, ignore):
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert "CONFIGSSH" in result.stdout
 	assert "FAKEERR" not in result.stdout
+
+
+def test_config_file_option_expands_tilde(monkeypatch, tmp_path, capsys):
+	monkeypatch.setenv("HOME", str(tmp_path))
+
+	args = _process_args_with_config(monkeypatch, tmp_path, {"DEFAULT_WINDOW_WIDTH": 77}, config_arg="~/extra.json")
+
+	assert args.window_width == 77
+	assert "not found" not in capsys.readouterr().err
+
+
+def test_store_config_file_expands_tilde(monkeypatch, tmp_path):
+	monkeypatch.setenv("HOME", str(tmp_path))
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["--store_config_file=~/stored.json", "-w"])
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.process_config_file(args)
+
+	assert exc_info.value.code == 0
+	assert json.loads((tmp_path / "stored.json").read_text())["DEFAULT_PRINT_SUCCESS_HOSTS"] is True
