@@ -2579,7 +2579,9 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				if useScp:
 					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
 				else:
-					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
+					# no --inplace: rsync writes a new file and renames it over the old one, so a running
+					# binary can be replaced and no reader sees a file half written
+					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:

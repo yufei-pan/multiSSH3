@@ -109,10 +109,20 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 0
 	assert rsync_calls[0] == [
-		"rsync", "-ahlX", "--partial", "--inplace", "--info=name",
+		"rsync", "-ahlX", "--partial", "--info=name",
 		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
+
+
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_rsync_writes_a_new_file_and_renames_it_into_place(fake_host, monkeypatch, gather):
+	# --inplace wrote into the destination file itself: "Text file busy" on a running binary, and
+	# readers saw it half written
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], gatherMode=gather)
+
+	assert calls[0][0] == "rsync"
+	assert "--inplace" not in calls[0]
 
 
 def test_run_command_gather_mode_scp(fake_host, monkeypatch):
