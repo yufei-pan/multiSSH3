@@ -4622,6 +4622,9 @@ elif [[ $- == *i* ]]; then
 			# take Ctrl-R only when its binding can be called back (and is not already ours)
 			if _mssh_complete_previous "$keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
 				printf -v "_mssh_complete_previous_${keymap//-/_}" '%s' "$_mssh_complete_found"
+				# a Ctrl-R bound with bind -x (fzf, atuin) is unbound first: when a bind replaces a bind -x
+				# key, bash 5.1 drops the command of another bind -x key (our hook key, or the operator's)
+				[[ $_mssh_complete_found == x:* ]] && bind -m "$keymap" -r '\C-r'
 				# "$_" last: bash sets $_ to a command's last argument, so it keeps the operator's $_
 				if [[ $keymap == emacs ]]; then
 					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs "$_"'

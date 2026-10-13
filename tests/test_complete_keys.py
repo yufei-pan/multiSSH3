@@ -140,6 +140,38 @@ def test_bash_ctrl_r_on_other_lines_calls_a_previous_shell_command(home, where):
 		session.close()
 
 
+# Ctrl-R as fzf's key-bindings.bash binds it from bash 4 on (atuin and mcfly bind it with bind -x too)
+FZF_CTRL_R = r'''_fakefzf() { READLINE_LINE=FZF; READLINE_POINT=3; }
+bind -m emacs-standard -x '"\C-r": _fakefzf'
+bind -m vi-command -x '"\C-r": _fakefzf'
+bind -m vi-insert -x '"\C-r": _fakefzf'
+'''
+VI_PRINT_KEY = 'set -o vi\nbind -m vi-insert -x \'"\\C-x\\C-p": printf "@@LINE[%s]@@\\n" "$READLINE_LINE"\'\n'
+
+
+@pytest.mark.parametrize('mode', ['emacs', 'vi'])
+def test_bash_ctrl_r_over_fzf_keeps_every_shell_command_key(home, mode):
+	# bash 5.1, when a plain bind replaces a bind -x key, drops the command of another bind -x key:
+	# Ctrl-R then said "cannot find keymap for command", and a key of the operator's could stop working
+	env, home = home
+	if bash_version(env) < 43:
+		pytest.skip('bash 4.2 cannot list bind -x bindings: Ctrl-R stays the shell command')
+	session = bash_session(home, env, glue_file(home, 'bash'), pre=(VI_PRINT_KEY if mode == 'vi' else '') + FZF_CTRL_R)
+	try:
+		assert printed(session, 'ls\x12') == 'FZF'
+		session.send('\x15mssh gpu[01-16] \x12')
+		assert 'commands for' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		if mode == 'vi':
+			# vi command mode keeps fzf's Ctrl-R: the glue leaves that keymap alone
+			session.send('\x15ls\x1b')
+			time.sleep(0.3)
+			assert printed(session, '\x12A') == 'FZF'
+		assert b'cannot find keymap' not in session.output
+	finally:
+		session.close()
+
+
 def test_bash_picker_leaves_keys_typed_after_the_choice(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))
@@ -171,8 +203,7 @@ def test_bash_ctrl_r_keeps_the_last_argument(home):
 
 def test_bash_vi_mode_ctrl_r(home):
 	env, home = home
-	pre = 'set -o vi\nbind -m vi-insert -x \'"\\C-x\\C-p": printf "@@LINE[%s]@@\\n" "$READLINE_LINE"\''
-	session = bash_session(home, env, glue_file(home, 'bash'), pre=pre)
+	session = bash_session(home, env, glue_file(home, 'bash'), pre=VI_PRINT_KEY)
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
