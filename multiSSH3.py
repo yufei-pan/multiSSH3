@@ -1713,6 +1713,15 @@ def __expandIPv4Address(hosts):
 	expandedHosts.extend(expandedHost)
 	return expandedHosts
 
+def _has_open_range(text):
+	'''Whether a [] group of text holds a range with an end missing: node[1-], node[-3], rack[a-].'''
+	for group in re.findall(r'\[(.*?)]', text):
+		for part in group.split(','):
+			range_start, dash, range_end = part.partition('-')
+			if dash and not (range_start.strip() and range_end.strip()):
+				return True
+	return False
+
 @cache_decorator 
 def __expand_hostname(text, validate=True):# -> set:
 	'''
@@ -1734,7 +1743,11 @@ def __expand_hostname(text, validate=True):# -> set:
 		- Mixed alphanumeric ranges walk string.digits + string.ascii_letters in that order
 		  (0-9 then A-Z then a-z), so [9-A] yields 9,A and [Z-a] yields Z then a — not a
 		  contiguous Unicode range.
+		- A range with an end missing (node[1-], node[-3], rack[a-]) makes the name invalid: it
+		  is kept whole and unexpanded, so mssh reports it instead of guessing the other end.
 	'''
+	if _has_open_range(text):
+		return set(__validate_expand_hostname(text)) if validate else {text}
 	expandinghosts = [text]
 	expandedhosts = set()
 	# all valid alphanumeric characters
@@ -1757,6 +1770,10 @@ def __expand_hostname(text, validate=True):# -> set:
 					continue
 				range_start = range_start.strip()
 				range_end = range_end.strip()
+				if not range_start or not range_end:
+					# an open range only an earlier expansion made (a[x,[]1-]): _has_open_range saw none
+					expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
+					continue
 				if range_start.isdigit() and range_end.isdigit():
 					padding_length = min(len(range_start), len(range_end))
 					format_str = "{:0" + str(padding_length) + "d}"

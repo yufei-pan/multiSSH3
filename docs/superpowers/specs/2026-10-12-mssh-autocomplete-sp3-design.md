@@ -255,3 +255,4 @@ Implementing and testing SP3 (unit tests, real bash, zsh, fish and ble.sh in the
 | Probe queue | Queries append hosts | hosts already waiting are left out | a query for a long range repeats on every keystroke |
 | Ranges past the member limit | Checked up to the limit | the first `RANGE_MEMBERS_LIMIT` members are checked, the total is counted without expanding | `expand_ranges` gives up on a range over its limit |
 | Shell tests | (not specified) | the harness holds the prober's lock (tests write host states themselves) and gives the terminal a size | no DNS or ping from tests; ble.sh sizes its info panel from the terminal |
+| Ranges with an end missing | (not specified) | `node[1-]`, `node[-3]`, `rack[a-]` are one host name, checked as a plain name (unknown once DNS says so) | mssh takes such a name whole as one invalid host name; before, mssh crashed on `int('', 16)` (or `rack[-x]` silently meant `rack0`-`rackx`) and the engine said nothing |

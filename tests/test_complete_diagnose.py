@@ -153,6 +153,21 @@ def test_a_range_mssh_completion_cannot_expand_says_nothing(engine):
 	assert warnings(engine, 'mssh node[a-c] uptime') == ([], False)
 
 
+@pytest.mark.parametrize('word', ['node[1-]', 'node[-3]', 'rack[a-]', 'rack[-x]'])
+def test_a_range_with_an_end_missing_is_one_host_name(engine, word):
+	# mssh expands no member of it: the name as typed is checked, and is unknown
+	assert warnings(engine, 'mssh {} uptime'.format(word)) == ([], True)
+	assert mc.take_probe_queue(engine.directory) == [word]
+	seed(engine, **{word: 'invalid'})
+	assert warnings(engine, 'mssh {} uptime'.format(word))[0] == [(word, 'unknown', word + ': unknown host')]
+
+
+@pytest.mark.parametrize('name', ['node[1-]', 'node[-3]', 'rack[ a - ]', 'n[1-2]x[-]', 'n[1-2,5-]', 'node[1-16]', 'rack[a-c]',
+	'node[]', 'node[1', 'node]1-[', 'a[x,[]1-]', 'n[1-2][3-]', 'plain'])
+def test_open_ranges_are_told_apart_as_mssh_does(name):
+	assert mc._has_open_range(name) == getattr(multiSSH3, '_has_open_range')(name)
+
+
 def test_a_huge_range_is_checked_up_to_the_member_limit(engine, monkeypatch):
 	monkeypatch.setattr(mc, 'RANGE_MEMBERS_LIMIT', 4)
 	seed(engine, host1='invalid')

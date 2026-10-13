@@ -293,6 +293,8 @@ mssh testrig[1-10] lsblk
 mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
 ```
 
+A range needs both ends: `node[1-]` or `node[-3]` is not expanded, and mssh rejects it as an invalid host name.
+
 ## Misc Features
 
 ### Interactive Inputs

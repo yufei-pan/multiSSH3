@@ -395,3 +395,21 @@ def test_lookups_still_run_when_no_thread_can_be_started(monkeypatch):
 	multiSSH3._run_in_threads(done.append, ["a", "b", "c"])
 
 	assert sorted(done) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("name", ["node[1-]", "node[-3]", "rack[a-]", "rack[x-]", "rack[-x]", "node[ 1 - ]", "node[1-3,5-]", "node[1-2]-[a-]"])
+def test_a_range_with_an_end_missing_is_an_invalid_host_name(hermetic_resolution, monkeypatch, capsys, name):
+	# every name without brackets exists: none of the range's would-be members may be used
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None if "[" in hostname else "10.0.0.1")
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	before = multiSSH3.__mainReturnCode
+
+	assert multiSSH3.__expand_hostname(name, validate=False) == {name}
+	assert multiSSH3.expand_hostnames([name]) == {}
+	assert "Error: {!r} is not a valid hostname or IP address!".format(name) in capsys.readouterr().err
+	assert multiSSH3.__mainReturnCode == before + 1
+
+
+def test_a_range_an_earlier_expansion_leaves_open_is_kept_as_it_is(no_hostname_validation):
+	# the second [ only becomes a group once the first is expanded: a[1-] is a name, not int('', 16)
+	assert multiSSH3.__expand_hostname("a[x,[]1-]", validate=False) == {"ax1-]", "a[1-]"}

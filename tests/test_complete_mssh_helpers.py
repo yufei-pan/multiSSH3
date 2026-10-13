@@ -58,6 +58,10 @@ def test_expand_hostnames_local_stops_alias_loops(no_dns, monkeypatch):
 	assert multiSSH3.expand_hostnames_local('loop_a') == ([], [])
 
 
+def test_expand_hostnames_local_keeps_a_range_with_an_end_missing_as_one_name(no_dns):
+	assert multiSSH3.expand_hostnames_local('node[1-],rack[-x]') == (['node[1-]', 'rack[-x]'], ['node[1-]', 'rack[-x]'])
+
+
 def test_expand_hostnames_local_counts_no_failures(no_dns):
 	multiSSH3.expand_hostnames_local('zz-bad-host')
 	assert multiSSH3.__failedHosts == set()

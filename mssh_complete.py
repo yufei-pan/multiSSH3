@@ -2063,6 +2063,20 @@ def _ipv4_members(name, limit=None):
 	limit = RANGE_MEMBERS_LIMIT if limit is None else limit
 	return ['.'.join(address) for address in itertools.islice(itertools.product(*octets), limit)], total
 
+def _has_open_range(text):
+	'''Whether a [] group of text holds a range with an end missing (node[1-], rack[-x]), as multiSSH3._has_open_range.'''
+	start = text.find('[')
+	while start >= 0:
+		end = text.find(']', start + 1)
+		if end < 0:
+			return False
+		for part in text[start + 1:end].split(','):
+			low, sep, high = part.partition('-')
+			if sep and not (low.strip() and high.strip()):
+				return True
+		start = text.find('[', end + 1)
+	return False
+
 def _range_count(text):
 	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
 	start = text.find('[')
@@ -2461,7 +2475,8 @@ class Engine(object):
 		'''
 		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
 		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
-		The members of an IPv4 range are addresses: they are only pinged, never unknown.
+		The members of an IPv4 range are addresses: they are only pinged, never unknown. A range
+		with an end missing (node[1-]) is one host name, as mssh takes it (an invalid one).
 		'''
 		if _ipv4_range(name):
 			return _ipv4_members(name)
@@ -2469,7 +2484,7 @@ class Engine(object):
 		if number is not None:
 			members = self.hosts.alias_members(number)
 			return members, len(members)
-		if '[' not in name:
+		if '[' not in name or _has_open_range(name):
 			return None
 		total = _range_count(name)
 		if total is None:
