@@ -153,3 +153,13 @@ def test_no_suggestion_mssh_would_run_as_several_commands(monkeypatch):
 			shown += 1
 			assert len(mssh_runs(before + ghost.text, monkeypatch)) == 1, before + ghost.text
 	assert shown
+
+
+def test_commands_with_quoted_words_are_suggested_as_typed(monkeypatch):
+	# as mssh records `mssh web1 "systemctl status 'ssh*'"`
+	history = [line(NOW - number, '-su', 'web1', multiSSH3._shell_quote("systemctl status 'ssh*'")) for number in range(5)]
+	ghost = suggest('mssh web1 sys', history=history)
+	assert (ghost.kind, ghost.text) == ('line', "temctl status \\'ssh\\*\\'")
+	assert mssh_runs('mssh web1 sys' + ghost.text, monkeypatch) == ["systemctl status 'ssh*'"]
+	assert suggest('mssh web1 systemctl status ', history=history).text == "\\'ssh\\*\\'"
+	assert suggest('mssh web1 sys', shell='zsh', history=history).text == "temctl status \\'ssh\\*\\'"

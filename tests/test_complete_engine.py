@@ -286,3 +286,34 @@ def test_command_words_never_complete_to_a_word_mssh_would_run_alone(monkeypatch
 	for before in ('mssh web1 ', 'mssh web1 grep '):
 		for text in texts(query(before, knowledges=knowledges)):
 			assert len(mssh_runs(before + text, monkeypatch)) == 1, before + text
+
+
+def test_next_command_words_keep_the_quotes_history_ran_them_with(monkeypatch):
+	# mssh joins the command words as typed: the quotes of 'ssh*' must reach the remote shell, or it
+	# runs `systemctl status ssh*` with * matched against its working directory
+	knowledges = [memory([recorded(NOW - number, 'web1', "systemctl status 'ssh*'") for number in range(3)])]
+	before = 'mssh web1 systemctl status '
+	assert texts(query(before, knowledges=knowledges)) == ["\\'ssh\\*\\'"]
+	assert mssh_runs(before + "\\'ssh\\*\\'", monkeypatch) == ["systemctl status 'ssh*'"]
+	# zsh and fish quote the word themselves
+	for shell in ('zsh', 'fish'):
+		assert texts(query(before, shell=shell, knowledges=knowledges)) == ["'ssh*'"], shell
+	assert texts(query(before + "\\'ss", word="\\'ss", shell='zsh', knowledges=knowledges)) == ["'ssh*'"]
+
+
+def test_command_words_after_a_quoted_word_follow_history(monkeypatch):
+	knowledges = [memory([recorded(NOW - number, 'web1', "grep '^root:' /etc/passwd") for number in range(3)]
+		+ [recorded(NOW - 10 - number, 'web1', '"$HOME/bin/report" daily') for number in range(3)])]
+	assert texts(query("mssh web1 grep \\'\\^root:\\' ", knowledges=knowledges)) == ['/etc/passwd']
+	# the program itself was quoted
+	assert '\\"\\$HOME/bin/report\\"' in texts(query('mssh web1 ', knowledges=knowledges))
+	before = 'mssh web1 \\"\\$HOME/bin/report\\" '
+	assert texts(query(before, knowledges=knowledges)) == ['daily']
+	assert mssh_runs(before + 'daily', monkeypatch) == ['"$HOME/bin/report" daily']
+
+
+def test_ansi_c_quoted_command_words_are_offered_as_typed(monkeypatch):
+	# $'a\tb' holds a tab once dequoted: as typed it is one plain word
+	knowledges = [memory([recorded(NOW - number, 'web1', "echo $'a\\tb'") for number in range(3)])]
+	assert texts(query('mssh web1 echo ', knowledges=knowledges)) == ["\\$\\'a\\\\tb\\'"]
+	assert mssh_runs("mssh web1 echo \\$\\'a\\\\tb\\'", monkeypatch) == ["echo $'a\\tb'"]

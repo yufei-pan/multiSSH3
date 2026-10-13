@@ -6,7 +6,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, bash_session, build_index, fish_complete, make_home,
+from complete_shell_harness import (ENGINE, bash_session, build_index, fish_complete, fish_session, make_home,
 	require_shell, zsh_session)
 
 HISTORY = [
@@ -291,5 +291,41 @@ def test_bash_set_e_survives_a_missing_engine(setup):
 	session = bash_session(home, env, glue_file(home, 'bash', ['/nonexistent/engine']), bash_completion=False, extra='set -e')
 	try:
 		assert session.line_after('mssh h zzq') == 'mssh h zzq'
+	finally:
+		session.close()
+
+
+# as mssh records `mssh web1 "nosuchcmd status 'ssh*'"` and the same with fakefile
+QUOTED_WORD_HISTORY = ['1790000000\t/x/multiSSH3.py\t-su\tweb1\t\'{} status \'"\'"\'ssh*\'"\'"\'\''.format(name) for name in ('nosuchcmd', 'fakefile')]
+
+
+def words(line):
+	'''The words a line means, whatever quoting the shell chose.'''
+	return None if line is None else [token.text for token in mc.lex(line)]
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
+def test_command_words_are_inserted_with_their_quotes(tmp_path, shell):
+	# mssh passes the quotes of 'ssh*' on to the remote shell only when the local word holds them
+	env, home = make_home(tmp_path, QUOTED_WORD_HISTORY)
+	build_index(env)
+	# an empty working directory: the shells add its files to the words of a remote command
+	empty = tmp_path / 'empty'
+	empty.mkdir()
+	cd = "cd '{}'".format(empty)
+	typed = ['mssh web1 nosuchcmd status ']
+	if shell == 'bash':
+		session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=cd)
+		# a delegated completion turns on file name quoting: bash quotes the word itself
+		typed.append('mssh web1 fakefile status ')
+	elif shell == 'zsh':
+		session = zsh_session(home, env, glue_file(home, 'zsh'), extra=cd)
+		typed.append("mssh web1 nosuchcmd status \\'ss")
+	else:
+		session = fish_session(home, env, '', pre="source '{}'; {}".format(glue_file(home, 'fish'), cd))
+		typed.append("mssh web1 nosuchcmd status \\'ss")
+	try:
+		for line in typed:
+			assert words(session.line_after(line)) == words(line)[:4] + ["'ssh*'"], line
 	finally:
 		session.close()

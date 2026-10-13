@@ -376,12 +376,19 @@ def split_hosts(text):
 		text = text.replace(separator, ' ')
 	return text.split()
 
+def words_as_typed(command):
+	'''
+	The words of a remote command with their quotes and escapes: each as it is typed among the
+	unquoted command words of an mssh line, which mssh joins as they are into the remote command.
+	'''
+	return [token.raw for token in lex(command)]
+
 def command_features(command):
-	'''Features of one remote command: the command, its program and program plus first argument.'''
+	'''Features of one remote command: the command, its program and program plus first argument (words as typed).'''
 	command = command.strip()
 	if not command:
 		return []
-	words = [token.text for token in lex(command)]
+	words = words_as_typed(command)
 	features = ['c:' + command]
 	if words:
 		features.append('p:' + words[0])
@@ -2737,15 +2744,17 @@ class Engine(object):
 		'''
 		typed = context.command_words
 		commands = {}
+		features = {}
 		for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed), context.features, deadline).items():
-			words = [token.text for token in lex(feature[2:])]
+			words = words_as_typed(feature[2:])
 			if len(words) >= len(typed) and words[:len(typed) - 1] == typed[:-1] and words[len(typed) - 1].startswith(typed[-1]):
 				key = tuple(words)
 				commands[key] = commands.get(key, 0.0) + score
+				features.setdefault(key, []).append(feature)
 		top, share = _top_share(commands)
 		if top is None:
 			return None
-		uses = self._uses('c:' + ' '.join(top))
+		uses = sum(self._uses(feature) for feature in features[top])
 		share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
 		next_words = {}
 		for words, score in commands.items():
@@ -3058,7 +3067,7 @@ class Engine(object):
 			else:
 				following = {}
 				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline).items():
-					words = [token.text for token in lex(feature[2:])]
+					words = words_as_typed(feature[2:])
 					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
