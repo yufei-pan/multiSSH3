@@ -2405,7 +2405,12 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip) if host.ip else host.address,case_sensitive=False)
 		formatedCMD = []
 		if host.extraargs and isinstance(host.extraargs, str):
-			extraargs = host.extraargs.split()
+			try:
+				# as a shell splits them: -ea "-o ProxyCommand='ssh -W %h:%p bastion'" is two arguments
+				extraargs = shlex.split(host.extraargs)
+			except ValueError:
+				# an unclosed quote: split on spaces as before
+				extraargs = host.extraargs.split()
 		elif host.extraargs and isinstance(host.extraargs, list):
 			extraargs = [str(arg) for arg in host.extraargs]
 		else:

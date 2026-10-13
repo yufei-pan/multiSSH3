@@ -305,6 +305,28 @@ def test_run_command_extraargs_list(fake_host, monkeypatch):
 	assert "-o" in calls[0] and "Foo=1" in calls[0]
 
 
+@pytest.mark.parametrize("extraargs, expected", [
+	("-o Port=2222 -v", ["-o", "Port=2222", "-v"]),
+	# split as a shell would: a quoted value with spaces stays one argument
+	("-o ProxyCommand='ssh -W %h:%p bastion'", ["-o", "ProxyCommand=ssh -W %h:%p bastion"]),
+	('-o "ProxyCommand=ssh -W %h:%p bastion" -v', ["-o", "ProxyCommand=ssh -W %h:%p bastion", "-v"]),
+	("-o Foo='bar", ["-o", "Foo='bar"]),  # an unclosed quote is split on spaces, as before
+])
+def test_run_command_extraargs_string_is_split_like_a_shell(fake_host, monkeypatch, extraargs, expected):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true", extraargs=extraargs)
+	calls = []
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		return FakeProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	multiSSH3.run_command(host, sem, timeout=5)
+	end = calls[0].index("--")
+	assert calls[0][end - len(expected):end] == expected
+
+
 def test_run_command_missing_file_tools(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "/dest", files=["/tmp/a"], scp=True)

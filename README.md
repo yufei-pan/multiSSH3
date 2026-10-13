@@ -441,9 +441,11 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 
 ### `-ea, --extraargs EXTRAARGS` | _`DEFAULT_EXTRA_ARGS`_
 - Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.
+- The string is split into arguments as a shell would: quote an argument that contains spaces.
 - Example:
 ```bash
 mssh -ea="--delete" -f ./data/ allServers /tmp/data/
+mssh -ea="-o ProxyCommand='ssh -W %h:%p bastion'" allServers uptime
 ```
 
 ### `-11, --oneonone` | _`DEFAULT_ONE_ON_ONE`_
