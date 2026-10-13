@@ -4095,16 +4095,36 @@ def _last_run_stderr(host):
 			return host.stderr[index + 1:]
 	return host.stderr
 
+def _connect_error_names_host(host, connect_host):
+	'''
+	Whether connect_host, the host in ssh's connect error, is the one mssh had ssh connect to, not
+	another host the remote command tried with an ssh of its own (mssh hostA 'ssh backup ...').
+
+	ssh names, lowercased, the HostName it connects to: the address mssh gave it (or its FQDN when
+	ssh canonicalizes names), or the HostName the ssh config gives it. Only that last case asks
+	ssh -G, which is cached and was already asked for names that only the ssh config knows.
+	'''
+	connect_host = connect_host.lower()
+	address = (getattr(host, 'address', None) or host.name.rsplit('@', 1)[-1]).strip().lower()
+	if connect_host == address or connect_host.startswith(address + '.'):
+		return True
+	if host.ip and connect_host == str(host.ip).lower():
+		return True
+	if 'ssh' not in _binPaths or not address or address.startswith('-'):
+		return False
+	config = _ssh_config_values(address)
+	return bool(config) and config.get('hostname', '').lower() == connect_host
+
 def _found_unreachable(host):
 	'''
 	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
 
 	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
 	cannot be reached (scp's legacy protocol exits with 1); a remote command printing the same
-	words (curl: ... No route to host) did reach its host. A command stopped by the timeout (-t)
-	counts too if nothing at all came back before it: a host that never answers looks like that,
-	but so does a command that was quiet from the start, which mssh cannot tell apart. Output
-	means the host answered.
+	words (curl: ... No route to host) did reach its host, and so did one whose own ssh could not
+	reach another host. A command stopped by the timeout (-t) counts too if nothing at all came
+	back before it: a host that never answers looks like that, but so does a command that was
+	quiet from the start, which mssh cannot tell apart. Output means the host answered.
 	'''
 	stderr = _last_run_stderr(host)
 	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits with 1, not 255
@@ -4112,7 +4132,9 @@ def _found_unreachable(host):
 	if ssh_failed and stderr:
 		first_line = stderr[0].strip()
 		connect_error = _ssh_connect_error(first_line)
-		if (connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS) or _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
+		if connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS:
+			return _connect_error_names_host(host, connect_error[0])
+		if _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
 			return True
 	if host.returncode != 124 or host.stdout or not stderr:
 		return False

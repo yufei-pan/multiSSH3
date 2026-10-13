@@ -437,8 +437,14 @@ def test_skipped_host_is_printed_with_the_failures(monkeypatch, tmp_path, capsys
 	assert "mock-b" not in out
 
 
-def _unreachable_after_run(monkeypatch, tmp_path, host, cached=()):
-	'''Let processRunOnHosts record a finished host; returns the hosts it then counts as unreachable.'''
+def _unreachable_after_run(monkeypatch, tmp_path, host, cached=(), ssh_config_hostnames=None):
+	'''
+	Let processRunOnHosts record a finished host; returns the hosts it then counts as unreachable.
+
+	ssh_config_hostnames maps names to the HostName ssh -G gives them (default: the name itself).
+	'''
+	hostnames = ssh_config_hostnames or {}
+	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname: {"hostname": hostnames.get(hostname, hostname.lower())})
 	expiry = int(multiSSH3.time.monotonic() + 300)
 	unavailable = {name: expiry for name in cached}
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", dict(unavailable))
@@ -450,18 +456,50 @@ def _unreachable_after_run(monkeypatch, tmp_path, host, cached=()):
 	return set(unavailable)
 
 
-@pytest.mark.parametrize("line", [
-	"ssh: connect to host web1 port 22: No route to host",
-	"ssh: connect to host 10.0.0.5 port 2222: Connection timed out",
+@pytest.mark.parametrize("name, line", [
+	("web1", "ssh: connect to host web1 port 22: No route to host"),
+	("root@Web1", "ssh: connect to host web1 port 22: No route to host"),  # ssh lowercases the name
+	("web1", "ssh: connect to host 10.0.0.5 port 2222: Connection timed out"),
+	("web1", "ssh: connect to host web1.corp.example port 22: Connection timed out"),  # CanonicalizeHostname
 	# a ProxyJump host that cannot reach the target (older OpenSSH prints this)
-	"channel 0: open failed: connect failed: No route to host",
+	("web1", "channel 0: open failed: connect failed: No route to host"),
 ])
-def test_ssh_failing_to_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path, line):
-	host = fake_host("mock-a", "true")
+def test_ssh_failing_to_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path, name, line):
+	host = fake_host(name, "true", ip="10.0.0.5")
 	host.returncode = 255
 	host.stderr = [line]
 
-	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {name}
+
+
+def test_ssh_failing_to_connect_to_the_ssh_config_hostname_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path):
+	host = fake_host("db", "true", ip="10.0.0.9")
+	host.returncode = 255
+	host.stderr = ["ssh: connect to host db-primary.corp.example port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host,
+		ssh_config_hostnames={"db": "db-primary.corp.example"}) == {"db"}
+
+
+def test_remote_ssh_failing_to_reach_another_host_does_not_mark_the_host(fake_host, monkeypatch, tmp_path):
+	# mssh hostA 'ssh backup ...' with backup down: the remote ssh exits 255 with its own error
+	host = fake_host("hosta", "ssh backup tar c /data", ip="10.0.0.7")
+	host.returncode = 255
+	host.stderr = ["ssh: connect to host backup port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["hosta"]) == set()
+
+
+def test_ssh_naming_the_host_itself_needs_no_ssh_config_lookup(fake_host, monkeypatch, tmp_path):
+	looked_up = []
+	host = fake_host("web1", "true", ip="10.0.0.5")
+	host.returncode = 255
+	host.stderr = ["ssh: connect to host web1 port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"web1"}
+	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname: looked_up.append(hostname))
+	multiSSH3._found_unreachable(host)
+	assert looked_up == []
 
 
 @pytest.mark.parametrize("returncode, line", [
