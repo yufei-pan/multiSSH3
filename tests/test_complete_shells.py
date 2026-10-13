@@ -285,13 +285,14 @@ def test_the_line_the_login_note_suggests_loads_the_glue(tmp_path):
 	assert loaded()
 
 
-# one install or uninstall in a child process that cannot write a file past a size limit, as a full
-# disk or a quota would stop it part way; prints what the call returned, or what it raised
+# one install or uninstall in a child process, which may not write a file past a size limit (as a full
+# disk or a quota would stop it part way); prints what the call returned, or what it raised
 LIMITED_CALL = r'''
 import json, resource, sys
 import mssh_complete as mc
 limit, call, arguments = int(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3])
-resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+if limit >= 0:
+	resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
 try:
 	print(json.dumps(getattr(mc, call)(**arguments)))
 except Exception as error:
@@ -302,6 +303,40 @@ def _with_a_file_size_limit(limit, call, **arguments):
 	result = subprocess.run([sys.executable, '-c', LIMITED_CALL, str(limit), call, json.dumps(arguments)],
 		cwd=str(REPO), stdout=subprocess.PIPE, timeout=60)
 	return json.loads(result.stdout.decode())
+
+def _in_a_child(call, **arguments):
+	'''What the call returns in a child process, or ['hung', []] when it did not end within 10 s.'''
+	try:
+		result = subprocess.run([sys.executable, '-c', LIMITED_CALL, '-1', call, json.dumps(arguments)],
+			cwd=str(REPO), stdout=subprocess.PIPE, timeout=10)
+	except subprocess.TimeoutExpired:
+		return ['hung', []]
+	return json.loads(result.stdout.decode())
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'device'])
+def test_an_rc_file_that_is_not_a_regular_file_is_left_alone(tmp_path, kind):
+	# ~/.bashrc linked to /dev/null turns it off: install as root replaced /dev/null with a file
+	# holding the block (the node here is the test's own, in tmp_path), and reading a FIFO waited forever
+	env, home = make_home(tmp_path)
+	node = tmp_path / 'node'
+	if kind == 'fifo':
+		os.mkfifo(str(node))
+	elif os.geteuid() == 0:
+		os.mknod(str(node), 0o666 | stat.S_IFCHR, os.makedev(1, 3))
+	else:
+		pytest.skip('only root may make a device node')
+	rc = home / '.bashrc'
+	os.symlink(str(node), str(rc))
+	code, messages = _in_a_child('install', shell='bash', home=str(home), environ=env, command=ENGINE)
+	is_node = stat.S_ISFIFO if kind == 'fifo' else stat.S_ISCHR
+	assert is_node(os.stat(str(node)).st_mode)
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	assert (code, messages[1:]) == (1, ['did not change {} (a link to {}): not a regular file'.format(rc, node),
+		'to load it anyway, add these lines to it yourself:', mc.RC_BEGIN, '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue), mc.RC_END])
+	# nothing of mssh's can be in it
+	assert _in_a_child('uninstall', shell='bash', home=str(home), environ=env) == [0, ['removed {}'.format(glue)]]
+	assert is_node(os.stat(str(node)).st_mode)
 
 
 @pytest.mark.parametrize('change', ['add', 'update', 'remove'])

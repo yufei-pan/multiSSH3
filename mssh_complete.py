@@ -5336,6 +5336,9 @@ RC_END = '# <<< mssh completion <<<'
 class InstallError(Exception):
 	'''Install or uninstall stopped without changing the file it names; its args are the lines to print.'''
 
+class NotRegularFile(InstallError):
+	'''The rc file is not a regular file: /dev/null (rc files turned off), a FIFO, a device.'''
+
 def _reason(error, path):
 	'''What went wrong with path in an OSError, in a few words (naming the file it was about if another one).'''
 	if not error.strerror:
@@ -5362,6 +5365,9 @@ def _replace_file(path, text):
 		old = os.stat(target)
 	except FileNotFoundError:
 		old = None
+	if old is not None and not stat.S_ISREG(old.st_mode):
+		# renaming over /dev/null would replace the device with a file
+		raise OSError(errno.EINVAL, 'not a regular file')
 	if old is not None and not os.access(target, os.W_OK):
 		raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
 	fd, temporary = tempfile.mkstemp(prefix='.' + os.path.basename(target).lstrip('.') + '.', suffix='.mssh-tmp', dir=os.path.dirname(target))
@@ -5436,8 +5442,17 @@ def _write_glue(path, text, messages):
 	return True
 
 def _read_rc(rc):
-	'''The text of the rc file, or None when there is none.'''
+	'''
+	The text of the rc file, or None when there is none.
+
+	Raises:
+		NotRegularFile: it is /dev/null, a FIFO or a device (reading a FIFO would wait for a writer)
+		InstallError: it cannot be read
+	'''
+	import stat
 	try:
+		if not stat.S_ISREG(os.stat(rc).st_mode):
+			raise NotRegularFile('did not change {}: not a regular file'.format(_shown(rc)))
 		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
 			return f.read()
 	except FileNotFoundError:
@@ -5507,7 +5522,11 @@ def _editor_on(rc):
 
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
-	text = _read_rc(rc)
+	add_by_hand = ['to load it anyway, add these lines to it yourself:', RC_BEGIN] + body.split('\n') + [RC_END]
+	try:
+		text = _read_rc(rc)
+	except NotRegularFile as error:
+		raise InstallError(*(error.args + tuple(add_by_hand)))
 	found = _rc_block(rc, text) if text is not None else None
 	if found is not None:
 		begin, start, body_start, body_end, _ = found
@@ -5520,11 +5539,15 @@ def _add_rc_block(rc, body, messages):
 		messages.append('updated the mssh block in ' + _shown(rc))
 		return
 	block = '\n{}\n{}\n{}\n'.format(RC_BEGIN if text is not None else RC_BEGIN_CREATED, body, RC_END)
-	_write_rc(rc, (text or '') + block, ['to load it anyway, add these lines to it yourself:', RC_BEGIN] + body.split('\n') + [RC_END])
+	_write_rc(rc, (text or '') + block, add_by_hand)
 	messages.append('added a block loading it to ' + _shown(rc))
 
 def _remove_rc_block(rc, messages):
-	text = _read_rc(rc)
+	try:
+		text = _read_rc(rc)
+	except NotRegularFile:
+		# nothing mssh wrote can be in it
+		return
 	found = _rc_block(rc, text) if text is not None else None
 	if found is None:
 		return
@@ -5552,10 +5575,14 @@ def _bash_login_note(home, rc):
 	They read the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists and is readable,
 	not ~/.bashrc; most of those load ~/.bashrc (the distributions' own do), but not all.
 	'''
+	import stat
 	line = '[ -f ~/.bashrc ] && . ~/.bashrc'
 	for name in ('.bash_profile', '.bash_login', '.profile'):
 		login = os.path.join(home, name)
 		try:
+			if not stat.S_ISREG(os.stat(login).st_mode):
+				# a FIFO would wait for a writer: no telling what it holds
+				return None
 			with open(login, encoding='utf-8', errors='replace') as f:
 				if 'bashrc' in f.read():
 					return None
