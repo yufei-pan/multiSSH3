@@ -2374,6 +2374,23 @@ def _rsync_link_sources(files):
 		kept.append((path, target, 'directory' if is_directory else 'nothing' if not exists else 'with_directory'))
 	return copy_links, kept
 
+def _rsync_owner_options(extraargs):
+	'''
+	Return rsync options that leave the files this user owns to the user rsync writes them as.
+
+	rsync -a keeps each file's owner when the receiving rsync is root. Pushed as root from a
+	workstation, the operator's own files kept the operator's uid, another user on the host: sshd
+	refused an authorized_keys copied that way, and sudoers.d and cron.d skip such files too. scp
+	leaves new files to the user it logs in as. Mapping only this user's uid and gid to root's
+	keeps every other owner, as -a does, between machines that share uids. Nothing is mapped for
+	root here, nor when -ea sets owners itself; a receiving rsync that is not root changes no owner.
+	'''
+	if not hasattr(os, 'geteuid') or os.geteuid() == 0:
+		return []
+	if any(str(arg).startswith(('--chown', '--usermap', '--groupmap', '--no-o', '--no-g')) for arg in extraargs):
+		return []
+	return [f'--usermap={os.geteuid()}:0', f'--groupmap={os.getegid()}:0']
+
 # ssh's options that take a value. rsync has most of these letters as options without one (-o
 # owner, -p perms, -i itemize, ...) and took the value for a file to copy; -e and -B take a value in
 # rsync as well and stay rsync's
@@ -2776,6 +2793,8 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 						formatedCMD.append('--no-recursive')
 					# -ea's ssh options go to ssh, after mssh's own as for a command
 					ssh_words, rsync_words = _ssh_options_in(extraargs)
+					if not host.gatherMode:
+						formatedCMD += _rsync_owner_options(rsync_words)
 					rsh = ' '.join([rsyncLocalExtraArgs[1]] + [shlex.quote(word) for word in ssh_words])
 					formatedCMD += ['--rsh', rsh] + rsync_words +['--']+fileArgs
 			else:
