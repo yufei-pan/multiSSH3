@@ -444,6 +444,8 @@ def _unreachable_after_run(monkeypatch, tmp_path, host, cached=(), ssh_config_ho
 	ssh_config_hostnames maps names to the HostName ssh -G gives them (default: the name itself).
 	'''
 	hostnames = ssh_config_hostnames or {}
+	# ssh -G is stubbed: the test does not need an installed ssh (the Docker test images have none)
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
 	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname: {"hostname": hostnames.get(hostname, hostname.lower())})
 	expiry = int(multiSSH3.time.monotonic() + 300)
 	unavailable = {name: expiry for name in cached}
