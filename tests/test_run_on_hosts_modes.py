@@ -430,3 +430,53 @@ def test_pattern_that_is_no_path_is_still_expanded(monkeypatch, tmp_path):
 	(tmp_path / "b.log").write_text("b")
 
 	assert sorted(_copied_files(monkeypatch, [str(tmp_path / "*.log")])) == [str(tmp_path / "a.log"), str(tmp_path / "b.log")]
+
+
+def _copy_warnings(monkeypatch, tmp_path, capsys, files, commands="/dest/", **kwargs):
+	'''What mssh prints before a copy of files to mock-a (no copy is run).'''
+	_mock_run(monkeypatch)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=commands, file=files, no_start=True, no_watch=True,
+		no_history=True, called=False, will_update_unreachable_hosts=False, **kwargs)
+	return capsys.readouterr().err
+
+
+@pytest.fixture
+def links(tmp_path):
+	(tmp_path / "app-2").mkdir()
+	(tmp_path / "current").symlink_to("app-2")
+	(tmp_path / "app.conf.real").write_text("conf")
+	(tmp_path / "app.conf").symlink_to("app.conf.real")
+	(tmp_path / "dir").mkdir()
+	return tmp_path
+
+
+@pytest.mark.parametrize("names,warned", [
+	(["current"], ["current -> app-2"]),
+	(["app.conf", "dir"], ["app.conf -> app.conf.real"]),
+	(["app.conf"], []),  # copied as the file it points to
+	(["dir"], []),
+], ids=["link_to_directory", "link_with_directory", "link_to_file", "directory"])
+def test_copy_warns_of_links_rsync_copies_as_links(monkeypatch, tmp_path, capsys, links, names, warned):
+	err = _copy_warnings(monkeypatch, tmp_path, capsys, [str(links / name) for name in names])
+
+	lines = [line for line in err.splitlines() if "symbolic link" in line]
+	assert len(lines) == len(warned)
+	for line, link in zip(lines, warned):
+		assert line.startswith("Warning: " + str(links / link.split(" ")[0]) + " ")
+		assert link.split(" -> ")[1] in line
+
+
+def test_sync_warns_of_a_link_to_a_directory(monkeypatch, tmp_path, capsys, links):
+	err = _copy_warnings(monkeypatch, tmp_path, capsys, [str(links / "current")], commands=None, file_sync=True)
+
+	assert "Warning: " + str(links / "current") + " " in err
+
+
+@pytest.mark.parametrize("kwargs", [dict(scp=True), dict(gather_mode=True), dict(quiet=True)], ids=["scp", "gather", "quiet"])
+def test_no_link_warning_where_rsync_does_not_copy_local_links(monkeypatch, tmp_path, capsys, links, kwargs):
+	err = _copy_warnings(monkeypatch, tmp_path, capsys, [str(links / "current")], **kwargs)
+
+	assert "symbolic link" not in err

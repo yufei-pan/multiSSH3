@@ -1,4 +1,5 @@
 import io
+import os
 import errno
 import threading
 
@@ -95,6 +96,7 @@ def test_run_command_scp_files(fake_host, monkeypatch):
 
 
 def test_run_command_rsync_files(fake_host, monkeypatch):
+	monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "/tmp/dest", files=["/tmp/a"], scp=False)
 	# Prefer rsync path
@@ -111,10 +113,30 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 0
 	assert rsync_calls[0] == [
-		"rsync", "-ahlX", "--partial", "--inplace", "--info=name",
+		"rsync", "-ahlX", "--partial-dir=.rsync-partial", "--info=name",
 		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
+
+
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_rsync_writes_a_new_file_and_renames_it_into_place(fake_host, monkeypatch, gather):
+	# --inplace wrote into the destination file itself: "Text file busy" on a running binary, and
+	# readers saw it half written
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], gatherMode=gather)
+
+	assert calls[0][0] == "rsync"
+	assert "--inplace" not in calls[0]
+
+
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_interrupted_rsync_keeps_its_partial_file_beside_the_destination(fake_host, monkeypatch, gather):
+	# --partial renamed the part copied so far over the destination when -t, Ctrl-C or a lost
+	# connection stopped rsync: the host's file was replaced by a truncated one
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], gatherMode=gather)
+
+	assert "--partial" not in calls[0]
+	assert "--partial-dir=.rsync-partial" in calls[0]
 
 
 def test_run_command_gather_mode_scp(fake_host, monkeypatch):
@@ -441,6 +463,391 @@ def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, mo
 	rsh = calls[0][calls[0].index("--rsh") + 1]
 	assert _rsync_split(rsh) == ["/opt/open ssh/bin/ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
 		"-i", identity_file]
+
+
+MSSH_SSH_OPTIONS = ["ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null"]
+
+
+@pytest.mark.parametrize("extraargs,ssh_words,rsync_words", [
+	("-o ConnectTimeout=5", ["-o", "ConnectTimeout=5"], []),
+	("-oConnectTimeout=5", ["-oConnectTimeout=5"], []),
+	("-p 2222", ["-p", "2222"], []),
+	("-p2222", ["-p2222"], []),
+	("-i /home/u/.ssh/id_ed25519", ["-i", "/home/u/.ssh/id_ed25519"], []),  # rsync -i sent the private key as a file
+	("-J root@bastion", ["-J", "root@bastion"], []),
+	("-F /home/u/ssh_config", ["-F", "/home/u/ssh_config"], []),
+	("-l root", ["-l", "root"], []),
+	("-c aes128-ctr", ["-c", "aes128-ctr"], []),
+	("--delete -o ConnectTimeout=5 -z", ["-o", "ConnectTimeout=5"], ["--delete", "-z"]),
+	# rsync's own options stay rsync's
+	("--delete", [], ["--delete"]),
+	("-i", [], ["-i"]),
+	("-p --delete", [], ["-p", "--delete"]),
+	("-P", [], ["-P"]),
+	("--bwlimit=1000 -z", [], ["--bwlimit=1000", "-z"]),
+	(["-o", "ConnectTimeout=5", "--delete"], ["-o", "ConnectTimeout=5"], ["--delete"]),
+	# as shlex.split gives it (-ea "-o 'ProxyCommand=ssh -W %h:%p bastion'"): one word in ssh's argv
+	(["-o", "ProxyCommand=ssh -W %h:%p bastion"], ["-o", "ProxyCommand=ssh -W %h:%p bastion"], []),
+], ids=["o", "o_attached", "p", "p_attached", "i", "J", "F", "l", "c", "mixed", "delete", "itemize", "perms", "progress",
+	"bwlimit", "list", "value_with_spaces"])
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_rsync_hands_ssh_options_from_extraargs_to_ssh(fake_host, monkeypatch, extraargs, ssh_words, rsync_words, gather):
+	# rsync read -ea "-o ConnectTimeout=5" as --owner and a file to copy named ConnectTimeout=5
+	monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, gatherMode=gather)
+
+	argv = calls[0]
+	assert _rsync_split(argv[argv.index("--rsh") + 1]) == MSSH_SSH_OPTIONS + ssh_words
+	assert argv[argv.index("--rsh") + 2:argv.index("--")] == rsync_words
+
+
+@pytest.mark.parametrize("extraargs,scp_words", [
+	("-p 2222", ["-P", "2222"]),  # scp's -p keeps times, its port is -P
+	("-p2222", ["-P2222"]),
+	("-P 2222", ["-P", "2222"]),
+	("-o ConnectTimeout=5 -J root@bastion", ["-o", "ConnectTimeout=5", "-J", "root@bastion"]),
+	("-l 8192", ["-l", "8192"]),  # scp's bandwidth limit
+], ids=["p", "p_attached", "P", "o_J", "limit"])
+def test_scp_gets_ssh_options_from_extraargs_its_way(fake_host, monkeypatch, extraargs, scp_words):
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, scp=True)
+
+	argv = calls[0]
+	assert argv[argv.index("-o UserKnownHostsFile=/dev/null") + 1:argv.index("--")] == scp_words
+
+
+def test_ssh_command_gets_extraargs_as_given(fake_host, monkeypatch):
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	host = fake_host("mock-a", "uptime", extraargs="-p 2222 -o ConnectTimeout=5")
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert calls[0][calls[0].index("-o UserKnownHostsFile=/dev/null") + 1:calls[0].index("--")] == ["-p", "2222", "-o", "ConnectTimeout=5"]
+
+
+@pytest.mark.parametrize("path,keep_globs,quoted", [
+	("/tmp/dst y/", False, "/tmp/dst\\ y/"),
+	("/tmp/it's $HOME/", False, "/tmp/it\\'s\\ \\$HOME/"),
+	("/a;b&c|d<e>f(g)h`i\"j\\k#l!m\tn", False, "/a\\;b\\&c\\|d\\<e\\>f\\(g\\)h\\`i\\\"j\\\\k\\#l\\!m\\\tn"),
+	("/data/*.log", False, "/data/\\*.log"),  # a destination is a name
+	("/data/[ab]{1,2}?.log", True, "/data/[ab]{1,2}?.log"),  # sources stay globs, as for rsync and scp
+	("/var/log/my app/*.log", True, "/var/log/my\\ app/*.log"),
+	("~/my dir/", False, "~/my\\ dir/"),  # still the home directory
+	("/plain/path-1_2.txt", False, "/plain/path-1_2.txt"),
+], ids=["space", "quote_dollar", "shell_characters", "star_in_destination", "globs", "glob_and_space", "home", "plain"])
+def test_scp_shell_quoted(path, keep_globs, quoted):
+	assert multiSSH3._scp_shell_quoted(path, keep_globs) == quoted
+
+
+def _no_protocol_probe(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_scp_uses_remote_shell", lambda argv: pytest.fail("scp's protocol is not needed"))
+
+
+@pytest.mark.parametrize("legacy,destination", [(True, "mock-a:/tmp/dst\\ y/"), (False, "mock-a:/tmp/dst y/")],
+	ids=["legacy", "sftp"])
+@pytest.mark.parametrize("retry", [False, True], ids=["requested", "retry"])
+def test_scp_quotes_the_destination_for_its_legacy_protocol(fake_host, monkeypatch, legacy, destination, retry):
+	# OpenSSH < 9.0 scp hands the destination to the host's shell: "scp: ambiguous target";
+	# the SFTP protocol takes it as written
+	probed = []
+	monkeypatch.setattr(multiSSH3, "_scp_uses_remote_shell", lambda argv: probed.append(argv) or legacy)
+	results = [FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()] if retry else [FakeProc()]
+	host, calls = _copy_with_results(fake_host, monkeypatch, results, ["/src/a"], command="/tmp/dst y/",
+		scp=not retry, extraargs="-p 2222")
+
+	assert calls[-1][0] == "scp"
+	assert calls[-1][-1] == destination
+	assert probed and probed[0] == calls[-1][:calls[-1].index("--")]
+
+
+def test_scp_destination_without_shell_characters_needs_no_probe(fake_host, monkeypatch):
+	_no_protocol_probe(monkeypatch)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], command="/tmp/dst-1/", scp=True)
+
+	assert calls[0][-1] == "mock-a:/tmp/dst-1/"
+
+
+def test_scp_gather_quotes_its_sources_for_either_protocol(fake_host, monkeypatch, tmp_path):
+	# the legacy protocol reads them in the host's shell, the SFTP one as globs: a backslash serves both
+	_no_protocol_probe(monkeypatch)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/tmp/dst y/r.txt", "/var/log/*.log"],
+		command=str(tmp_path) + "/", scp=True, gatherMode=True)
+
+	assert calls[0][-3:] == ["mock-a:/tmp/dst\\ y/r.txt", "mock-a:/var/log/*.log", str(tmp_path) + "/"]
+
+
+def test_rsync_takes_remote_paths_as_written(fake_host, monkeypatch, tmp_path):
+	# rsync 3.2.4+ protects its arguments itself
+	_no_protocol_probe(monkeypatch)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], command="/tmp/dst y/")
+
+	assert calls[0][-1] == "mock-a:/tmp/dst y/"
+
+
+class _Ran:
+	def __init__(self, stderr):
+		self.stderr = stderr
+		self.returncode = 1
+
+
+@pytest.mark.parametrize("stderr,legacy", [
+	(b"Executing: program /usr/bin/false host mssh-scp-protocol.invalid, user (unspecified), command scp -v -r -p -t /\nlost connection\n", True),
+	(b"Executing: program /usr/bin/false host mssh-scp-protocol.invalid, user (unspecified), command sftp\nscp: Connection closed\n", False),
+	(b"unknown option -- O\nusage: scp [-346BCpqrTv] ...\n", False),
+], ids=["legacy", "sftp", "usage"])
+def test_scp_protocol_probe_reads_what_scp_would_run(monkeypatch, stderr, legacy):
+	monkeypatch.setattr(multiSSH3, "_scp_protocol_cache", {})
+	runs = []
+
+	def fake_run(argv, **kwargs):
+		runs.append(argv)
+		return _Ran(stderr)
+
+	monkeypatch.setattr(multiSSH3.subprocess, "run", fake_run)
+	argv = ["/usr/bin/scp", "-rp", "-o StrictHostKeyChecking=no"]
+
+	assert multiSSH3._scp_uses_remote_shell(argv) is legacy
+	assert multiSSH3._scp_uses_remote_shell(argv) is legacy
+	assert len(runs) == 1  # once per command line
+	# nothing is connected to: scp's ssh is a program that exits at once
+	assert runs[0][:3] == argv and "-S" in runs[0] and "-v" in runs[0]
+	assert os.path.basename(runs[0][runs[0].index("-S") + 1]) in ("false", "true")
+
+
+def test_scp_protocol_probe_that_fails_quotes_nothing(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_scp_protocol_cache", {})
+
+	def fake_run(argv, **kwargs):
+		raise OSError("no scp")
+
+	monkeypatch.setattr(multiSSH3.subprocess, "run", fake_run)
+
+	assert multiSSH3._scp_uses_remote_shell(["/missing/scp", "-rp"]) is False
+
+
+def _as_user(monkeypatch, uid, gid):
+	monkeypatch.setattr(os, "geteuid", lambda: uid, raising=False)
+	monkeypatch.setattr(os, "getegid", lambda: gid, raising=False)
+
+
+def test_rsync_push_gives_my_files_to_the_user_it_writes_as(fake_host, monkeypatch):
+	# pushed as root from uid 1000, a file kept uid 1000 on the host, another user there: sshd
+	# refused an authorized_keys copied that way. scp leaves new files to root.
+	_as_user(monkeypatch, 1000, 1001)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"])
+
+	assert "--usermap=1000:0" in calls[0]
+	assert "--groupmap=1001:0" in calls[0]
+	assert calls[0].index("--groupmap=1001:0") < calls[0].index("--")
+
+
+@pytest.mark.parametrize("uid,extraargs,gather", [
+	(0, None, False),  # root here: every owner is kept, as -a does
+	(1000, None, True),  # gathering: this machine's rsync is the receiver, running as this user
+	(1000, "--chown=web:web", False),
+	(1000, "--usermap=*:nobody", False),
+	(1000, "--groupmap=1001:staff", False),
+	(1000, "--no-owner --no-group", False),
+	(1000, "--no-o", False),
+], ids=["root", "gather", "chown", "usermap", "groupmap", "no_owner", "no_o"])
+def test_rsync_maps_no_owner(fake_host, monkeypatch, uid, extraargs, gather):
+	_as_user(monkeypatch, uid, 1001)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, gatherMode=gather)
+
+	assert not [arg for arg in calls[0] if arg.startswith(("--usermap=1", "--groupmap=1001:0"))]
+
+
+def test_rsync_maps_no_owner_without_user_ids(fake_host, monkeypatch):
+	# Windows has no geteuid
+	monkeypatch.delattr(os, "geteuid", raising=False)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"])
+
+	assert not [arg for arg in calls[0] if arg.startswith(("--usermap", "--groupmap"))]
+
+
+@pytest.fixture
+def linked_tree(tmp_path):
+	'''A config that is a relative link to a file, a link to a directory, a dangling link and a directory.'''
+	(tmp_path / "srv").mkdir()
+	(tmp_path / "srv" / "app.conf").write_text("new")
+	(tmp_path / "etc").mkdir()
+	(tmp_path / "etc" / "app.conf").symlink_to("../srv/app.conf")
+	(tmp_path / "etc" / "plain.conf").write_text("plain")
+	(tmp_path / "app-2").mkdir()
+	(tmp_path / "current").symlink_to("app-2")
+	(tmp_path / "gone").symlink_to("nowhere")
+	(tmp_path / "dir").mkdir()
+	(tmp_path / "dir" / "inner").symlink_to("../srv/app.conf")
+	return tmp_path
+
+
+@pytest.mark.parametrize("names", [["etc/app.conf"], ["etc/app.conf", "etc/plain.conf"]], ids=["link", "link_and_file"])
+def test_rsync_copies_the_file_a_linked_source_points_to(fake_host, monkeypatch, linked_tree, names):
+	# rsync -l replaced the host's /etc/app.conf with a link to ../srv/app.conf, which points nowhere there
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], [str(linked_tree / name) for name in names])
+
+	assert "--copy-links" in calls[0]
+	assert calls[0][-len(names) - 1:-1] == [str(linked_tree / name) for name in names]
+
+
+@pytest.mark.parametrize("names", [
+	["etc/plain.conf"],
+	["dir"],  # --copy-links would follow the links inside it too
+	["current"],  # a link to a directory: --copy-links would also follow every link inside it
+	["gone"],  # points nowhere: copied as the link it is
+	["etc/app.conf", "dir"],
+	["current/"],  # the trailing slash already copies the directory's contents
+], ids=["file", "directory", "link_to_directory", "dangling_link", "link_with_directory", "link_to_directory_contents"])
+def test_rsync_keeps_these_links_as_links(fake_host, monkeypatch, linked_tree, names):
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], [str(linked_tree) + "/" + name for name in names])
+
+	assert "--copy-links" not in calls[0]
+
+
+def test_rsync_reports_a_dangling_link_among_linked_files(linked_tree):
+	# with --copy-links rsync says "symlink has no referent" for it, as scp fails on it: no warning
+	assert multiSSH3._rsync_link_sources([str(linked_tree / "etc/app.conf"), str(linked_tree / "gone")]) == (True, [])
+
+
+def test_rsync_link_sources_name_the_links_copied_as_links(linked_tree):
+	copy_links, kept = multiSSH3._rsync_link_sources([str(linked_tree / "etc/app.conf"), str(linked_tree / "dir"),
+		str(linked_tree / "current"), str(linked_tree / "gone")])
+
+	assert copy_links is False
+	assert [(path[len(str(linked_tree)) + 1:], target) for path, target, _ in kept] == [
+		("etc/app.conf", "../srv/app.conf"), ("current", "app-2"), ("gone", "nowhere")]
+
+
+def _gather_with_rsync(fake_host, monkeypatch, files, destination, results, make_links=(), second_run_copies=None):
+	'''Gather files from mock-a with fake rsync runs; the first run leaves the given local links behind
+	as rsync -l does for a source that is a link on the host, the second one copies files to the
+	second_run_copies paths (default: where each link was). Return the host, each run's argv and
+	whether each link still existed when the next run started.'''
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	results = list(results)
+	calls = []
+	links_before_run = []
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		links_before_run.append([os.path.islink(path) for path, _ in make_links])
+		if len(calls) == 1:
+			for path, target in make_links:
+				os.symlink(target, path)
+		elif len(calls) == 2 and not results[0].returncode:
+			for path in ([path for path, _ in make_links] if second_run_copies is None else second_run_copies):
+				with open(path, "w") as copy:
+					copy.write("what the link points to")
+		return results.pop(0)
+
+	_patch_popen(monkeypatch, fake_popen)
+	host = fake_host("mock-a", destination, files=files, gatherMode=True)
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+	return host, calls, links_before_run
+
+
+@pytest.mark.parametrize("files,destination,copy", [
+	(["/etc/os-release"], "{tmp}/g/", "{tmp}/g/os-release"),
+	(["/etc/os-release"], "{tmp}/existing", "{tmp}/existing/os-release"),
+	(["/etc/os-release"], "{tmp}/one_file", "{tmp}/one_file"),
+	(["/etc/os-release", "/etc/hostname"], "{tmp}/g", "{tmp}/g/os-release"),
+], ids=["into_directory", "into_existing_directory", "to_a_new_name", "with_another_file"])
+def test_gathered_link_is_copied_again_as_what_it_points_to(fake_host, monkeypatch, tmp_path, files, destination, copy):
+	# rsync brought /etc/os-release back as a link to ../usr/lib/os-release, which points into this machine
+	(tmp_path / "existing").mkdir()
+	(tmp_path / "g").mkdir()
+	destination, copy = destination.format(tmp=tmp_path), copy.format(tmp=tmp_path)
+	host, calls, links_before_run = _gather_with_rsync(fake_host, monkeypatch, files, destination,
+		[FakeProc(stdout=b"os-release -> ../usr/lib/os-release\n"), FakeProc(stdout=b"os-release\n")],
+		make_links=[(copy, "../usr/lib/os-release")])
+
+	assert len(calls) == 2
+	assert "--copy-links" not in calls[0]
+	# --no-recursive: a link to a directory is skipped, --copy-links would follow every link inside it
+	assert "--copy-links" in calls[1] and "--no-recursive" in calls[1]
+	assert calls[1][-2:] == ["mock-a:/etc/os-release", destination]
+	assert links_before_run[1] == [False]  # removed first: rsync -L would follow it here
+	# without -X: no retry follows, which would find the links that are put back (see run_command)
+	assert [arg for arg in calls[1][:calls[1].index("--")] if arg not in ("--copy-links", "--no-recursive")] == (
+		[calls[0][0], "-ahl"] + calls[0][2:calls[0].index("--")])
+	assert not os.path.islink(copy)
+	assert host.returncode == 0
+	assert host.stdout == ["os-release"]
+	assert any("/etc/os-release" in line and "link" in line for line in host.output)
+
+
+def test_gathered_link_into_a_linked_destination_stays_a_link(fake_host, monkeypatch, tmp_path):
+	# rsync writes through a destination that is a link; following links there could write anywhere
+	(tmp_path / "real").mkdir()
+	(tmp_path / "via").symlink_to("real")
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path / "via"),
+		[FakeProc()], make_links=[(str(tmp_path / "real" / "os-release"), "../usr/lib/os-release")])
+
+	assert len(calls) == 1
+	assert host.returncode == 0
+
+
+@pytest.mark.parametrize("source", ["/etc/", "/etc/*.conf"], ids=["contents", "glob"])
+def test_gather_without_a_single_copy_per_source_is_not_rerun(fake_host, monkeypatch, tmp_path, source):
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, [source], str(tmp_path) + "/",
+		[FakeProc()], make_links=[(str(tmp_path / "app.conf"), "../srv/app.conf")])
+
+	assert len(calls) == 1
+
+
+def test_failed_gather_rerun_is_not_retried_with_scp(fake_host, monkeypatch, tmp_path):
+	# scp would copy every source again into a destination that may hold links rsync made
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)], make_links=[(str(tmp_path / "os-release"), "x")])
+
+	assert [argv[0] for argv in calls] == ["rsync", "rsync"]
+	assert host.returncode == 12
+
+
+def test_gathered_link_to_a_directory_is_put_back_as_the_link(fake_host, monkeypatch, tmp_path):
+	# copied as a directory, the next gather failed: rsync cannot replace a directory with the link
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/srv/current", "/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stdout=b"skipping directory current\nos-release\n")],
+		make_links=[(str(tmp_path / "current"), "app-2"), (str(tmp_path / "os-release"), "../usr/lib/os-release")],
+		second_run_copies=[str(tmp_path / "os-release")])
+
+	assert len(calls) == 2
+	assert os.readlink(str(tmp_path / "current")) == "app-2"
+	assert host.returncode == 0
+	assert host.stderr == ["Warning: /srv/current is a symbolic link to a directory on the host, copied as the link (-> app-2)."]
+
+
+def test_gathered_link_to_nothing_on_the_host_ends_with_rsyncs_error(fake_host, monkeypatch, tmp_path):
+	dangling = (b'rsync: [sender] link_stat "/etc/broken" failed: No such file or directory (2)\n'
+		b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n")
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/broken"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stderr=dangling, returncode=23)], make_links=[(str(tmp_path / "broken"), "/nonexistent")])
+
+	assert len(calls) == 2
+	assert host.returncode == 23
+	assert any("link_stat" in line for line in host.stderr)
+	# rsync's error alone does not say the source is a link; the link rsync copied first is put back
+	assert host.stderr[-1].startswith("Warning: /etc/broken is a symbolic link on the host") and "-> /nonexistent" in host.stderr[-1]
+	assert os.readlink(str(tmp_path / "broken")) == "/nonexistent"
+
+
+def test_gathered_links_are_put_back_after_a_failed_second_copy(fake_host, monkeypatch, tmp_path):
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc(stderr=b"ssh: connect to host mock-a port 22: Connection refused\n", returncode=255)],
+		make_links=[(str(tmp_path / "os-release"), "../usr/lib/os-release")])
+
+	assert host.returncode == 255
+	assert os.readlink(str(tmp_path / "os-release")) == "../usr/lib/os-release"
+	assert host.stderr[0].startswith("ssh: connect to host")  # the connect error stays first
+
+
+def test_gathered_link_copied_again_has_no_note_when_it_works(fake_host, monkeypatch, tmp_path):
+	host, calls, _ = _gather_with_rsync(fake_host, monkeypatch, ["/etc/os-release"], str(tmp_path) + "/",
+		[FakeProc(), FakeProc()], make_links=[(str(tmp_path / "os-release"), "x")])
+
+	assert len(calls) == 2
+	assert host.stderr == []
 
 
 def test_run_command_ipmitool_local(fake_host, monkeypatch):
