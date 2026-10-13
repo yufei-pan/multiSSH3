@@ -89,3 +89,46 @@ def test_a_host_already_queued_is_not_queued_again(directory):
 	mc.queue_probes(directory, ['node2', 'node3', 'node3'])
 	with open(os.path.join(directory, mc.PROBE_QUEUE_NAME)) as f:
 		assert f.read().split() == ['node1', 'node2', 'node3']
+
+
+DAY = 86400.0
+
+
+def test_states_nothing_can_use_any_more_are_dropped():
+	states = {
+		# no fresh result and never answered ping: as good as never checked
+		'typo1': mc.HostState('invalid', NOW - 601),
+		'quiet1': mc.HostState('valid', NOW - 700, 'silent', NOW - 61, 0.0),
+		'noping1': mc.HostState('unsure', NOW - 61, 'none', NOW - 61),
+		# answered ping, but longer ago than any ping expiry the prober keeps answers for
+		'old1': mc.HostState('valid', NOW - DAY - 1, 'answer', NOW - DAY - 1, NOW - DAY - 1),
+		'old2': mc.HostState('valid', NOW - 900, 'silent', NOW - 900, NOW - DAY - 1),
+	}
+	assert mc.prune_host_states(states, NOW, DAY) == {}
+
+
+def test_states_queries_still_use_are_kept():
+	states = {
+		'gpu017': mc.HostState('invalid', NOW - 599),                           # unknown host, fresh for 10 minutes
+		'node2': mc.HostState('unsure', NOW - 59),                               # unsure, fresh for a minute
+		'node3': mc.HostState('valid', NOW - 700, 'silent', NOW - 59, 0.0),      # a fresh ping
+		# when a host last answered ping: a silent ping later says "answered N min ago" while that
+		# is within the ping expiry, which -uhe on the line can raise up to the horizon
+		'node4': mc.HostState('valid', NOW - 700, 'answer', NOW - 700, NOW - 700),
+		'node5': mc.HostState('valid', NOW - DAY, 'answer', NOW - DAY, NOW - DAY),
+		'node6': mc.HostState('valid', NOW - 900, 'silent', NOW - 900, NOW - 3600),
+		# a clock set back: still fresh to the readers
+		'node7': mc.HostState('valid', NOW + 300),
+	}
+	kept = mc.prune_host_states(states, NOW, DAY)
+	assert sorted(kept) == sorted(states)
+	assert all(kept[host] is states[host] for host in states)
+
+
+def test_past_the_limit_only_the_latest_answers_are_kept(monkeypatch):
+	monkeypatch.setattr(mc, 'ANSWER_ROWS', 2)
+	states = {'node{}'.format(number): mc.HostState('valid', NOW - 3600, 'answer', NOW - 3600 + number, NOW - 3600 + number) for number in range(5)}
+	# fresh results do not count against the limit: queries use them now
+	states['gpu017'] = mc.HostState('invalid', NOW)
+	states['node9'] = mc.HostState('valid', NOW - 700, 'silent', NOW - 10, NOW - 7200)
+	assert sorted(mc.prune_host_states(states, NOW, DAY)) == ['gpu017', 'node3', 'node4', 'node9']

@@ -180,3 +180,31 @@ def test_one_prober_at_a_time(tmp_path, monkeypatch):
 	assert mc.spawn_probe(str(tmp_path)) is True
 	assert mc.spawn_probe(str(tmp_path)) is False
 	assert len(started) == 1 and started[0][-3:] == ['probe', '--lock', os.path.join(str(tmp_path), mc.PROBE_LOCK_NAME)]
+
+
+def test_answers_are_kept_for_the_longest_ping_expiry_known(monkeypatch):
+	monkeypatch.delenv('MSSH_COMPLETE_PING_TTL', raising=False)
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 600)
+	# -uhe on a line can ask for more than mssh's default: a day at least
+	assert mc.answer_horizon(multiSSH3) == mc.ANSWER_KEEP == 86400
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 3 * 86400)
+	assert mc.answer_horizon(multiSSH3) == 3 * 86400
+	monkeypatch.setenv('MSSH_COMPLETE_PING_TTL', str(5 * 86400))
+	assert mc.answer_horizon(multiSSH3) == 5 * 86400
+	monkeypatch.setenv('MSSH_COMPLETE_PING_TTL', 'soon')
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 'later')
+	assert mc.answer_horizon(multiSSH3) == mc.ANSWER_KEEP
+
+
+def test_the_prober_writes_only_states_queries_can_use(env, monkeypatch):
+	monkeypatch.delenv('MSSH_COMPLETE_PING_TTL', raising=False)
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 600)
+	day = 86400.0
+	mc.write_host_states(env.directory, {
+		'typo1': mc.HostState('invalid', NOW - 700),
+		'old1': mc.HostState('valid', NOW - 2 * day, 'answer', NOW - 2 * day, NOW - 2 * day),
+		'node4': mc.HostState('valid', NOW - 3600, 'answer', NOW - 3600, NOW - 3600),
+	})
+	mc.queue_probes(env.directory, ['node1'])
+	mc.run_probe(env.directory, now=lambda: NOW)
+	assert sorted(states(env)) == ['node1', 'node4']
