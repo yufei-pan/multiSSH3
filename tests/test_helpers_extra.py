@@ -51,6 +51,33 @@ def test_get_terminal_size_fallback(monkeypatch):
 	assert rows == 40
 
 
+def test_get_terminal_size_reads_columns_from_stdin_when_stdout_is_piped():
+	# `mssh ... | less` on a 200x40 terminal: os.get_terminal_size() fails on the pipe, so the
+	# TIOCGWINSZ fallback reads stdin, whose winsize struct holds the rows before the columns.
+	import os
+	import subprocess
+	import sys
+
+	import pytest
+	pty = pytest.importorskip("pty")
+	import fcntl
+	import struct
+	import termios
+
+	master, slave = pty.openpty()
+	try:
+		fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 200, 0, 0))
+		out = subprocess.run(
+			[sys.executable, "-c", "import multiSSH3; print(*multiSSH3.get_terminal_size()[:2])"],
+			stdin=slave, stdout=subprocess.PIPE, cwd=os.path.dirname(os.path.abspath(multiSSH3.__file__)),
+			universal_newlines=True, check=True,
+		).stdout
+	finally:
+		os.close(slave)
+		os.close(master)
+	assert out.split() == ["200", "40"]
+
+
 def test_join_threads_resolves_global_at_call_time():
 	"""Regression: default must not bind the set object at def time (multiCMD sentinel)."""
 	import threading
