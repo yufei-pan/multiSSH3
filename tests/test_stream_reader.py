@@ -108,6 +108,18 @@ CASES = [
 	("p" * 120 + "\x85" + "q" * 100 + "\n").encode(),  # NEL
 	("o" * 98 + " ").encode() * 3,  # separator straddling the 100 byte check
 	b"y" * 70000 + b"\n" + b"tail",  # a line longer than one read
+	b"".join(b"line %d\n" % i for i in range(3000)) + b"unfinished",  # many short lines
+	b"".join(b"line %d\r\n" % i for i in range(3000)) + b"unfinished\r",  # windows line ends
+	b"unix\nwin\r\nmac\rold\n\rx\r\r\ny\n" * 40,  # mixed line ends
+	b"abcdefgh\rXY" + b"\nplain" * 300 + b"\n",  # whole lines after a \r in an unfinished line
+	b"bad \xff\xfe bytes\n\xc3\n\xe2\x80\n\xed\xa0\x80\nok\n" * 30,  # invalid utf-8 in whole lines
+	"café 中文 \U0001F600\n".encode() * 300,
+	b"plain\n" * 300 + ("x" * 150 + "\u2028" + "y" * 150 + "\n").encode() + b"plain\n" * 300,
+	b"plain\n" * 300 + b"form\x0cfeed\n" + b"plain\n" * 300,  # a short line holding a unicode line break
+	"中".encode() * 30000 + b"\nend\n",  # a long multibyte line
+	("\x0c" + "x" * 999 + "\n").encode() * 3,  # a unicode line break, then a long run
+	(("o" * 98 + "\x1c") * 30 + "\r" + ("p" * 98 + "\x1d") * 30 + "\n").encode(),
+	b"progress " + b"".join(b"%d%%\r" % i for i in range(300)) + b"\x08\x08done\n",
 	("r" * 180 + "\r" + "s" * 30 + " " + "t" * 150 + "\n").encode(),
 ]
 CHUNKINGS = [[1], [2], [7], [64], [65536], [3, 1, 100, 5, 4096]]
@@ -131,3 +143,53 @@ def test_chunked_reader_matches_byte_reader_on_random_streams(monkeypatch, encod
 		data = b"".join(rng.choice(TOKENS) for _ in range(rng.randint(0, 700)))
 		sizes = [rng.randint(1, 150) for _ in range(8)]
 		_assert_same_as_legacy(data, sizes)
+
+
+# mostly whole lines, so that many chunks are added at once, with each special case mixed in
+LINE_TOKENS = [b"word "] * 10 + [b"\n"] * 10 + [b"\r\n"] * 3 + [b"x" * 97, b"y" * 150, b"\r", b"\x08",
+	b"\x0b", b"\x0c", b"\x1c", b"\x85", "\x85".encode(), "\u2028".encode(), b"\xff", b"\xc3", b"\xe2\x80",
+	"é".encode(), "中".encode(), "\U0001F600".encode(), b"\xef\xbb\xbf"]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "latin-1", "ascii", "utf-8-sig", "gbk"])
+def test_chunked_reader_matches_byte_reader_on_random_line_streams(monkeypatch, encoding):
+	monkeypatch.setattr(multiSSH3, "_encoding", encoding)
+	rng = random.Random(6031)
+	for _ in range(150):
+		data = b"".join(rng.choice(LINE_TOKENS) for _ in range(rng.randint(0, 900)))
+		sizes = [rng.randint(1, 400) for _ in range(8)]
+		_assert_same_as_legacy(data, sizes)
+
+
+class CountingBuffer(io.BytesIO):
+	"""A line buffer that counts its writes: per line or per byte work in the reader shows as writes."""
+	def __init__(self):
+		super().__init__()
+		self.writes = 0
+
+	def write(self, data):
+		self.writes += 1
+		return super().write(data)
+
+
+@pytest.mark.parametrize("line_end", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_reader_adds_a_chunk_of_whole_lines_at_once(line_end):
+	lines = ["line {}".format(index) for index in range(1000)]
+	data = line_end.join(line.encode() for line in lines) + line_end + b"unfinished"
+	host = multiSSH3.Host("h", "cmd", ip="127.0.0.1")
+	buffer = CountingBuffer()
+	multiSSH3.__handle_reading_stream(io.BytesIO(data), host.stdout, host, buffer)
+	assert host.stdout == lines + ["unfinished"]
+	# only the first line (it may end one begun in an earlier chunk) and the unfinished one pass through the line buffer
+	assert buffer.writes == 2
+
+
+def test_reader_writes_a_run_holding_a_line_break_up_to_each_check_at_once():
+	# a form feed is a unicode line break: the line is split where it grows past each 100 bytes, and the
+	# bytes between two of those points are written at once (about 10 writes here, not 1000)
+	data = b"\x0c" + b"x" * 999 + b"\n"
+	host = multiSSH3.Host("h", "cmd", ip="127.0.0.1")
+	buffer = CountingBuffer()
+	multiSSH3.__handle_reading_stream(io.BytesIO(data), host.stdout, host, buffer)
+	assert host.stdout == ["", "x" * 999]
+	assert buffer.writes <= 15
