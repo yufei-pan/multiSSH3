@@ -83,6 +83,12 @@ def test_passwords_are_never_completed():
 	assert texts(response) == [] and 'nodefault' in response.directives
 
 
+def test_option_descriptions_show_a_percent_once(monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_EXTRA_ARGS', '-o ControlPath=~/.ssh/cm-%r@%h:%p')
+	option, _ = mc.spec_from_parser(multiSSH3.get_parser()).lookup('-ea')
+	assert option.help.endswith('(default: -o ControlPath=~/.ssh/cm-%r@%h:%p)')
+
+
 def test_path_options_ask_for_files():
 	assert 'files' in query('mssh -f ').directives
 	assert 'files' in query('mssh -fs ').directives

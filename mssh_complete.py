@@ -255,7 +255,7 @@ class ParserSpec(object):
 		return cls(OptionSpec.from_row(row) for row in rows)
 
 def spec_from_parser(parser):
-	'''Describe the options of an argparse parser (index builder side).'''
+	'''Describe the options of an argparse parser (index builder side). mssh help is plain text with each % doubled for argparse.'''
 	import argparse
 	groups = {}
 	for number, group in enumerate(getattr(parser, '_mutually_exclusive_groups', ())):
@@ -271,7 +271,7 @@ def spec_from_parser(parser):
 		if isinstance(default, bool) or not isinstance(default, (int, float, str)):
 			default = ''
 		options.append(OptionSpec(action.dest, action.option_strings, nargs, repeat,
-			groups.get(id(action), ''), _one_line(default), _one_line(action.help or '')))
+			groups.get(id(action), ''), _one_line(default), _one_line((action.help or '').replace('%%', '%'))))
 	return ParserSpec(options)
 
 def flag_settings(parser):
