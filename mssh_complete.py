@@ -1530,24 +1530,28 @@ def take_lock(path, now=None):
 		return True
 	return False
 
-def spawn_rebuild(directory):
-	'''Start a detached `rebuild` unless one is running. Returns whether one was started.'''
-	lock = os.path.join(directory, LOCK_NAME)
+def _spawn_detached(directory, lock_name, command):
+	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
+	lock = os.path.join(directory, lock_name)
 	if not take_lock(lock):
 		return False
 	import subprocess
 	try:
-		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), 'rebuild', '--lock', lock],
+		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), command, '--lock', lock],
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
-		_debug('cannot start rebuild: {!r}'.format(e))
+		_debug('cannot start {}: {!r}'.format(command, e))
 		try:
 			os.unlink(lock)
 		except OSError:
 			pass
 		return False
 	return True
+
+def spawn_rebuild(directory):
+	'''Start a detached `rebuild` unless one is running. Returns whether one was started.'''
+	return _spawn_detached(directory, LOCK_NAME, 'rebuild')
 
 def _load_index(path):
 	try:
@@ -1734,6 +1738,155 @@ def take_probe_queue(directory):
 		if _queueable(host) and host not in hosts:
 			hosts.append(host)
 	return hosts
+
+#%% ------------ Prober ----------------
+PROBE_RUN_LIMIT = 120.0  # seconds one prober run may last; the next query starts another for what is left
+PING_COMMAND = ('ping', '-c2', '-i0.2', '-W1', '-q')
+DNS_TIMEOUT = 2.0
+
+def _out_of_resources(error):
+	'''Whether error says the system is out of descriptors or processes (a smaller batch may work).'''
+	import errno
+	return isinstance(error, OSError) and error.errno in (errno.EMFILE, errno.ENFILE, errno.EAGAIN)
+
+def probe_parallelism(mssh):
+	'''
+	How many hosts the prober checks at once: mssh's own rule for parallel ssh sessions (the mssh
+	config's DEFAULT_MAX_CONNECTIONS, default 4 x CPUs, clamped by the open-file limit), halved
+	while the 1-minute load average is at or above the CPU count; never below 4.
+	'''
+	try:
+		parallel = int(mssh._normalize_max_connections(mssh.DEFAULT_MAX_CONNECTIONS))
+	except Exception:
+		parallel = 4 * (os.cpu_count() or 1)
+	try:
+		if os.getloadavg()[0] >= (os.cpu_count() or 1):
+			parallel //= 2
+	except (AttributeError, OSError):
+		pass
+	return max(parallel, 4)
+
+def ping_host(host):
+	'''
+	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (no permission, a name it
+	cannot resolve). Raises FileNotFoundError without a ping command, OSError when out of
+	descriptors or processes.
+	'''
+	import subprocess
+	argv = list(PING_COMMAND) + (['-6'] if ':' in host else []) + [host]
+	try:
+		code = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode
+	except subprocess.TimeoutExpired:
+		return 'silent'
+	except FileNotFoundError:
+		raise
+	except OSError as e:
+		if _out_of_resources(e):
+			raise
+		return 'none'
+	return {0: 'answer', 1: 'silent'}.get(code, 'none')
+
+def _probe_batch(mssh, hosts, states, now, ping_available):
+	'''
+	Check and ping hosts at once, one thread each, updating states (host -> HostState).
+
+	Returns:
+		list: the hosts that could not be checked for lack of descriptors or processes, in order
+	'''
+	import threading
+	retry = []
+	guard = threading.Lock()
+
+	def check(host):
+		state = states.get(host) or HostState()
+		try:
+			if not state.fresh_validity(now()):
+				state.validity, state.checked_at = mssh.host_validity(host, timeout=DNS_TIMEOUT), now()
+			if state.validity != 'invalid' and not state.fresh_ping(now()):
+				answer = 'none'
+				if ping_available[0]:
+					try:
+						answer = ping_host(host)
+					except FileNotFoundError:
+						ping_available[0] = False
+				state.ping, state.pinged_at = answer, now()
+				if answer == 'answer':
+					state.answered_at = state.pinged_at
+		except Exception as e:
+			if _out_of_resources(e):
+				with guard:
+					retry.append(host)
+			else:
+				_debug('probing {} failed: {!r}'.format(host, e))
+			return
+		with guard:
+			states[host] = state
+
+	threads = []
+	for number, host in enumerate(hosts):
+		thread = threading.Thread(target=check, args=(host,), daemon=True)
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads: the rest waits for a smaller batch
+			retry.extend(hosts[number:])
+			break
+		threads.append(thread)
+	for thread in threads:
+		thread.join()
+	return sorted(retry, key=hosts.index)
+
+def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
+	'''
+	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
+	learned in host-state.tsv after each batch, until the queue is empty or limit seconds have
+	passed. Hosts left over go back into the queue. Never connects to a host: only DNS, ssh -G
+	(which reads the ssh config) and ping.
+
+	Returns:
+		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
+	'''
+	try:
+		os.nice(10)
+	except (AttributeError, OSError):
+		pass
+	mssh = _import_mssh()
+	parallel = probe_parallelism(mssh)
+	started = now()
+	checked = 0
+	ping_available = [True]
+	while now() - started < limit:
+		hosts = take_probe_queue(directory)
+		if not hosts:
+			break
+		states = read_host_states(directory)
+		moment = now()
+		todo = [host for host in hosts if needs_probe(states.get(host), moment)]
+		while todo:
+			if now() - started >= limit:
+				queue_probes(directory, todo[::-1])
+				return {'checked': checked, 'parallel': parallel}
+			batch, todo = todo[:parallel], todo[parallel:]
+			retry = _probe_batch(mssh, batch, states, now, ping_available)
+			checked += len(batch) - len(retry)
+			write_host_states(directory, states)
+			if lock:
+				# a lock that keeps changing is not stale
+				try:
+					os.utime(lock, None)
+				except OSError:
+					pass
+			if retry:
+				if parallel == 1:
+					queue_probes(directory, (retry + todo)[::-1])
+					return {'checked': checked, 'parallel': parallel}
+				parallel = max(parallel // 2, 1)
+				todo = retry + todo
+	return {'checked': checked, 'parallel': parallel}
+
+def spawn_probe(directory):
+	'''Start a detached `probe` unless one is running. Returns whether one was started.'''
+	return _spawn_detached(directory, PROBE_LOCK_NAME, 'probe')
 
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
@@ -4843,6 +4996,24 @@ def _cmd_rebuild(args):
 			except OSError:
 				pass
 
+def _cmd_probe(args):
+	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	try:
+		directory = cache_dir()
+		if directory is None:
+			return 1
+		run_probe(directory, lock)
+		return 0
+	except Exception as e:
+		_debug('probe failed: {!r}'.format(e))
+		return 1
+	finally:
+		if lock:
+			try:
+				os.unlink(lock)
+			except OSError:
+				pass
+
 def _cmd_eval(args):
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete eval', description='Replay mssh history and report how much typing completion saves.')
@@ -4867,6 +5038,8 @@ def main(argv=None):
 		return _cmd_query()
 	if command == 'rebuild':
 		return _cmd_rebuild(argv[1:])
+	if command == 'probe':
+		return _cmd_probe(argv[1:])
 	if command == 'eval':
 		return _cmd_eval(argv[1:])
 	if command == 'pick':
@@ -4878,7 +5051,7 @@ def main(argv=None):
 	if command in ('-V', '--version'):
 		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
 		return 0
-	print('usage: mssh-complete query | pick | edit TEXT | rebuild | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
+	print('usage: mssh-complete query | pick | edit TEXT | rebuild | probe | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
 	return 2
 
 if __name__ == '__main__':
