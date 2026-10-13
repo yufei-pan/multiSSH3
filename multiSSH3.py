@@ -4477,6 +4477,24 @@ def _why_names_no_hosts(token):
 		return '{} is {!r} in the env files'.format(name, readEnvFromFile().get(name))
 	return None
 
+def _names_a_host(token):
+	'''
+	Whether a host token names at least one host, without DNS (like expand_hostnames_local).
+
+	Stops at the first member that is not an alias, and reuses the range expansions expanding
+	the hosts cached, so a large range costs next to nothing.
+	'''
+	name = token.rsplit('@', 1)[-1].strip()
+	if _IPV4_RANGE_RE.match(name):
+		return bool(__expandIPv4Address(frozenset([name])))
+	for member in __expand_hostname(name, validate=False):
+		member = member.strip().strip('$')
+		if not member:
+			continue
+		if _local_hostname_source(member) not in ('env', 'env_file') or expand_hostnames_local(member)[0]:
+			return True
+	return False
+
 def _report_tokens_naming_no_hosts(tokens):
 	'''
 	Report each host token that names no host at all, e.g. a range counting down or an empty alias.
@@ -4491,7 +4509,7 @@ def _report_tokens_naming_no_hosts(tokens):
 	global __mainReturnCode
 	global __failedHosts
 	for token in tokens:
-		if token in __failedHosts or expand_hostnames_local(token)[0]:
+		if token in __failedHosts or _names_a_host(token):
 			continue
 		reason = _why_names_no_hosts(token)
 		eprint('Error: {!r} names no hosts{}'.format(token, ': ' + reason if reason else ''))
