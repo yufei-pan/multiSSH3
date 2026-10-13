@@ -3106,6 +3106,28 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxAttr)
 		charsWritten += min(len(trail_str), numChar - charsWritten)
 
+# ssh's notices are short; a longer line is the command's output. Searching all of a line that can be
+# megabytes long, with patterns like "Connection to .* closed", could take minutes
+_TUI_NOTICE_MAX_LENGTH = 1024
+
+def _tui_leaves_out(line):
+	'''
+	Whether a host's window leaves line out: ssh's own notices, which the output at the end leaves out too
+	(ERROR_MESSAGES_TO_IGNORE). "Warning: Permanently added ..." comes with every connection (mssh keeps no
+	known hosts), and was all a quiet command's window showed.
+	'''
+	return len(line) <= _TUI_NOTICE_MAX_LENGTH and bool(__ERROR_MESSAGES_TO_IGNORE_REGEX.search(line))
+
+def _tui_first_shown_line(output, rows):
+	'''The index in output from which a window of rows rows shows the lines it does not leave out.'''
+	index = len(output)
+	shown = 0
+	while index > 0 and shown < rows:
+		index -= 1
+		if not _tui_leaves_out(output[index]):
+			shown += 1
+	return index
+
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexOffset = 0):
 	'''
 	Generate a list for the hosts to be displayed on the screen. This is used to display as much relevant information as possible.
@@ -3431,13 +3453,15 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# host.printedLines = len(host.output)
 				if host.lineNumToPrintSet:
 					try:
-						# visible range is from len(host.output) - host_window_height + 1 to len(host.output)
-						visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
+						# visible range: the last host_window_height - 1 lines the window does not leave out
+						visibleLowerBound = _tui_first_shown_line(host.output, host_window_height - 1)
 						lineNumToPrintSet = host.lineNumToPrintSet.copy()
 						host.lineNumToPrintSet = set()
 						for lineNumToReprint in sorted(lineNumToPrintSet):
 							# if the line is visible, we will reprint it
 							if visibleLowerBound <= lineNumToReprint <= len(host.output):
+								if _tui_leaves_out(host.output[lineNumToReprint]):
+									continue
 								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 								hostWindowUpdated = True
 					except Exception:

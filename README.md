@@ -328,6 +328,7 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 > Esc     : Clear / hide view  
 > ```
 > `Esc` clears the input line. On an empty input line it hides the live view; the commands keep running and their output is printed when they finish.
+> The live view leaves out ssh's own notices, as the output at the end does ( `ERROR_MESSAGES_TO_IGNORE` ): mssh does not keep the hosts' keys, so ssh says `Warning: Permanently added ...` on every connection, and a quiet command's window showed only that.
 > You can also toggle this help in curses by pressing `?` or `F1`.
 
 ### Command String Replacement
