@@ -122,6 +122,22 @@ class Grid(object):
 				self._put(char)
 			index += 1
 
+	def resize(self, rows, columns):
+		'''
+		The window changed size, as xterm takes it: nothing reflows. Rows are cut or padded on the right;
+		with fewer rows, rows leave at the top while the cursor's row would fall off the bottom.
+		'''
+		cells = [row[:columns] + [(' ', '')] * (columns - len(row)) for row in self.cells]
+		if rows < self.rows and self.row >= rows:
+			gone = self.row - rows + 1
+			cells = cells[gone:]
+			self.row -= gone
+			self.saved = (max(self.saved[0] - gone, 0), self.saved[1])
+		cells = cells[:rows] + [[(' ', '')] * columns for _ in range(rows - len(cells))]
+		self.cells, self.rows, self.columns = cells, rows, columns
+		self.column = min(self.column, columns)
+		self.saved = (min(self.saved[0], rows - 1), min(self.saved[1], columns - 1))
+
 	def line(self, row):
 		return ''.join(char for char, _ in self.cells[row]).rstrip()
 
@@ -137,12 +153,20 @@ class Grid(object):
 		return self.row, min(self.column, self.columns - 1)
 
 
+class Resize(object):
+	'''A FakeTerminal burst: the terminal window changes to rows x columns.'''
+	def __init__(self, rows, columns):
+		self.rows = rows
+		self.columns = columns
+
+
 class FakeTerminal(object):
 	'''
 	What the picker and the editor need from a Terminal, drawing into a Grid. Keys come in scripted
 	bursts (what the operator typed at once), one key per read; queue holds the burst's unread keys.
 	A burst of None is the operator waiting: a read with a timeout returns None (timeouts records them).
 	typed_ahead: a burst already there when the program starts reading (typed before it was ready).
+	A Resize burst changes the grid's size and reads as the key 'resize', as Terminal reports one.
 	'''
 	def __init__(self, bursts, rows=24, columns=80, grid=None, typed_ahead=None):
 		import mssh_complete as mc
@@ -163,6 +187,9 @@ class FakeTerminal(object):
 			if not self.bursts:
 				raise AssertionError('the program read more keys than the test scripted')
 			burst = self.bursts.pop(0)
+			if isinstance(burst, Resize):
+				self.grid.resize(burst.rows, burst.columns)
+				return 'resize', b''
 			if burst is None:
 				if timeout is None:
 					raise AssertionError('the program waits for a key with no timeout while the test waits')

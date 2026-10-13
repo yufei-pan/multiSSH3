@@ -2,6 +2,7 @@
 import fcntl
 import os
 import pty
+import signal
 import struct
 import termios
 import threading
@@ -301,6 +302,45 @@ def test_terminal_reads_its_size(tty_pair):
 		assert term.size() == (30, 120)
 
 
+def test_terminal_reports_a_resize_before_the_keys_waiting(tty_pair):
+	master, slave, path = tty_pair
+	os.write(master, b'ab')
+	with mc.Terminal(path) as term:
+		os.kill(os.getpid(), signal.SIGWINCH)
+		assert term.read_key(timeout=1) == ('resize', b'')
+		assert [term.read_key(timeout=1), term.read_key(timeout=1)] == [('a', b'a'), ('b', b'b')]
+		# one report for one resize
+		assert term.read_key(timeout=0.05) is None
+
+
+def test_terminal_wakes_up_on_a_resize(tty_pair):
+	# the editor and the picker wait for a key with no timeout: a resize must end that wait
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		timer = threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGWINCH))
+		timer.start()
+		started = time.monotonic()
+		try:
+			assert term.read_key(timeout=5) == ('resize', b'')
+		finally:
+			timer.cancel()
+		assert time.monotonic() - started < 2
+
+
+def test_terminal_puts_the_resize_handler_back(tty_pair):
+	master, slave, path = tty_pair
+	seen = []
+	previous = signal.signal(signal.SIGWINCH, lambda number, frame: seen.append(number))
+	try:
+		with mc.Terminal(path) as term:
+			os.kill(os.getpid(), signal.SIGWINCH)
+			assert term.read_key(timeout=1) == ('resize', b'') and seen == []
+		os.kill(os.getpid(), signal.SIGWINCH)
+		assert seen == [signal.SIGWINCH]
+	finally:
+		signal.signal(signal.SIGWINCH, previous)
+
+
 def test_terminal_joins_a_character_cut_between_writes(tty_pair):
 	master, slave, path = tty_pair
 	with mc.Terminal(path) as term:
@@ -324,3 +364,13 @@ def test_grid_wraps_wide_characters_and_restores_the_cursor():
 	grid.feed('abcd漢\x1b7xy\r\n\x1b[2Cz\x1b8!')
 	assert grid.lines() == ['abcd', '漢!y', '  z']
 	assert grid.cursor == (1, 3)
+
+
+def test_grid_resizes_like_xterm():
+	# nothing reflows: rows are cut on the right, and the cursor's row stays on screen
+	grid = Grid(4, 10)
+	grid.feed('0123456789\r\nab\r\ncd\r\nef\x1b[2D')
+	grid.resize(3, 5)
+	assert grid.lines() == ['ab', 'cd', 'ef'] and grid.cursor == (2, 0)
+	grid.resize(3, 8)
+	assert grid.lines() == ['ab', 'cd', 'ef'] and (grid.rows, grid.columns) == (3, 8)

@@ -32,10 +32,22 @@ def home(tmp_path):
 	return env, home
 
 
-def glue_file(home, shell, name=None):
+def glue_file(home, shell, name=None, command=ENGINE):
 	path = home / (name or 'glue.' + shell)
-	path.write_text(mc.render_glue(shell, ENGINE))
+	path.write_text(mc.render_glue(shell, command))
 	return path
+
+
+def slow_engine(home, delay, deaf=False):
+	'''
+	The engine, delay seconds slow to start (an NFS home, a loaded machine); deaf: Ctrl-C does not stop
+	it either, as when it waits on a hung file system.
+	'''
+	import shlex
+	path = home / 'slow-engine'
+	path.write_text('#!/bin/sh\n{}sleep {}\nexec {} "$@"\n'.format("trap '' INT\n" if deaf else '', delay, ' '.join(shlex.quote(part) for part in ENGINE)))
+	path.chmod(0o755)
+	return [str(path)]
 
 
 def printed(session, keys, wait=0.6):
@@ -169,6 +181,102 @@ def test_bash_picker_leaves_keys_typed_after_the_choice(home):
 		session.close()
 
 
+def test_bash_picker_draws_again_when_the_terminal_is_resized(home):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		session.read_until(b'type to filter', 10)
+		session.resize(24, 50)
+		session.read_until(b'type to filter', 10)
+		rows = rendered(session).lines()
+		box = rows[1:13]
+		assert rows[0] == '@@READY@@ mssh gpu[01-16]' and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
+		assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 50 and rows[13:] == [''] * 11, rows
+		# Esc: the line as it was, nothing left of the menu; bash knows the new width
+		session.send('\x1b')
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		session.send('\x15echo "[$COLUMNS]"\r')
+		session.read_until(b'[50]', 10)
+		rows = settled(session)
+		assert not [row for row in rows if 'filter' in row or '│' in row or '|' in row] and rows[-2:] == ['[50]', '@@READY@@'], rows
+	finally:
+		session.close()
+
+
+def test_bash_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
+	# past MSSH_COMPLETE_START_TIMEOUT Ctrl-R does what it did before, with the keys typed meanwhile;
+	# the engine, ready later, leaves the terminal alone
+	env, home = home
+	delay = 1.5
+	session = bash_session(home, dict(env, MSSH_COMPLETE_START_TIMEOUT='0.3'), glue_file(home, 'bash', command=slow_engine(home, delay)))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		started = time.monotonic()
+		session.send('\x12aa')
+		read_until_shown(session, 'echo aa2', 10)
+		assert reverse_search_found(session, 'echo aa2'), screen(session)
+		# the engine is ready by now
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		session.send('\r')
+		assert re.search(r'[\r\n]aa2\r\n', session.read_until(b'aa2\r\n', 10))
+		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
+	# at once, even when Ctrl-C does not stop the engine, which then leaves the terminal alone
+	env, home = home
+	delay = 1.5
+	session = bash_session(home, env, glue_file(home, 'bash', command=slow_engine(home, delay, deaf=True)))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		started = time.monotonic()
+		session.send('\x12')
+		time.sleep(0.3)
+		session.send('\x03')
+		session.read_until(b'@@READY@@ mssh gpu[01-16] ', 5)
+		assert time.monotonic() - started < delay
+		rows = [row for row in screen(session) if row]
+		assert rows == ['@@READY@@ mssh gpu[01-16]'], rows
+		# the engine is ready by now
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		assert printed(session, 'x') == 'mssh gpu[01-16] x'
+		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('option', ['set -e', 'set -u', 'set -o pipefail'])
+def test_bash_shell_options_do_not_break_ctrl_r_or_the_editor(home, option):
+	env, home = home
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + option)
+	try:
+		# a path to mssh: space is a space, Ctrl-R the picker
+		session.send('/x/mssh gpu[01-16] \x12')
+		session.read_until(b'type to filter', 10)
+		assert words(printed(session, '\r')) == ['/x/mssh'] + PICKED[1:]
+		if bash_version(env) >= 44:
+			session.send('\x15mssh gp')
+			session.read_until(b'nvidia-smi', 10)
+			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+		# never ready in time: Ctrl-R searches as before, space is a space
+		session.send('\x15MSSH_COMPLETE_START_TIMEOUT=0\r/x/mssh gpu[01-16] \x12aa')
+		read_until_shown(session, 'echo aa2', 10)
+		assert reverse_search_found(session, 'echo aa2'), screen(session)
+		session.send('\x07\x15mssh xy\r')
+		assert '@@RAN[xy]@@' in session.read_until(b'@@RAN[xy]@@', 10)
+		session.send('echo "[alive]"\r')
+		assert '[alive]\r\n' in session.read_until(b'[alive]\r\n', 10)
+	finally:
+		session.close()
+
+
 def test_bash_ctrl_r_keeps_the_last_argument(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))
@@ -203,10 +311,10 @@ def test_bash_vi_mode_ctrl_r(home):
 
 # ---------------------------------------------------------------- plain bash: the mssh line editor
 
-def editor_session(env, home, **kwargs):
+def editor_session(env, home, command=ENGINE, **kwargs):
 	if bash_version(env) < 44:
 		pytest.skip('the mssh line editor needs bash 4.4 or later')
-	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash'), extra=FAKE_MSSH)
+	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH)
 
 
 def test_editor_needs_bash_4_4(home):
@@ -383,6 +491,67 @@ def test_editor_ctrl_c_leaves_the_line_on_screen(home):
 		session.close()
 
 
+def test_editor_draws_again_when_the_terminal_is_resized(home):
+	# at once, wrapped at the new width; and bash knows the new width after the editor
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.resize(24, 30)
+		session.read_until(b'nvidia-smi', 10)
+		grid = rendered(session)
+		assert grid.lines()[:3] == ['@@READY@@ mssh gpu[01-16] "nvi', 'dia-smi"', ''] and grid.cursor == (0, 17)
+		session.send('\x03')
+		session.read_until(b'^C', 10)
+		session.send('echo "[$COLUMNS]"\r')
+		session.read_until(b'[30]', 10)
+		rows = settled(session)
+		assert rows[-4:] == ['@@READY@@ mssh gp^C', '@@READY@@ echo "[$COLUMNS]"', '[30]', '@@READY@@'], rows
+	finally:
+		session.close()
+
+
+def test_editor_goes_on_without_an_engine_slow_to_start(home):
+	# past MSSH_COMPLETE_START_TIMEOUT the space is a space and readline reads the keys typed meanwhile;
+	# the editor, ready later, leaves the terminal alone
+	env, home = home
+	delay = 2.0
+	session = editor_session(env, home, command=slow_engine(home, delay), MSSH_COMPLETE_START_TIMEOUT='0.3')
+	try:
+		started = time.monotonic()
+		session.send('mssh host1 uptime\r')
+		assert '@@RAN[host1 uptime]@@' in session.read_until(b'@@RAN[host1 uptime]@@', 10)
+		assert time.monotonic() - started < delay - 0.5
+		# the editor is ready by now
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		session.send('echo "[ok]"\r')
+		assert '[ok]\r\n' in session.read_until(b'[ok]\r\n', 10)
+	finally:
+		session.close()
+
+
+def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
+	# as Ctrl-C in the editor: the line and ^C stay on screen, a fresh prompt below
+	env, home = home
+	delay = 1.5
+	session = editor_session(env, home, command=slow_engine(home, delay, deaf=True))
+	try:
+		started = time.monotonic()
+		session.send('mssh ')
+		time.sleep(0.3)
+		session.send('\x03')
+		session.read_until(b'^C', 5)
+		session.read_until(b'@@READY@@', 5)
+		rows = [row for row in screen(session) if row]
+		assert rows == ['@@READY@@ mssh ^C', '@@READY@@'], rows
+		# the editor is ready by now
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		assert printed(session, 'echo x') == 'echo x'
+	finally:
+		session.close()
+
+
 def test_editor_ctrl_r_opens_the_picker(home):
 	env, home = home
 	session = editor_session(env, home)
@@ -482,6 +651,27 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		session.close()
 
 
+def test_blesh_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
+	# ble.sh reads Ctrl-C as a key: without the deadline nothing ended the wait
+	env, home = home
+	delay = 2.0
+	session = blesh_session(home, dict(env, MSSH_COMPLETE_START_TIMEOUT='0.3'), glue_file(home, 'bash', command=slow_engine(home, delay)))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		started = time.monotonic()
+		session.send('\x12aa')
+		assert 'echo aa2' in read_until_shown(session, 'echo aa2', 10)
+		assert time.monotonic() - started < delay - 0.5
+		# the engine is ready by now
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		session.send('\x07\x15')
+		assert printed(session, 'echo x') == 'echo x'
+		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
 # ---------------------------------------------------------------- zsh
 
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
@@ -545,10 +735,15 @@ def known(env, **validities):
 
 
 def rendered(session):
-	"""The terminal after everything the session printed."""
+	"""The terminal after everything the session printed, resized where the test resized it."""
 	from vt_grid import Grid
 	grid = Grid(24, 80)
-	grid.feed(session.output.decode('utf-8', 'replace'))
+	start = 0
+	for end, rows, columns in session.resizes:
+		grid.feed(session.output[start:end].decode('utf-8', 'replace'))
+		grid.resize(rows, columns)
+		start = end
+	grid.feed(session.output[start:].decode('utf-8', 'replace'))
 	return grid
 
 
@@ -609,6 +804,11 @@ def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
 		assert not [row for row in screen(session) if 'unknown host' in row]
 	finally:
 		session.close()
+
+
+def reverse_search_found(session, line):
+	'''Whether readline's reverse search shows line (readlines before 8 redraw its prompt in ways the grid does not follow).'''
+	return any(row.startswith('(reverse-i-search)`') and row.endswith(': ' + line) for row in screen(session))
 
 
 def settled(session, quiet=1.0):
@@ -685,6 +885,31 @@ def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15\x12aa\x12\r')
 		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+	finally:
+		session.close()
+
+
+def test_zsh_picker_draws_again_when_the_terminal_is_resized(home):
+	# zsh leaves its line on screen: the menu opens again below the cursor's row
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		session.read_until(b'type to filter', 10)
+		session.resize(24, 50)
+		session.read_until(b'type to filter', 10)
+		rows = rendered(session).lines()
+		box = rows[1:13]
+		assert rows[0].startswith('@@READY@@ mssh gpu[01-16]') and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
+		assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 50 and rows[13:] == [''] * 11, rows
+		session.send('\x1b')
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		session.send('\x15echo "[$COLUMNS]"\r')
+		session.read_until(b'[50]', 10)
+		rows = settled(session)
+		assert not [row for row in rows if 'filter' in row or '│' in row or '|' in row] and rows[-2:] == ['[50]', '@@READY@@'], rows
 	finally:
 		session.close()
 

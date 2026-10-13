@@ -479,6 +479,7 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 | Environment variable | Effect |
 | --- | --- |
 | `MSSH_COMPLETE_TIMEOUT` | Seconds the shell waits for an answer (default 0.3) |
+| `MSSH_COMPLETE_START_TIMEOUT` | bash only: seconds the shell waits for the Ctrl-R menu or the line editor to open (default 2); past that, Ctrl-R does what it did before and space is a space |
 | `MSSH_COMPLETE_GHOST_TIMEOUT` | ble.sh only: milliseconds a grey suggestion may take (default 300) |
 | `MSSH_COMPLETE_SHELL_HISTORY` | Lines of shell history sent along (default 1000) |
 | `MSSH_COMPLETE_EDITOR` | `1` turns on the plain-bash mssh line editor (`install bash editor` sets it) |
