@@ -151,7 +151,7 @@ def test_import_and_max_connections_survive_unknown_cpu_count(tmp_path):
 		"import multiSSH3\n"
 		"print(multiSSH3._normalize_max_connections(None), multiSSH3._normalize_max_connections(-2))\n"
 	).format(str(package_root))
-	result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
+	result = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, cwd=tmp_path, timeout=60)
 
 	assert result.returncode == 0, result.stderr
 	assert result.stdout.split() == ["4", "2"]

@@ -2,7 +2,8 @@
 # Run the autocomplete tests in the Docker shell matrix: modern, current (the newest Python), legacy and centos7 images.
 # The images run at once (the tests mostly wait on shells, not the CPU); each one's output is shown when all are done.
 # Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [centos7]   (default: all four)
-# MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py)
+# MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py). The whole suite, e.g. on
+# Python 3.6: MSSH_MATRIX_TESTS=tests tests/shells/run_matrix.sh legacy centos7
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)

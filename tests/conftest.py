@@ -125,7 +125,8 @@ def ssh_host_works(host):
 				host,
 				"true",
 			],
-			capture_output=True,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
 			timeout=5,
 		)
 		return r.returncode == 0
@@ -144,8 +145,9 @@ def ssh_localhost_works():
 def run_cli(args, timeout=30, check=False):
 	return subprocess.run(
 		[sys.executable, str(MULTISSH3_PY), *args],
-		capture_output=True,
-		text=True,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE,
+		universal_newlines=True,
 		timeout=timeout,
 		check=check,
 	)

@@ -90,7 +90,7 @@ def test_echoed_command_round_trips_through_bash(monkeypatch, tmp_path):
 	commands = ["echo $HOSTNAME `id` it's \\$x !", "line1\nline2\tend"]
 
 	line = multiSSH3.getStrCommand(hosts="node1,node2,node3", commands=commands, password="p$w'd")
-	parsed = subprocess.run(["bash", "-c", "printf '%s\\0' " + line], capture_output=True, text=True,
+	parsed = subprocess.run(["bash", "-c", "printf '%s\\0' " + line], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
 		cwd=tmp_path, check=True).stdout.split("\0")[:-1]
 	args = multiSSH3.process_args(parsed[1:])
 
