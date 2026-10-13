@@ -327,6 +327,30 @@ def test_run_command_extraargs_string_is_split_like_a_shell(fake_host, monkeypat
 	assert calls[0][end - len(expected):end] == expected
 
 
+@pytest.mark.parametrize("os_name, extraargs, expected", [
+	# Windows paths keep their backslashes: shell escapes made -i C:\keys\id into C:keysid
+	("nt", r"-i C:\keys\id", ["-i", r"C:\keys\id"]),
+	("nt", r'-i "C:\my keys\id"', ["-i", r"C:\my keys\id"]),
+	("nt", "-o ProxyCommand='ssh -W %h:%p bastion'", ["-o", "ProxyCommand=ssh -W %h:%p bastion"]),
+	("posix", r"-o Foo=a\ b", ["-o", "Foo=a b"]),  # elsewhere a backslash escapes, as in a shell
+])
+def test_run_command_extraargs_backslashes_by_platform(fake_host, monkeypatch, os_name, extraargs, expected):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true", extraargs=extraargs)
+	calls = []
+
+	def fake_popen(argv, **kwargs):
+		calls.append(argv)
+		return FakeProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.os, "name", os_name)
+	multiSSH3.run_command(host, sem, timeout=5)
+	monkeypatch.undo()  # os.name back before pytest reports
+	end = calls[0].index("--")
+	assert calls[0][end - len(expected):end] == expected
+
+
 def _redfish_then_ipmitool():
 	redfish = multiSSH3.get_default_ipmi_definition()
 	redfish["ipmi_method"] = "redfish"
