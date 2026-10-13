@@ -4243,96 +4243,103 @@ def _order_target_hosts(host_tokens, target_host_dic, username=None):
 	ordered.extend(sorted((host for host in target_host_dic if host not in seen), key=_natural_sort_key))
 	return ordered
 
-@cache_decorator
+# The CLI default of each option (dest -> value) of the parser process_args built, config files applied:
+# what a replayed command line gets for an option it leaves out. main() overwrites some DEFAULT_*
+# globals with the options given (set_global_with_args), so those cannot tell.
+__cli_option_defaults = {}
+
+def _parser_defaults(parser):
+	'''The default of each option of an argparse parser by dest: what a line without the option gets.'''
+	return {action.dest: parser.get_default(action.dest) for action in parser._actions}
+
+def _cli_option_defaults():
+	'''The CLI's option defaults: those of the parser this run's options were read with, else a new one's.'''
+	return __cli_option_defaults or _parser_defaults(get_parser())
+
 def __formCommandArgStr(shortend = False, **kwargs) -> str:
-	oneonone = kwargs.get('oneonone', DEFAULT_ONE_ON_ONE)
-	timeout = kwargs.get('timeout', DEFAULT_TIMEOUT)
-	password = kwargs.get('password', DEFAULT_PASSWORD)
-	no_watch = kwargs.get('no_watch', DEFAULT_NO_WATCH)
-	json = kwargs.get('json', DEFAULT_JSON_MODE)
-	max_connections = kwargs.get('max_connections', DEFAULT_MAX_CONNECTIONS)
-	file = kwargs.get('file', None)
-	ipmi = kwargs.get('ipmi', DEFAULT_IPMI)
-	interface_ip_prefix = kwargs.get('interface_ip_prefix', DEFAULT_INTERFACE_IP_PREFIX)
-	scp = kwargs.get('scp', DEFAULT_SCP)
-	gather_mode = kwargs.get('gather_mode', False)
-	username = kwargs.get('username', DEFAULT_USERNAME)
-	extraargs = kwargs.get('extraargs', DEFAULT_EXTRA_ARGS)
-	skip_unreachable = kwargs.get('skip_unreachable', DEFAULT_SKIP_UNREACHABLE)
-	no_env = kwargs.get('no_env', DEFAULT_NO_ENV)
-	greppable = kwargs.get('greppable', DEFAULT_GREPPABLE_MODE)
-	skip_hosts = kwargs.get('skip_hosts', DEFAULT_SKIP_HOSTS)
-	file_sync = kwargs.get('file_sync', False)
-	error_only = kwargs.get('error_only', DEFAULT_ERROR_ONLY)
-	identity_file = kwargs.get('identity_file', DEFAULT_IDENTITY_FILE)
-	copy_id = kwargs.get('copy_id', False)
-	unavailable_host_expiry = kwargs.get('unavailable_host_expiry', DEFAULT_UNAVAILABLE_HOST_EXPIRY)
-	no_history = kwargs.get('no_history', DEFAULT_NO_HISTORY)
-	history_file = kwargs.get('history_file', DEFAULT_HISTORY_FILE)
-	env_file = kwargs.get('env_file', '')
-	# only env files given explicitly: listing the defaults would make a replayed line trust them all
-	env_files = kwargs.get('env_files', ())
-	repeat = kwargs.get('repeat', DEFAULT_REPEAT)
-	interval = kwargs.get('interval', DEFAULT_INTERVAL)
+	'''
+	The options of a run as mssh command line options.
+
+	The "> mssh ..." echo and the history file show them, and both are replayed (the Ctrl-R picker,
+	mssh-complete): every option that changes what runs, where, or what is shown is listed, a flag
+	when it is on, a value when it is not the CLI's default (the parser's, config files applied: a
+	replay gets the same one). Values are attached with "=", so none is read as a host or command.
+
+	Not listed: -ip (an IPMI password is not spread further; -p is, by design: README), the options
+	that do something besides the run (--generate_config_file, --store_config_file,
+	--add_control_master_config), and those main() folds into others: -T into -t, -uk and -k DIR into
+	-k FILE, --script into its options, -s PATH into -f PATH -fs.
+	'''
+	defaults = _cli_option_defaults()
 	argsList = []
-	if oneonone:
-		argsList.append('--oneonone' if not shortend else '-11')
-	if timeout and timeout != DEFAULT_TIMEOUT:
-		argsList.append(f'--timeout={timeout}' if not shortend else f'-t={timeout}')
-	if repeat and repeat != DEFAULT_REPEAT:
-		argsList.append(f'--repeat={repeat}' if not shortend else f'-r={repeat}')
-	if interval and interval != DEFAULT_INTERVAL:
-		argsList.append(f'--interval={interval}' if not shortend else f'-i={interval}')
-	if password and password != DEFAULT_PASSWORD:
-		argsList.append(f'--password={_shell_quote(password)}' if not shortend else f'-p={_shell_quote(password)}')
-	if identity_file and identity_file != DEFAULT_IDENTITY_FILE:
-		argsList.append(f'--key={_shell_quote(identity_file)}' if not shortend else f'-k={_shell_quote(identity_file)}')
-	if copy_id:
-		argsList.append('--copy_id' if not shortend else '-ci')
-	if no_watch:
-		argsList.append('--no_watch' if not shortend else '-q')
-	if json:
-		argsList.append('--json' if not shortend else '-j')
-	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS:
-		argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
-	if file:
-		argsList.extend([f'--file={_shell_quote(file)}' for file in file] if not shortend else [f'-f={_shell_quote(file)}' for file in file])
-	if ipmi:
-		argsList.append('--ipmi')
-	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX:
-		argsList.append(f'--interface_ip_prefix={_shell_quote(interface_ip_prefix)}' if not shortend else f'-pre={_shell_quote(interface_ip_prefix)}')
-	if scp:
-		argsList.append('--scp')
-	if gather_mode:
-		argsList.append('--gather_mode' if not shortend else '-gm')
-	if username and username != DEFAULT_USERNAME:
-		argsList.append(f'--username={_shell_quote(username)}' if not shortend else f'-u={_shell_quote(username)}')
-	if extraargs and extraargs != DEFAULT_EXTRA_ARGS:
-		argsList.append(f'--extraargs={_shell_quote(extraargs)}' if not shortend else f'-ea={_shell_quote(extraargs)}')
-	if skip_unreachable:
+	def flag(dest, long_name, short_name=None):
+		value = kwargs.get(dest)
+		# run_command_on_hosts' no_output is ... for "its default"
+		if value and value is not ...:
+			argsList.append(short_name if shortend and short_name else long_name)
+	def option(dest, long_name, short_name=None):
+		default = defaults.get(dest)
+		value = kwargs.get(dest, default)
+		# 0 and '' are values too: -t 0 means no timeout when the configured default is another
+		if value is not None and value != default:
+			argsList.append('{}={}'.format(short_name if shortend and short_name else long_name, _shell_quote(value)))
+	def options(dest, long_name, short_name=None):
+		for value in kwargs.get(dest) or ():
+			argsList.append('{}={}'.format(short_name if shortend and short_name else long_name, _shell_quote(value)))
+	flag('oneonone', '--oneonone', '-11')
+	option('timeout', '--timeout', '-t')
+	option('repeat', '--repeat', '-r')
+	option('interval', '--interval', '-i')
+	option('password', '--password', '-p')
+	option('identity_file', '--key', '-k')
+	flag('copy_id', '--copy_id', '-ci')
+	flag('no_watch', '--no_watch', '-q')
+	flag('json', '--json', '-j')
+	option('max_connections', '--max_connections', '-m')
+	options('file', '--file', '-f')
+	# -fs takes an optional path: listed last it would take the hosts that follow for one. -su / -nsu,
+	# always listed, comes after it
+	flag('file_sync', '--file_sync', '-fs')
+	flag('ipmi', '--ipmi')
+	option('ipmi_interface_ip_prefix', '--ipmi_interface_ip_prefix', '-mpre')
+	option('ipmi_username', '--ipmi_username', '-iu')
+	option('ipmi_args', '--ipmi_args', '-ia')
+	option('ipmi_method', '--ipmi_method', '-im')
+	option('ipmi_retry_lockout_time', '--ipmi_retry_lockout_time', '-irlt')
+	option('interface_ip_prefix', '--interface_ip_prefix', '-pre')
+	flag('scp', '--scp')
+	flag('gather_mode', '--gather_mode', '-gm')
+	option('username', '--username', '-u')
+	option('extraargs', '--extraargs', '-ea')
+	if kwargs.get('skip_unreachable', DEFAULT_SKIP_UNREACHABLE):
 		argsList.append('--skip_unreachable' if not shortend else '-su')
 	else:
 		argsList.append('--no_skip_unreachable' if not shortend else '-nsu')
-	if unavailable_host_expiry and unavailable_host_expiry != DEFAULT_UNAVAILABLE_HOST_EXPIRY:
-		argsList.append(f'--unavailable_host_expiry={unavailable_host_expiry}' if not shortend else f'-uhe={unavailable_host_expiry}')
-	if no_env:
-		argsList.append('--no_env')
-	if env_file:
-		argsList.append(f'--env_file={_shell_quote(env_file)}' if not shortend else f'-ef={_shell_quote(env_file)}')
-	if env_files:
-		argsList.extend([f'--env_files={_shell_quote(ef)}' for ef in env_files] if not shortend else [f'-efs={_shell_quote(ef)}' for ef in env_files])
-	if no_history:
-		argsList.append('--no_history' if not shortend else '-nh')
-	if history_file and history_file != DEFAULT_HISTORY_FILE:
-		argsList.append(f'--history_file={_shell_quote(history_file)}' if not shortend else f'-hf={_shell_quote(history_file)}')
-	if greppable:
-		argsList.append('--greppable' if not shortend else '-g')
-	if error_only:
-		argsList.append('--error_only' if not shortend else '-eo')
-	if skip_hosts and skip_hosts != DEFAULT_SKIP_HOSTS:
-		argsList.append(f'--skip_hosts={_shell_quote(skip_hosts)}' if not shortend else f'-sh={_shell_quote(skip_hosts)}')
-	if file_sync:
-		argsList.append('--file_sync' if not shortend else '-fs')
+	option('unavailable_host_expiry', '--unavailable_host_expiry', '-uhe')
+	flag('no_env', '--no_env')
+	option('env_file', '--env_file', '-ef')
+	# only env files given explicitly: listing the defaults would make a replayed line trust them all
+	options('env_files', '--env_files', '-efs')
+	option('host_file', '--host_file')
+	if kwargs.get('config_file'):
+		# a config file can set any global (even the ssh binary): a replay elsewhere must load this one,
+		# not one a relative path finds in the directory it runs in
+		argsList.append('--config_file={}'.format(_shell_quote(os.path.abspath(os.path.expanduser(kwargs['config_file'])))))
+	flag('no_history', '--no_history', '-nh')
+	option('history_file', '--history_file', '-hf')
+	flag('greppable', '--greppable', '-g')
+	flag('error_only', '--error_only', '-eo')
+	option('skip_hosts', '--skip_hosts', '-sh')
+	option('window_width', '--window_width', '-ww')
+	option('window_height', '--window_height', '-wh')
+	flag('single_window', '--single_window', '-sw')
+	flag('no_output', '--no_output', '-no')
+	flag('success_hosts', '--success_hosts', '-w')
+	flag('return_zero', '--return_zero', '-rz')
+	option('encoding', '--encoding', '-e')
+	option('diff_display_threshold', '--diff_display_threshold', '-dt')
+	flag('force_truecolor', '--force_truecolor')
+	flag('debug', '--debug')
 	return ' '.join(argsList)
 
 def _typed_host_str(hosts):
@@ -4362,8 +4369,9 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 	commandArgKwargs.pop('shortend', None)
 	commandArgKwargs.pop('tabSeperated', None)
 	commandArgKwargs.pop('typed_hosts', None)
-	if commandArgKwargs.get('file'):
-		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
+	# run_command_on_hosts' deprecated files= adds to file=
+	if commandArgKwargs.get('files'):
+		commandArgKwargs['file'] = list(commandArgKwargs.get('file') or []) + list(commandArgKwargs['files'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
 	commandStr = ' '.join(_shell_quote(command) for command in format_commands(commands))
 	hostStr = _shell_quote(hostStr)
@@ -5009,6 +5017,7 @@ def get_parser():
 
 def process_args(args = None):
 	global __configs_from_file
+	global __cli_option_defaults
 	cfp = 	parser = argparse.ArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
 	try:
@@ -5024,6 +5033,8 @@ def process_args(args = None):
 	except Exception:
 		pass
 	parser = get_parser()
+	# before main() sets globals from the options: what a replay of the echoed / recorded line gets
+	__cli_option_defaults = _parser_defaults(parser)
 	# We handle the signal
 	signal.signal(signal.SIGINT, signal_handler)
 	# We parse the arguments

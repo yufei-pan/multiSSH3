@@ -171,6 +171,8 @@ def restore_module_globals():
 		"DEFAULT_DIFF_DISPLAY_THRESHOLD": multiSSH3.DEFAULT_DIFF_DISPLAY_THRESHOLD,
 		"DEFAULT_HOST_FILE": multiSSH3.DEFAULT_HOST_FILE,
 		"_binPaths": dict(multiSSH3._binPaths),
+		# process_args keeps its parser's defaults for the echoed / recorded command line
+		"__cli_option_defaults": multiSSH3.__cli_option_defaults,
 	}
 	_clear_expand_caches()
 	yield
