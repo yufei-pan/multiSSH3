@@ -416,6 +416,20 @@ def editor_session(env, home, command=ENGINE, **kwargs):
 	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH)
 
 
+def test_taking_the_keys_leaves_the_operators_variables_alone(home):
+	# the glue takes the keys from PROMPT_COMMAND, in the operator's shell: what it uses on the way is local
+	env, home = home
+	if bash_version(env) < 44:
+		pytest.skip('the mssh line editor needs bash 4.4 or later')
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'),
+		pre='previous=MINE line=MINE keymap=MINE status=MINE')
+	try:
+		session.send('printf "@@%s@@\\n" "VARS:$previous,$line,$keymap,$status"\r')
+		assert '@@VARS:MINE,MINE,MINE,MINE@@' in session.read_until(b'@@\r\n', 10)
+	finally:
+		session.close()
+
+
 def test_editor_needs_bash_4_4(home):
 	env, home = home
 	if bash_version(env) >= 44:
