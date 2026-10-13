@@ -161,6 +161,7 @@ def restore_module_globals():
 		"__global_suppress_printout": multiSSH3.__global_suppress_printout,
 		"__mainReturnCode": multiSSH3.__mainReturnCode,
 		"__failedHosts": set(multiSSH3.__failedHosts),
+		"_counted_alias_loops": set(multiSSH3._counted_alias_loops),
 		"_encoding": multiSSH3._encoding,
 		"DEFAULT_PASSWORD": multiSSH3.DEFAULT_PASSWORD,
 		"SSH_STRICT_HOST_KEY_CHECKING": multiSSH3.SSH_STRICT_HOST_KEY_CHECKING,
@@ -183,6 +184,7 @@ def restore_module_globals():
 			"DEFAULT_IPMI_DEFINITIONS",
 			"ERRORS",
 			"__failedHosts",
+			"_counted_alias_loops",
 			"_binPaths",
 		):
 			continue
@@ -194,6 +196,7 @@ def restore_module_globals():
 	multiSSH3.DEFAULT_IPMI_DEFINITIONS = [dict(item) for item in saved["DEFAULT_IPMI_DEFINITIONS"]]
 	multiSSH3.ERRORS = list(saved["ERRORS"])
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
+	multiSSH3._counted_alias_loops = set(saved["_counted_alias_loops"])
 	multiSSH3._binPaths = dict(saved["_binPaths"])
 	multiSSH3.join_threads(timeout=2)
 	_clear_expand_caches()

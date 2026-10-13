@@ -246,6 +246,10 @@ When hostname need to be resolved, mssh will check in the following order:
 >
 > ipv4 address expansion -> range expansion -> identify ipv4 -> resolve using environment variables ( if not no_env ) -> env map from env_files -> remote hostname resolution
 
+An alias's value is split into hosts as the hosts argument is (`,`, spaces, `;`, ...). An alias with an empty value (`eu=''`) stands for no hosts.
+
+Inside its own expansion, directly or through other aliases, an alias's name is not expanded again but taken as a host name, as bash does with aliases: `web="web,web-b"` runs on the host `web` and on `web-b`. When no host has that name, mssh reports the loop and runs on the rest: `Error: alias loop through 'web' (web -> app -> web): 'web' is not a valid hostname or IP address!`
+
 
 ### Default Env Files
 
