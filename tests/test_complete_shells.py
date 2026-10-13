@@ -542,6 +542,26 @@ def test_rc_files_keep_their_owner(tmp_path):
 	assert (rc.stat().st_uid, rc.stat().st_gid) == (4321, 4322) and rc.read_text() == 'alias ll="ls -l"\n'
 
 
+@pytest.mark.skipif(os.geteuid() != 0, reason='only root may give a file to another user')
+def test_an_rc_file_whose_owner_cannot_be_kept_is_not_replaced(tmp_path, monkeypatch):
+	# a group-writable ~/.bashrc of another user: replacing it made it the installing user's
+	# (fchown fails without root, here made to fail)
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	os.chown(str(rc), 4321, 4322)
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	before = rc.read_text()
+	def not_permitted(*args):
+		raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+	monkeypatch.setattr(os, 'fchown', not_permitted)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)
+	assert code == 1 and messages[-6:-4] == ['could not change {}: replacing it would change its owner; it is as it was'.format(rc),
+		'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:']
+	assert rc.read_text() == before and (rc.stat().st_uid, rc.stat().st_gid) == (4321, 4322)
+	assert sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history']
+
+
 def test_a_created_rc_file_gets_the_usual_permissions(tmp_path):
 	env, home = make_home(tmp_path)
 	mask = os.umask(0o027)

@@ -5352,7 +5352,8 @@ def _replace_file(path, text):
 
 	The text goes to a temporary file in the same directory, which then takes the old file's place.
 	A symbolic link stays a link: the file it points to is the one replaced. The new file keeps the
-	old one's permissions, and its owner where we may set it (root installing for another user).
+	old one's permissions and owner (a file whose owner we may not set is not replaced); ACLs and
+	other extended attributes are not copied.
 
 	Raises:
 		OSError: nothing was changed; a file we may not write counts, as it did when files were written in place
@@ -5391,7 +5392,8 @@ def _replace_file(path, text):
 					try:
 						os.fchown(f.fileno(), old.st_uid, old.st_gid)
 					except OSError:
-						pass
+						# another user's file we may write (group-writable): it must stay theirs
+						raise PermissionError(errno.EPERM, 'replacing it would change its owner')
 			os.fchmod(f.fileno(), mode)
 			os.fsync(f.fileno())
 		try:
