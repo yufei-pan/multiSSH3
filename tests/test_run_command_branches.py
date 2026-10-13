@@ -110,7 +110,7 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	multiSSH3.run_command(host, sem, timeout=5)
 	assert host.returncode == 0
 	assert rsync_calls[0] == [
-		"rsync", "-ahlX", "--partial", "--info=name",
+		"rsync", "-ahlX", "--partial-dir=.rsync-partial", "--info=name",
 		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
@@ -124,6 +124,16 @@ def test_rsync_writes_a_new_file_and_renames_it_into_place(fake_host, monkeypatc
 
 	assert calls[0][0] == "rsync"
 	assert "--inplace" not in calls[0]
+
+
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_interrupted_rsync_keeps_its_partial_file_beside_the_destination(fake_host, monkeypatch, gather):
+	# --partial renamed the part copied so far over the destination when -t, Ctrl-C or a lost
+	# connection stopped rsync: the host's file was replaced by a truncated one
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], gatherMode=gather)
+
+	assert "--partial" not in calls[0]
+	assert "--partial-dir=.rsync-partial" in calls[0]
 
 
 def test_run_command_gather_mode_scp(fake_host, monkeypatch):

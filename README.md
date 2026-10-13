@@ -459,6 +459,7 @@ mssh -ea="--delete" -f ./data/ allServers /tmp/data/
 - A path that exists is copied as written, glob characters in its name included (`report[1].txt`); any other is expanded as a glob, so a quoted glob (`-f '*.log'`) is expanded by mssh.
 - Files are copied with rsync when it is installed on this machine, else with scp as with `-W, --scp`.
 - rsync writes each file under a temporary name and renames it into place once it is complete, so a running program can be replaced and nobody reads a half-written file.
+- A copy that is stopped (`-t`, Ctrl-C, a lost connection) leaves the old file in place and keeps the part already copied in a `.rsync-partial` directory beside it; the next copy of that file continues from there and removes the directory.
 - rsync connects with the same ssh program and options as mssh's other commands, `-k` identity file included. A host given as an IPv6 address is written in brackets for rsync and scp (`root@[fd00::5]:/dest/`).
 - As with rsync, a directory given with a trailing slash (`./data/`) copies its contents into the destination, one without (`./data`) copies the directory itself into it.
 - A source that is a symbolic link to a file is copied as that file, under the link's name, as scp does (rsync's `--copy-links`). Links inside a directory stay links, so a link is copied as a link, with a warning before the copy, when it points to a directory or to nothing, or when a directory is copied in the same run (`--copy-links` would follow the links inside it too).

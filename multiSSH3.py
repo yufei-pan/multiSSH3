@@ -2759,8 +2759,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 					formatedCMD = scpOptions +['--']+fileArgs
 				else:
 					# no --inplace: rsync writes a new file and renames it over the old one, so a running
-					# binary can be replaced and no reader sees a file half written
-					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial', '--info=name']
+					# binary can be replaced and no reader sees a file half written. A copy that is stopped
+					# keeps its part in .rsync-partial/ for the next one to continue (--partial would rename
+					# it over the destination, a truncated file in place of the old one)
+					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial-dir=.rsync-partial', '--info=name']
 					# a source that is a link to a file is copied as that file: a gather finds out after
 					# copying (see run_command), a push before (see _rsync_link_sources)
 					if host.gatherMode:
