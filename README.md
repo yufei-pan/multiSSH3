@@ -350,6 +350,19 @@ mssh will replace some magic strings in the command string with host specific va
 
 > Note: Resolved name is the IP / Hostname with user appended and ip prefix applied. This is what got used to connect to the host.
 
+### When a Host Does Not Answer
+mssh has ssh, scp and rsync's ssh give up on a host that takes the connection but never answers (an overloaded or hung sshd), or that stops answering while its command runs (it went off the network):
+- `-o ConnectTimeout=30`: when connecting and sshd's first words take longer than 30 s, the host fails with `Connection timed out during banner exchange` (older OpenSSH: `ssh: connect to host ... Connection timed out`), return code 255, and counts as unreachable. A file copy takes twice as long, mssh tries scp after rsync failed.
+- `-o ServerAliveInterval=15 -o ServerAliveCountMax=4`: after about 60 s without an answer from a connected host, it fails with `Timeout, server ... not responding.`, return code 255. A command that prints nothing for a long time is not affected: sshd answers the keepalives.
+
+Change the values with `DEFAULT_SSH_CONNECT_TIMEOUT`, `DEFAULT_SSH_SERVER_ALIVE_INTERVAL` and `DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX` in the config file; 0 leaves the option to ssh (without a keepalive interval, mssh does not pass its count either).
+
+Your own values win. ssh uses the first value it gets and a command-line `-o` beats the ssh config, so mssh leaves an option out when you give it:
+- with `-ea` for ssh or scp, e.g. `-ea '-o ConnectTimeout=120'` (with `-ea '-F FILE'`, mssh reads that ssh config instead of the two below);
+- in your ssh config, `~/.ssh/config` or `/etc/ssh/ssh_config` and the files they `Include`, also for single hosts (`Host slow*` / `ConnectTimeout 120`). Only when these files mention one of the three options does mssh ask `ssh -G` about each host whether it sets it, which runs the config's `Match exec` lines once more. `ConnectTimeout 0` there means no timeout for those hosts; `ServerAliveInterval 0` cannot be told from not setting it.
+
+A shared connection (`ControlMaster`, see [SSH ControlMaster Configuration](#ssh-controlmaster-configuration)) does the keepalive of the ssh that opened it. One mssh opened gives up on a host that went away, and the next ssh connects anew (where `ConnectTimeout` applies). One that a plain `ssh` without `ServerAliveInterval` in your ssh config opened does not notice: commands through it wait until the kernel gives up on the connection, which takes about 15 minutes on Linux. Setting `ServerAliveInterval` in your ssh config covers those too.
+
 ## Autocomplete
 
 mssh completes hosts, options, option values and remote commands when you press TAB, in bash, zsh and fish.
@@ -485,6 +498,7 @@ mssh -f ./data/ allServers /tmp/data/
 - When using 0, timeout is disabled.
 - For CLI interface, will use `DEFAULT_CLI_TIMEOUT` as default.
 - For module interface, will use `DEFAULT_TIMEOUT` as default.
+- Without `-t` a host that does not answer still cannot hold up the run, ssh gives up on it ([When a Host Does Not Answer](#when-a-host-does-not-answer)).
 
 ### `-T, --use_script_timeout` | False
 - In CLI, use `DEFAULT_TIMEOUT` as timeout value instead of `DEFAULT_CLI_TIMEOUT`.
@@ -935,6 +949,11 @@ DEFAULT_SCP = False
 DEFAULT_FILE_SYNC = False
 DEFAULT_TIMEOUT = 50
 DEFAULT_CLI_TIMEOUT = 0
+# seconds after which ssh gives up on a host that does not answer (ConnectTimeout) or stops answering
+# (ServerAliveInterval x ServerAliveCountMax), unless -ea or the ssh config set them; 0 leaves them to ssh
+DEFAULT_SSH_CONNECT_TIMEOUT = 30
+DEFAULT_SSH_SERVER_ALIVE_INTERVAL = 15
+DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX = 4
 DEFAULT_UNAVAILABLE_HOST_EXPIRY = 600
 DEFAULT_REPEAT = 1
 DEFAULT_INTERVAL = 0

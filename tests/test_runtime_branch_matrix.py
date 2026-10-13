@@ -103,6 +103,7 @@ def test_run_command_debug_ssh_ipmitool_preserves_auth_argv(fake_host, monkeypat
 
 	assert calls == [[
 		"sshpass", "-p", "bmc-pass", "ssh", "-i", "/tmp/id_ed25519",
+		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"--", "bmc-user@mock-a", "ipmitool power status",
 	]]
 	assert host.returncode == 0
