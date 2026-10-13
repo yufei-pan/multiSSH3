@@ -313,7 +313,7 @@ The output is printed when the commands finish, so it can be piped like any comm
 ```bash
 mssh all 'dmesg' | less
 ```
-If the reader exits before reading all of it (`| head`, or `q` in `less`), mssh stops quietly as other command line tools do: no further commands or `--repeat` runs start, and the exit code still counts the hosts that failed in what ran.
+If the reader exits before reading all of it (`| head`, or `q` in `less`), mssh stops quietly as other command line tools do: no further commands or `--repeat` runs start, and the exit code still counts the hosts that failed in what ran. If that happens before anything has run (the output of `-h`, `-V`, a usage error or `--generate_config_file`), the exit code is 141, as for other tools SIGPIPE ends.
 
 ### Curses Window Size Control
 
