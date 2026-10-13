@@ -352,6 +352,32 @@ def test_run_command_waits_for_running_commands_when_out_of_processes(fake_host,
 		"Command finished with return code 0"]
 
 
+def test_run_command_keeps_waiting_for_running_commands_however_long_they_take(fake_host, monkeypatch):
+	# a wait of over a thousand back-offs (about 17 minutes, e.g. next to commands run with -t 0)
+	# must go on waiting, not fail on the back-off growing past what a float holds
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	failures = [1100]
+	delays = []
+
+	def fake_popen(argv, **kwargs):
+		if failures[0]:
+			failures[0] -= 1
+			raise _out_of_processes()
+		return FakeProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", delays.append)
+	monkeypatch.setattr(multiSSH3, "__running_procs", {object()})  # another host's command
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=1)
+
+	assert host.returncode == 0
+	assert len(delays) == 1100
+	assert delays[:5] == [0.1, 0.2, 0.4, 0.8, 1.0]
+	assert max(delays) == 1.0
+
+
 def test_run_command_out_of_processes_uses_up_the_retries_when_nothing_else_runs(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "true")

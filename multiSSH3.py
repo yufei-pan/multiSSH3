@@ -2200,7 +2200,8 @@ def __handle_writing_stream(stream,stop_event,host):
 	return sentInputPos
 
 def _emfile_backoff_seconds(attempt):
-	return min(0.1 * (2 ** attempt), 1.0)
+	# 0.1, 0.2, 0.4, 0.8, then 1 s; the exponent stops growing, as waiting for processes or threads has no attempt limit
+	return min(0.1 * (2 ** min(attempt, 4)), 1.0)
 
 def _start_waiting_thread(function):
 	'''
