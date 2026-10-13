@@ -2392,16 +2392,16 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		if not ip_prefix:
 			ip_prefix = host.interface_ip_prefix
 		if ip_prefix:
-			try:
-				if ':' in str(host.ip):
-					raise ValueError('interface_ip_prefix only applies to IPv4 addresses')
-				hostOctets = host.ip.split('.')
-				prefixOctets = ip_prefix.split('.')
+			if _interface_prefix_applies(host.ip):
+				hostOctets = str(host.ip).split('.')
+				prefixOctets = str(ip_prefix).split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
-			except Exception:
-				host.output.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+			else:
+				# run_command_on_hosts said so before the run too, outside the TUI
+				warning = _interface_prefix_warning(ip_prefix, [host.name])
+				host.output.append(warning)
 				if __DEBUG_MODE:
-					host.stderr.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+					host.stderr.append(warning)
 		if username:
 			host.resolvedName = username + '@' + host.address
 		else:
@@ -2526,6 +2526,14 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		host.returncode = -1
 		return attempt('stop')
 	return attempt('run', formatedCMD)
+
+def _interface_prefix_applies(ip):
+	'''Whether an interface IP prefix (-pre, -mpre) can rewrite ip: it replaces the leading octets of IPv4 addresses.'''
+	return bool(ip) and ':' not in str(ip)
+
+def _interface_prefix_warning(prefix, names):
+	'''The warning for hosts an interface IP prefix cannot apply to: mssh connects to them by name.'''
+	return f"Warning: interface IP prefix {prefix} not applied to {','.join(compact_hostnames_local(names))}: no IPv4 address, connecting by name"
 
 def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 	'''
@@ -4621,6 +4629,12 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
 		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
+	if interface_ip_prefix and not __global_suppress_printout:
+		# said once here: run_command's own warning only reaches the TUI
+		unprefixed = [host for host, ip in targetHostDic.items()
+			if not _interface_prefix_applies(ip) and host not in skipHostSet and ip not in skipHostSet]
+		if unprefixed:
+			eprint(_interface_prefix_warning(interface_ip_prefix, unprefixed))
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts

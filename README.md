@@ -516,6 +516,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The prefix of the for the interfaces. Will replace the resolved IP address with the given prefix when connecting to the host.
 - Will prioritize `IPMI_INTERFACE_IP_PREFIX` if it exists when in ipmi mode.
 - Ex: `10.0.0.1` + `-pre '172.30'` -> `172.30.0.1`
+- Only IPv4 addresses are rewritten. mssh connects to hosts without one by name, and says which before the run.
 
 ### `-iu, --ipmi_username IPMI_USERNAME` | _`DEFAULT_IPMI_USERNAME`_
 - The username to use to connect to the hosts via ipmi.

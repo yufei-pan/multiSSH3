@@ -100,3 +100,42 @@ def test_parallel_lookups_read_the_hosts_file_once(hosts_file, monkeypatch):
 def test_read_hosts_file_of_a_missing_file_is_empty(tmp_path):
 	assert multiSSH3.read_hosts_file(str(tmp_path / 'missing')) == {}
 	assert multiSSH3.read_hosts_file(str(tmp_path)) == {}  # a directory
+
+
+@pytest.fixture
+def no_dns(monkeypatch, tmp_path):
+	'''Names resolve from the hosts file only: no DNS, ssh config or env aliases.'''
+	monkeypatch.setattr(multiSSH3, '_resolve_dns', lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, '_ssh_config_target', lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, '_env_files', [str(tmp_path / 'no-env')])
+	monkeypatch.setattr(multiSSH3, '_unavailable_hosts_file_path', lambda create=True: str(tmp_path / 'unavailable.csv'))
+	monkeypatch.setattr(multiSSH3, '_etc_hosts', {})
+	multiSSH3.getIP.cache_clear()
+	yield
+	multiSSH3.getIP.cache_clear()
+
+
+def run_on_hosts(hosts, **kwargs):
+	'''run_command_on_hosts as main() calls it, with no host started.'''
+	return multiSSH3.run_command_on_hosts(hosts=hosts, commands=['echo #IP#'], no_watch=True, no_history=True,
+		called=False, no_start=True, will_update_unreachable_hosts=False, **kwargs)
+
+
+def test_a_prefix_that_cannot_apply_is_said_outside_the_tui(hosts_file, no_dns, capsys):
+	# -pre rewrites IPv4 addresses only: the others are reached by name, which was said only in the TUI
+	hosts_file('fd00::5 node5\n10.0.0.6 node6\nfd00::7 node7\n')
+	run_on_hosts('node5,node6,node7', interface_ip_prefix='192.168.7')
+	err = capsys.readouterr().err
+	assert 'Warning: interface IP prefix 192.168.7 not applied to node5,node7: no IPv4 address, connecting by name' in err
+
+
+def test_a_prefix_that_applies_everywhere_says_nothing(hosts_file, no_dns, capsys):
+	hosts_file('fd00::6 node6\n10.0.0.6 node6\n')
+	run_on_hosts('node6', interface_ip_prefix='192.168.7')
+	assert 'prefix' not in capsys.readouterr().err
+
+
+def test_a_quiet_run_leaves_the_prefix_warning_out(hosts_file, no_dns, capsys):
+	hosts_file('fd00::5 node5\n')
+	run_on_hosts('node5', interface_ip_prefix='192.168.7', quiet=True)
+	assert 'prefix' not in capsys.readouterr().err
