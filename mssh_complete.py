@@ -6321,7 +6321,10 @@ _mssh_complete_accept() {
 }
 
 _mssh_complete_ghost_setup() {
-	# grey text with own widgets (zsh 5.3 and later, a terminal with colours)
+	# grey text with own widgets (zsh 5.3 and later, a terminal with colours). Not under the operator's
+	# sh_glob: zsh's add-zle-hook-widget runs the hooks in the operator's options, and there finds none
+	# of them ("No such widget" at every key; a zle-line-init or -finish widget set before stops too)
+	[[ -o sh_glob ]] && return 0
 	emulate -L zsh
 	autoload -Uz is-at-least add-zle-hook-widget
 	is-at-least 5.3 || return 0
@@ -6471,7 +6474,9 @@ _mssh_complete_warn_finish() {
 }
 
 _mssh_complete_warn_setup() {
-	# warnings under the line (zsh 5.3 and later), with grey text from either source
+	# warnings under the line (zsh 5.3 and later), with grey text from either source; not under the
+	# operator's sh_glob (see _mssh_complete_ghost_setup)
+	[[ -o sh_glob ]] && return 0
 	emulate -L zsh
 	autoload -Uz is-at-least add-zle-hook-widget
 	is-at-least 5.3 || return 0
@@ -6501,7 +6506,8 @@ _mssh_complete_setup() {
 }
 
 _mssh_complete_zas_strategy() {
-	# zsh-autosuggestions asks mssh first
+	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
+	emulate -L zsh
 	(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 
@@ -6716,6 +6722,24 @@ def engine_command():
 def _fish_quote(word):
 	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
+def _zsh_guard(text):
+	'''
+	The zsh glue as zsh must read it: after its comment lines, read by eval in zsh's own options.
+
+	zsh parses what it sources in the options of the moment, and a .zshrc can set them before the mssh
+	block: sh_glob made `(files|dirs)` a parse error, ignore_braces made `exec {fd}< <(...)` run a
+	command named {fd} (the shell exited), ksh_arrays kept compdef from running, and aliases were
+	expanded into the functions. emulate -L in an anonymous function gives the operator's options back
+	when it returns, however loading ended (no_aliases is set apart: zsh 5.0.2 forgets -L when emulate
+	is also given -o). Not `emulate zsh -c`: its sticky emulation would switch the options at every
+	call of a glue function too, and _mssh must hand over to the completion functions in the options
+	it was called with.
+	'''
+	import re
+	head = re.match(r'(?:#[^\n]*\n)*', text).group(0)
+	return (head + "# Read in zsh's own options whatever the .zshrc set before it; the .zshrc's options are back after it.\n"
+		+ "() {\n\temulate -L zsh\n\tsetopt no_aliases\n\teval '\n" + text[len(head):].replace("'", "'\\''") + "'\n}\n")
+
 def render_glue(shell, command=None):
 	'''The glue script for shell, running the engine with command (a list of words).'''
 	import shlex
@@ -6723,7 +6747,8 @@ def render_glue(shell, command=None):
 		raise ValueError('unsupported shell {!r}, use one of {}'.format(shell, ', '.join(SHELLS)))
 	command = engine_command() if command is None else command
 	quote = _fish_quote if shell.startswith('fish') else shlex.quote
-	return _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
+	text = _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
+	return _zsh_guard(text) if shell == 'zsh' else text
 
 #%% ------------ Printing to a reader that may go ----------------
 # the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`

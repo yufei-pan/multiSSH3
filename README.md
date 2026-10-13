@@ -454,7 +454,7 @@ It learns from an index of your history and hosts, kept in mssh's private cache 
 
 While you type an mssh line, the most likely rest of it shows in grey after the cursor: the rest of the line when one past invocation clearly fits, only the rest of the current word when only that is clear, or the start every known value shares when none is (what TAB would insert), nothing when mssh is not sure. → (or End, Ctrl-F) takes all of it, Alt-→ / Ctrl-→ / Alt-F one word. Enter runs only what you typed.
 
-- **zsh:** built in; with [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) loaded, mssh becomes its first strategy on mssh lines.
+- **zsh:** built in; with [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) loaded, mssh becomes its first strategy on mssh lines. With `setopt sh_glob` (or `emulate sh`) in `~/.zshrc`, grey text comes only through zsh-autosuggestions, and zsh shows no warnings (below): zsh's `add-zle-hook-widget`, which both need, finds no hooks under that option.
 - **bash with [ble.sh](https://github.com/akinomyoga/ble.sh):** built in, as ble.sh's first suggestion source.
 - **plain bash (4.4 or later):** turn on the mssh line editor, which takes over after you type an mssh name and a space, and hands the line back to readline on any key it does not handle (↑, Ctrl-K, ...) or when you delete into `mssh `:
 
