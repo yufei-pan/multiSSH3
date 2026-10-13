@@ -205,3 +205,9 @@ def test_the_index_records_what_flags_do_and_their_defaults(home, monkeypatch):
 	engine = mc.engine_for(mc.Request('bash', 'mssh ', '', ''), directory, NOW)
 	assert engine.flag_sets['--no_skip_unreachable'] is False and engine.flag_sets['--skip_unreachable'] is True
 	assert engine.flag_defaults['skip_unreachable'] is False and engine.flag_defaults['ipmi'] is multiSSH3.DEFAULT_IPMI
+
+
+def test_the_index_records_option_combinations_with_no_effect(home):
+	_, directory = build()
+	engine = mc.engine_for(mc.Request('bash', 'mssh ', '', ''), directory, NOW)
+	assert engine.no_effect == [(option, kind, tuple(others), why) for option, kind, others, why in multiSSH3.OPTION_NO_EFFECT]

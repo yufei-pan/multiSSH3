@@ -1493,6 +1493,8 @@ def build_index(directory, now=None, mssh=None):
 		('aliases', alias_rows),
 		('groups', group_rows),
 		('unavailable', [unavailable]),
+		# option combinations main() ignores: [option, kind, why, others...]
+		('no_effect', [[option, kind, why] + list(others) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]),
 	]
 	path = os.path.join(directory, INDEX_NAME)
 	write_nsv(path, header, sections)
@@ -2086,6 +2088,12 @@ def _one_edit(typed, other):
 	short, long_ = (typed, other) if len(typed) < len(other) else (other, typed)
 	return any(long_[:index] + long_[index + 1:] == short for index in range(len(long_)))
 
+def _option_name(text, attached):
+	'''An option word without the value given with it: -ip=secret -> -ip, -uroot -> -u.'''
+	if attached is None:
+		return text
+	return text[:len(text) - len(attached)].rstrip('=')
+
 def _unique(names):
 	'''names without repeats, in order.'''
 	seen = set()
@@ -2267,6 +2275,8 @@ class Engine(object):
 		# what mssh's flags set ({long string: value}) and their defaults ({dest: value}): flag_settings
 		self.flag_sets = {}
 		self.flag_defaults = {}
+		# OPTION_NO_EFFECT entries from mssh: (long option, 'with' | 'without', other long options, why)
+		self.no_effect = []
 
 	def query(self, request, deadline=None):
 		ghost = request.flags.get('ghost') == '1'
@@ -2330,12 +2340,22 @@ class Engine(object):
 		reach = (unavailable,) + self._line_settings(words, roles)
 		wanted = []
 		found = []
-		for token, (role, _) in zip(words, roles):
-			if token.start <= cursor <= token.start + len(token.raw):
+		options = []
+		def typing(token):
+			return token.start <= cursor <= token.start + len(token.raw)
+		for number, (token, (role, option)) in enumerate(zip(words, roles)):
+			if role == ROLE_OPTION and option is not None:
+				_, attached = self.spec.lookup(token.text)
+				value, value_done = attached, not typing(token)
+				if attached is None and number + 1 < len(words) and roles[number + 1][0] == ROLE_VALUE:
+					value, value_done = words[number + 1].text, not typing(words[number + 1])
+				options.append((token, option, _option_name(token.text, attached), value, not typing(token), value_done))
+			if typing(token):
 				# still being typed
 				continue
 			if role == ROLE_HOSTS:
 				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
+		found.extend(self._option_diagnostics(options))
 		wanted = _unique(wanted)
 		if probe and wanted and self.directory:
 			try:
@@ -2416,6 +2436,48 @@ class Engine(object):
 		if needs_probe(state, now):
 			wanted.append(name)
 		return state.fresh_validity(now) if state is not None else ''
+
+	def _option_diagnostics(self, options):
+		'''
+		Conflicting options: two of one exclusive group (the later one is marked), a value option
+		given twice with different values (the earlier one), an option with no effect on this line
+		(OPTION_NO_EFFECT). options: (token, OptionSpec, name, value, word typed, value typed) per
+		option word, in order.
+		'''
+		found = []
+		on_line = {option.long for _, option, _, _, word_done, _ in options if word_done}
+		groups = {}
+		values = {}
+		for token, option, name, value, word_done, value_done in options:
+			if not word_done:
+				continue
+			span = (token.start, token.start + len(token.raw))
+			if option.group:
+				first = groups.setdefault(option.group, (option, name))
+				if first[0].long != option.long:
+					found.append(Diagnostic(span[0], span[1], 'options', '{} cannot be used with {} (mssh stops with an error)'.format(name, first[1])))
+			if option.nargs != '0' and not option.repeat and value is not None and value_done:
+				earlier = values.get(option.dest)
+				if earlier is not None and earlier[1] != value:
+					shown = 'the last one' if option.dest in PASSWORD_DESTS else value
+					found.append(Diagnostic(earlier[0].start, earlier[0].start + len(earlier[0].raw), 'options',
+						'{} given twice: mssh uses {}'.format(earlier[2], shown)))
+				values[option.dest] = (token, value, name)
+			for entry, kind, others, why in self.no_effect:
+				if entry != option.long:
+					continue
+				if kind == 'with':
+					applies = any(other in on_line for other in others)
+				else:
+					applies = not any(other in on_line or self._on_by_default(other) for other in others)
+				if applies:
+					found.append(Diagnostic(span[0], span[1], 'options', '{} does nothing: {}'.format(name, why)))
+		return found
+
+	def _on_by_default(self, string):
+		'''Whether a flag (by its long string) is on without being given: the mssh config turned it on.'''
+		option = self.spec.lookup(string)[0]
+		return option is not None and option.nargs == '0' and self.flag_sets.get(option.long) is True and self.flag_defaults.get(option.dest, False)
 
 	def _line_settings(self, words, roles):
 		'''
@@ -2986,11 +3048,14 @@ def engine_for(request, directory=Ellipsis, now=None):
 		config = {row[0]: row[1:] for row in (index.row('config', number) for number in range(index.count('config'))) if row}
 		users = config.get('users', ())
 		flags = (_flag_values(config.get('flag_sets', ())), _flag_values(config.get('flag_defaults', ())))
+		no_effect = [(row[0], row[1], tuple(row[3:]), row[2]) for row in (index.row('no_effect', number) for number in range(index.count('no_effect'))) if len(row) >= 3]
 	else:
 		# degraded: no index, so options come from mssh's parser and history is not ranked
-		parser = _import_mssh().get_parser()
+		mssh = _import_mssh()
+		parser = mssh.get_parser()
 		spec = spec_from_parser(parser)
 		flags = flag_settings(parser)
+		no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]
 	if tail:
 		memory = MemoryKnowledge()
 		memory.add_history(tail, spec, now)
@@ -3003,6 +3068,7 @@ def engine_for(request, directory=Ellipsis, now=None):
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	engine.directory = directory
 	engine.flag_sets, engine.flag_defaults = flags
+	engine.no_effect = no_effect
 	return engine
 
 #%% ------------ Terminal ----------------

@@ -236,3 +236,43 @@ def test_an_unknown_host_is_not_also_unreachable(skipping):
 	seed(skipping, gpu017='invalid')
 	unavailable(skipping, 'gpu017')
 	assert [kind for _, kind, _ in warnings(skipping, 'mssh gpu017 uptime')[0]] == ['unknown']
+
+
+def test_options_of_one_exclusive_group(skipping):
+	assert warnings(skipping, 'mssh -su -nsu node01 uptime')[0] == [('-nsu', 'options', '-nsu cannot be used with -su (mssh stops with an error)')]
+	# the same option twice is allowed
+	assert warnings(skipping, 'mssh -su -su node01 uptime')[0] == []
+
+
+def test_an_option_given_twice(engine):
+	assert warnings(engine, 'mssh -u admin -u=root node01 uptime')[0] == [('-u', 'options', '-u given twice: mssh uses root')]
+	assert warnings(engine, 'mssh -u root -u root node01 uptime')[0] == []
+	# a password never shows
+	assert warnings(engine, 'mssh -p one --password=two node01 uptime')[0] == [('-p', 'options', '-p given twice: mssh uses the last one')]
+	# the second value is still being typed
+	assert warnings(engine, 'mssh -u admin -u ro')[0] == []
+
+
+@pytest.fixture
+def no_effect(skipping):
+	skipping.no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in multiSSH3.OPTION_NO_EFFECT]
+	skipping.flag_defaults['ipmi'] = False
+	return skipping
+
+
+@pytest.mark.parametrize('line, expected', [
+	('mssh --script -nsu node01 true', [('-nsu', 'options', '-nsu does nothing: --script skips unreachable hosts anyway')]),
+	('mssh -iu admin node01 true', [('-iu', 'options', '-iu does nothing: only used with --ipmi')]),
+	('mssh -M -iu admin node01 true', []),
+	('mssh -iu admin --generate_config_file node01 true', []),
+	# the message names the option, never the value given with it
+	('mssh -ip=secret node01 true', [('-ip=secret', 'options', '-ip does nothing: only used with --ipmi')]),
+])
+def test_options_that_do_nothing_here(no_effect, line, expected):
+	assert warnings(no_effect, line)[0] == expected
+
+
+def test_settings_used_by_default_are_not_flagged(no_effect):
+	# the mssh config turns --ipmi on
+	no_effect.flag_defaults['ipmi'] = True
+	assert warnings(no_effect, 'mssh -iu admin node01 true')[0] == []
