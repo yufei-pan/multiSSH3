@@ -3219,8 +3219,9 @@ def _legacy_key(params, final):
 			key = shifted
 		elif char.isalpha() and char.islower():
 			key = char.upper() if bool(bits & _SHIFT) != bool(bits & _CAPS_LOCK) else char
-		elif bits & _SHIFT:
-			# what Shift does to this key depends on the keyboard layout, and the terminal did not say
+		elif bits & _SHIFT and final == 'u' and not char.isupper():
+			# the kitty protocol sends the key Shift was pressed with (xterm the character it made, as
+			# in ~ and with upper case letters): what Shift makes of it depends on the keyboard layout
 			return None
 		else:
 			key = char

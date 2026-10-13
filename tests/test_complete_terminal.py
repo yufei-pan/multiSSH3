@@ -67,6 +67,11 @@ def test_decode_keys_reads_esc_however_it_is_sent(data, expected):
 	(b'\x1b[97;129u', ('a', b'a')),
 	(b'\x1b[49:33;2u', ('!', b'!')),
 	(b'\x1b[49;2;33u', ('!', b'!')),
+	# xterm sends the character Shift made (the kitty protocol the key and, when asked, what Shift makes of it)
+	(b'\x1b[27;2;65~', ('A', b'A')),
+	(b'\x1b[27;2;33~', ('!', b'!')),
+	(b'\x1b[65;2u', ('A', b'A')),
+	(b'\x1b[27;6;65~', ('ctrl-a', b'\x01')),
 	(b'\x1b[233u', ('é', 'é'.encode('utf-8'))),
 	(b'\x1b[13;2u', ('enter', b'\r')),
 	(b'\x1b[99;5:1u', ('ctrl-c', b'\x03')),
@@ -184,7 +189,7 @@ def test_terminal_reads_esc_pressed_twice_as_esc(tty_pair, typed):
 
 
 @pytest.mark.parametrize('typed', [b'\x1b', b'\x1b\x1b', b'\x1b[27u', b'\x1b[27;1u', b'\x1b[27;1;27~', b'\x1b[103;5u', b'\x1b[99;5u'])
-def test_the_picker_closes_on_esc_however_the_terminal_sends_it(tty_pair, typed):
+def test_the_picker_cancels_on_esc_ctrl_g_and_ctrl_c_however_they_are_sent(tty_pair, typed):
 	master, slave, path = tty_pair
 	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
 	picker = mc.Picker([mc.PickItem('gpu01'), mc.PickItem('gpu02')], [], 'hosts')
