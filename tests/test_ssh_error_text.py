@@ -149,3 +149,60 @@ def test_config_file_with_the_old_defaults_keeps_remote_errors(tmp_path):
 	hosts = json.loads(result.stdout)
 	assert hosts[0]["returncode"] == 56
 	assert hosts[0]["stderr"] == [REMOTE_ERRORS[0]]
+
+
+def _failed_host(fake_host, name, returncode, *stderr):
+	host = fake_host(name, "cmd")
+	host.returncode = returncode
+	host.stderr = list(stderr)
+	return host
+
+
+def _pretty(hosts, monkeypatch):
+	monkeypatch.setattr(multiSSH3, "get_terminal_color_capability", lambda: "None")
+	monkeypatch.setattr(multiSSH3, "get_terminal_size", lambda: (120, 30))
+	return multiSSH3.generate_output(hosts, greppable=False, quiet=False)
+
+
+@pytest.mark.parametrize("returncode, line", [
+	(28, "curl: (28) Failed to connect to 10.255.255.1 port 80 after 130000 ms: Connection timed out"),
+	(7, "curl: (7) Failed to connect to 10.0.0.9 port 80 after 3 ms: No route to host"),
+	(255, "nc: connect to 10.0.0.9 port 80 (tcp) failed: Connection timed out"),
+	# a remote script's own ssh: mssh's ssh connected, so it did not exit 255
+	(1, "ssh: connect to host node9 port 22: Connection refused"),
+])
+def test_remote_connect_errors_are_shown_as_printed(fake_host, monkeypatch, returncode, line):
+	host = _failed_host(fake_host, "node1", returncode, line)
+
+	text = _pretty([host], monkeypatch)
+
+	assert " " + line in text
+	assert "SSH connection timed out!" not in text
+	assert "Cannot find host!" not in text
+	assert "SSH not reachable!" not in text
+
+
+@pytest.mark.parametrize("reason, summary", [
+	("Connection refused", "SSH not reachable! (port 2222: Connection refused)"),
+	("Connection timed out", "SSH connection timed out! (port 2222: Connection timed out)"),
+	("No route to host", "Cannot find host! (port 2222: No route to host)"),
+])
+def test_ssh_connect_errors_are_summarized_with_port_and_reason(fake_host, monkeypatch, reason, summary):
+	ssh_line = "ssh: connect to host node1 port 2222: " + reason
+	host = _failed_host(fake_host, "node1", 255, ssh_line)
+
+	text = _pretty([host], monkeypatch)
+
+	assert " " + summary in text.splitlines()
+	assert ssh_line not in text
+	# only the display changes: JSON, greppable output and library callers still get ssh's line
+	assert host.stderr == [ssh_line]
+
+
+def test_unreachable_hosts_merge_into_one_block(fake_host, monkeypatch):
+	hosts = [_failed_host(fake_host, name, 255, "ssh: connect to host {} port 22: Connection timed out".format(name))
+		for name in ("node1", "node2", "node3")]
+
+	text = _pretty(hosts, monkeypatch)
+
+	assert text.count("SSH connection timed out! (port 22: Connection timed out)") == 1

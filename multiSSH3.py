@@ -3660,6 +3660,40 @@ def pre_merge_hosts(hosts):
 			hosts.remove(group[i])
 	return hosts
 
+_SSH_CONNECT_ERROR = re.compile(r'ssh: connect to host (\S+) port (\S+): (.+)')
+# ssh's reason: the summary the pretty output shows for it
+_SSH_CONNECT_ERROR_SUMMARIES = {
+	'Connection refused': 'SSH not reachable!',
+	'Connection timed out': 'SSH connection timed out!',
+	'No route to host': 'Cannot find host!',
+}
+
+def _ssh_connect_error(line):
+	'''
+	Split ssh's own "ssh: connect to host HOST port PORT: REASON" line into (host, port, reason).
+
+	Returns None for any other line, such as a remote program's error ending with the same reason.
+	'''
+	match = _SSH_CONNECT_ERROR.fullmatch(line.strip())
+	return match.groups() if match else None
+
+def _displayed_stderr(host):
+	'''
+	The stderr lines the pretty output shows for host.
+
+	When ssh could not connect (it exits 255 right after saying why), its line is shown as a summary
+	without the host name, so unreachable hosts merge into one block: "SSH connection timed out!
+	(port 22: Connection timed out)". host.stderr keeps ssh's line for JSON and greppable output.
+	'''
+	if host.returncode != 255 or not host.stderr:
+		return host.stderr
+	connect_error = _ssh_connect_error(host.stderr[-1])
+	if not connect_error or connect_error[2] not in _SSH_CONNECT_ERROR_SUMMARIES:
+		return host.stderr
+	_address, port, reason = connect_error
+	summary = '{} (port {}: {})'.format(_SSH_CONNECT_ERROR_SUMMARIES[reason], port, reason)
+	return host.stderr[:-1] + [summary]
+
 def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
@@ -3704,28 +3738,22 @@ def get_host_raw_output(hosts, terminal_width):
 				lineBag.update(zip(host.stdout, host.stdout[1:]))
 			lineBag.update(host.stdout)
 			prevLine = host.stdout[-1]
-		if host.stderr:
-			if host.stderr[0].strip().startswith('ssh: connect to host ') and host.stderr[0].strip().endswith('Connection refused'):
-				host.stderr[0] = 'SSH not reachable!'
-			elif host.stderr[-1].strip().endswith('Connection timed out'):
-				host.stderr[-1] = 'SSH connection timed out!'
-			elif host.stderr[-1].strip().endswith('No route to host'):
-				host.stderr[-1] = 'Cannot find host!'
-			if host.stderr:
-				hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
-				# for line in host.stderr:
-				# 	if len(line) < terminal_width - 2:
-				# 		hostPrintOut.append(f" {line}")
-				# 	else:
-				# 		hostPrintOut.extend(text_wrapper.wrap(line))
-				hostPrintOut.extend(f" {line}" for line in host.stderr)
-				max_length = max(max_length, max(map(len, host.stderr)))
-				lineBag.add((prevLine,2))
-				lineBag.add((2,host.stderr[0]))
-				lineBag.update(host.stderr)
-				if len(host.stderr) > 1:
-					lineBag.update(zip(host.stderr, host.stderr[1:]))
-				prevLine = host.stderr[-1]
+		stderr = _displayed_stderr(host)
+		if stderr:
+			hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
+			# for line in stderr:
+			# 	if len(line) < terminal_width - 2:
+			# 		hostPrintOut.append(f" {line}")
+			# 	else:
+			# 		hostPrintOut.extend(text_wrapper.wrap(line))
+			hostPrintOut.extend(f" {line}" for line in stderr)
+			max_length = max(max_length, max(map(len, stderr)))
+			lineBag.add((prevLine,2))
+			lineBag.add((2,stderr[0]))
+			lineBag.update(stderr)
+			if len(stderr) > 1:
+				lineBag.update(zip(stderr, stderr[1:]))
+			prevLine = stderr[-1]
 		if host.returncode != 0:
 			codeColor = red_str
 		else:

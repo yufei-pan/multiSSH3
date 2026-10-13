@@ -1022,4 +1022,6 @@ __DEBUG_MODE = False
 
 > `__ERROR_MESSAGES_TO_IGNORE_REGEX` is the compiled regex pattern for error messages to ignore. If custom defined, mssh will ignore `ERROR_MESSAGES_TO_IGNORE` and use supplied regex pattern instead.
 
+> When ssh cannot connect to a host (it exits with 255 after `ssh: connect to host HOST port PORT: REASON`), the default output shows the line as `SSH not reachable!`, `SSH connection timed out!` or `Cannot find host!` followed by the port and ssh's reason, e.g. `SSH connection timed out! (port 22: Connection timed out)`. Without the host name, unreachable hosts merge into one block. `--json` and `--greppable` output keep ssh's line, and a remote program's error that ends the same way is shown as printed.
+
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
