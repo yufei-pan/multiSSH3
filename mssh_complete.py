@@ -4411,6 +4411,112 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		[[ " ${_ble_complete_auto_source[*]-} " == *' mssh '* ]] || _ble_complete_auto_source=(mssh ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"})
 	}
 	blehook/eval-after-load complete _mssh_complete_ble_source
+
+	_mssh_complete_warn_ranges=()
+	_mssh_complete_warn_key=
+	_mssh_complete_warn_delays=()
+
+	_mssh_complete_ble_warn_watch() {
+		# the finished words of the line ($1) changed: ask for warnings when ble.sh is idle
+		local before=${1::_ble_edit_ind} after=${1:_ble_edit_ind} key
+		# the line without the word at the cursor, which is still being typed
+		key=${before%"${before##*[[:space:]]}"}$'\1'${after#"${after%%[[:space:]]*}"}
+		[[ $key == "$_mssh_complete_warn_key" ]] && return 0
+		_mssh_complete_warn_key=$key
+		# while the prober works, ask again 0.3, 1 and 3 seconds after this answer
+		_mssh_complete_warn_delays=(300 700 2000)
+		ble/util/idle.cancel _mssh_complete_ble_warn_ask
+		ble/util/idle.push _mssh_complete_ble_warn_ask
+	}
+
+	_mssh_complete_ble_warn_ask() {
+		# idle task: ask the engine about the line, mark the words and show the reason line
+		local request=$_ble_base_run/$$.mssh-complete.warn.request answer=$_ble_base_run/$$.mssh-complete.warn.answer
+		local line reason= pending=0 status start
+		local -a ranges=() starts=()
+		if _mssh_complete_is_mssh "$_ble_edit_str"; then
+			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" > "$request" 2>/dev/null || return 0
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			status=$?
+			if ((status == 148)); then
+				# typing interrupted: ask again at the next redraw
+				_mssh_complete_warn_key=
+				return 0
+			fi
+			((status == 0)) || return 0
+			while IFS= read -r line; do
+				case $line in
+					'W '*)
+						_mssh_complete_split "${line:2}"
+						# one mark per start, in order
+						starts[_mssh_complete_fields[0]]=${_mssh_complete_fields[1]} ;;
+					'R '*) reason=${line:2} ;;
+					'D '*) [[ " ${line:2} " == *' pending '* ]] && pending=1 ;;
+				esac
+			done < "$answer"
+			for start in "${!starts[@]}"; do
+				ranges+=("$start" "${starts[start]}")
+			done
+		fi
+		_mssh_complete_warn_ranges=(${ranges[@]+"${ranges[@]}"})
+		ble/textarea#invalidate
+		_mssh_complete_ble_warn_info "$reason"
+		if ((pending && ${#_mssh_complete_warn_delays[@]})); then
+			ble/util/idle.push --sleep "${_mssh_complete_warn_delays[0]}" _mssh_complete_ble_warn_ask
+			_mssh_complete_warn_delays=("${_mssh_complete_warn_delays[@]:1}")
+		fi
+	}
+
+	_mssh_complete_ble_warn_info() {
+		# the reason line under the prompt, kept as ble.sh's default info and drawn now (as
+		# ble/edit/info/immediate-show does), the cursor left where it was
+		local ret pos
+		ble/edit/info/set-default text "$1"
+		[[ $_ble_edit_info_scene == default ]] && ble/edit/info/.rendering-enabled || return 0
+		ble/canvas/panel/save-position
+		pos=$ret
+		ble/edit/info#panel::render "$_ble_edit_info_panel"
+		ble/canvas/panel/load-position "$pos"
+		ble/util/buffer.flush
+	}
+
+	_mssh_complete_ble_warn_reset() {
+		# a new prompt: no warnings left from the last line
+		_mssh_complete_warn_ranges=()
+		_mssh_complete_warn_key=
+		ble/util/idle.cancel _mssh_complete_ble_warn_ask
+		ble/edit/info/set-default text ''
+	}
+
+	_mssh_complete_ble_warnings() {
+		# warnings for mssh lines: an mssh highlight layer marks the words, ble.sh's info line says why
+		declare -F ble/highlight/layer:{selection}/declare ble/util/idle.push ble/util/idle.cancel \
+			ble/edit/info/set-default ble/edit/info/.rendering-enabled ble/edit/info#panel::render \
+			ble/canvas/panel/save-position ble/canvas/panel/load-position ble/util/buffer.flush \
+			ble/array#insert-before ble/textarea#invalidate >/dev/null 2>&1 || return 0
+		if [[ -n ${NO_COLOR-} ]]; then
+			ble/color/defface mssh_warning underline
+		else
+			ble/color/defface mssh_warning underline,fg=red
+		fi
+		ble/highlight/layer:{selection}/declare mssh
+		function ble/highlight/layer:mssh/update {
+			_mssh_complete_ble_warn_watch "$1"
+			local -a sel=(${_mssh_complete_warn_ranges[@]+"${_mssh_complete_warn_ranges[@]}"}) gflags=()
+			local ret i
+			ble/color/face2g mssh_warning
+			for ((i = 0; i < ${#sel[@]} / 2; i++)); do
+				gflags[i]=$ret
+			done
+			ble/highlight/layer:{selection}/update mssh "$@"
+		}
+		function ble/highlight/layer:mssh/getg {
+			ble/highlight/layer:{selection}/getg mssh "$@"
+		}
+		[[ " ${_ble_highlight_layer_list[*]} " == *' mssh '* ]] || ble/array#insert-before _ble_highlight_layer_list region mssh
+		blehook PRECMD+=_mssh_complete_ble_warn_reset
+	}
+	_mssh_complete_ble_warnings
 elif [[ $- == *i* ]]; then
 	# readline counts READLINE_POINT in bytes before bash 5
 	_mssh_complete_bytes=0

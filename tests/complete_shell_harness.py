@@ -1,11 +1,14 @@
 '''Drive real shells for the autocomplete tests: a pseudo-terminal session, or a direct call.'''
+import fcntl
 import os
 import pty
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 
@@ -54,6 +57,8 @@ class Session(object):
 		self.print_key = print_key
 		self.pid, self.fd = pty.fork()
 		if self.pid == 0:
+			# a real terminal has a size (ble.sh sizes its panels from it)
+			fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
 			if cwd:
 				os.chdir(str(cwd))
 			os.execvpe(argv[0], argv, env)

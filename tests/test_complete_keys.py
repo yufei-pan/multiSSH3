@@ -367,6 +367,32 @@ def test_blesh_suggests_from_the_engine(home):
 		session.close()
 
 
+def test_blesh_marks_an_unknown_host_and_says_why(home):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = blesh_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
+		session.read_until(b'@@never@@', 1)
+		assert underlined(session, 'gpu017')
+	finally:
+		session.close()
+
+
+def test_blesh_warning_appears_when_the_prober_answers(home):
+	env, home = home
+	session = blesh_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu099 ')
+		time.sleep(0.2)
+		known(env, gpu099='invalid')
+		# no key pressed: the glue asks again while the prober works
+		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 15)
+	finally:
+		session.close()
+
+
 def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 	env, home = home
 	session = blesh_session(home, env, glue_file(home, 'bash'))
