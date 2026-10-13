@@ -3655,6 +3655,9 @@ def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
 	hostnames_by_line_bag_len = {}
+	# a narrower terminal gets a 20 column layout and wraps its lines itself: the headers ('█ EXECUTED COMMAND:')
+	# need 19, and textwrap fails below 2 columns and never returns at 2 (the '- ' host name indent of mergeOutputs)
+	terminal_width = max(terminal_width, 20)
 	text_wrapper = textwrap.TextWrapper(width=terminal_width - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
 									 initial_indent=' ', subsequent_indent='-')
 	max_length = 20

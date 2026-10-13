@@ -1,4 +1,4 @@
-'''A terminal that tells no size (0 columns): the results still print.'''
+'''A terminal that is very narrow or tells no size (0 columns): the results still print.'''
 import json
 import os
 import select
@@ -77,6 +77,69 @@ def test_get_terminal_size_of_a_pty_without_a_size(stdout_is_the_pty):
 	assert result.stderr.split() == ['120', '30']
 
 
+def _host(name, stdout, returncode=0, command='echo one two three four five six seven eight nine ten'):
+	host = multiSSH3.Host(name=name, command=command)
+	host.stdout = list(stdout)
+	host.returncode = returncode
+	return host
+
+
+def _hosts():
+	'''Hosts whose output merges with a difference shown, a host on its own, and one with stderr.'''
+	common = ['line {} of what every host printed'.format(number) for number in range(12)]
+	hosts = [_host('node{}'.format(number), common + ['node{} differs here'.format(number)]) for number in range(1, 4)]
+	hosts.append(_host('a-host-with-a-rather-long-name.example', ['its own output'], returncode=1))
+	hosts[-1].stderr = ['something failed']
+	return hosts
+
+
+def _plain(monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'getIP', lambda hostname, local=False: hostname)
+	monkeypatch.setattr(multiSSH3, 'get_terminal_color_capability', lambda: 'None')
+
+
+def _output(monkeypatch, columns, **kwargs):
+	_plain(monkeypatch)
+	monkeypatch.setattr(multiSSH3, 'get_terminal_size', lambda: os.terminal_size((columns, 24)))
+	typed = [list('a line typed into the curses display\n'), list('one more')]
+	return multiSSH3.generate_output(_hosts(), keyPressesIn=typed, **kwargs)
+
+
+@pytest.mark.parametrize('columns', [0, 1, 3, 10, 19])
+def test_a_terminal_narrower_than_20_columns_is_laid_out_as_20(monkeypatch, columns):
+	# 0 and 1 column raised ValueError in textwrap; 3 cut host names up a character a line
+	assert _output(monkeypatch, columns) == _output(monkeypatch, 20)
+
+
+def _rules(output):
+	return {line for line in output.split('\n') if line.startswith('─')}
+
+
+def test_a_wider_terminal_still_sets_the_layout(monkeypatch):
+	assert _rules(_output(monkeypatch, 20)) == {'─' * 20}
+	assert _rules(_output(monkeypatch, 30)) == {'─' * 30}
+	# on a wide terminal as wide as the output needs: its longest host name (38 columns) and 5
+	assert _rules(_output(monkeypatch, 80)) == {'─' * 43}
+
+
+@pytest.mark.parametrize('columns', [0, 1, 2, 3])
+def test_get_host_raw_output_lays_out_at_least_20_columns(monkeypatch, columns):
+	# the width it returns is the one mergeOutputs wraps host names at: given 2, it never returned, filling memory
+	_plain(monkeypatch)
+	outputs, _, _, _, line_length = multiSSH3.get_host_raw_output(_hosts(), columns)
+
+	assert line_length == 20
+	block = outputs['node1']
+	command_lines = block[1:block.index('▓ STDOUT:')]
+	assert command_lines == [' echo one two three', '- four five six ', '-seven eight nine ', '-ten']
+
+
+@pytest.mark.parametrize('mode', ['greppable', 'usejson'])
+@pytest.mark.parametrize('columns', [0, 1, 2])
+def test_greppable_and_json_output_do_not_depend_on_the_terminal(monkeypatch, mode, columns):
+	assert _output(monkeypatch, columns, **{mode: True}) == _output(monkeypatch, 80, **{mode: True})
+
+
 def _run_in_pty(argv, rows, columns, env, deadline=60):
 	'''Run argv on a pty of rows x columns (stdin, stdout and stderr): (output, exit status).'''
 	pty = pytest.importorskip('pty')
@@ -85,7 +148,7 @@ def _run_in_pty(argv, rows, columns, env, deadline=60):
 	import termios
 	master, slave = pty.openpty()
 	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
-	# a regression that loops while it allocates must not take the machine's memory
+	# a regression that loops while it allocates (textwrap did at 2 columns) must not take the machine's memory
 	argv = ['/bin/sh', '-c', 'ulimit -v 2097152 2>/dev/null; exec "$0" "$@"'] + list(argv)
 	process = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env['HOME'], close_fds=True)
 	os.close(slave)
@@ -131,10 +194,10 @@ def _scratch_home(tmp_path):
 	return env, str(fake_ssh) + '.log'
 
 
-@pytest.mark.parametrize('rows, columns', [(0, 0), (24, 0)])
+@pytest.mark.parametrize('rows, columns', [(0, 0), (24, 0), (24, 1), (24, 2)])
 def test_mssh_prints_its_results_whatever_width_the_terminal_reports(tmp_path, rows, columns):
 	# script -qc 'mssh ...' /dev/null without a terminal gives mssh a 0x0 pty: the commands ran, then printing
-	# them failed (ValueError: invalid width -1)
+	# them failed (ValueError: invalid width -1). 1 column failed too, and at 2 printing never ended
 	env, fake_ssh_log = _scratch_home(tmp_path)
 	argv = [sys.executable, MULTISSH3_PY, '-ef', '/dev/null', '--host_file', env['HOME'] + '/hosts', '127.0.0.1', 'echo narrow-ok']
 
