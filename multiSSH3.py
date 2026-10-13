@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 import argparse
+import copy
 import errno
 import functools
 import getpass
@@ -52,6 +53,8 @@ CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 ERRORS = []
 
 #%% ------------ User Defined Global Variables ----------------
+# the names defined before this section, to tell the settings below apart (see _BUILTIN_SETTINGS)
+_names_before_settings = set(globals())
 AUTHOR = 'Yufei Pan'
 AUTHOR_EMAIL = 'pan@zopyr.us'
 DEFAULT_HOSTS = 'all'
@@ -154,15 +157,25 @@ _etc_hosts = {}
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
-def _setting_type(value):
-	'''(type, item type) of a built-in setting, the item type when it is a list whose items share one.'''
+#%% ------------ Settings a config file can change ----------------
+# the settings above whose name starts with _: any other such name there is mssh's own state
+_UNDERSCORE_SETTINGS = ('__DEFAULT_COLOR_PALETTE', '_DEFAULT_CALLED', '_DEFAULT_RETURN_UNFINISHED',
+	'_DEFAULT_UPDATE_UNREACHABLE_HOSTS', '_DEFAULT_NO_START', '_etc_hosts', '__ERROR_MESSAGES_TO_IGNORE_REGEX', '__DEBUG_MODE')
+# the settings (what config files can change) with their built-in values, to check config values against: what
+# the section above defines that is public or listed in _UNDERSCORE_SETTINGS and a JSON value (not a function)
+_BUILTIN_SETTINGS = {name: copy.deepcopy(globals()[name]) for name in sorted(set(globals()) - _names_before_settings)
+	if (not name.startswith('_') or name in _UNDERSCORE_SETTINGS)
+	and isinstance(globals()[name], (str, int, float, bool, type(None), list, dict))}
+del _names_before_settings
+
+def _setting_type(name):
+	'''(type, item type) of setting name: the item type when its built-in value is a list whose items share one.'''
+	value = _BUILTIN_SETTINGS[name]
+	if name == '_etc_hosts':
+		# host name -> address, empty by default
+		return dict, str
 	item_types = {type(item) for item in value} if isinstance(value, list) else set()
 	return type(value), (item_types.pop() if len(item_types) == 1 else None)
-
-# the settings above (what config files can change) with the type of their built-in values,
-# to check the values config files give them against
-_SETTING_TYPES = {name: _setting_type(value) for name, value in list(globals().items())
-	if not (name.startswith('__') and name.endswith('__')) and not callable(value) and not isinstance(value, type(os))}
 
 #%% ------------ Pre Helper Functions ----------------
 def cache_decorator(user_function):
@@ -610,12 +623,12 @@ def _check_config_value(name, value):
 	Returns:
 		tuple: (value, None) when it can be used, else (None, why not)
 	'''
-	if name not in _SETTING_TYPES:
+	if name not in _BUILTIN_SETTINGS:
 		# a program path such as _sshPath: null or empty for the one on PATH
 		if value is None or isinstance(value, str):
 			return value, None
 		return None, 'expected the path to the program, got {}'.format(_config_value_text(value))
-	kind, item_kind = _SETTING_TYPES[name]
+	kind, item_kind = _setting_type(name)
 	list_of_strings = isinstance(value, list) and all(isinstance(item, str) for item in value)
 	if name in ('DEFAULT_HOSTS', 'DEFAULT_SKIP_HOSTS') and list_of_strings:
 		return ','.join(value), None
@@ -665,9 +678,13 @@ def _check_config_value(name, value):
 		else:
 			return value, None
 	elif kind is dict:
-		if isinstance(value, dict):
+		if not isinstance(value, dict):
+			expected = 'an object'
+		elif item_kind and not all(isinstance(item, item_kind) for item in value.values()):
+			odd = next(item for item in value.values() if not isinstance(item, item_kind))
+			return None, 'expected an object of strings, got one holding {}'.format(_json_kind(odd))
+		else:
 			return value, None
-		expected = 'an object'
 	else:
 		return None, 'not a setting a config file can change'
 	return None, 'expected {}, got {}'.format(expected, _config_value_text(value))
@@ -682,7 +699,7 @@ def _check_config(config, config_file):
 	'''
 	checked = {}
 	for name, value in config.items():
-		if name in _SETTING_TYPES or _PROGRAM_PATH_KEY.match(name):
+		if name in _BUILTIN_SETTINGS or _PROGRAM_PATH_KEY.match(name):
 			value, problem = _check_config_value(name, value)
 			if problem:
 				eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
@@ -747,7 +764,7 @@ def _apply_config(configs):
 	global DEFAULT_ENV_FILES
 	for name, value in configs.items():
 		# the config holds the pattern, the global its compiled form
-		if name in _SETTING_TYPES and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+		if name in _BUILTIN_SETTINGS and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
 			globals()[name] = value
 	pattern = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX')
 	if pattern:

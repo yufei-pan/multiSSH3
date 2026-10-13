@@ -282,3 +282,53 @@ def test_store_config_file_expands_tilde(monkeypatch, tmp_path):
 
 	assert exc_info.value.code == 0
 	assert json.loads((tmp_path / "stored.json").read_text())["DEFAULT_PRINT_SUCCESS_HOSTS"] is True
+
+
+def test_names_outside_the_settings_cannot_be_set(monkeypatch, tmp_path):
+	_process_args_with_config(monkeypatch, tmp_path, {"version": "0.0", "CONFIG_FILE_CHAIN": ["/tmp/x.json"], "ERRORS": [1]})
+
+	assert multiSSH3.version != "0.0"
+	assert multiSSH3.CONFIG_FILE_CHAIN != ["/tmp/x.json"]
+
+
+def test_internal_names_among_the_settings_cannot_be_set(tmp_path):
+	# other changes keep mssh's own state next to the settings (a lock, the path the help names, a reference
+	# copy): a config file must not reach them, while a new public setting there works as the others
+	source = MULTISSH3_PY.read_text()
+	for anchor, added in [
+		("DEFAULT_HOST_FILE = '/etc/hosts'\n", "_SYSTEM_HOST_FILE = '/etc/hosts'\n"),
+		("_etc_hosts = {}\n", "_etc_hosts_lock = threading.Lock()\n"),
+		("DEFAULT_IPMI_DEFINITIONS = [get_default_ipmi_definition()]\n", "_BUILTIN_IPMI_DEFINITION = get_default_ipmi_definition()\n"),
+		("__DEBUG_MODE = False\n", "DEFAULT_NEW_SETTING = 5\n"),
+	]:
+		assert source.count(anchor) == 1
+		source = source.replace(anchor, anchor + added)
+	(tmp_path / "merged.py").write_text(source)
+	_write_config(tmp_path / ".multiSSH3.config.json", {"_SYSTEM_HOST_FILE": "/tmp/hosts", "_etc_hosts_lock": None,
+		"_BUILTIN_IPMI_DEFINITION": {"username": "x"}, "DEFAULT_NEW_SETTING": "6"})
+	code = ("import sys; sys.path.insert(0, {!r}); import merged; "
+		"print(merged._SYSTEM_HOST_FILE, hasattr(merged._etc_hosts_lock, 'acquire'), merged._BUILTIN_IPMI_DEFINITION['username'], "
+		"merged.DEFAULT_NEW_SETTING)").format(str(tmp_path))
+	env = dict(os.environ, HOME=str(tmp_path))
+
+	result = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+		universal_newlines=True, env=env, cwd=str(tmp_path), timeout=60)
+
+	assert result.stdout.split() == ["/etc/hosts", "True", "admin", "6"], result.stderr
+	assert "Warning" not in result.stderr
+
+
+def test_documented_underscore_settings_can_be_set(monkeypatch, tmp_path):
+	_process_args_with_config(monkeypatch, tmp_path,
+		{"_DEFAULT_NO_START": True, "_etc_hosts": {"node1": "10.0.0.1"}, "__DEBUG_MODE": True})
+
+	assert multiSSH3._DEFAULT_NO_START is True
+	assert multiSSH3._etc_hosts == {"node1": "10.0.0.1"}
+	assert getattr(multiSSH3, "__DEBUG_MODE") is True
+
+
+def test_etc_hosts_from_a_config_must_map_names_to_addresses(tmp_path, capsys):
+	path = _write_config(tmp_path / "multiSSH3.config.json", {"_etc_hosts": {"node1": 5}})
+
+	assert multiSSH3.load_config_file(str(path)) == {}
+	assert "_etc_hosts" in capsys.readouterr().err
