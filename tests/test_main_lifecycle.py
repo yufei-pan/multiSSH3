@@ -423,3 +423,97 @@ def test_script_mode_does_not_report_success_when_hosts_were_skipped(monkeypatch
 	assert code == 2
 	assert "Success" not in out
 	assert "rc: 255" in out and "unreachable" in out
+
+
+def _main_recording_runs(monkeypatch, tmp_path, argv):
+	'''Run main(argv) with names unresolvable and commands succeeding; returns (exit code, hosts run on).'''
+	monkeypatch.setattr(multiSSH3, "getIP", _names_only_resolve_ips)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
+	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
+	ran = []
+
+	def succeed(host, sem, timeout=60, passwds=None, **kwargs):
+		ran.append(host.name)
+		host.returncode = 0
+
+	monkeypatch.setattr(multiSSH3, "run_command", succeed)
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(argv + ["--no_watch", "--no_history", "-ef", str(tmp_path / "none.env")])
+	return exc_info.value.code, ran
+
+
+@pytest.mark.parametrize("target, reason", [
+	("node[10-1]", "the range [10-1] counts down"),
+	("root@node[3-1]", "the range [3-1] counts down"),
+	("10.0.0.20-10", "the range 20-10 counts down"),
+])
+def test_target_naming_no_hosts_stops_with_an_error(monkeypatch, tmp_path, capsys, target, reason):
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, [target, "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == []
+	assert code == 1
+	assert "Error: {!r} names no hosts: {}".format(target, reason) in err
+	assert "Exiting: no hosts to run on" in err
+	assert "All hosts returned 0" not in err
+
+
+def test_empty_alias_as_target_stops_with_an_error(monkeypatch, tmp_path, capsys):
+	monkeypatch.setenv("MSSH_TEST_EMPTY_GROUP", "")
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["MSSH_TEST_EMPTY_GROUP", "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == []
+	assert code == 1
+	assert "Error: 'MSSH_TEST_EMPTY_GROUP' names no hosts: the environment variable MSSH_TEST_EMPTY_GROUP is ''" in err
+
+
+def test_empty_group_inside_an_alias_is_not_an_error(monkeypatch, tmp_path, capsys):
+	# the README's env file example keeps empty groups (eu='') inside bigger ones
+	monkeypatch.setenv("MSSH_TEST_EMPTY_GROUP", "")
+	monkeypatch.setenv("MSSH_TEST_ALL", "127.0.0.1,MSSH_TEST_EMPTY_GROUP")
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["MSSH_TEST_ALL", "uptime"])
+
+	assert ran == ["127.0.0.1"]
+	assert code == 0
+	assert "names no hosts" not in capsys.readouterr().err
+
+
+def test_a_host_token_naming_no_hosts_fails_the_run_but_the_rest_runs(monkeypatch, tmp_path, capsys):
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["node[10-1],127.0.0.1", "uptime", "--repeat", "2"])
+
+	err = capsys.readouterr().err
+	assert ran == ["127.0.0.1", "127.0.0.1"]
+	assert code == 1  # counted once, like a host name that does not resolve
+	assert err.count("Error: 'node[10-1]' names no hosts: the range [10-1] counts down") == 1
+
+
+def test_target_of_invalid_names_only_stops_with_their_count(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["nosuch-a,nosuch-b", "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == []
+	assert code == 2
+	assert "Exiting: no hosts to run on" in err
+
+
+def test_skip_hosts_excluding_every_host_warns(monkeypatch, tmp_path, capsys):
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["127.0.0.1", "uptime", "-X", "127.0.0.1"])
+
+	assert ran == []
+	assert code == 0
+	assert "Warning: -X, --skip_hosts leaves no hosts to run on" in capsys.readouterr().err
+
+
+def test_library_call_on_a_target_naming_no_hosts_returns_nothing(monkeypatch, capsys):
+	hosts = multiSSH3.run_command_on_hosts(hosts="node[10-1]", commands=["true"], no_watch=True, quiet=True,
+		no_history=True, called=True, will_update_unreachable_hosts=False)
+
+	assert hosts == []
+	assert "names no hosts" not in capsys.readouterr().err

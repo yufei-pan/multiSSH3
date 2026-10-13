@@ -293,6 +293,8 @@ mssh testrig[1-10] lsblk
 mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
 ```
 
+A host you give that names no host at all, such as a range counting down ( `node[10-1]`, `10.0.0.20-10` ) or an empty alias, is an error like a name that does not resolve: mssh says why, counts it as a failed host and lists it in `failed_hosts`. When none of the hosts you gave names a host, mssh stops with `Exiting: no hosts to run on` without running anything. Empty groups inside an alias ( like `eu=''` in the example above ) are fine. If `-X, --skip_hosts` excludes every host, mssh warns.
+
 ## Misc Features
 
 ### Interactive Inputs

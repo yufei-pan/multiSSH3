@@ -4455,6 +4455,49 @@ def _normalize_max_connections(max_connections):
 		normalized = safe_limit
 	return normalized
 
+def _why_names_no_hosts(token):
+	'''Why a host token names no host, for the error message, or None when that is not clear.'''
+	name = token.rsplit('@', 1)[-1].strip().strip('$')
+	if _IPV4_RANGE_RE.match(name):
+		for octet in name.split('.'):
+			start, _, end = octet.strip('[]').partition('-')
+			if start.isdigit() and end.isdigit() and int(start) > int(end):
+				return 'the range {}-{} counts down'.format(start, end)
+	else:
+		for group in re.findall(r'\[(.*?)]', name):
+			for part in group.split(','):
+				part = part.strip()
+				# expanded alone, so the range is read exactly as __expand_hostname reads it
+				if '-' in part and not __expand_hostname('[{}]'.format(part), validate=False):
+					return 'the range [{}] counts down'.format(part)
+	source = _local_hostname_source(name)
+	if source == 'env':
+		return 'the environment variable {} is {!r}'.format(name, os.environ.get(name))
+	if source == 'env_file':
+		return '{} is {!r} in the env files'.format(name, readEnvFromFile().get(name))
+	return None
+
+def _report_tokens_naming_no_hosts(tokens):
+	'''
+	Report each host token that names no host at all, e.g. a range counting down or an empty alias.
+
+	Like a name that does not resolve, each counts once towards the exit code and is listed with
+	the failed hosts. Empty groups inside an alias are fine (README's env file example has them):
+	only the tokens given are checked.
+
+	Args:
+		tokens (list): The host tokens as given, from _host_tokens_in_order
+	'''
+	global __mainReturnCode
+	global __failedHosts
+	for token in tokens:
+		if token in __failedHosts or expand_hostnames_local(token)[0]:
+			continue
+		reason = _why_names_no_hosts(token)
+		eprint('Error: {!r} names no hosts{}'.format(token, ': ' + reason if reason else ''))
+		__mainReturnCode += 1
+		__failedHosts.add(token)
+
 # what a host skipped as unreachable returns: ssh's code for a host it could not connect to
 _SKIPPED_HOST_RETURN_CODE = 255
 
@@ -4597,8 +4640,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
-	# one on one mode pairs commands with hosts in the order the hosts were given
-	hostTokens = _host_tokens_in_order(hosts) if oneonone else []
+	# the hosts as given: one on one mode pairs commands with them in this order
+	hostTokens = _host_tokens_in_order(hosts)
 	if isinstance(hosts, list):
 		hosts = frozenset(hosts)
 	elif isinstance(hosts, dict):
@@ -4634,6 +4677,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
 		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
+	if not called:
+		_report_tokens_naming_no_hosts(hostTokens)
+		if not targetHostDic:
+			# every host is a name that does not resolve or names no host: nothing would run
+			_abort(max(1, __mainReturnCode), 'no hosts to run on', called=called)
+		if all(host in skipHostSet or targetHostDic[host] in skipHostSet for host in targetHostDic):
+			eprint('Warning: -X, --skip_hosts leaves no hosts to run on')
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
