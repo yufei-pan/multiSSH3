@@ -331,6 +331,68 @@ def test_marker_lines_are_found_however_they_were_edited(tmp_path):
 	assert rc.read_text() == text
 
 
+@pytest.mark.parametrize('zdotdir', ['set', 'empty'])
+def test_zsh_installs_where_zsh_reads_its_rc_file(tmp_path, zdotdir):
+	# zsh reads $ZDOTDIR/.zshrc when ZDOTDIR is set: install wrote ~/.zshrc, which zsh never read
+	env, home = make_home(tmp_path)
+	directory = home / '.config' / 'zsh' if zdotdir == 'set' else home
+	directory.mkdir(parents=True, exist_ok=True)
+	rc = directory / '.zshrc'
+	rc.write_text('setopt nobeep\n')
+	env = dict(env, ZDOTDIR=str(directory) if zdotdir == 'set' else '')
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	assert messages[-1] == 'added a block loading it to {}'.format(rc)
+	assert mc.RC_BEGIN in rc.read_text()
+	assert sorted(name for name in os.listdir(str(home)) if name.startswith('.zsh')) == (['.zshrc'] if zdotdir == 'empty' else [])
+	mc.uninstall('zsh', home=str(home), environ=env)
+	assert rc.read_text() == 'setopt nobeep\n'
+
+
+def test_a_new_zsh_loads_the_glue_from_zdotdir(tmp_path):
+	path = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	zdotdir = home / '.config' / 'zsh'
+	zdotdir.mkdir(parents=True)
+	(zdotdir / '.zshrc').write_text('autoload -Uz compinit && compinit -u -D\n')
+	env = dict(env, ZDOTDIR=str(zdotdir))
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	result = subprocess.run([path, '-i', '-c', 'print -r -- "loaded=${+functions[_mssh]}"'], env=env, cwd=str(home),
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	assert 'loaded=1' in result.stdout.decode('utf-8', 'replace')
+
+
+def test_fish_installs_into_its_config_directory(tmp_path):
+	# fish's configuration directory is $XDG_CONFIG_HOME/fish when that is set
+	env, home = make_home(tmp_path)
+	config = home / 'xdg'
+	env = dict(env, XDG_CONFIG_HOME=str(config))
+	code, messages = mc.install('fish', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	wrote = sorted(message.split(' ', 1)[1] for message in messages if message.startswith('wrote '))
+	assert wrote == sorted([str(config / 'fish' / 'conf.d' / 'mssh-complete.fish')]
+		+ [str(config / 'fish' / 'completions' / (name + '.fish')) for name in mc.MSSH_NAMES])
+	assert not (home / '.config').exists()
+	mc.uninstall('fish', home=str(home), environ=env)
+	assert [name for _, _, names in os.walk(str(config)) for name in names] == []
+
+
+def test_a_new_fish_loads_the_glue_from_xdg_config_home(setup):
+	fish = require_shell('fish')
+	env, home = setup
+	# fish loads a command's completions only when the command exists
+	(home / 'bin').mkdir()
+	(home / 'bin' / 'mssh').write_text('#!/bin/sh\n')
+	(home / 'bin' / 'mssh').chmod(0o755)
+	env = dict(env, XDG_CONFIG_HOME=str(home / 'xdg'), PATH=str(home / 'bin') + os.pathsep + env['PATH'])
+	assert mc.install('fish', home=str(home), environ=env, command=ENGINE)[0] == 0
+	script = 'complete -C"mssh --no_wa"; functions -q __mssh_complete_ctrl_r; and echo keys loaded'
+	result = subprocess.run([fish, '-c', script], env=env, cwd=str(home),
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	output = result.stdout.decode('utf-8', 'replace')
+	assert '--no_watch' in output and 'keys loaded' in output
+
+
 def test_rc_files_that_are_links_stay_links(tmp_path):
 	# dotfile managers link ~/.bashrc into a repository: the file in the repository is the one changed
 	env, home = make_home(tmp_path)

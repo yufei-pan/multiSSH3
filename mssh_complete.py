@@ -5536,13 +5536,15 @@ def _remove_rc_block(rc, messages):
 
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
+	# fish's own configuration directory: $XDG_CONFIG_HOME/fish, else ~/.config/fish
 	config = environ.get('XDG_CONFIG_HOME') or os.path.join(home, '.config')
 	if shell == 'fish':
 		# completions load lazily; the Ctrl-R glue must load at startup: conf.d (written whole, like the rc blocks)
 		return {'files': [os.path.join(config, 'fish', 'completions', name + '.fish') for name in MSSH_NAMES],
 			'keys': os.path.join(config, 'fish', 'conf.d', 'mssh-complete.fish')}
 	if shell == 'zsh':
-		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': os.path.join(home, '.zshrc')}
+		# zsh reads .zshrc from $ZDOTDIR when that is set (often in ~/.zshenv), and never reads ~/.zshrc then
+		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': os.path.join(environ.get('ZDOTDIR') or home, '.zshrc')}
 	# always from ~/.bashrc: bash-completion's per-user directory only loads where bash-completion
 	# runs, which an installed package does not guarantee (stock Debian root shells do not load it)
 	return {'files': [os.path.join(data, 'multiSSH3', 'completion.bash')], 'rc': os.path.join(home, '.bashrc')}
