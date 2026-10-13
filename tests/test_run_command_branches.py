@@ -509,6 +509,106 @@ def test_ssh_command_gets_extraargs_as_given(fake_host, monkeypatch):
 	assert calls[0][calls[0].index("-o UserKnownHostsFile=/dev/null") + 1:calls[0].index("--")] == ["-p", "2222", "-o", "ConnectTimeout=5"]
 
 
+@pytest.mark.parametrize("path,keep_globs,quoted", [
+	("/tmp/dst y/", False, "/tmp/dst\\ y/"),
+	("/tmp/it's $HOME/", False, "/tmp/it\\'s\\ \\$HOME/"),
+	("/a;b&c|d<e>f(g)h`i\"j\\k#l!m\tn", False, "/a\\;b\\&c\\|d\\<e\\>f\\(g\\)h\\`i\\\"j\\\\k\\#l\\!m\\\tn"),
+	("/data/*.log", False, "/data/\\*.log"),  # a destination is a name
+	("/data/[ab]{1,2}?.log", True, "/data/[ab]{1,2}?.log"),  # sources stay globs, as for rsync and scp
+	("/var/log/my app/*.log", True, "/var/log/my\\ app/*.log"),
+	("~/my dir/", False, "~/my\\ dir/"),  # still the home directory
+	("/plain/path-1_2.txt", False, "/plain/path-1_2.txt"),
+], ids=["space", "quote_dollar", "shell_characters", "star_in_destination", "globs", "glob_and_space", "home", "plain"])
+def test_scp_shell_quoted(path, keep_globs, quoted):
+	assert multiSSH3._scp_shell_quoted(path, keep_globs) == quoted
+
+
+def _no_protocol_probe(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_scp_uses_remote_shell", lambda argv: pytest.fail("scp's protocol is not needed"))
+
+
+@pytest.mark.parametrize("legacy,destination", [(True, "mock-a:/tmp/dst\\ y/"), (False, "mock-a:/tmp/dst y/")],
+	ids=["legacy", "sftp"])
+@pytest.mark.parametrize("retry", [False, True], ids=["requested", "retry"])
+def test_scp_quotes_the_destination_for_its_legacy_protocol(fake_host, monkeypatch, legacy, destination, retry):
+	# OpenSSH < 9.0 scp hands the destination to the host's shell: "scp: ambiguous target";
+	# the SFTP protocol takes it as written
+	probed = []
+	monkeypatch.setattr(multiSSH3, "_scp_uses_remote_shell", lambda argv: probed.append(argv) or legacy)
+	results = [FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12), FakeProc()] if retry else [FakeProc()]
+	host, calls = _copy_with_results(fake_host, monkeypatch, results, ["/src/a"], command="/tmp/dst y/",
+		scp=not retry, extraargs="-p 2222")
+
+	assert calls[-1][0] == "scp"
+	assert calls[-1][-1] == destination
+	assert probed and probed[0] == calls[-1][:calls[-1].index("--")]
+
+
+def test_scp_destination_without_shell_characters_needs_no_probe(fake_host, monkeypatch):
+	_no_protocol_probe(monkeypatch)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], command="/tmp/dst-1/", scp=True)
+
+	assert calls[0][-1] == "mock-a:/tmp/dst-1/"
+
+
+def test_scp_gather_quotes_its_sources_for_either_protocol(fake_host, monkeypatch, tmp_path):
+	# the legacy protocol reads them in the host's shell, the SFTP one as globs: a backslash serves both
+	_no_protocol_probe(monkeypatch)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/tmp/dst y/r.txt", "/var/log/*.log"],
+		command=str(tmp_path) + "/", scp=True, gatherMode=True)
+
+	assert calls[0][-3:] == ["mock-a:/tmp/dst\\ y/r.txt", "mock-a:/var/log/*.log", str(tmp_path) + "/"]
+
+
+def test_rsync_takes_remote_paths_as_written(fake_host, monkeypatch, tmp_path):
+	# rsync 3.2.4+ protects its arguments itself
+	_no_protocol_probe(monkeypatch)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], command="/tmp/dst y/")
+
+	assert calls[0][-1] == "mock-a:/tmp/dst y/"
+
+
+class _Ran:
+	def __init__(self, stderr):
+		self.stderr = stderr
+		self.returncode = 1
+
+
+@pytest.mark.parametrize("stderr,legacy", [
+	(b"Executing: program /usr/bin/false host mssh-scp-protocol.invalid, user (unspecified), command scp -v -r -p -t /\nlost connection\n", True),
+	(b"Executing: program /usr/bin/false host mssh-scp-protocol.invalid, user (unspecified), command sftp\nscp: Connection closed\n", False),
+	(b"unknown option -- O\nusage: scp [-346BCpqrTv] ...\n", False),
+], ids=["legacy", "sftp", "usage"])
+def test_scp_protocol_probe_reads_what_scp_would_run(monkeypatch, stderr, legacy):
+	monkeypatch.setattr(multiSSH3, "_scp_protocol_cache", {})
+	runs = []
+
+	def fake_run(argv, **kwargs):
+		runs.append(argv)
+		return _Ran(stderr)
+
+	monkeypatch.setattr(multiSSH3.subprocess, "run", fake_run)
+	argv = ["/usr/bin/scp", "-rp", "-o StrictHostKeyChecking=no"]
+
+	assert multiSSH3._scp_uses_remote_shell(argv) is legacy
+	assert multiSSH3._scp_uses_remote_shell(argv) is legacy
+	assert len(runs) == 1  # once per command line
+	# nothing is connected to: scp's ssh is a program that exits at once
+	assert runs[0][:3] == argv and "-S" in runs[0] and "-v" in runs[0]
+	assert os.path.basename(runs[0][runs[0].index("-S") + 1]) in ("false", "true")
+
+
+def test_scp_protocol_probe_that_fails_quotes_nothing(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_scp_protocol_cache", {})
+
+	def fake_run(argv, **kwargs):
+		raise OSError("no scp")
+
+	monkeypatch.setattr(multiSSH3.subprocess, "run", fake_run)
+
+	assert multiSSH3._scp_uses_remote_shell(["/missing/scp", "-rp"]) is False
+
+
 @pytest.fixture
 def linked_tree(tmp_path):
 	'''A config that is a relative link to a file, a link to a directory, a dangling link and a directory.'''

@@ -2418,6 +2418,52 @@ def _scp_port_option(words):
 		i += 1
 	return out
 
+# what a POSIX shell reads specially in a word, glob characters and a leading ~ aside
+_SHELL_SPECIAL_CHARACTERS = frozenset(' \t\'"\\$`;&|<>()#!')
+_GLOB_CHARACTERS = frozenset('*?[]{}')
+
+def _scp_shell_quoted(path, keep_globs):
+	'''
+	Return a remote path for scp with a backslash before each character a shell reads specially.
+
+	scp's legacy protocol (OpenSSH before 9.0, or scp -O) hands remote paths to the host's shell,
+	which split '/tmp/dst y/' in two ("scp: ambiguous target"). keep_globs leaves glob characters
+	active, for a source: the legacy protocol's shell expands them, and the SFTP protocol reads a
+	source as a glob in which a backslash quotes the next character, so a quoted source serves
+	both protocols. A leading ~ stays the home directory.
+	'''
+	special = _SHELL_SPECIAL_CHARACTERS if keep_globs else _SHELL_SPECIAL_CHARACTERS | _GLOB_CHARACTERS
+	return ''.join('\\' + char if char in special else char for char in path)
+
+_scp_protocol_cache = {}
+_scp_protocol_lock = threading.Lock()
+
+def _scp_uses_remote_shell(scp_argv):
+	'''
+	Return True when scp, run with these options, hands remote paths to the host's shell: its legacy
+	protocol, the default before OpenSSH 9.0 or with -O. The SFTP protocol takes a destination as
+	written. The OpenSSH version alone does not tell: -O and -s choose, and distributions may
+	backport the SFTP default (RHEL 9's 8.7 is said to).
+
+	scp -v names the protocol it starts before it connects ("command scp -t" or "command sftp");
+	with a stand-in for ssh that exits at once, nothing is connected to. Asked once per command
+	line; False when scp names neither.
+	'''
+	key = tuple(scp_argv)
+	with _scp_protocol_lock:
+		if key not in _scp_protocol_cache:
+			legacy = False
+			stand_in = shutil.which('false') or shutil.which('true')
+			if stand_in:
+				try:
+					ran = subprocess.run(list(scp_argv) + ['-v', '-S', stand_in, '--', os.devnull, 'mssh-scp-protocol.invalid:/'],
+						stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+					legacy = b', command scp ' in ran.stderr
+				except Exception:
+					legacy = False
+			_scp_protocol_cache[key] = legacy
+		return _scp_protocol_cache[key]
+
 _KEPT_LINK_WARNINGS = {
 	'directory': '{path} is a symbolic link to a directory, rsync copies the link (-> {target}), not the directory.',
 	'nothing': '{path} is a symbolic link to nothing here, rsync copies the link (-> {target}).',
@@ -2693,15 +2739,24 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				remoteName = host.resolvedName
 				if ':' in host.address and not host.address.startswith('['):
 					remoteName = f'{username}@[{host.address}]' if username else f'[{host.address}]'
+				scpOptions = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + _scp_port_option(extraargs) if useScp else []
 				if host.gatherMode:
-					fileArgs = [f'{remoteName}:{file}' for file in (gather_links or host.files)] + [host.command]
-				elif useScp and scp_like_rsync:
-					sources, destination = _scp_sources_like_rsync(host.files, host.command)
-					fileArgs = sources + [f'{remoteName}:{destination}']
+					sources = gather_links or host.files
+					if useScp:
+						# a quoted source serves both of scp's protocols (see _scp_shell_quoted)
+						sources = [_scp_shell_quoted(path, keep_globs=True) for path in sources]
+					fileArgs = [f'{remoteName}:{file}' for file in sources] + [host.command]
 				else:
-					fileArgs = host.files + [f'{remoteName}:{host.command}']
+					if useScp and scp_like_rsync:
+						sources, destination = _scp_sources_like_rsync(host.files, host.command)
+					else:
+						sources, destination = host.files, host.command
+					# a quoted destination only serves scp's legacy protocol, SFTP takes it as written
+					if useScp and _scp_shell_quoted(destination, keep_globs=False) != destination and _scp_uses_remote_shell(scpOptions):
+						destination = _scp_shell_quoted(destination, keep_globs=False)
+					fileArgs = sources + [f'{remoteName}:{destination}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + _scp_port_option(extraargs) +['--']+fileArgs
+					formatedCMD = scpOptions +['--']+fileArgs
 				else:
 					# no --inplace: rsync writes a new file and renames it over the old one, so a running
 					# binary can be replaced and no reader sees a file half written

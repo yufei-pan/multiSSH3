@@ -485,6 +485,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Use scp for copying files by default instead of trying rsync.
 - Can speed up operation if we know rsync will not be available on remote hosts.
 - scp's own rules apply: a trailing slash makes no difference, `./data/` copies the directory itself (to `/dest/data` when `/dest` exists).
+- Remote paths are taken as written, as rsync takes them, spaces and characters such as `'` or `$` included; a remote source keeps its glob characters (`/var/log/*.log`). scp's legacy protocol (the default before OpenSSH 9.0, or `-O`) hands remote paths to the host's shell, so mssh puts a backslash before each character the shell reads specially. To know which protocol the local scp uses, mssh runs it once with `-v` and a stand-in for ssh that connects nowhere.
 
 ### `-G, -gm, --gather_mode` | False
 - Gather files from the hosts instead of sending files to the hosts.
