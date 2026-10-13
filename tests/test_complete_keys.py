@@ -172,6 +172,19 @@ def test_bash_ctrl_r_over_fzf_keeps_every_shell_command_key(home, mode):
 		session.close()
 
 
+@pytest.mark.parametrize('separator', [': ', ' '])
+def test_bash_reads_a_shell_command_binding_in_both_formats(home, separator):
+	# bind -X prints "\C-r": "command" before bash 5.3, "\C-r" "command" from 5.3 on (same escapes)
+	env, home = home
+	script = r'''. "$1"
+bind() { [[ $3 == -X ]] && printf '%s\n' '"\C-x\C-p"SEP"echo x"' '"\C-r"SEP"__fzf_history__ \"a\\b\""'; }
+_mssh_complete_previous emacs && printf '%s\n' "$_mssh_complete_found"
+'''.replace('SEP', separator)
+	result = subprocess.run([require_shell('bash'), '-c', script, 'bash', str(glue_file(home, 'bash'))], env=env,
+		stdout=subprocess.PIPE, timeout=30)
+	assert result.stdout.decode() == 'x:__fzf_history__ "a\\b"\n'
+
+
 def test_bash_picker_leaves_keys_typed_after_the_choice(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))

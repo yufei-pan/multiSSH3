@@ -4391,8 +4391,11 @@ _mssh_complete_previous() {
 	local line
 	_mssh_complete_found=
 	while IFS= read -r line; do
-		[[ $line == '"\C-r": "'*'"' ]] || continue
-		line=${line#'"\C-r": "'}
+		# bind -X prints '"\C-r": "command"', from bash 5.3 on '"\C-r" "command"'
+		[[ $line == '"\C-r": "'*'"' || $line == '"\C-r" "'*'"' ]] || continue
+		line=${line#'"\C-r"'}
+		line=${line#:}
+		line=${line#' "'}
 		line=${line%'"'}
 		line=${line//'\"'/'"'}
 		_mssh_complete_found=x:${line//'\\'/'\'}
