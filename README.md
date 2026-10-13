@@ -589,7 +589,8 @@ mssh -f ./data/ allServers /tmp/data/
   - You will observe `Warning: The number of maximum connections {max_connections} is larger than estimated limit {estimated_limit} .....` if the max connections is larger than estimated limit.
   - mssh will also throttle thread generation if the estimated limit is lower than `2 * max_connections` to avoid hitting the file descriptor limit as python will use some file descriptors when setting up threads.
 - Behind a bastion (`ssh -J`, or `ProxyJump` in `~/.ssh/config`), every connection goes through the bastion's sshd, and its `MaxStartups` (default `10:30:100`) turns away connections that have not logged in yet once more than 10 are opening: 30% of new ones, rising to all of them at 100. mssh opens up to `-m` connections at once, so with the default some hosts fail with `kex_exchange_identification: read: Connection reset by peer` / `Connection closed by UNKNOWN port 65535` (exit code 255). The same can happen on a host many clients connect to at once.
-  - When hosts fail this way, a hint after the summary says how many and why. Use `-m 10` (or fewer) for runs through a bastion, or raise `MaxStartups` on it.
+  - mssh tries such a host again, up to 3 times, 0.2 to 3 s later, when ssh's lines show the connection was dropped before login: they name the address ssh connected to, or `UNKNOWN port 65535` through a `ProxyJump` / `ProxyCommand`, with nothing else printed. A command that may have started is never run again. Older OpenSSH, such as 8.0 on RHEL 8, names no address, so its ssh and scp runs are not tried again; rsync runs are, as they received nothing and only sync again.
+  - When hosts still fail this way, a hint after the summary says how many and why. Use `-m 10` (or fewer) for runs through a bastion, or raise `MaxStartups` on it.
 
 ### `-j, --json` | _`DEFAULT_JSON_OUTPUT`_
 - Output in json format.
