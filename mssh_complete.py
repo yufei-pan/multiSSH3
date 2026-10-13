@@ -614,6 +614,30 @@ class HistoryEntry(object):
 	def features(self):
 		return make_features(self.options, self.hosts, [command for command in self.commands if command.strip()])
 
+def history_options(field, spec):
+	'''
+	The options field of a ~/.mssh_history line.
+
+	Returns:
+		tuple: ((OptionSpec, value or None) pairs, the option strings as written)
+	'''
+	options = []
+	texts = []
+	tokens = lex(field)
+	index = 0
+	while index < len(tokens):
+		text = tokens[index].text
+		option, attached = spec.lookup(text)
+		index += 1
+		if option is None:
+			continue
+		if attached is None and option.nargs in ('1', '+') and index < len(tokens):
+			attached = tokens[index].text
+			index += 1
+		options.append((option, attached))
+		texts.append(text.partition('=')[0] if attached is not None and '=' in text else text)
+	return options, texts
+
 def parse_history_line(line, spec):
 	'''
 	Parse a ~/.mssh_history line: <ts>\\t<program>\\t<options>\\t<hosts>\\t<commands>.
@@ -630,21 +654,7 @@ def parse_history_line(line, spec):
 		return None
 	if not 0 <= ts < 10 ** 11:
 		return None
-	options = []
-	texts = []
-	tokens = lex(fields[2])
-	index = 0
-	while index < len(tokens):
-		text = tokens[index].text
-		option, attached = spec.lookup(text)
-		index += 1
-		if option is None:
-			continue
-		if attached is None and option.nargs in ('1', '+') and index < len(tokens):
-			attached = tokens[index].text
-			index += 1
-		options.append((option, attached))
-		texts.append(text.partition('=')[0] if attached is not None and '=' in text else text)
+	options, texts = history_options(fields[2], spec)
 	host_tokens = lex(fields[3])
 	hosts = host_tokens[0].text if host_tokens else ''
 	if hosts == 'EMPTY_HOSTS':
@@ -3679,9 +3689,12 @@ def _loose_dests(pairs):
 
 def _typed_run(line, engine):
 	'''
-	(run key, features) of a shell line running mssh, or None when the history tab cannot offer it.
-	The run key is (hosts, commands, options as _run_options gives them).
+	(run key, (options, hosts, commands)) of a shell line running mssh, or None when the history tab
+	cannot offer it. The run key is (hosts, commands, options as _run_options gives them).
 	'''
+	if 'mssh' not in line and 'multissh' not in line and 'multiSSH' not in line:
+		# most lines run something else: no need to read them
+		return None
 	tokens = lex(line)
 	if not tokens or os.path.basename(tokens[0].text) not in MSSH_NAMES or _has_control(line):
 		return None
@@ -3691,7 +3704,7 @@ def _typed_run(line, engine):
 		return None
 	options, hosts, commands = _collect(words, roles)
 	commands = _join_commands(commands)
-	return (hosts, tuple(commands), _run_options(options, engine)), make_features(options, hosts, commands)
+	return (hosts, tuple(commands), _run_options(options, engine)), (options, hosts, commands)
 
 def _history_items(request, engine, history_lines, name, features):
 	'''
@@ -3728,7 +3741,7 @@ def _history_items(request, engine, history_lines, name, features):
 		parsed.append((len(entries), entry.hosts, tuple(entry.commands), line))
 		entries.append([len(features & set(entry.features())), entry.ts, text, 1])
 	unrecorded = MemoryKnowledge()
-	typed = {}  # run key -> [times in the shell's history, its features, its newest line]
+	typed = {}  # run key -> [times in the shell's history, its (options, hosts, commands), its newest line]
 	runs = []   # the run keys, newest first
 	keys = {}   # line -> run key (None: not offered), so a line typed often is read once
 	for line in request.history[::-1] if request.shell != 'fish' else request.history:
@@ -3746,11 +3759,11 @@ def _history_items(request, engine, history_lines, name, features):
 	wanted = set(key[:2] for key in runs)
 	for number, hosts, commands, line in parsed:
 		if (hosts, commands) in wanted:
-			entry = parse_history_line(line, engine.spec)
-			candidates.setdefault((hosts, commands), []).append((number, _run_options(entry.options, engine)))
+			options = history_options(line.rstrip('\r\n').split('\t')[2], engine.spec)[0]
+			candidates.setdefault((hosts, commands), []).append((number, _run_options(options, engine)))
 	pools = {}  # the entries some runs' lines count towards -> [times typed, the newest of those runs]
 	for key in runs:
-		count, run_features, line = typed[key]
+		count, parts, line = typed[key]
 		bucket = candidates.get(key[:2], ())
 		# the record of this run, else one mssh may have written in another form
 		found = [number for number, pairs in bucket if pairs == key[2]]
@@ -3762,6 +3775,7 @@ def _history_items(request, engine, history_lines, name, features):
 			pool = pools.setdefault(tuple(found), [0, key])
 			pool[0] += count
 			continue
+		run_features = make_features(*parts)
 		if len(entries) < HISTORY_LIMIT:
 			# the newest spelling of a run only the shell's history holds
 			entries.append([len(features & set(run_features)), 0, line, count])
@@ -3772,8 +3786,9 @@ def _history_items(request, engine, history_lines, name, features):
 		count -= sum(entries[number][3] for number in found)
 		if count > 0:
 			entries[found[0]][3] += count
+			run_features = make_features(*typed[key][1])
 			for _ in range(count):
-				unrecorded.add(typed[key][1], 0.0)
+				unrecorded.add(run_features, 0.0)
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
 	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order], unrecorded
 

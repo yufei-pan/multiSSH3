@@ -312,8 +312,10 @@ def test_a_line_typed_many_times_is_read_once(monkeypatch):
 	lex = mc.lex
 	parsed = []
 	monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))
-	mc.picker_items(request('mssh ', history=['mssh node1 uptime'] * 500), engine(), [], NOW)
+	mc.picker_items(request('mssh ', history=['mssh node1 uptime', 'ls -la /tmp'] * 500), engine(), [], NOW)
 	assert parsed.count('mssh node1 uptime') == 1
+	# a line that cannot run mssh is not read at all
+	assert 'ls -la /tmp' not in parsed
 
 
 def run_engine(args, data, env):
