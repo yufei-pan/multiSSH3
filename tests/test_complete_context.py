@@ -161,7 +161,8 @@ def test_a_password_being_typed_is_the_password_slot(before):
 
 
 # argparse (3.6 to 3.15) takes a word starting with "-" as an option's value only when it holds a
-# space and names no option: not whole, not before "=", not as -xVALUE, not as the start of options
+# space and names no option: not whole, not before "=", not as -xVALUE. mssh's parser takes option
+# names in full only (no-option-abbrev), so the start of option names is a value too
 DASH_VALUES = [
 	('-o StrictHostKeyChecking=no', True),
 	('--user name', True),
@@ -175,8 +176,8 @@ DASH_VALUES = [
 	('-q foo', False),      # -q, then " foo"
 	('-my secret', False),  # -m "y secret"
 	('-u=x y', False),
-	('--usern=a b', False),
-	('--no=a b', False),    # --no starts several options
+	('--usern=a b', True),  # only starts --username: mssh takes names in full
+	('--no=a b', True),     # starts several options, names none
 ]
 
 
