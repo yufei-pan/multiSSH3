@@ -16,6 +16,7 @@ import math
 import os
 import queue
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -2221,6 +2222,127 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
 
+# once the command ended, at most a pipe's worth of its output is left to read (64 KiB by default, on Linux
+# at most 1 MiB without root): a reader that takes in more than this since then reads a process the command
+# left behind
+_READER_MAX_BYTES_AFTER_EXIT = 4 * 1024 * 1024
+# seconds in all a reader may wait for input after the command ended, before it is given up
+_READER_WAIT_AFTER_EXIT = 1.0
+
+def _pipe_has_input(fd):
+	'''True when a read from fd returns at once: output or end of file is there.'''
+	try:
+		poller = select.poll()
+		poller.register(fd, select.POLLIN)
+		return bool(poller.poll(0))
+	except Exception:
+		return False
+
+class _CommandPipe:
+	'''
+	One of the command's output pipes, as its reader thread reads it.
+
+	A process the command left in the background can keep the pipe open after the command ended, and
+	the reader would wait for it. This tells run_command when the reader waits for input, and lets it
+	give the reader up: reads then return end of file. Where the pipe can be polled, the reader waits
+	for input before it reads, so a reader given up while it waits takes in nothing more.
+
+	The reader reads 64 KiB at a time with read1, which leaves nothing in the pipe object's own buffer,
+	where polling would not see it.
+	'''
+	def __init__(self, pipe):
+		self.pipe = pipe
+		self._read = getattr(pipe, 'read1', None) or pipe.read
+		self.lock = threading.Lock()
+		self.waiting = False # waits for input (where polled: has not read anything yet)
+		self.given_up = False
+		self.bytes_read = 0
+		self.fd = None
+		self.poller = None
+		try:
+			self.fd = pipe.fileno()
+			poller = select.poll()
+			poller.register(self.fd, select.POLLIN)
+			self.poller = poller
+		except Exception:
+			# no file descriptor (a stand-in in tests) or no poll (Windows): the reader just reads
+			pass
+
+	def read1(self, size):
+		with self.lock:
+			if self.given_up:
+				return b''
+			self.waiting = True
+		try:
+			if self.poller is not None:
+				try:
+					self.poller.poll()
+				except OSError:
+					pass # the read reports a closed pipe
+				with self.lock:
+					if self.given_up:
+						return b''
+					self.waiting = False
+			data = self._read(size)
+		finally:
+			self.waiting = False
+		self.bytes_read += len(data)
+		return data
+
+def _wait_for_readers(host, readers):
+	'''
+	Wait until the reader threads took in what the command wrote, now that it ended or was stopped.
+
+	A reader busy with output is waited for however long it takes: once the command ended, at most a
+	pipe's worth of output is left. A reader is given up when a process the command left in the
+	background holds its pipe open: once it waited for input _READER_WAIT_AFTER_EXIT seconds in all, or
+	took in more than _READER_MAX_BYTES_AFTER_EXIT bytes, more than the command can have left. Its
+	unfinished last line is recorded; what that process writes later is not. After Ctrl C, the readers
+	get _READER_WAIT_AFTER_EXIT seconds.
+
+	Args:
+		host (Host): The host object
+		readers (list): (thread, _CommandPipe, target list, line buffer) for stdout and stderr
+
+	Returns:
+		bool: True when every reader read its pipe to the end
+	'''
+	bytes_at_exit = [pipe.bytes_read for _thread, pipe, _target, _buffer in readers]
+	waited = [0.0] * len(readers)
+	pending = list(range(len(readers)))
+	all_read = True
+	stop_at = None
+	last = time.monotonic()
+	while pending:
+		readers[pending[0]][0].join(0.05)
+		now = time.monotonic()
+		elapsed, last = now - last, now
+		if _emo and stop_at is None:
+			stop_at = now + _READER_WAIT_AFTER_EXIT
+		stopping = stop_at is not None and now >= stop_at
+		for index in list(pending):
+			thread, pipe, target, buffer = readers[index]
+			if not thread.is_alive():
+				pending.remove(index)
+				continue
+			with pipe.lock:
+				# output or end of file that is there but not taken yet is not waiting: the thread is slow to wake
+				idle = pipe.waiting and (pipe.poller is None or not _pipe_has_input(pipe.fd))
+				if idle:
+					waited[index] += elapsed
+				if not pipe.given_up and (stopping or waited[index] >= _READER_WAIT_AFTER_EXIT
+						or pipe.bytes_read - bytes_at_exit[index] > _READER_MAX_BYTES_AFTER_EXIT):
+					pipe.given_up = True
+					all_read = False
+				# done with a reader given up while it waits; one given up while busy ends at its next read,
+				# after the output in hand
+				if pipe.given_up and (idle or stopping):
+					if idle and pipe.poller is not None:
+						# it waits for input it will not take: record its unfinished last line for it
+						__handle_reading_stream(io.BytesIO(), target, host, buffer)
+					pending.remove(index)
+	return all_read
+
 def _emfile_backoff_seconds(attempt):
 	return min(0.1 * (2 ** attempt), 1.0)
 
@@ -2579,8 +2701,11 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 					give_streams.append(give_stdin)
 				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
 				__running_procs.add(proc)
-				give_stdout((proc.stdout,host.stdout, host,host.stdout_buffer))
-				give_stderr((proc.stderr,host.stderr, host,host.stderr_buffer))
+				# the readers read through _CommandPipe: one can be given up when a background process holds its pipe
+				stdout_pipe = _CommandPipe(proc.stdout)
+				stderr_pipe = _CommandPipe(proc.stderr)
+				give_stdout((stdout_pipe,host.stdout, host,host.stdout_buffer))
+				give_stderr((stderr_pipe,host.stderr, host,host.stderr_buffer))
 				if interactive_stdin:
 					give_stdin((proc.stdin,stdin_stop_event, host))
 				give_streams = []
@@ -2627,14 +2752,16 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 						sleep_interval *= 1.1
 				stdin_stop_event.set()
 				# Wait for output processing to complete
-				stdout_thread.join(timeout=1)
-				stderr_thread.join(timeout=1)
+				all_read = _wait_for_readers(host, [(stdout_thread, stdout_pipe, host.stdout, host.stdout_buffer),
+					(stderr_thread, stderr_pipe, host.stderr, host.stderr_buffer)])
 				if stdin_thread:
 					stdin_thread.join(timeout=1)
 				if proc.stdin is not None and proc.stdin.closed:
 					# communicate() would flush the closed pipe and raise
 					proc.stdin = None
-				if not _emo:
+				# communicate() reads the pipes too, only once no reader does: it closes them and collects
+				# the exit status, and finds output only when a reader failed
+				if not _emo and all_read:
 					stdout = None
 					stderr = None
 					try:
@@ -2659,8 +2786,10 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 						host.returncode = -1
 				host.output.append(f'Command finished with return code {host.returncode}')
 				if host.stderr:
-					# filter out the error messages that we want to ignore
-					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
+					# filter out the error messages that we want to ignore, in the list itself: a reader still
+					# running (after Ctrl C, or where pipes cannot be polled) appends to it, and those lines stay
+					count = len(host.stderr)
+					host.stderr[:count] = [line for line in host.stderr[:count] if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
 			except OSError as e:
 				if e.errno == errno.EMFILE and proc is None:
 					retry_reason = 'open files'
