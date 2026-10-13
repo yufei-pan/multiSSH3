@@ -705,7 +705,7 @@ class Host:
 		self.output = [] # the output of the command for curses
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
-		self.lineNumToPrintSet = set() # line numbers to reprint
+		self.lineNumToPrintSet = set() # line numbers the TUI must draw: the readers note them only while it runs (interactive_stdin)
 		self.lastUpdateTime = time.monotonic() # the last time the output was updated
 		self.lastPrintedUpdateTime = 0 # the last time the output was printed
 		self.files = files # the files to be copied to the host
@@ -2066,7 +2066,10 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
-		host.lineNumToPrintSet.add(len(host.output)-1)
+		# only the TUI draws from the set, and interactive_stdin is set while it runs: without it the set
+		# would hold every line number for nothing
+		if host.interactive_stdin:
+			host.lineNumToPrintSet.add(len(host.output)-1)
 		buffer.seek(0)
 		buffer.truncate(0)
 		host.output_buffer.seek(0)
@@ -2083,7 +2086,8 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		lines = text.split('\n')
 		target.extend(lines)
 		host.output.extend(lines)
-		host.lineNumToPrintSet.update(range(len(host.output) - len(lines), len(host.output)))
+		if host.interactive_stdin:
+			host.lineNumToPrintSet.update(range(len(host.output) - len(lines), len(host.output)))
 		return True
 	def split_line_breaks():
 		'''Split the line on unicode line breaks when it grew to a multiple of 100 bytes.'''
@@ -2096,7 +2100,8 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 					# for all lines except the last one, we add them to the target
 					target.append(line)
 					host.output.append(line)
-					host.lineNumToPrintSet.add(len(host.output)-1)
+					if host.interactive_stdin:
+						host.lineNumToPrintSet.add(len(host.output)-1)
 				# we keep the last line in the buffer
 				buffer.seek(0)
 				buffer.truncate(0)
