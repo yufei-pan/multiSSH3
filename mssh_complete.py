@@ -211,13 +211,12 @@ class ParserSpec(object):
 		for option in self.options:
 			for string in option.strings:
 				self.by_string[string] = option
-		self._long = sorted(string for string in self.by_string if string.startswith('--'))
 
 	def lookup(self, text):
 		'''
 		The option a word names, and the value attached to it ("-x=value", "--long=value", "-xVALUE").
 
-		Unique abbreviations of --long options are accepted, like argparse does.
+		Names count in full only: mssh takes no abbreviations ("--user" is not --username).
 
 		Returns:
 			tuple: (OptionSpec or None, attached value or None)
@@ -226,26 +225,15 @@ class ParserSpec(object):
 		if option is not None:
 			return option, None
 		name, sep, value = text.partition('=')
-		option = (self.by_string.get(name) or self._abbreviation(name)) if sep else self._abbreviation(text)
+		option = self.by_string.get(name) if sep else None
 		if option is not None:
-			return option, (value if sep else None)
+			return option, value
 		if len(text) > 2 and text[0] == '-' and text[1] != '-':
 			# argparse reads -pVALUE as -p VALUE, '=' in VALUE included
 			short = self.by_string.get(text[:2])
 			if short is not None and short.nargs != '0':
 				return short, text[2:]
 		return None, None
-
-	def _abbreviation(self, name):
-		if not name.startswith('--') or len(name) < 3:
-			return None
-		found = {}
-		for string in self._long[bisect_left(self._long, name):]:
-			if not string.startswith(name):
-				break
-			option = self.by_string[string]
-			found[id(option)] = option
-		return next(iter(found.values())) if len(found) == 1 else None
 
 	def to_rows(self):
 		return [option.to_row() for option in self.options]
