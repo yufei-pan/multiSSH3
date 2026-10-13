@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 import argparse
+import codecs
 import errno
 import functools
 import getpass
@@ -2146,6 +2147,18 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		# if there is still some data in the buffer, we add it to the target
 		add_line(buffer,target, host)
 
+def _encode_typed_line(chars):
+	'''The bytes a line typed in the TUI sends: bytes typed outside _encoding (surrogates) go out as typed.'''
+	text = ''.join(chars)
+	try:
+		return text.encode(encoding=_encoding, errors='surrogateescape')
+	except UnicodeEncodeError:
+		return text.encode(encoding=_encoding, errors='backslashreplace')
+
+def _typed_line_for_display(chars):
+	'''A typed line as text to show: what _encode_typed_line sends, with bytes outside _encoding as \\xe9.'''
+	return _encode_typed_line(chars).decode(encoding=_encoding, errors='backslashreplace')
+
 def __handle_writing_stream(stream,stop_event,host):
 	'''
 	Write the key presses to the stream
@@ -2166,9 +2179,9 @@ def __handle_writing_stream(stream,stop_event,host):
 	sentInputPos = 0
 	while not stop_event.is_set() and host.interactive_stdin:
 		if sentInputPos < len(__keyPressesIn) - 1 :
-			stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+			stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 			stream.flush()
-			line = '> ' + ''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\n', '↵')
+			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
@@ -2180,7 +2193,7 @@ def __handle_writing_stream(stream,stop_event,host):
 		# the TUI ended while the command runs: send the lines already typed, then end of input
 		try:
 			while sentInputPos < len(__keyPressesIn) - 1:
-				stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+				stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 				sentInputPos += 1
 			stream.flush()
 		except Exception:
@@ -3105,6 +3118,24 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexO
 			rearrangedHosts.add(host)
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
 
+def _tui_typed_keys(key, decoder):
+	'''
+	The key presses one getch() result completes, in the order they were typed.
+
+	getch() returns a character typed as several bytes (UTF-8 é is c3 a9) one byte at a time. Those
+	bytes go through decoder (incremental, errors='surrogateescape') and come back as one str once
+	the character is complete. Any other key comes back as its int code, after the bytes of a
+	sequence it cut short: those come back as surrogates, which _encode_typed_line sends unchanged.
+	'''
+	if key == -1:
+		return ()
+	if 128 <= key <= 255:
+		text = decoder.decode(bytes((key,)))
+		return (text,) if text else ()
+	cut_short = decoder.decode(b'', True)
+	decoder.reset()
+	return (cut_short, key) if cut_short else (key,)
+
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
 	global _encoding
 	_ = config_reason
@@ -3221,10 +3252,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		help_panel.hide()
 		curses.panel.update_panels()
 		indexOffset = 0
+		# collects the bytes of a character typed in several bytes, see _tui_typed_keys
+		key_decoder = codecs.getincrementaldecoder(_encoding)(errors='surrogateescape')
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
-			# Check for keypress
-			key = stdscr.getch()
-			if key != -1:  # -1 means no keypress
+			# Check for keypress: an int key code, or a str for a character typed in several bytes (UTF-8)
+			for key in _tui_typed_keys(stdscr.getch(), key_decoder):
 				# we store the keypresses in a list of lists.
 				# Each list is a list of characters to be sent to the stdin of the process at once.
 				# When we encounter a newline, we add a new list to the list of lists. ( a new line of input )
@@ -3329,9 +3361,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						if curserPosition < len(__keyPressesIn[lineToDisplay]):
 							__keyPressesIn[lineToDisplay].pop(curserPosition)
 					else:
-						# if the key is not a special key, we will add it
-						__keyPressesIn[lineToDisplay].insert(curserPosition, chr(key))
-						curserPosition += 1
+						# if the key is not a special key, we will add it, one list item per character
+						typed = key if isinstance(key, str) else chr(key)
+						__keyPressesIn[lineToDisplay][curserPosition:curserPosition] = list(typed)
+						curserPosition += len(typed)
 			# reconfigure when the terminal size changes
 			if org_dim != stdscr.getmaxyx():
 				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
@@ -3341,11 +3374,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} i:{indexOffset} "
 			else:
 				# we use the stat bar to display the key presses
-				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').strip('\n') + ' '
+				encodedLine = _typed_line_for_display(__keyPressesIn[lineToDisplay]).strip('\n') + ' '
 				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
 				# format the stats line with chracter at curser position inverted using ansi escape sequence
 				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
-				displayCurserPosition = min(curserPosition,len(encodedLine) -1)
+				# it counts the shown text before the cursor: a byte outside the encoding shows as 4 characters (\xe9)
+				displayCurserPosition = min(len(_typed_line_for_display(__keyPressesIn[lineToDisplay][:curserPosition])),len(encodedLine) -1)
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
 			if stats != old_stat or refresh_all:
 				old_stat = stats

@@ -1,3 +1,6 @@
+import io
+import threading
+
 import pytest
 
 import multiSSH3
@@ -541,3 +544,77 @@ def test_generate_display_shows_typed_nul_in_input_line(stub_curses_harness, fak
 
 	assert result[6] == "Refresh requested"  # not "Error: embedded null character"
 	assert any("a^@b" in text for text in _rendered_text(stub_curses_harness))
+
+
+def _type_keys(harness, fake_host, monkeypatch, keys, history=None):
+	"""Feed keys to the display as getch() returns them, then Ctrl-R; returns the display's result."""
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list(line) for line in history or [[]]])
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	harness.inject_keys(list(keys) + [12])
+	return multiSSH3.__generate_display(harness.window, [host], min_char_len=10, min_line_len=2)
+
+
+def _sent_bytes(fake_host):
+	"""What the hosts' stdin gets for the lines typed so far."""
+	class RecordingPipe(io.BytesIO):
+		def close(self):
+			self.sent = self.getvalue()
+			super().close()
+
+	pipe = RecordingPipe()
+	host = fake_host("mock-b", "cat")
+	host.interactive_stdin = False  # the TUI is gone: send every finished line, then end of input
+	multiSSH3.__handle_writing_stream(pipe, threading.Event(), host)
+	return pipe.sent
+
+
+@pytest.mark.parametrize(
+	"typed",
+	["héllo", "€", "日本", "😀"],
+)
+def test_generate_display_decodes_characters_typed_in_several_bytes(stub_curses_harness, fake_host, monkeypatch, typed):
+	# getch() returns each byte of a UTF-8 character on its own: é comes as 0xc3, then 0xa9
+	result = _type_keys(stub_curses_harness, fake_host, monkeypatch, typed.encode("utf-8"))
+
+	assert multiSSH3.__keyPressesIn == [list(typed)]  # not "hÃ©llo"
+	assert result[1] == len(typed)  # the cursor moved one place per character
+
+
+def test_characters_typed_in_several_bytes_reach_the_hosts_as_typed(stub_curses_harness, fake_host, monkeypatch):
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, "héllo\n".encode("utf-8"))
+
+	assert _sent_bytes(fake_host) == "héllo\n".encode("utf-8")  # not 68 c3 83 c2 a9 6c 6c 6f 0a
+
+
+def test_bytes_outside_the_encoding_reach_the_hosts_unchanged_and_in_order(stub_curses_harness, fake_host, monkeypatch):
+	# a Latin-1 terminal in a UTF-8 session: é is the single byte 0xe9, which starts a UTF-8 sequence
+	# that the next key (a, then Enter) cuts short
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, b"caf\xe9a\xe9\n")
+
+	assert _sent_bytes(fake_host) == b"caf\xe9a\xe9\n"
+
+
+def test_input_line_shows_bytes_outside_the_encoding_as_hex(stub_curses_harness, fake_host, monkeypatch):
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, [*b"caf\xe9!", -1])  # one redraw before Ctrl-R
+
+	assert any("caf\\xe9!" in text for text in _rendered_text(stub_curses_harness))  # the byte sent, not \udce9
+
+
+def test_sent_line_echo_shows_what_was_sent(fake_host, monkeypatch):
+	import time
+
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list("hé caf\udce9\n"), []])
+	host = fake_host("mock-b", "cat")
+	host.interactive_stdin = True
+	stop = threading.Event()
+	writer = threading.Thread(target=multiSSH3.__handle_writing_stream, args=(io.BytesIO(), stop, host), daemon=True)
+	writer.start()
+	deadline = time.monotonic() + 5
+	while not host.output and time.monotonic() < deadline:
+		time.sleep(0.01)
+	stop.set()
+	writer.join(timeout=5)
+
+	assert host.output == ["> hé caf\\xe9↵"]
