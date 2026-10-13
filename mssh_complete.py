@@ -5227,7 +5227,8 @@ switch "$FISH_VERSION"
 					set -l line (bind -M $mode \cr 2>/dev/null)
 					test (count $line) -ge 1; or continue
 					string match -q '*__mssh_complete_ctrl_r*' -- "$line[-1]"; and continue
-					eval "set -g __mssh_complete_words -- $line[-1]"
+					# the words of bind's line: -- goes before the name (after it, set keeps a -- as a value)
+					eval "set -g -- __mssh_complete_words $line[-1]"
 					set -l words $__mssh_complete_words[2..-1]
 					set -e __mssh_complete_words
 					while set -q words[1]; and string match -q -- '-*' $words[1]
@@ -5287,7 +5288,7 @@ switch "$FISH_VERSION"
 					set -l line (bind -M $mode ' ' 2>/dev/null)
 					test (count $line) -ge 1; or continue
 					string match -q '*__mssh_complete_check*' -- "$line[-1]"; and continue
-					eval "set -g __mssh_complete_words -- $line[-1]"
+					eval "set -g -- __mssh_complete_words $line[-1]"
 					set -l words $__mssh_complete_words[2..-1]
 					set -e __mssh_complete_words
 					while set -q words[1]; and string match -q -- '-*' $words[1]

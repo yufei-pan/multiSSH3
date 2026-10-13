@@ -705,3 +705,21 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 		assert printed(session, 'ls\x12') == 'FISHPREV'
 	finally:
 		session.close()
+
+
+@pytest.mark.parametrize('pre', ['', "bind \\cr 'commandline -r FISHPREV'"], ids=['fish-binding', 'own-binding'])
+def test_fish_keys_taken_run_only_what_they_ran_before(home, pre):
+	# the glue keeps the commands of the bindings it takes, not bind's options or the key: fish ran
+	# those as commands (Unknown command: space) at every space (fish 4) and at Ctrl-R on other lines
+	env, home = home
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)
+	try:
+		session.send('echo a b')
+		read_until_shown(session, 'echo a b')
+		session.send('\x12')
+		if pre:
+			assert 'FISHPREV' in read_until_shown(session, 'FISHPREV')
+		errors = [row for row in settled(session) if 'fish:' in row or "in function '__mssh" in row]
+		assert errors == []
+	finally:
+		session.close()
