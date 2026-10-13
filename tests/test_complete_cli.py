@@ -179,3 +179,19 @@ def test_a_real_fish_version_is_read_without_its_config(tmp_path, monkeypatch):
 
 	assert mc._fish_major() == int(reference.split('.')[0])
 	assert not (home / 'config-ran').exists() and not (home / 'conf.d-ran').exists()
+
+
+@pytest.mark.parametrize('action', ['install', 'uninstall'])
+def test_a_shell_named_without_autocomplete_is_named_back(capsys, action):
+	# not "cannot tell which shell to set up, name it": it was named
+	assert mc.completion_command([action, 'tcsh']) == 2
+
+	error = capsys.readouterr().err
+	assert 'tcsh' in error and 'bash, zsh' in error and 'cannot tell' not in error
+
+
+def test_a_shell_that_cannot_be_told_is_asked_for(capsys, monkeypatch):
+	monkeypatch.setattr(mc, 'detect_shell', lambda: None)
+
+	assert mc.completion_command(['install']) == 2
+	assert 'cannot tell which shell to set up' in capsys.readouterr().err

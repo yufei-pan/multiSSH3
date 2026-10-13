@@ -5606,6 +5606,9 @@ def completion_command(values):
 		values = values[:-1]
 	if action in ('install', 'uninstall') and len(values) <= 2:
 		shell = values[1] if len(values) == 2 else detect_shell()
+		if shell not in SHELLS and len(values) == 2:
+			print('mssh: autocomplete is for bash, zsh and fish, not {}'.format(shell), file=sys.stderr)
+			return 2
 		if shell not in SHELLS:
 			print('mssh: cannot tell which shell to set up, name it: mssh --completion {} bash|zsh|fish'.format(action), file=sys.stderr)
 			return 2
