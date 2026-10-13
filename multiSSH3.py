@@ -2292,9 +2292,10 @@ def _ipmi_definitions_for_host(hostname):
 	the DEFAULT_IPMI_* values, as the command line's IPMI options change them), and the DEFAULT_IPMI_*
 	definition itself: first when the command line gives IPMI options, else where the list marks it,
 	else last. Every wrong login can count towards the BMC locking the account, so:
-	- when a listed definition applies to the host, the DEFAULT_IPMI_* one is only added with -iu / -ip
-	  or a DEFAULT_IPMI_PASSWORD of the user's: else it is the built-in admin / admin, or a username
-	  with the built-in password, that nobody gave as a login
+	- when a listed definition applies to the host, the DEFAULT_IPMI_* one is only added with -iu / -ip,
+	  or when DEFAULT_IPMI_PASSWORD was set (by a config file, or to something else than the built-in
+	  one) and the login is not admin / admin (mssh writes the built-in login into the config files it
+	  makes): else nobody gave it as a login
 	- a login is tried once, however many definitions hold it
 
 	Args:
@@ -2316,7 +2317,12 @@ def _ipmi_definitions_for_host(hostname):
 			continue
 		listed.append(dict(ChainMap(definition, default)))
 	login_given = 'username' in _ipmi_command_line or 'password' in _ipmi_command_line
-	if listed and not login_given and str(default.get('password')) == str(_BUILTIN_IPMI_DEFINITION['password']):
+	builtin_login = all(str(default.get(key)) == str(_BUILTIN_IPMI_DEFINITION[key]) for key in ('username', 'password'))
+	# a password configured as 'admin' is still a login of the user's (root / admin on some boards);
+	# one that is not 'admin' was set by someone (a config file, or a program importing mssh)
+	password_configured = 'DEFAULT_IPMI_PASSWORD' in __configs_from_file or str(default.get('password')) != str(_BUILTIN_IPMI_DEFINITION['password'])
+	login_configured = password_configured and not builtin_login
+	if listed and not login_given and not login_configured:
 		candidates = listed
 	elif _ipmi_command_line:
 		candidates = [default] + listed

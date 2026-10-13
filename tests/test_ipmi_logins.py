@@ -53,26 +53,28 @@ def _login(argv):
 	return (user, password, ' '.join(rest[:-2]))
 
 
-def logins_tried(monkeypatch, config=None, argv=(), host='bmc1', command_line=True):
+def logins_tried(monkeypatch, config=None, argv=(), host='bmc1', command_line=True, set_in_code=None):
 	'''
 	The ipmitool logins mssh tries on host, in order, when every one fails.
 
 	config is what the config files set, applied to the module the way loading them at import
 	does; argv is the rest of the command line after "-M host 'power status'". Without
-	command_line the module runs the host as when imported (no process_args).
+	command_line the module runs the host as when imported (no process_args). set_in_code holds
+	module globals a program importing mssh sets itself.
 	'''
-	runs = commands_run(monkeypatch, config, argv, host, command_line)
+	runs = commands_run(monkeypatch, config, argv, host, command_line, set_in_code=set_in_code)
 	return [_login(run) for run in runs if run[:2] == ['/bin/sh', '-c']]
 
 
-def commands_run(monkeypatch, config=None, argv=(), host='bmc1', command_line=True, bins=('sh', 'ipmitool', 'ssh')):
+def commands_run(monkeypatch, config=None, argv=(), host='bmc1', command_line=True, bins=('sh', 'ipmitool', 'ssh'), set_in_code=None):
 	'''Every command line mssh runs for host in --ipmi mode when each one fails (see logins_tried).'''
 	for name, value in BUILTIN.items():
 		monkeypatch.setattr(multiSSH3, name, value)
 	# DEFAULT_IPMI_DEFINITIONS as the module builds it before any config file loads
 	monkeypatch.setattr(multiSSH3, 'DEFAULT_IPMI_DEFINITIONS', [dict(BUILTIN_DEFINITION)])
-	monkeypatch.setattr(multiSSH3, '__configs_from_file', {})
-	for name, value in (config or {}).items():
+	# loading config files at import also records their keys
+	monkeypatch.setattr(multiSSH3, '__configs_from_file', copy.deepcopy(config or {}))
+	for name, value in dict(config or {}, **(set_in_code or {})).items():
 		monkeypatch.setattr(multiSSH3, name, copy.deepcopy(value))
 	if command_line:
 		args = multiSSH3.process_args(['-M', host, 'power status'] + list(argv))
@@ -163,6 +165,30 @@ def test_config_username_without_password_adds_no_login_after_the_definitions(mo
 	# root / admin, the configured user with the built-in password, was tried last
 	config = {'DEFAULT_IPMI_USERNAME': 'root', 'DEFAULT_IPMI_DEFINITIONS': [{'password': 'p1'}, {'password': 'p2'}]}
 	assert logins_tried(monkeypatch, config) == [('root', 'p1', ''), ('root', 'p2', '')]
+
+
+def test_configured_password_admin_is_tried_after_the_definitions(monkeypatch):
+	# root / admin is a real login (ASRock BMCs): configured, it is tried even though the password is the built-in one
+	config = {'DEFAULT_IPMI_USERNAME': 'root', 'DEFAULT_IPMI_PASSWORD': 'admin', 'DEFAULT_IPMI_DEFINITIONS': [{'username': 'x', 'password': 'px'}]}
+	assert logins_tried(monkeypatch, config) == [('x', 'px', ''), ('root', 'admin', '')]
+
+
+def test_configured_admin_admin_is_not_tried_after_the_definitions(monkeypatch):
+	# --generate_config_file / --store_config_file write the built-in login out: still not tried next to a definition
+	config = {'DEFAULT_IPMI_USERNAME': 'admin', 'DEFAULT_IPMI_PASSWORD': 'admin', 'DEFAULT_IPMI_DEFINITIONS': [
+		dict(BUILTIN_DEFINITION), {'username': 'x', 'password': 'px'}]}
+	assert logins_tried(monkeypatch, config) == [('x', 'px', '')]
+
+
+def test_password_set_in_code_is_tried_after_the_definitions(monkeypatch):
+	config = {'DEFAULT_IPMI_DEFINITIONS': [{'username': 'x', 'password': 'px'}]}
+	tried = logins_tried(monkeypatch, config, command_line=False, set_in_code={'DEFAULT_IPMI_PASSWORD': 'pw'})
+	assert tried == [('x', 'px', ''), ('admin', 'pw', '')]
+
+
+def test_command_line_password_admin_is_tried_first(monkeypatch):
+	config = {'DEFAULT_IPMI_USERNAME': 'root', 'DEFAULT_IPMI_DEFINITIONS': [{'username': 'x', 'password': 'px'}]}
+	assert logins_tried(monkeypatch, config, ['-ip', 'admin']) == [('root', 'admin', ''), ('x', 'px', '')]
 
 
 def test_admin_admin_listed_in_the_definitions_is_tried_once(monkeypatch):

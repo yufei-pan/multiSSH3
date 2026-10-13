@@ -210,7 +210,7 @@ A wrong login can count towards the BMC locking the account, so mssh tries each 
 2. **`DEFAULT_IPMI_DEFINITIONS`** (config file), in order. A key a definition leaves out comes from the `DEFAULT_IPMI_*` values, or from the command line when it gives that option: `-ia='-I lanplus'` reaches every definition without its own `args`.
 3. **`DEFAULT_IPMI_USERNAME` / `DEFAULT_IPMI_PASSWORD`** (config file), when step 1 did not try them.
 
-When a definition of step 2 applies to the host, the login of step 1 or 3 is only tried if `-iu` or `-ip` is given or `DEFAULT_IPMI_PASSWORD` is set to something other than `admin`. Otherwise it would be the built-in `admin` / `admin`, or your username with the built-in password `admin`, which you did not give as a login. So `admin` / `admin` is only tried on a host nothing else is configured for; to try it after your logins, list it: `{"username": "admin", "password": "admin"}`.
+When a definition of step 2 applies to the host, the login of step 1 or 3 is only tried if `-iu` or `-ip` is given, or if a config file sets `DEFAULT_IPMI_PASSWORD` and the login is not `admin` / `admin`. A configured password `admin` counts (`root` / `admin` is the login of some boards); a `DEFAULT_IPMI_USERNAME` without a password only fills in the definitions that leave their username out. `admin` / `admin` itself, the built-in login (which `--generate_config_file` and `--store_config_file` write out too), is only tried on a host nothing else is configured for, or when typed as `-iu admin -ip admin`. To try it after your logins, list it: `{"username": "admin", "password": "admin"}`.
 
 | Config file | Command line | Logins tried, in order |
 | --- | --- | --- |
@@ -221,6 +221,8 @@ When a definition of step 2 applies to the host, the login of step 1 or 3 is onl
 | the same | `-iu root -ip pw` | `root`/`pw`, `u1`/`p1`, `u2`/`p2` |
 | the same | `-ia='-I lanplus'` | `u1`/`p1`, `u2`/`p2`, both with `-I lanplus` |
 | `DEFAULT_IPMI_USERNAME`, `DEFAULT_IPMI_PASSWORD` and `DEFAULT_IPMI_DEFINITIONS` as above | | `u1`/`p1`, `u2`/`p2`, `ADMIN`/`pw` |
+| `"DEFAULT_IPMI_USERNAME": "root", "DEFAULT_IPMI_PASSWORD": "admin"` and the definitions above | | `u1`/`p1`, `u2`/`p2`, `root`/`admin` |
+| `"DEFAULT_IPMI_USERNAME": "root", "DEFAULT_IPMI_DEFINITIONS": [{"password": "p1"}, {"password": "p2"}]` | | `root`/`p1`, `root`/`p2` |
 | `"DEFAULT_IPMI_DEFINITIONS": [{"hostname_keyword": "gpu", "username": "root", "password": "x"}]` | | `root`/`x` on `gpu01`, `admin`/`admin` on `cpu01` |
 
 A host that fails every login then gets `ipmitool` run on it over ssh (see `-M, --ipmi`), once: mssh does not run a command line it already ran on that host.
