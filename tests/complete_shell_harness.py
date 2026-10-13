@@ -1,5 +1,6 @@
 '''Drive real shells for the autocomplete tests: a pseudo-terminal session, or a direct call.'''
 import fcntl
+import json
 import os
 import pty
 import select
@@ -32,8 +33,10 @@ def make_home(tmp_path, history_lines=()):
 	A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).
 
 	The prober's lock is taken, so no prober runs (no DNS, no ping): tests that want answers about
-	hosts write host-state.tsv themselves.
+	hosts write host-state.tsv themselves. An mssh config in HOME keeps this machine's /etc/hosts and
+	/etc/profile.d/hosts.sh out of the host names the engine offers.
 	'''
+	import multiSSH3
 	home = tmp_path / 'home'
 	runtime = tmp_path / 'runtime'
 	home.mkdir()
@@ -41,6 +44,8 @@ def make_home(tmp_path, history_lines=()):
 	(runtime / 'multiSSH3').mkdir(mode=0o700)
 	(runtime / 'multiSSH3' / 'probe.lock').write_text('')
 	(home / '.mssh_history').write_text(''.join(line + '\n' for line in history_lines))
+	(home / '.multiSSH3.config.json').write_text(json.dumps({'DEFAULT_HOST_FILE': str(home / 'hosts'),
+		'DEFAULT_ENV_FILES': [path for path in multiSSH3.DEFAULT_ENV_FILES if path.startswith('~')]}))
 	env = {
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
 		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '5',

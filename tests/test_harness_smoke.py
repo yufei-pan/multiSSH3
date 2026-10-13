@@ -1,8 +1,15 @@
+import os
+import pwd
+import socket
+import subprocess
 import sys
 
 import pytest
 
+import multiSSH3
+import mssh_complete
 from conftest import (
+	SESSION_HOME,
 	parse_mssh_test_hosts,
 	run_cli,
 	ssh_hosts_works,
@@ -79,3 +86,37 @@ def test_tty_or_curses_ok_uses_real_terminal(monkeypatch):
 def test_tty_or_curses_ok_false_without_real_tty(monkeypatch):
 	monkeypatch.setattr("conftest._real_tty_fd", lambda: (None, None))
 	assert tty_or_curses_ok() is False
+
+
+def test_the_tests_never_use_the_real_home():
+	real_home = pwd.getpwuid(os.getuid()).pw_dir
+	child = subprocess.run([sys.executable, "-c", "import os; print(os.path.expanduser('~'))"],
+		stdout=subprocess.PIPE, universal_newlines=True, check=True)
+
+	assert os.path.expanduser("~") == SESSION_HOME != real_home
+	# processes the tests start too: mssh run from a test writes its history there
+	assert child.stdout.strip() == SESSION_HOME
+	assert os.path.expanduser(multiSSH3.DEFAULT_HISTORY_FILE) == os.path.join(SESSION_HOME, ".mssh_history")
+
+
+@pytest.mark.parametrize("xdg", [True, False], ids=["xdg_runtime_dir", "temp_dir"])
+def test_the_tests_never_use_the_real_runtime_dir(monkeypatch, tmp_path_factory, xdg):
+	if not xdg:
+		# the end of the chain: <tempdir>/multiSSH3-<uid>
+		monkeypatch.delenv("XDG_RUNTIME_DIR")
+	base = str(tmp_path_factory.getbasetemp())
+
+	assert multiSSH3.runtime_dir().startswith(base + os.sep)
+	assert mssh_complete.cache_dir() == multiSSH3.runtime_dir()
+	assert multiSSH3._unavailable_hosts_file_path().startswith(base + os.sep)
+
+
+def test_the_tests_never_see_this_machine_s_host_names():
+	# its env files (/etc/profile.d/hosts.sh) and hosts file
+	assert multiSSH3.readEnvFromFile() == {}
+	assert multiSSH3.getIP("localhost") == "127.0.0.1"
+	# nor DNS: a search domain with a wildcard would give any short name an address
+	with pytest.raises(socket.gaierror):
+		socket.getaddrinfo("h", 22)
+	assert multiSSH3.getIP("h") is None
+	assert multiSSH3.expand_hostnames(["h", "127.0.0.1"]) == {"127.0.0.1": "127.0.0.1"}

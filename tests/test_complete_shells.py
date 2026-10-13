@@ -205,7 +205,7 @@ def test_uninstall_restores_rc_files(tmp_path, shell):
 	mc.uninstall(shell, home=str(home), environ=env)
 	assert {name: (home / name).read_bytes() for name in ('.bashrc', '.zshrc')} == before
 	left = [os.path.join(root, name) for root, _, names in os.walk(str(home)) for name in names]
-	assert sorted(left) == sorted([str(home / '.bashrc'), str(home / '.zshrc'), str(home / '.mssh_history')])
+	assert sorted(left) == sorted([str(home / '.bashrc'), str(home / '.zshrc'), str(home / '.mssh_history'), str(home / '.multiSSH3.config.json')])
 
 
 def test_uninstall_deletes_an_rc_file_it_created(tmp_path):
