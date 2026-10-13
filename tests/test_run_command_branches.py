@@ -449,6 +449,66 @@ def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, mo
 		"-i", identity_file]
 
 
+MSSH_SSH_OPTIONS = ["ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null"]
+
+
+@pytest.mark.parametrize("extraargs,ssh_words,rsync_words", [
+	("-o ConnectTimeout=5", ["-o", "ConnectTimeout=5"], []),
+	("-oConnectTimeout=5", ["-oConnectTimeout=5"], []),
+	("-p 2222", ["-p", "2222"], []),
+	("-p2222", ["-p2222"], []),
+	("-i /home/u/.ssh/id_ed25519", ["-i", "/home/u/.ssh/id_ed25519"], []),  # rsync -i sent the private key as a file
+	("-J root@bastion", ["-J", "root@bastion"], []),
+	("-F /home/u/ssh_config", ["-F", "/home/u/ssh_config"], []),
+	("-l root", ["-l", "root"], []),
+	("-c aes128-ctr", ["-c", "aes128-ctr"], []),
+	("--delete -o ConnectTimeout=5 -z", ["-o", "ConnectTimeout=5"], ["--delete", "-z"]),
+	# rsync's own options stay rsync's
+	("--delete", [], ["--delete"]),
+	("-i", [], ["-i"]),
+	("-p --delete", [], ["-p", "--delete"]),
+	("-P", [], ["-P"]),
+	("--bwlimit=1000 -z", [], ["--bwlimit=1000", "-z"]),
+	(["-o", "ConnectTimeout=5", "--delete"], ["-o", "ConnectTimeout=5"], ["--delete"]),
+	# as shlex.split gives it (-ea "-o 'ProxyCommand=ssh -W %h:%p bastion'"): one word in ssh's argv
+	(["-o", "ProxyCommand=ssh -W %h:%p bastion"], ["-o", "ProxyCommand=ssh -W %h:%p bastion"], []),
+], ids=["o", "o_attached", "p", "p_attached", "i", "J", "F", "l", "c", "mixed", "delete", "itemize", "perms", "progress",
+	"bwlimit", "list", "value_with_spaces"])
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_rsync_hands_ssh_options_from_extraargs_to_ssh(fake_host, monkeypatch, extraargs, ssh_words, rsync_words, gather):
+	# rsync read -ea "-o ConnectTimeout=5" as --owner and a file to copy named ConnectTimeout=5
+	monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, gatherMode=gather)
+
+	argv = calls[0]
+	assert _rsync_split(argv[argv.index("--rsh") + 1]) == MSSH_SSH_OPTIONS + ssh_words
+	assert argv[argv.index("--rsh") + 2:argv.index("--")] == rsync_words
+
+
+@pytest.mark.parametrize("extraargs,scp_words", [
+	("-p 2222", ["-P", "2222"]),  # scp's -p keeps times, its port is -P
+	("-p2222", ["-P2222"]),
+	("-P 2222", ["-P", "2222"]),
+	("-o ConnectTimeout=5 -J root@bastion", ["-o", "ConnectTimeout=5", "-J", "root@bastion"]),
+	("-l 8192", ["-l", "8192"]),  # scp's bandwidth limit
+], ids=["p", "p_attached", "P", "o_J", "limit"])
+def test_scp_gets_ssh_options_from_extraargs_its_way(fake_host, monkeypatch, extraargs, scp_words):
+	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, scp=True)
+
+	argv = calls[0]
+	assert argv[argv.index("-o UserKnownHostsFile=/dev/null") + 1:argv.index("--")] == scp_words
+
+
+def test_ssh_command_gets_extraargs_as_given(fake_host, monkeypatch):
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	host = fake_host("mock-a", "uptime", extraargs="-p 2222 -o ConnectTimeout=5")
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert calls[0][calls[0].index("-o UserKnownHostsFile=/dev/null") + 1:calls[0].index("--")] == ["-p", "2222", "-o", "ConnectTimeout=5"]
+
+
 @pytest.fixture
 def linked_tree(tmp_path):
 	'''A config that is a relative link to a file, a link to a directory, a dangling link and a directory.'''

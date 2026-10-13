@@ -2374,6 +2374,50 @@ def _rsync_link_sources(files):
 		kept.append((path, target, 'directory' if is_directory else 'nothing' if not exists else 'with_directory'))
 	return copy_links, kept
 
+# ssh's options that take a value. rsync has most of these letters as options without one (-o
+# owner, -p perms, -i itemize, ...) and took the value for a file to copy; -e and -B take a value in
+# rsync as well and stay rsync's
+_SSH_OPTIONS_WITH_VALUE = frozenset('bcDEFIiJLlmOoPpQRSWw')
+
+def _ssh_options_in(words):
+	'''
+	Split -ea's words into (ssh's options, the rest) for a copy that rsync runs over ssh.
+
+	An option is ssh's when it takes a value in ssh and its value follows as the next word, one
+	that does not start with -, or is attached as -oName=value or -pPORT: rsync has no such forms.
+	rsync read "-o ConnectTimeout=5" as --owner and a file to copy named ConnectTimeout=5, and
+	"-i ~/.ssh/id_ed25519" as --itemize-changes and the private key, which it copied to the hosts.
+	'''
+	ssh_words, rest = [], []
+	i = 0
+	while i < len(words):
+		word = str(words[i])
+		letter = word[1:2] if word.startswith('-') and not word.startswith('--') else ''
+		if letter in _SSH_OPTIONS_WITH_VALUE and len(word) == 2 and i + 1 < len(words) and not str(words[i + 1]).startswith('-'):
+			ssh_words += [word, str(words[i + 1])]
+			i += 2
+			continue
+		if (letter == 'o' and '=' in word) or (letter == 'p' and word[2:].isdigit()):
+			ssh_words.append(word)
+		else:
+			rest.append(word)
+		i += 1
+	return ssh_words, rest
+
+def _scp_port_option(words):
+	'''Return -ea's words for scp: ssh's -p PORT becomes -P PORT (scp's -p keeps file times).'''
+	out = []
+	i = 0
+	while i < len(words):
+		word = str(words[i])
+		if word == '-p' and i + 1 < len(words) and str(words[i + 1]).isdigit():
+			out += ['-P', str(words[i + 1])]
+			i += 2
+			continue
+		out.append('-P' + word[2:] if word.startswith('-p') and word[2:].isdigit() else word)
+		i += 1
+	return out
+
 _KEPT_LINK_WARNINGS = {
 	'directory': '{path} is a symbolic link to a directory, rsync copies the link (-> {target}), not the directory.',
 	'nothing': '{path} is a symbolic link to nothing here, rsync copies the link (-> {target}).',
@@ -2657,7 +2701,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				else:
 					fileArgs = host.files + [f'{remoteName}:{host.command}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
+					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + _scp_port_option(extraargs) +['--']+fileArgs
 				else:
 					# no --inplace: rsync writes a new file and renames it over the old one, so a running
 					# binary can be replaced and no reader sees a file half written
@@ -2673,7 +2717,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 					if gather_links:
 						# a link to a directory is skipped, rather than its links followed (see run_command)
 						formatedCMD.append('--no-recursive')
-					formatedCMD += rsyncLocalExtraArgs + extraargs +['--']+fileArgs
+					# -ea's ssh options go to ssh, after mssh's own as for a command
+					ssh_words, rsync_words = _ssh_options_in(extraargs)
+					rsh = ' '.join([rsyncLocalExtraArgs[1]] + [shlex.quote(word) for word in ssh_words])
+					formatedCMD += ['--rsh', rsh] + rsync_words +['--']+fileArgs
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:

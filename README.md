@@ -441,6 +441,7 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 
 ### `-ea, --extraargs EXTRAARGS` | _`DEFAULT_EXTRA_ARGS`_
 - Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.
+- For a file copy with rsync, ssh's options that take a value go to the ssh that rsync runs, and the other arguments to rsync: the option followed by its value as the next word (`-o ConnectTimeout=5`, `-p 2222`, `-i FILE`, `-J HOST`, `-F FILE`, `-l USER`, ...), or `-oName=value` and `-pPORT`. scp takes ssh's options itself; ssh's `-p PORT` is given to it as `-P PORT`.
 - Example:
 ```bash
 mssh -ea="--delete" -f ./data/ allServers /tmp/data/
