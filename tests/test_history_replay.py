@@ -165,6 +165,9 @@ ROUND_TRIPS = [
 	(['-u', 'root', '-ea=-o Port=2222', '-ci', '-j', '-g', '-eo', '-uhe', '42', '-r', '2', '-a'], {}, '127.0.0.1', ['true']),
 	(['-C', '-efs', 'T/hosts.env', '-X', '127.0.0.7', '-pre', '10.0.', '-q'], {'DEFAULT_ENV_FILES': []}, 'replay_group', ['true']),
 	(['-ef', 'T/hosts.env'], {}, 'replay_group,127.0.0.1', ['true']),
+	# a command word starting with "-" follows a "--", else it is read as an mssh option (-x, -a)
+	(['-q'], {}, '127.0.0.1', ['--', '-x']),
+	(['-a'], {}, '127.0.0.1', ['--', '-x', 'ls -l']),
 ]
 
 
@@ -208,16 +211,21 @@ def test_command_echo_replays_the_same_run(options, config, hosts, commands, rep
 def test_mssh_complete_reads_every_recorded_option(options, config, hosts, commands, replay_env, monkeypatch, capsys):
 	for name, value in config.items():
 		monkeypatch.setattr(multiSSH3, name, value)
-	_run_main(_case_argv(options, hosts, commands, replay_env), capsys)
+	ran, _ = _run_main(_case_argv(options, hosts, commands, replay_env), capsys)
 	line = (replay_env / 'history').read_text().splitlines()[-1]
 
 	entry = mc.parse_history_line(line, SPEC)
 
-	recorded = shlex.split(line.split('\t')[2])
+	recorded = [word for word in shlex.split(line.split('\t')[2])]
 	assert entry is not None
 	# every option is recorded as one word, its value attached: each one names an mssh option
 	assert len(entry.options) == len(recorded), (recorded, entry.option_texts)
 	assert entry.hosts == hosts
+	assert entry.commands == ran['commands']
+	# the Ctrl-R picker and the diagnostics replay read the line with its fields joined
+	fields = line.split('\t')
+	text = ' '.join(['mssh'] + [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS'])
+	assert mc.parse_context(text + ' ', '', SPEC).hosts == hosts
 
 
 def test_script_timeout_is_recorded_as_the_timeout_it_chose(replay_env, capsys):
@@ -269,6 +277,16 @@ def test_file_sync_does_not_take_the_hosts_as_a_path(replay_env, capsys):
 	line = (replay_env / 'history').read_text().splitlines()[-1]
 	recorded = shlex.split(line.split('\t')[2])
 	assert recorded[-1] != '-fs'
+
+
+def test_dash_commands_follow_a_double_dash_after_the_hosts(replay_env, capsys):
+	# "-- HOSTS -x" would do on 3.12+, but argparse 3.11 and older read -x as an option there
+	_, echo = _run_main(_case_argv(['-a'], '127.0.0.1', ['--', '-x', 'ls -l'], replay_env), capsys)
+	fields = (replay_env / 'history').read_text().splitlines()[-1].split('\t')
+	assert '--' not in shlex.split(fields[2])
+	assert shlex.split(fields[3]) == ['127.0.0.1', '--']
+	assert shlex.split(fields[4]) == ['-x', 'ls -l']
+	assert shlex.split(echo)[-4:] == ['127.0.0.1', '--', '-x', 'ls -l']
 
 
 def test_replaying_a_found_key_warns_of_nothing(replay_env, capsys):

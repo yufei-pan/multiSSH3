@@ -4377,8 +4377,13 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 	if commandArgKwargs.get('files'):
 		commandArgKwargs['file'] = list(commandArgKwargs.get('file') or []) + list(commandArgKwargs['files'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
-	commandStr = ' '.join(_shell_quote(command) for command in format_commands(commands))
+	commands = format_commands(commands)
+	commandStr = ' '.join(_shell_quote(command) for command in commands)
 	hostStr = _shell_quote(hostStr)
+	if any(command.startswith('-') for command in commands):
+		# else read as an mssh option. After the hosts, where it is typed: every Python's argparse reads
+		# "HOSTS -- -x" so, while 3.11 and older read -x as an option in "-- HOSTS -x"
+		hostStr += ' --'
 	filePath = os.path.abspath(__file__)
 	programName = _shell_quote(filePath) if filePath else 'mssh'
 	if tabSeperated:
