@@ -1189,19 +1189,6 @@ def _debug(message):
 		pass
 
 #%% ------------ Index sources ----------------
-def read_hosts_file(path):
-	'''name -> address from a hosts file.'''
-	hosts = {}
-	try:
-		with open(path, encoding='utf-8', errors='replace') as f:
-			for line in f:
-				fields = line.split('#', 1)[0].split()
-				for name in fields[1:]:
-					hosts.setdefault(name, fields[0])
-	except OSError:
-		pass
-	return hosts
-
 def read_ssh_config(path, base_dir, names, users, read):
 	'''
 	Add the Host names (no patterns) and User values of an ssh config file and the files it Includes.
@@ -1419,7 +1406,8 @@ def build_index(directory, now=None, mssh=None):
 		entry[0] |= source
 		if address and not entry[1]:
 			entry[1] = address
-	for name, address in read_hosts_file(mssh.DEFAULT_HOST_FILE).items():
+	# mssh's own reading, so the names marked as from the hosts file are the ones it finds there
+	for name, address in mssh.read_hosts_file(mssh.DEFAULT_HOST_FILE).items():
 		add(name, SRC_HOSTS_FILE, address)
 	ssh_names, users, ssh_paths = set(), set(), []
 	read_ssh_config('~/.ssh/config', os.path.expanduser('~/.ssh'), ssh_names, users, ssh_paths)

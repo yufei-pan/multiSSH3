@@ -115,7 +115,8 @@ DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
-DEFAULT_HOST_FILE = '/etc/hosts'
+_SYSTEM_HOST_FILE = '/etc/hosts'
+DEFAULT_HOST_FILE = _SYSTEM_HOST_FILE
 DEFAULT_ENCODING = 'utf-8'
 DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
 SSH_STRICT_HOST_KEY_CHECKING = False
@@ -156,6 +157,7 @@ _DEFAULT_RETURN_UNFINISHED = False
 _DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
 _DEFAULT_NO_START = False
 _etc_hosts = {}
+_etc_hosts_lock = threading.Lock()
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
@@ -362,6 +364,68 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
 		time.sleep(1)
 
+def read_hosts_file(path):
+	'''
+	Read a hosts file such as /etc/hosts: lines of an IP address followed by its names.
+
+	It is read as the C library reads it: text after # is a comment, lines that do not start with
+	an IP address are skipped, and a name listed twice keeps its first address. When a name has
+	both, it gets its first IPv4 address, as names looked up in DNS do. Bytes that are not UTF-8
+	are replaced, they never stop the read.
+
+	Args:
+		path (str): The hosts file
+
+	Returns:
+		dict: host name -> IP address, empty when the file cannot be read
+	'''
+	hosts = {}
+	if not path:
+		return hosts
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			for line in f:
+				fields = line.split('#', 1)[0].split()
+				if len(fields) < 2:
+					continue
+				address = fields[0]
+				ipv4 = ':' not in address
+				try:
+					socket.inet_pton(socket.AF_INET if ipv4 else socket.AF_INET6, address)
+				except (OSError, ValueError):
+					continue
+				for name in fields[1:]:
+					known = hosts.get(name)
+					if known is None or (ipv4 and ':' in known):
+						hosts[name] = address
+	except OSError:
+		pass
+	return hosts
+
+def _load_etc_hosts():
+	'''_etc_hosts, read from DEFAULT_HOST_FILE when empty (by one thread: the parallel lookups of a range all start here).'''
+	if not _etc_hosts:
+		with _etc_hosts_lock:
+			if not _etc_hosts:
+				_etc_hosts.update(read_hosts_file(DEFAULT_HOST_FILE))
+	return _etc_hosts
+
+def _host_file_warning():
+	'''
+	Why the hosts file the operator chose (--host_file) gives mssh no host names, or None when it does.
+
+	The system's own /etc/hosts is not checked: a system without one is not the operator's mistake.
+	'''
+	path = DEFAULT_HOST_FILE
+	if not path or path == _SYSTEM_HOST_FILE or _load_etc_hosts():
+		return None
+	if not os.path.exists(path):
+		return f'Warning: --host_file {path} does not exist'
+	if os.path.isdir(path) or not os.access(path, os.R_OK):
+		return f'Warning: --host_file {path} cannot be read'
+	return (f'Warning: --host_file {path} has no address lines, so it gives no host names. It is a hosts file like '
+		f'{_SYSTEM_HOST_FILE} (an IP address, then names, per line), not a list of hosts to run on.')
+
 def getIP(hostname: str,local=False):
 	'''
 	Get the IP address of the hostname
@@ -389,19 +453,7 @@ def _getIP(hostname, local):
 	except ValueError:
 		pass
 	# Then we check DEFAULT_HOST_FILE
-	if not _etc_hosts and os.path.exists(DEFAULT_HOST_FILE):
-		with open(DEFAULT_HOST_FILE,'r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
-					continue
-				#ip, host = line.split()[:2]
-				chunks = line.split()
-				if len(chunks) < 2:
-					continue
-				ip = chunks[0]
-				for host in chunks[1:]:
-					_etc_hosts[host] = ip
-	if hostname in _etc_hosts:
+	if hostname in _load_etc_hosts():
 		return _etc_hosts[hostname]
 	if local:
 		return None
@@ -2746,17 +2798,17 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 		if not ip_prefix:
 			ip_prefix = host.interface_ip_prefix
 		if ip_prefix:
-			try:
-				if ':' in str(host.ip):
-					raise ValueError('interface_ip_prefix only applies to IPv4 addresses')
-				hostOctets = host.ip.split('.')
+			if _interface_prefix_applies(host.ip):
+				hostOctets = str(host.ip).split('.')
 				# '172.30.' means the same as '172.30', not an empty third octet
-				prefixOctets = ip_prefix.rstrip('.').split('.')
+				prefixOctets = str(ip_prefix).rstrip('.').split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
-			except Exception:
-				host.output.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+			else:
+				# run_command_on_hosts said so before the run too, outside the TUI
+				warning = _interface_prefix_warning(ip_prefix, [host.name])
+				host.output.append(warning)
 				if __DEBUG_MODE:
-					host.stderr.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+					host.stderr.append(warning)
 		if username:
 			host.resolvedName = username + '@' + host.address
 		else:
@@ -2899,6 +2951,14 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 		host.returncode = -1
 		return attempt('stop')
 	return attempt('run', formatedCMD)
+
+def _interface_prefix_applies(ip):
+	'''Whether an interface IP prefix (-pre, -mpre) can rewrite ip: it replaces the leading octets of IPv4 addresses.'''
+	return bool(ip) and ':' not in str(ip)
+
+def _interface_prefix_warning(prefix, names):
+	'''The warning for hosts an interface IP prefix cannot apply to: mssh connects to them by name.'''
+	return f"Warning: interface IP prefix {prefix} not applied to {','.join(compact_hostnames_local(names))}: no IPv4 address, connecting by name"
 
 def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 	'''
@@ -5417,6 +5477,12 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			_abort(max(1, __mainReturnCode), 'no hosts to run on', called=called)
 		if all(host in skipHostSet or targetHostDic[host] in skipHostSet for host in targetHostDic):
 			eprint('Warning: -X, --skip_hosts leaves no hosts to run on')
+	if interface_ip_prefix and not __global_suppress_printout:
+		# said once here: run_command's own warning only reaches the TUI
+		unprefixed = [host for host, ip in targetHostDic.items()
+			if not _interface_prefix_applies(ip) and host not in skipHostSet and ip not in skipHostSet]
+		if unprefixed:
+			eprint(_interface_prefix_warning(interface_ip_prefix, unprefixed))
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
@@ -5844,7 +5910,7 @@ def get_parser():
 	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
-	parser.add_argument('--host_file', type=str,help=f'File containing list of hosts to run the command on, one host per line. Default:{DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
+	parser.add_argument('--host_file', type=str,help=f'The hosts file mssh looks host names up in before DNS, in the format of {_SYSTEM_HOST_FILE} (an IP address, then names, per line). Not a list of hosts to run on. Default: {DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
 	parser.add_argument('--completion', nargs='+', metavar='ARG', help='Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL] [editor]" / "uninstall [SHELL]" it for the current user ("editor": the plain-bash mssh line editor)')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
@@ -6192,6 +6258,10 @@ def main(args = None):
 	if args.no_output:
 		__global_suppress_printout = True
 	if not __global_suppress_printout:
+		# before the echo, whose host lookups may already fail because of it
+		host_file_warning = _host_file_warning()
+		if host_file_warning:
+			eprint(host_file_warning)
 		cmdStr = getStrCommand(**vars(args))
 		eprint('> ' + cmdStr)
 		# read from the current directory before 6.27

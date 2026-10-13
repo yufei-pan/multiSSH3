@@ -234,7 +234,7 @@ First, mssh will expand [a-b] ranges in the hostname strings.
 
 When hostname need to be resolved, mssh will check in the following order:
 - Return if it is an ipv4 address
-- Return if hostname is in /etc/hosts
+- Return if hostname is in the hosts file (`/etc/hosts`, or `--host_file`): its first IPv4 address there, else its first IPv6 address
 - If `-C, --no_env` is not specified and hostname is in current terminal environment variables
     - Redo the whole range -> hostname resolution logic with the resolved env variable value.
 - hostname is in map generated from env_file(s) specified by `--env_files ENV_FILES`
@@ -538,6 +538,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The prefix of the for the interfaces. Will replace the resolved IP address with the given prefix when connecting to the host.
 - Will prioritize `IPMI_INTERFACE_IP_PREFIX` if it exists when in ipmi mode.
 - Ex: `10.0.0.1` + `-pre '172.30'` (or `'172.30.'`) -> `172.30.0.1`
+- Only IPv4 addresses are rewritten. mssh connects to hosts without one by name, and says which before the run.
 
 ### `-iu, --ipmi_username IPMI_USERNAME` | _`DEFAULT_IPMI_USERNAME`_
 - The username to use to connect to the hosts via ipmi.
@@ -722,6 +723,13 @@ Host *
   ControlPath /run/user/%i/ssh_sockets_%C
   ControlPersist 3600
 ```
+
+### `--host_file HOST_FILE` | _`DEFAULT_HOST_FILE`_
+- The hosts file mssh looks host names up in before DNS ( see Hostname Resolution Logic ). Default: `/etc/hosts`.
+- In the format of `/etc/hosts`: an IP address, then its names, per line. Text after `#` is a comment, and lines that do not start with an IP address are skipped.
+- A name listed more than once gets its first IPv4 address, else its first IPv6 address.
+- It is not a list of hosts to run on. mssh warns when the file does not exist or has no address lines.
+- mssh uses these addresses for `#IP#`, `-pre` and to check host names. ssh is still given the host name ( or the `-pre` address ), so it must find the name on its own ( DNS, `/etc/hosts`, `~/.ssh/config` ).
 
 ### `-V, --version` | False
 - Print the version of multiSSH3 and exit.

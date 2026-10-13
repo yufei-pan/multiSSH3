@@ -325,7 +325,7 @@ def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
 	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
 
 	assert commands[0][-2] == "v6-host"  # [ssh, ..., '--', target, command]: not rewritten to 10.0.0.x
-	assert any("ip_prefix" in line for line in host.output)
+	assert "Warning: interface IP prefix 10.0.0. not applied to v6-host: no IPv4 address, connecting by name" in host.output
 
 
 @pytest.mark.parametrize("prefix, address", [

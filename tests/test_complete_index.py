@@ -59,6 +59,21 @@ def test_build_index_collects_every_source(home):
 	assert index.header['history_offset'] == str(os.path.getsize(str(home / '.mssh_history')))
 
 
+def test_the_index_holds_the_hosts_file_names_mssh_resolves(home, tmp_path, monkeypatch):
+	# the names marked as from the hosts file are valid without DNS: exactly the ones mssh finds there
+	hosts = tmp_path / 'hosts'
+	hosts.write_bytes(b'10.0.0.5 node5 # old rack, ask Jos\xe9\nnode1 node2\nfd00::5 node5 node5-v6\n10.0.0.300 node3\n')
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_HOST_FILE', str(hosts))
+	monkeypatch.setattr(multiSSH3, '_etc_hosts', {})
+	multiSSH3.getIP.cache_clear()
+	index, _ = build()
+	table = mc.HostTable(index)
+	from_hosts_file = {name for name in table.names if table.sources(name) & mc.SRC_HOSTS_FILE}
+	candidates = ('node1', 'node2', 'node3', 'node5', 'node5-v6', 'old', 'rack', '#')
+	assert from_hosts_file == {name for name in candidates if multiSSH3.getIP(name, local=True)} == {'node5', 'node5-v6'}
+	multiSSH3.getIP.cache_clear()
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
