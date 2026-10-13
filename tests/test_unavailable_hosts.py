@@ -482,6 +482,14 @@ def test_remote_errors_mentioning_routes_or_timeouts_do_not_mark_the_host_unreac
 	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
 
 
+
+def test_ssh_connect_error_splits_only_ssh_own_line():
+	# the same helper as patch/ssh-error-text's, so the two merge into one
+	assert multiSSH3._ssh_connect_error(" ssh: connect to host web1 port 22: No route to host\n") == (
+		"web1", "22", "No route to host")
+	assert multiSSH3._ssh_connect_error("curl: (7) Failed to connect to repo.example port 443: No route to host") is None
+	assert multiSSH3._ssh_connect_error("remote says ssh: connect to host web1 port 22: No route to host") is None
+
 def test_with_no_skip_unreachable_a_host_is_skipped_after_an_earlier_command_without_an_a_hint(monkeypatch, tmp_path):
 	# -a only stops using earlier runs: within one run a host found unreachable is still skipped
 	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})

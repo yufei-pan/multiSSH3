@@ -3643,6 +3643,17 @@ def pre_merge_hosts(hosts):
 			hosts.remove(group[i])
 	return hosts
 
+_SSH_CONNECT_ERROR = re.compile(r'ssh: connect to host (\S+) port (\S+): (.+)')
+
+def _ssh_connect_error(line):
+	'''
+	Split ssh's own "ssh: connect to host HOST port PORT: REASON" line into (host, port, reason).
+
+	Returns None for any other line, such as a remote program's error ending with the same reason.
+	'''
+	match = _SSH_CONNECT_ERROR.fullmatch(line.strip())
+	return match.groups() if match else None
+
 def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
@@ -4064,20 +4075,25 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 	return clean
 
 
-# ssh's own message for a host it could not reach, directly or through a ProxyJump host (older OpenSSH).
-# A remote command printing the same words (curl: ... No route to host) did reach its host.
-_SSH_UNREACHABLE_RE = re.compile(r'^(?:ssh: connect to host \S+ port \S+|channel \d+: open failed: connect failed): (?:No route to host|Connection timed out)$')
+# reasons in ssh's connect error that mean nothing answered (Connection refused: the host did)
+_SSH_UNREACHABLE_REASONS = ('No route to host', 'Connection timed out')
+# older OpenSSH's message when a ProxyJump host cannot reach the target
+_SSH_JUMP_UNREACHABLE = re.compile(r'channel \d+: open failed: connect failed: (?:No route to host|Connection timed out)')
 
 def _found_unreachable(host):
 	'''
 	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
 
 	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
-	cannot be reached. A command stopped by the timeout (-t) counts too: a host that never
+	cannot be reached; a remote command printing the same words (curl: ... No route to host)
+	did reach its host. A command stopped by the timeout (-t) counts too: a host that never
 	answers looks like that.
 	'''
-	if host.returncode == 255 and host.stderr and _SSH_UNREACHABLE_RE.match(host.stderr[0].strip()):
-		return True
+	if host.returncode == 255 and host.stderr:
+		first_line = host.stderr[0].strip()
+		connect_error = _ssh_connect_error(first_line)
+		if (connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS) or _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
+			return True
 	return host.returncode == 124 and any(line.strip().startswith('Timeout!') for line in host.stderr)
 
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
