@@ -1157,6 +1157,9 @@ def expand_ranges(text, limit=100000):
 	for part in body.split(','):
 		low, sep, high = part.strip().partition('-')
 		if sep and _is_digits(low) and _is_digits(high):
+			if len(values) + int(high) - int(low) >= limit:
+				# past the limit: given back whole without writing it out (node[1-10000000] took 1.5 s)
+				return [text]
 			width = min(len(low), len(high))
 			values.extend('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
 		elif not sep and part.strip():
@@ -1171,6 +1174,84 @@ def expand_ranges(text, limit=100000):
 		if len(out) > limit:
 			return [text]
 	return out
+
+def range_union(texts, limit, budget):
+	'''
+	What expand_ranges(text, limit) gives for each of texts, as one set, writing each name once:
+	the number ranges of texts with one [...] are merged first, so hundreds of overlapping wide
+	ranges cost what the hosts they cover cost, not what all their members cost. Writing stops
+	after budget names (no deadline: the answer must not depend on how fast the machine is);
+	texts come most important first, and the merged numbers are written in the order texts
+	first name them, then the texts with more [...].
+	'''
+	names = set()
+	spans = {}   # (text before the [, text after the ], digits) -> [(low, high)] of the a-b parts
+	order = []   # keys of spans, as texts first name them
+	other = []   # texts with more than one [...]: expand_ranges takes them apart
+	for text in texts:
+		start = text.find('[')
+		end = text.find(']', start + 1)
+		if start < 0 or end < 0 or '[' in text[end + 1:]:
+			other.append(text)
+			continue
+		head, tail, body = text[:start], text[end + 1:], text[start + 1:end]
+		if '[' in body:
+			# a value holding a [ is read again as a range
+			other.append(text)
+			continue
+		parts = []
+		count = 0
+		# expand_ranges' reading of the parts: a-b with digits, or one value
+		for part in body.split(','):
+			low, sep, high = part.strip().partition('-')
+			if sep and _is_digits(low) and _is_digits(high):
+				parts.append((low, high))
+				count += max(int(high) - int(low) + 1, 0)
+			elif not sep and part.strip():
+				parts.append((part.strip(), None))
+				count += 1
+			else:
+				count = None
+				break
+		if count is None or count > limit:
+			# given back whole (letters, hex, past the limit)
+			names.add(text)
+			continue
+		for low, high in parts:
+			if high is None:
+				names.add(head + low + tail)
+				continue
+			key = (head, tail, min(len(low), len(high)))
+			if key not in spans:
+				spans[key] = []
+				order.append(key)
+			spans[key].append((int(low), int(high)))
+	written = 0
+	for key in order:
+		head, tail, width = key
+		merged = []
+		for low, high in sorted(spans[key]):
+			if low > high:
+				continue
+			if merged and low <= merged[-1][1] + 1:
+				merged[-1][1] = max(merged[-1][1], high)
+			else:
+				merged.append([low, high])
+		for low, high in merged:
+			if written >= budget:
+				return names
+			last = min(high, low + budget - written - 1)
+			names.update('{}{:0{}d}{}'.format(head, number, width, tail) for number in range(low, last + 1))
+			written += last - low + 1
+	for text in other:
+		if written >= budget:
+			break
+		members = expand_ranges(text, limit)
+		names.update(members)
+		# a range past the limit comes back whole after about the limit's worth of names
+		count = _range_count(text)
+		written += max(len(members), min(count, limit) if count is not None else 0)
+	return names
 
 #%% ------------ Cache directory ----------------
 def _private_dir(path, create=True):
@@ -2447,22 +2528,6 @@ def _padded_range(name):
 		return None
 	return '{}[{}-{}]{}'.format(name[:start], low.zfill(len(high)), high, name[end + 1:])
 
-def _strip_zeros(name):
-	'''name with leading zeros dropped from every run of digits: gpu017 -> gpu17.'''
-	out = []
-	index = 0
-	while index < len(name):
-		end = index
-		while end < len(name) and name[end] in _DIGITS:
-			end += 1
-		if end > index:
-			out.append(name[index:end].lstrip('0') or '0')
-			index = end
-		else:
-			out.append(name[index])
-			index += 1
-	return ''.join(out)
-
 def _one_edit(typed, other):
 	'''Whether other is one insertion, deletion, substitution or swap of adjacent characters away from typed.'''
 	if typed == other:
@@ -2478,6 +2543,77 @@ def _one_edit(typed, other):
 	short, long_ = (typed, other) if len(typed) < len(other) else (other, typed)
 	return any(long_[:index] + long_[index + 1:] == short for index in range(len(long_)))
 
+# Did-you-mean searches the sorted host names by bisecting: with 50k hosts, stripping or comparing
+# every name cost 33 ms per unknown host, and a line with a dozen of them outlasted the shells' wait.
+
+def _holds(names, name, lo=0, hi=None):
+	'''Whether the sorted list names holds name (between lo and hi).'''
+	index = bisect_left(names, name, lo, len(names) if hi is None else hi)
+	return index < len(names) and names[index] == name
+
+def _starts_some(names, prefix):
+	'''Whether a name of the sorted list names starts with prefix.'''
+	index = bisect_left(names, prefix)
+	return index < len(names) and names[index].startswith(prefix)
+
+def _zero_variants(names, name):
+	'''
+	The names of the sorted list names equal to name once leading zeros are dropped from every run
+	of digits (gpu017 -> gpu17; 000 -> 0), name itself included, in sorted order. They differ from
+	name only in how many zeros lead each run, so they are found run by run, never stripping a name.
+	'''
+	runs = []   # (the text before a run of digits, the run without its leading zeros)
+	text_start = index = 0
+	while index < len(name):
+		if name[index] not in _DIGITS:
+			index += 1
+			continue
+		end = index
+		while end < len(name) and name[end] in _DIGITS:
+			end += 1
+		runs.append((name[text_start:index], name[index:end].lstrip('0') or '0'))
+		text_start = index = end
+	tail = name[text_start:]
+	prefixes = ['']
+	for text, digits in runs:
+		grown = []
+		for prefix in prefixes:
+			head = prefix + text
+			zeros = ''
+			while _starts_some(names, head + zeros):
+				if _starts_some(names, head + zeros + digits):
+					grown.append(head + zeros + digits)
+				zeros += '0'
+		prefixes = grown
+	return sorted(prefix + tail for prefix in prefixes if _holds(names, prefix + tail))
+
+def _one_edit_names(names, name):
+	'''
+	The names of the sorted list names one edit away from name (_one_edit), in sorted order. A
+	changed or added character follows a part of name that some names start with: for each such
+	part only the characters that follow it in names are tried, each block of names found by bisecting.
+	'''
+	found = set()
+	for index in range(len(name) - 1):
+		found.add(name[:index] + name[index + 1] + name[index] + name[index + 2:])
+	for index in range(len(name)):
+		found.add(name[:index] + name[index + 1:])
+	found = {candidate for candidate in found if _holds(names, candidate)}
+	for index in range(len(name) + 1):
+		head = name[:index]
+		block = bisect_left(names, head)
+		if block < len(names) and names[block] == head:
+			block += 1
+		while block < len(names) and names[block].startswith(head):
+			char = names[block][index]
+			# names starting with head + char are names[block:end]
+			end = bisect_left(names, head + chr(ord(char) + 1), block) if ord(char) < sys.maxunicode else len(names)
+			for candidate in (head + char + name[index + 1:], head + char + name[index:]):
+				if _holds(names, candidate, block, end):
+					found.add(candidate)
+			block = end
+	return sorted(candidate for candidate in found if _one_edit(name, candidate))
+
 def _option_name(text, attached):
 	'''An option word without the value given with it: -ip=secret -> -ip, -uroot -> -u.'''
 	if attached is None:
@@ -2492,6 +2628,7 @@ def _unique(names):
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
 GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most this many
+HIDDEN_MEMBERS_LIMIT = 131072  # members of ranges typed before written out to hide them from a hosts TAB, at most (~25 ms)
 UNAVAILABLE_PENALTY = 0.5  # score factor for hosts mssh found unreachable
 SHELL_WEIGHT = 0.25        # weight of a shell history line next to an mssh history use
 MAX_CANDIDATES = 200
@@ -2823,8 +2960,9 @@ class Engine(object):
 		number = self.hosts.alias_index(name)
 		if number is not None:
 			members = self.hosts.alias_members(number)
-			# a@node1,b@node1: two run names (each can be unreachable), one host to count
-			pairs = _unique(list(zip(members, self.hosts.alias_member_users(number))))
+			# a@node1,b@node1: two run names (each can be unreachable), one host to count; checked up to
+			# the member limit, as a range is
+			pairs = _unique(list(zip(members, self.hosts.alias_member_users(number))))[:RANGE_MEMBERS_LIMIT]
 			return [member for member, _ in pairs], len(set(members)), [user for _, user in pairs]
 		if '[' not in name:
 			return None
@@ -2986,14 +3124,12 @@ class Engine(object):
 		def possible(candidate):
 			state = states.get(candidate)
 			return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
-		stripped = _strip_zeros(name)
-		same = [candidate for candidate in self.hosts.names if candidate != name and _strip_zeros(candidate) == stripped and possible(candidate)]
+		same = [candidate for candidate in _zero_variants(self.hosts.names, name) if possible(candidate)]
 		if same:
 			return same[0] if len(same) == 1 else None
 		if len(name) < 4:
 			return None
-		close = [candidate for candidate in self.hosts.names
-			if abs(len(candidate) - len(name)) <= 1 and _one_edit(name, candidate) and possible(candidate)]
+		close = [candidate for candidate in _one_edit_names(self.hosts.names, name) if possible(candidate)]
 		return close[0] if len(close) == 1 else None
 
 	def _range_diagnostic(self, name, members, verdicts, total, span, states, now, wanted):
@@ -3299,7 +3435,9 @@ class Engine(object):
 				users.add(os.environ['USER'])
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if user.startswith(word))
 		elif dest == 'skip_hosts':
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts)))
+			# the members that can complete the host being typed (after its "," and "user@")
+			prefix = word.rpartition(',')[2].rpartition('@')[2]
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if action.startswith(word))
 		elif dest == 'encoding':
@@ -3323,16 +3461,26 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text):
-		'''The host names a hosts argument names, as far as the index knows them (aliases, number ranges).'''
+	def _members(self, hosts_text, prefix=''):
+		'''
+		The host names a hosts argument names, as far as the index knows them (aliases, number
+		ranges), that start with prefix: the first RANGE_MEMBERS_LIMIT of them, as for its warnings.
+		'''
+		import itertools
 		members = set()
 		for word in split_hosts(hosts_text or ''):
+			room = RANGE_MEMBERS_LIMIT - len(members)
+			if room <= 0:
+				break
 			word = word.rpartition('@')[2]
 			alias = self.hosts.alias_index(word)
 			if alias is not None:
-				members.update(self.hosts.alias_members(alias))
+				named = self.hosts.alias_members(alias)
 			else:
-				members.update(expand_ranges(word))
+				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
+				# a range past its limit names no member, and costs nothing to find out
+				named = expand_ranges(word)
+			members.update(itertools.islice((name for name in named if name.startswith(prefix)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -3371,12 +3519,15 @@ class Engine(object):
 		def single(name):
 			return Candidate(lead + name, 'unreachable recently' if unreachable(name) else '', 'hosts', host_score(name))
 		# ranges typed before, e.g. node[1-3]: their members are not listed beside them, unless typed
-		# on their own before or named by the hosts argument (-X)
-		in_ranges = set()
+		# on their own before or named by the hosts argument (-X). range_union writes each member
+		# once (expanding hundreds of wide ranges one by one outlasted the shells' wait), up to
+		# HIDDEN_MEMBERS_LIMIT members.
+		ranges = []
 		for name, score in scores.items():
 			if '[' in name and name not in aliases:
 				out.append(Candidate(lead + name, 'used before', 'groups', score))
-				in_ranges.update(expand_ranges(name, limit=RANGE_MEMBERS_LIMIT))
+				ranges.append((-score, name))
+		in_ranges = range_union([name for _, name in sorted(ranges)], RANGE_MEMBERS_LIMIT, HIDDEN_MEMBERS_LIMIT)
 		names -= in_ranges - set(boost) - set(scores)
 		if len(names) <= GROUP_THRESHOLD:
 			out.extend(single(name) for name in names)
