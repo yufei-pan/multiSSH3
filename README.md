@@ -360,6 +360,10 @@ mssh --completion uninstall   # remove it again
 mssh --completion bash        # or print the script (bash, zsh or fish)
 ```
 
+Install writes the script to `~/.local/share/multiSSH3/` and adds a marked block that loads it to `~/.bashrc` (bash) or `$ZDOTDIR/.zshrc` (zsh; `~/.zshrc` when `ZDOTDIR` is not set); for fish it writes files under `~/.config/fish/` (`$XDG_CONFIG_HOME/fish/` when that is set). It prints every file it changes, and leaves alone a script file in its way that mssh did not write. Uninstall removes exactly what install added.
+
+Your rc file is replaced in one step, so a full disk or quota leaves it as it was; a link stays a link (the file it points to is the one changed) and the file keeps its permissions and owner. If the block's `# >>> mssh completion >>>` or `# <<< mssh completion <<<` line is missing or repeated, install and uninstall change nothing and print the line numbers to fix by hand.
+
 - **Hosts:** host strings you typed before, env file aliases, `/etc/hosts`, ssh config `Host` entries, `known_hosts` and the ARP table. Large clusters are offered as ranges (`node[0001-2000]`) until what you typed narrows them down. Hosts mssh recently found unreachable come last.
 - **Options and values:** option names, and values you used before (`-u`, `-t`, ...). Paths complete as files. Passwords are never completed.
 - **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`), and the magic strings (`#HOST#`, ...).
