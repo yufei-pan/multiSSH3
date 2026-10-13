@@ -1572,6 +1572,58 @@ def _local_hostname_source(hostname):
 		return 'env_file'
 	return None
 
+# getaddrinfo errors saying the name does not exist; any other failure says nothing about it
+_DNS_NO_SUCH_NAME = frozenset(code for code in (getattr(socket, 'EAI_NONAME', None), getattr(socket, 'EAI_NODATA', None)) if code is not None)
+
+def _dns_answer(hostname, timeout):
+	''''yes' when DNS resolves hostname, 'no' when it says the name does not exist, else 'unsure'.'''
+	result = []
+	def lookup():
+		try:
+			socket.getaddrinfo(hostname, None, 0, socket.SOCK_STREAM)
+			result.append('yes')
+		except socket.gaierror as e:
+			result.append('no' if e.errno in _DNS_NO_SUCH_NAME else 'unsure')
+		except Exception:
+			result.append('unsure')
+	# getaddrinfo takes no timeout: a lookup still running after it is left to finish on its own
+	thread = threading.Thread(target=lookup, daemon=True)
+	thread.start()
+	thread.join(timeout)
+	return result[0] if result else 'unsure'
+
+def host_validity(hostname, timeout=2.0):
+	'''
+	Whether mssh would accept hostname: 'valid', 'invalid' or 'unsure'.
+
+	The rule __validate_expand_hostname applies (an IP address, a hosts file name, an env / env
+	file alias, a name DNS resolves, a name the ssh config maps to another HostName or puts
+	behind a ProxyJump / ProxyCommand), except that DNS answers in three ways: only "no such name"
+	(EAI_NONAME, EAI_NODATA) can make a name invalid. A lookup failing otherwise or taking longer
+	than timeout seconds, or an ssh -G that fails, makes it 'unsure'. Nothing connects to the
+	host: ssh -G only reads the ssh config.
+
+	Args:
+		hostname (str): One host name, user@ allowed
+		timeout (float): Seconds the DNS lookup may take
+	'''
+	if '@' in hostname:
+		hostname = hostname.rsplit('@', 1)[1]
+	hostname = hostname.strip().strip('$')
+	if not hostname:
+		return 'invalid'
+	if _local_hostname_source(hostname):
+		return 'valid'
+	answer = _dns_answer(hostname, timeout)
+	if answer == 'yes':
+		return 'valid'
+	if 'ssh' in _binPaths and not hostname.startswith('-'):
+		if _ssh_config_values(hostname) is None:
+			return 'unsure'
+		if _ssh_config_target(hostname):
+			return 'valid'
+	return 'invalid' if answer == 'no' else 'unsure'
+
 @cache_decorator
 def __validate_expand_hostname(hostname):
 	'''
