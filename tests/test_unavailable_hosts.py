@@ -480,3 +480,22 @@ def test_remote_errors_mentioning_routes_or_timeouts_do_not_mark_the_host_unreac
 	host.stderr = [line]
 
 	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
+
+
+def test_with_no_skip_unreachable_a_host_is_skipped_after_an_earlier_command_without_an_a_hint(monkeypatch, tmp_path):
+	# -a only stops using earlier runs: within one run a host found unreachable is still skipped
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+
+	def unreachable(host, sem, timeout=60, passwds=None, **kwargs):
+		host.stderr.append("ssh: connect to host mock-a port 22: No route to host")
+		host.returncode = 255
+
+	monkeypatch.setattr(multiSSH3, "run_command", unreachable)
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-a", commands=["first", "second"], skip_unreachable=False,
+		no_watch=True, no_output=True, no_history=True, called=False)
+
+	assert [(host.command, host.skipped) for host in hosts] == [("first", False), ("second", True)]
+	assert hosts[1].stderr == ["Skipped: unreachable in an earlier command of this run"]

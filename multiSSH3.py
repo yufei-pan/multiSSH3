@@ -4519,20 +4519,23 @@ def _report_tokens_naming_no_hosts(tokens):
 # what a host skipped as unreachable returns: ssh's code for a host it could not connect to
 _SKIPPED_HOST_RETURN_CODE = 255
 
-def _mark_skipped_unreachable(host, expiry):
+def _mark_skipped_unreachable(host, expiry, this_run_only=False):
 	'''
 	Mark host as not run because it was unreachable in a recent run, which counts as a failure.
 
 	Args:
 		host (Host): The host, not started
 		expiry (int): When the host stops being skipped, in time.monotonic() seconds
+		this_run_only (bool): Only this run's earlier commands are used (-a, --no_skip_unreachable)
 
 	Returns:
 		Host: host, finished with _SKIPPED_HOST_RETURN_CODE and a stderr line saying why
 	'''
-	seconds_left = max(0, int(expiry - time.monotonic()))
-	message = ('Skipped: unreachable in a recent run, not tried again for another {} s '
-		'(-a, --no_skip_unreachable tries it now)'.format(seconds_left))
+	if this_run_only:
+		message = 'Skipped: unreachable in an earlier command of this run'
+	else:
+		message = ('Skipped: unreachable in a recent run, not tried again for another {} s '
+			'(-a, --no_skip_unreachable tries it now)'.format(max(0, int(expiry - time.monotonic()))))
 	host.skipped = True
 	host.stderr.append(message)
 	host.output.append(message)
@@ -4630,6 +4633,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		})
 	max_connections = _normalize_max_connections(max_connections)
 	commands = format_commands(commands)
+	this_run_only = False
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
@@ -4651,6 +4655,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			unavailableHosts = dict()
 			skip_unreachable = True
+			# -a: only hosts found unreachable by this run's earlier commands are skipped
+			this_run_only = True
 	if pre_merge_hosts is ...:
 		pre_merge_hosts = not called
 	if no_output is ...:
@@ -4781,7 +4787,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			hosts.append(new_host)
 			if recently_unreachable(host):
 				eprint(f"Skipping unavailable host: {host}")
-				_mark_skipped_unreachable(new_host, unavailableHosts[host])
+				_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
 			elif not __global_suppress_printout: 
 				eprint(f"Running command: {command!r} on host: {host!r}")
 		if not __global_suppress_printout:
@@ -4812,7 +4818,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					if recently_unreachable(host):
 						if not __global_suppress_printout:
 							eprint(f"Skipping unavailable host: {host}")
-						_mark_skipped_unreachable(new_host, unavailableHosts[host])
+						_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -4842,7 +4848,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if recently_unreachable(host):
 					if not __global_suppress_printout:
 						eprint(f"Skipping unavailable host: {host}")
-					_mark_skipped_unreachable(new_host, unavailableHosts[host])
+					_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
