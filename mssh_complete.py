@@ -6001,7 +6001,7 @@ elif [[ $- == *i* ]]; then
 	_mssh_complete_keys() {
 		# PROMPT_COMMAND, once, at the first prompt: take the keys. Not while the rc file loads: there
 		# stderr is often /dev/null, and readline starting then would lose its terminal setup
-		local status=$? keymap previous
+		local status=$? keymap line
 		PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_keys;/}
 		[[ -o emacs || -o vi ]] || return $status
 		for keymap in emacs vi-insert; do
@@ -6023,8 +6023,14 @@ elif [[ $- == *i* ]]; then
 		# the mssh line editor, entered with a space after an mssh name; only over a plain space key and
 		# from bash 4.4 on (bash 4.2 redraws a wrapped line wrongly after every bind -x command)
 		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]] && (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
-			previous=$(bind -m emacs -p 2>/dev/null | grep -F '" ": ' || :)
-			_mssh_complete_space_previous=${previous#'" ": '}
+			# what space does, read without grep: the operator's grep alias or function (colours, line
+			# numbers) or GREP_OPTIONS would change what it prints
+			_mssh_complete_space_previous=
+			while IFS= read -r line; do
+				if [[ $line == '" ": '* ]]; then
+					_mssh_complete_space_previous=${line#'" ": '}
+				fi
+			done < <(bind -m emacs -p 2>/dev/null || :)
 			case $_mssh_complete_space_previous in
 				self-insert|magic-space)
 					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space "$_"'
@@ -6620,11 +6626,13 @@ switch "$FISH_VERSION"
 			if command -sq timeout
 				set -l limit 0.3
 				set -q MSSH_COMPLETE_TIMEOUT; and set limit $MSSH_COMPLETE_TIMEOUT
-				set timeout_cmd timeout $limit
+				# by its path: a function the operator named timeout would run instead
+				set timeout_cmd (command -s timeout) $limit
 			end
+			# the history builtin: the operator's history function or alias (one showing times) would change the lines
 			set -l lines (begin
 				command printf '%s\0' MSSHC1 fish $FISH_VERSION "nul=0 term=$TERM" "$before" "$after" "$word"
-				history -n $keep 2>/dev/null
+				builtin history search -n $keep 2>/dev/null
 			end | $timeout_cmd @ENGINE@ query 2>/dev/null)
 			test (count $lines) -ge 2; or return
 			test "$lines[1]" = MSSHC1; or return
@@ -6683,9 +6691,10 @@ switch "$FISH_VERSION"
 					set -l after (string sub -s (math (string length -- "$before") + 1) -- "$full")
 					set -l keep 1000
 					set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
+					# the history builtin: the operator's history function or alias (one showing times) would change the lines
 					set -l lines (begin
 						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM" "$before" "$after" ''
-						history -n $keep 2>/dev/null
+						builtin history search -n $keep 2>/dev/null
 					end | @ENGINE@ pick 2>/dev/null)
 					set -l st $status
 					if test $st -eq 0; and test (count $lines) -ge 3; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E
@@ -6751,11 +6760,13 @@ switch "$FISH_VERSION"
 					if command -sq timeout
 						set -l limit 0.3
 						set -q MSSH_COMPLETE_TIMEOUT; and set limit $MSSH_COMPLETE_TIMEOUT
-						set timeout_cmd timeout $limit
+						# by its path: a function the operator named timeout would run instead
+						set timeout_cmd (command -s timeout) $limit
 					end
+					# the history builtin: the operator's history function or alias (one showing times) would change the lines
 					set -l lines (begin
 						command printf '%s\0' MSSHC1 fish $FISH_VERSION "diag=1 nul=0 term=$TERM" "$before" "$after" ''
-						history -n $keep 2>/dev/null
+						builtin history search -n $keep 2>/dev/null
 					end | $timeout_cmd @ENGINE@ query 2>/dev/null)
 					if test (count $lines) -ge 2; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E
 						for line in $lines
