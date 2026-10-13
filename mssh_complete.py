@@ -2146,33 +2146,44 @@ def _shell_expansions(text, marks, shell):
 			index = max(end, index + 1)
 	return found
 
-def _without_shell_expansions(token, shell):
+def _without_shell_expansions(token, shell, users=False):
 	'''
 	A hosts word with the hosts the shell rewrites before mssh sees them ($NODES, $(cat file),
 	node{1,2}, ~, !$, ...) blanked out: mssh gets something else, nothing can be said about them.
 	Text the shell passes as typed (in '...', after a backslash) stays: mssh reads it itself.
+
+	users: the word with only the hosts the shell rewrites just the user of ($USER@gpu017) kept
+	instead, or None when it has none: mssh gets the host as typed, under a user not known here.
 	'''
 	if not _EXPANSION_STARTS.intersection(token.raw):
-		return token
+		return None if users else token
 	text = token.text
 	marks = _quoting(token.raw)
 	# lex read the word another way: say nothing about it
 	spans = _shell_expansions(text, marks, shell) if len(marks) == len(text) else [(0, len(text))]
 	if not spans:
-		return token
+		return None if users else token
 	expanded = [False] * len(text)
 	for start, end in spans:
 		expanded[start:end] = [True] * (end - start)
 	blanked = list(text)
+	kept = False
 	position = 0
 	while position < len(text):
 		end = position
 		while end < len(text) and text[end] not in _HOST_SEPARATORS:
 			end += 1
-		# the host the shell rewrites a piece of
-		if any(expanded[position:end]):
+		at = text.rfind('@', position, end)
+		# the shell rewrites a piece of the host, or only of its user@
+		user_only = any(expanded[position:end]) and at >= 0 and not any(expanded[at:end])
+		keep = user_only if users else not any(expanded[position:end])
+		if keep:
+			kept = True
+		else:
 			blanked[position:end] = ' ' * (end - position)
 		position = end + 1
+	if users and not kept:
+		return None
 	blanked = ''.join(blanked)
 	return Token(blanked, blanked if token.raw == text else token.raw, token.quoted, token.open_quote, token.start)
 
@@ -2702,6 +2713,10 @@ class Engine(object):
 				continue
 			if role == ROLE_HOSTS:
 				found.extend(self._host_diagnostics(_without_shell_expansions(token, request.shell), states, now, wanted, reach))
+				users = _without_shell_expansions(token, request.shell, users=True)
+				if users is not None:
+					# mssh skips unreachable hosts by the name it runs them under, user@ included: unknown here
+					found.extend(item for item in self._host_diagnostics(users, states, now, wanted, reach) if item.kind != 'unreachable')
 				split = _brace_split(token, request.shell)
 				if split is not None:
 					found.append(split)

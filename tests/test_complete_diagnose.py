@@ -118,6 +118,26 @@ def test_literal_hosts_next_to_an_expansion_are_still_checked(engine):
 	assert mc.take_probe_queue(engine.directory) == []
 
 
+@pytest.mark.parametrize('word', ['$USER@gpu017', '${USER}@gpu017', '"$USER"@gpu017', '`whoami`@gpu017'])
+def test_a_user_the_shell_expands_leaves_the_host_checked(engine, word):
+	# the shell rewrites only the user: mssh still gets gpu017
+	seed(engine, gpu017='invalid')
+	assert warnings(engine, 'mssh {} uptime'.format(word))[0] == [(word, 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+
+
+def test_a_host_under_a_user_the_shell_makes_is_not_called_unreachable(skipping):
+	# mssh skips unreachable hosts by the name it runs them under, user@ included: not known here
+	unavailable(skipping, 'node05')
+	assert warnings(skipping, 'mssh $USER@node05 uptime') == ([], True)
+	# the host itself is still checked
+	assert mc.take_probe_queue(skipping.directory) == ['node05']
+
+
+@pytest.mark.parametrize('word', ['$USER@$HOST', 'root@$NODES', '${A:-x@y}', 'u@${A:-x@y}'])
+def test_a_host_the_shell_expands_after_a_user_is_not_checked(engine, word):
+	assert warnings_if_all_unknown(engine, 'mssh {} uptime'.format(word)) == []
+
+
 @pytest.mark.parametrize('raw, how', [
 	('a"$b"\\$c\'$d\'', 'uddlull'),
 	("$'\\x41$'x", 'llu'),
