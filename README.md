@@ -388,7 +388,9 @@ While you type an mssh line, the most likely rest of it shows in grey after the 
 
 ### Ctrl-R
 
-Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations. Type or paste to filter (nothing pasted runs: line breaks in a paste only separate words), ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
+Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations. Type or paste to filter, ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
+
+A paste only filters, nothing in it runs, whether or not the terminal marks it as pasted (bracketed paste). Unmarked pastes are told by timing: a line break with another one less than 50 ms behind it was pasted. So Enter pressed twice within 50 ms, or Enter and the next line's keys arriving together over a laggy link, filter instead of choosing (press Enter again). Other keys typed right after Enter follow the choice, as typed.
 
 ### Warnings before Enter
 

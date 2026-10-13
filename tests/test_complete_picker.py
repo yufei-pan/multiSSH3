@@ -180,13 +180,31 @@ def test_a_long_paste_is_cut_for_the_filter():
 	assert len(picker.query) == mc.PICKER_FILTER_LIMIT
 
 
-@pytest.mark.parametrize('paste', ['stor\recho INJECTED\r', 'stor\recho INJECTED', '\recho INJECTED\r'])
+@pytest.mark.parametrize('paste', ['stor\recho INJECTED\r', 'stor\r\r', '\recho INJECTED\r', 'stor\r\necho INJECTED\r\n'])
 def test_a_paste_the_terminal_does_not_mark_never_chooses(paste):
 	# bracketed paste off (bash before 5.1; fish 4 and ble.sh turn it off while the picker runs): a line
-	# break with more keys right behind it is in a paste, as is all that comes with it
+	# break with another one in the keys right behind it is in a paste, and all of them filter
 	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
 	assert picker.run(FakeTerminal([paste, '\x1b'])) == 'cancel'
 	assert picker.query.split() == paste.split()
+
+
+@pytest.mark.parametrize('enter', ['\r', '\r\n', '\r\x00'])
+def test_enter_chooses_however_the_terminal_sends_it(enter):
+	# CR LF (newline mode, serial consoles set to send it) and CR NUL (telnet) are one Enter: the LF
+	# is not left for the shell, where it would run the line
+	term = FakeTerminal(['st', enter])
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(term) == 'choose'
+	assert picker.chosen().text == 'storage1' and picker.typed_after == '' and term.queue == []
+
+
+def test_keys_typed_right_after_enter_follow_the_choice():
+	# a fast typist's next keys, or keys a slow link brought with the Enter: no line break among them,
+	# so no paste. Their text goes after the choice, where the shell would have put it
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal(['st', '\r-x\x1b[A'])) == 'choose'
+	assert picker.chosen().text == 'storage1' and picker.typed_after == '-x'
 
 
 def test_enter_typed_alone_chooses():
@@ -220,6 +238,14 @@ def test_slot_tab_offers_the_slot_and_a_choice_replaces_the_word():
 	assert slot[0].text == 'nvidia-smi' and slot[0].uses == 5
 	picker = mc.Picker(slot, history, title)
 	assert mc.apply_pick(req, picker, word, mc.parse_context(req.before, req.after, SPEC)) == ('mssh gpu[01-16] nvidia-smi ', 27)
+
+
+def test_keys_typed_right_after_the_choice_are_in_the_new_line():
+	req = request('mssh gpu[01-16] nv')
+	slot, title, history, word = mc.picker_items(req, engine(), HISTORY, NOW)
+	picker = mc.Picker(slot, history, title)
+	picker.typed_after = '-q'
+	assert mc.apply_pick(req, picker, word, mc.parse_context(req.before, req.after, SPEC)) == ('mssh gpu[01-16] nvidia-smi -q', 29)
 
 
 def test_a_choice_inside_an_open_quote_closes_it():

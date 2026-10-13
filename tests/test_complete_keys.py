@@ -798,6 +798,59 @@ def test_fish_paste_into_the_picker_only_filters(home, form):
 		session.close()
 
 
+ENTER_FORMS = [
+	# CR LF (newline mode, serial consoles set to send it) and CR NUL (telnet) are one Enter: no LF is
+	# left for the shell to run the line with
+	('\r\n', 'mssh storage1 '), ('\r\x00', 'mssh storage1 '),
+	# keys typed right after Enter (fast typing, a slow link) follow the choice, as the shell puts them
+	('\r-q', 'mssh storage1 -q'),
+]
+
+
+def enter_chooses(session, keys):
+	'''Filter the picker, then press Enter as keys sends it; the line the shell prints after.'''
+	session.send('mssh ')
+	time.sleep(0.5)
+	session.send('\x12')
+	session.read_until(b'type to filter', 10)
+	session.send('stor')
+	time.sleep(0.3)
+	return printed(session, keys)
+
+
+@pytest.mark.parametrize('keys, line', ENTER_FORMS, ids=['cr-lf', 'cr-nul', 'typed-after'])
+def test_bash_picker_enter_however_it_comes(home, keys, line):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		assert enter_chooses(session, keys) == line
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('keys, line', ENTER_FORMS, ids=['cr-lf', 'cr-nul', 'typed-after'])
+def test_editor_picker_enter_however_it_comes(home, keys, line):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		assert enter_chooses(session, keys) == line
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('keys, line', ENTER_FORMS, ids=['cr-lf', 'cr-nul', 'typed-after'])
+def test_zsh_picker_enter_however_it_comes(home, keys, line):
+	env, home = home
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKE_MSSH)
+	try:
+		assert enter_chooses(session, keys) == line
+		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
 def test_blesh_paste_into_the_picker_only_filters(home):
 	# ble.sh turns bracketed paste off while the picker runs: the paste comes unmarked
 	env, home = home

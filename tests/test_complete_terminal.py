@@ -151,6 +151,19 @@ def test_terminal_waits_for_input_when_asked(tty_pair):
 		assert term.has_input()
 
 
+def test_terminal_reads_line_breaks_as_sent(tty_pair):
+	# zsh runs its widgets with INLCR and ICRNL on, and Python's raw mode before 3.12 kept INLCR:
+	# a CR LF Enter then came as CR CR (a paste's line breaks)
+	master, slave, path = tty_pair
+	mode = termios.tcgetattr(slave)
+	mode[0] |= termios.INLCR | termios.ICRNL | termios.IGNCR
+	termios.tcsetattr(slave, termios.TCSANOW, mode)
+	with mc.Terminal(path) as term:
+		os.write(master, b'\r\n')
+		assert [term.read_key(timeout=1), term.read_key(timeout=1)] == [('enter', b'\r'), ('enter', b'\n')]
+	assert termios.tcgetattr(slave)[0] & termios.INLCR
+
+
 def test_terminal_restores_the_mode(tty_pair):
 	master, slave, path = tty_pair
 	before = termios.tcgetattr(slave)
