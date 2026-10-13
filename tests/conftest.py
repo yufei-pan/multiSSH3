@@ -159,6 +159,7 @@ def restore_module_globals():
 		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
 		"__keyPressesIn": [list(line) for line in multiSSH3.__keyPressesIn],
 		"DEFAULT_IPMI_DEFINITIONS": [dict(item) for item in multiSSH3.DEFAULT_IPMI_DEFINITIONS],
+		"_ipmi_command_line": dict(multiSSH3._ipmi_command_line),
 		"ERRORS": list(multiSSH3.ERRORS),
 		"_no_env": multiSSH3._no_env,
 		"__global_suppress_printout": multiSSH3.__global_suppress_printout,

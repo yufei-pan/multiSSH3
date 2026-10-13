@@ -959,7 +959,8 @@ def test_run_command_default_retry_limit_counts_current_ipmi_definitions(fake_ho
 	host = fake_host("127.0.0.1", "power status", ipmi=True)
 	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
 	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
-	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [_ipmi_failure() for _ in range(5)])
+	# eight different logins (copies of one login are tried once): more attempts than a fixed limit of 7 allows
+	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [_ipmi_failure(username="u{}".format(i)) for i in range(8)])
 	launches = []
 
 	def fake_popen(argv, **kwargs):
@@ -969,8 +970,8 @@ def test_run_command_default_retry_limit_counts_current_ipmi_definitions(fake_ho
 	_patch_popen(monkeypatch, fake_popen)
 	multiSSH3.run_command(host, sem, timeout=5)
 
-	# each ipmitool definition is retried once through ssh_ipmitool
-	assert len(launches) == 10
+	# each login, then ipmitool on the host over ssh: once, every failed login queues the same one
+	assert len(launches) == 9
 	assert host.stderr == ["Error: Exhausted all matching ipmi definitions!"]
 
 

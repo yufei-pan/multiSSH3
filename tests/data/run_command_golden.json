@@ -1229,14 +1229,6 @@
     "--",
     "nodeA1",
     "ipmitool power status"
-   ],
-   [
-    "/bin/ssh",
-    "-o StrictHostKeyChecking=no",
-    "-o UserKnownHostsFile=/dev/null",
-    "--",
-    "nodeA1",
-    "ipmitool power status"
    ]
   ],
   "command": "ipmitool power status",
@@ -1248,11 +1240,6 @@
    "Command finished with return code 1",
    "IPMI connection failed! Trying next ipmi definition...",
    "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
-   "Error: Unable to establish IPMI v2 / RMCP+ session",
-   "unauthorized name",
-   "Command finished with return code 1",
-   "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -1294,14 +1281,6 @@
     "--",
     "nodeA1",
     "ipmitool power status"
-   ],
-   [
-    "/bin/ssh",
-    "-o StrictHostKeyChecking=no",
-    "-o UserKnownHostsFile=/dev/null",
-    "--",
-    "nodeA1",
-    "ipmitool power status"
    ]
   ],
   "command": "ipmitool power status",
@@ -1313,11 +1292,6 @@
    "Command finished with return code 1",
    "IPMI connection failed! Trying next ipmi definition...",
    "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
-   "Error: Unable to establish IPMI v2 / RMCP+ session",
-   "unauthorized name",
-   "Command finished with return code 1",
-   "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -1342,11 +1316,6 @@
    "IPMI connection failed! Trying next ipmi definition...",
    "Resolved name: nodeA1",
    "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
-   "Error: Unable to establish IPMI v2 / RMCP+ session",
-   "unauthorized name",
-   "IPMI connection failed! Trying next ipmi definition...",
-   "Resolved name: nodeA1",
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "IPMI connection failed! Trying next ipmi definition...",

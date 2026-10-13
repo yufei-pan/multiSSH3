@@ -87,6 +87,8 @@ def get_default_ipmi_definition():
 	'hostname_keyword': '',
 	'retry_lockout_time': DEFAULT_IPMI_RETRY_LOCKOUT_TIME,
 }
+# the built-in values, before config files change them: see _ipmi_definitions_for_host
+_BUILTIN_IPMI_DEFINITION = get_default_ipmi_definition()
 DEFAULT_IPMI_DEFINITIONS = [get_default_ipmi_definition()]
 DEFAULT_INTERFACE_IP_PREFIX = None
 DEFAULT_NO_WATCH = False
@@ -898,6 +900,8 @@ for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 _apply_config(__configs_from_file)
 
 #%% Load mssh Functional Global Variables
+# IPMI options the command line gives (definition key -> value), set by process_args
+_ipmi_command_line = {}
 __global_suppress_printout = False
 __mainReturnCode = 0
 __failedHosts = set()
@@ -2891,6 +2895,97 @@ def _scp_cannot_copy_like_rsync(host):
 		return f'it would have to list the {len(sources)} entries of {directories} on its command line, more than a command line holds.'
 	return None
 
+# the fields that make up one IPMI attempt: definitions equal in these are the same login
+_IPMI_ATTEMPT_KEYS = ('ipmi_method', 'interface_ip_prefix', 'username', 'password', 'args')
+
+def _ipmi_default_definitions():
+	'''
+	Return (the DEFAULT_IPMI_* definition with the command line's IPMI options, the definitions that stand for it).
+
+	A definition in DEFAULT_IPMI_DEFINITIONS with every key equal to the built-in values or to the
+	DEFAULT_IPMI_* ones is what mssh itself puts there (the list it starts with, --generate_config_file,
+	--store_config_file): it marks where the DEFAULT_IPMI_* definition goes, it is not a login of its own.
+	'''
+	configured = get_default_ipmi_definition()
+	default = dict(configured)
+	default.update(_ipmi_command_line)
+	return default, (_BUILTIN_IPMI_DEFINITION, configured, default)
+
+def _ipmi_definitions_for_host(hostname):
+	'''
+	The IPMI definitions to try on a host, in order, with every key filled in.
+
+	The DEFAULT_IPMI_DEFINITIONS whose hostname_keyword is in hostname (keys they leave out come from
+	the DEFAULT_IPMI_* values, as the command line's IPMI options change them), and the DEFAULT_IPMI_*
+	definition itself: first when the command line gives IPMI options, else where the list marks it,
+	else last. Every wrong login can count towards the BMC locking the account, so:
+	- when a listed definition applies to the host, the DEFAULT_IPMI_* one is only added with -iu / -ip
+	  or a DEFAULT_IPMI_PASSWORD of the user's: else it is the built-in admin / admin, or a username
+	  with the built-in password, that nobody gave as a login
+	- a login is tried once, however many definitions hold it
+
+	Args:
+		hostname (str): The host's name as given (hostname_keyword is looked for in it)
+
+	Returns:
+		list: The definitions (dicts), first to try first
+	'''
+	default, marks = _ipmi_default_definitions()
+	listed = []
+	default_at = None
+	for definition in DEFAULT_IPMI_DEFINITIONS:
+		if definition in marks:
+			if default_at is None:
+				default_at = len(listed)
+			continue
+		keyword = definition.get('hostname_keyword')
+		if keyword and str(keyword).strip() not in hostname:
+			continue
+		listed.append(dict(ChainMap(definition, default)))
+	login_given = 'username' in _ipmi_command_line or 'password' in _ipmi_command_line
+	if listed and not login_given and str(default.get('password')) == str(_BUILTIN_IPMI_DEFINITION['password']):
+		candidates = listed
+	elif _ipmi_command_line:
+		candidates = [default] + listed
+	elif default_at is not None:
+		candidates = listed[:default_at] + [default] + listed[default_at:]
+	else:
+		candidates = listed + [default]
+	definitions = []
+	logins = set()
+	for definition in candidates:
+		login = tuple(str(definition.get(key)) for key in _IPMI_ATTEMPT_KEYS)
+		if login not in logins:
+			logins.add(login)
+			definitions.append(definition)
+	return definitions
+
+def _ipmi_definitions_to_store(args):
+	'''
+	DEFAULT_IPMI_DEFINITIONS for a config file that stores args' IPMI options as the DEFAULT_IPMI_* values.
+
+	The list as loaded, with the definition of the stored values marking where it is tried: first
+	when the command line gives IPMI options (as in this run), else where the list marked it. mssh
+	6.31 and earlier add that definition again unless the list ends with it.
+	'''
+	stored = {
+		'interface_ip_prefix': args.ipmi_interface_ip_prefix,
+		'username': args.ipmi_username,
+		'password': args.ipmi_password,
+		'args': args.ipmi_args,
+		'ipmi_method': args.ipmi_method,
+		'hostname_keyword': '',
+		'retry_lockout_time': args.ipmi_retry_lockout_time,
+	}
+	marks = _ipmi_default_definitions()[1] + (stored,)
+	definitions = [stored] if _ipmi_command_line else []
+	for definition in DEFAULT_IPMI_DEFINITIONS:
+		if definition not in marks:
+			definitions.append(definition)
+		elif stored not in definitions:
+			definitions.append(stored)
+	return definitions
+
 _CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
 _CommandAttempt.__doc__ = '''
 What _build_command decided for one attempt.
@@ -2938,7 +3033,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			username, host.address = host.name.rsplit('@',1)
 		if host.ipmi:
 			if ipmi_definitions_list is ...:
-				ipmi_definitions_list = [ipmi_definition for ipmi_definition in DEFAULT_IPMI_DEFINITIONS if not ipmi_definition.get('hostname_keyword') or str(ipmi_definition.get('hostname_keyword')).strip() in host.name]
+				ipmi_definitions_list = _ipmi_definitions_for_host(host.name)
 			if not ipmi_definitions_list:
 				host.output.append('Error: Exhausted all matching ipmi definitions!')
 				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
@@ -3396,18 +3491,31 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
 	scp_like_rsync = False
 	rsync_xattrs = True
+	# the IPMI command lines run on this host: one again (the ssh fallback every failed definition
+	# adds, or two definitions that end up the same) would only repeat a failed login
+	ran = set()
 	while True:
 		if retry_limit < 0:
 			host.output.append('Error: Retry limit reached!')
 			host.stderr.append('Error: Retry limit reached!')
 			host.returncode = 1
 			return
+		line_counts = (len(host.output), len(host.stdout), len(host.stderr))
 		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync, rsync_xattrs)
 		if action == 'stop':
 			return
 		if action == 'rebuild':
 			retry_limit -= 1
 			continue
+		if host.ipmi:
+			attempt = tuple(str(arg) for arg in formatedCMD)
+			if attempt in ran:
+				# not run: drop what building it said, it was said when it ran
+				del host.output[line_counts[0]:]
+				del host.stdout[line_counts[1]:]
+				del host.stderr[line_counts[2]:]
+				continue
+			ran.add(attempt)
 		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit, (passwds, ipmi_definition.get('password')))
 		if stop:
 			return
@@ -5905,7 +6013,7 @@ def generate_default_config(args):
 		'DEFAULT_IPMI_METHOD': args.ipmi_method,
 		'DEFAULT_IPMI_RETRY_LOCKOUT_TIME': args.ipmi_retry_lockout_time,
 		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
-		'DEFAULT_IPMI_DEFINITIONS': DEFAULT_IPMI_DEFINITIONS,
+		'DEFAULT_IPMI_DEFINITIONS': _ipmi_definitions_to_store(args),
 		'DEFAULT_NO_WATCH': args.no_watch,
 		'DEFAULT_WINDOW_WIDTH': args.window_width,
 		'DEFAULT_WINDOW_HEIGHT': args.window_height,
@@ -6252,8 +6360,21 @@ def _parse_command_line(parser, argv = None):
 	namespace.commands = commands
 	return namespace
 
+# the IPMI options: argparse dest -> IPMI definition key
+_IPMI_OPTIONS = (
+	('ipmi_interface_ip_prefix', 'interface_ip_prefix'),
+	('ipmi_username', 'username'),
+	('ipmi_password', 'password'),
+	('ipmi_args', 'args'),
+	('ipmi_method', 'ipmi_method'),
+	('ipmi_retry_lockout_time', 'retry_lockout_time'),
+)
+# the default of an option process_args needs to know was given
+_NOT_GIVEN = object()
+
 def process_args(args = None):
 	global __configs_from_file
+	global _ipmi_command_line
 	cfp = 	parser = _MsshArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
 	try:
@@ -6272,6 +6393,9 @@ def process_args(args = None):
 	except Exception:
 		pass
 	parser = get_parser()
+	# the IPMI options the command line gives, also when they repeat a default: _ipmi_definitions_for_host
+	ipmi_option_defaults = {dest: parser.get_default(dest) for dest, _ in _IPMI_OPTIONS}
+	parser.set_defaults(**{dest: _NOT_GIVEN for dest in ipmi_option_defaults})
 	_install_signal_handlers()
 	args = _parse_command_line(parser, args)
 	try:
@@ -6304,27 +6428,14 @@ def process_args(args = None):
 	if args.unavailable_host_expiry <= 0:
 		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
 		args.unavailable_host_expiry = 10
-	default_ipmi_definition = get_default_ipmi_definition()
-	while DEFAULT_IPMI_DEFINITIONS:
-		last_definition = DEFAULT_IPMI_DEFINITIONS.pop()
-		if last_definition != default_ipmi_definition:
-			DEFAULT_IPMI_DEFINITIONS.append(last_definition)
-			break
-	fields = [
-		('interface_ip_prefix', args.ipmi_interface_ip_prefix),
-		('username', args.ipmi_username),
-		('password', args.ipmi_password),
-		('args', args.ipmi_args),
-		('ipmi_method', args.ipmi_method),
-		('retry_lockout_time', args.ipmi_retry_lockout_time),
-	]
-	modified = any(val != default_ipmi_definition[key] for key, val in fields)
-	for key, val in fields:
-		default_ipmi_definition[key] = val
-	if modified:
-		DEFAULT_IPMI_DEFINITIONS.insert(0, default_ipmi_definition)
-	else:
-		DEFAULT_IPMI_DEFINITIONS.append(default_ipmi_definition)
+	# DEFAULT_IPMI_DEFINITIONS stays as the config files set it (--store_config_file writes it back),
+	# each host's list is made from it when the host runs
+	_ipmi_command_line = {}
+	for dest, key in _IPMI_OPTIONS:
+		if getattr(args, dest) is _NOT_GIVEN:
+			setattr(args, dest, ipmi_option_defaults[dest])
+		else:
+			_ipmi_command_line[key] = getattr(args, dest)
 	return args
 
 def process_config_file(args):

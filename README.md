@@ -205,6 +205,32 @@ Host *
   ControlPersist 3600
 ```
 
+### IPMI Logins
+
+With `-M, --ipmi`, mssh logs in to each host's BMC with one IPMI definition after another until one works. A definition is a dict with any of `username`, `password`, `args`, `ipmi_method`, `interface_ip_prefix` and `retry_lockout_time` (what `-iu`, `-ip`, `-ia`, `-im`, `-mpre` and `-irlt` set), and `hostname_keyword`: a definition with one is only tried on hosts whose name contains it.
+
+A wrong login can count towards the BMC locking the account, so mssh tries each login once, and only logins you gave it, in this order:
+1. **The command line's**, when it has any of `-iu`, `-ip`, `-ia`, `-im`, `-mpre` or `-irlt`: the `DEFAULT_IPMI_*` values with those options applied.
+2. **`DEFAULT_IPMI_DEFINITIONS`** (config file), in order. A key a definition leaves out comes from the `DEFAULT_IPMI_*` values, or from the command line when it gives that option: `-ia='-I lanplus'` reaches every definition without its own `args`.
+3. **`DEFAULT_IPMI_USERNAME` / `DEFAULT_IPMI_PASSWORD`** (config file), when step 1 did not try them.
+
+When a definition of step 2 applies to the host, the login of step 1 or 3 is only tried if `-iu` or `-ip` is given or `DEFAULT_IPMI_PASSWORD` is set to something other than `admin`. Otherwise it would be the built-in `admin` / `admin`, or your username with the built-in password `admin`, which you did not give as a login. So `admin` / `admin` is only tried on a host nothing else is configured for; to try it after your logins, list it: `{"username": "admin", "password": "admin"}`.
+
+| Config file | Command line | Logins tried, in order |
+| --- | --- | --- |
+| nothing | | `admin`/`admin` |
+| `"DEFAULT_IPMI_USERNAME": "ADMIN", "DEFAULT_IPMI_PASSWORD": "pw"` | | `ADMIN`/`pw` |
+| the same | `-iu root` | `root`/`pw` |
+| `"DEFAULT_IPMI_DEFINITIONS": [{"username": "u1", "password": "p1"}, {"username": "u2", "password": "p2"}]` | | `u1`/`p1`, `u2`/`p2` |
+| the same | `-iu root -ip pw` | `root`/`pw`, `u1`/`p1`, `u2`/`p2` |
+| the same | `-ia='-I lanplus'` | `u1`/`p1`, `u2`/`p2`, both with `-I lanplus` |
+| `DEFAULT_IPMI_USERNAME`, `DEFAULT_IPMI_PASSWORD` and `DEFAULT_IPMI_DEFINITIONS` as above | | `u1`/`p1`, `u2`/`p2`, `ADMIN`/`pw` |
+| `"DEFAULT_IPMI_DEFINITIONS": [{"hostname_keyword": "gpu", "username": "root", "password": "x"}]` | | `root`/`x` on `gpu01`, `admin`/`admin` on `cpu01` |
+
+A host that fails every login then gets `ipmitool` run on it over ssh (see `-M, --ipmi`), once: mssh does not run a command line it already ran on that host.
+
+`--store_config_file` stores the command line's IPMI options as the `DEFAULT_IPMI_*` values and keeps your `DEFAULT_IPMI_DEFINITIONS`. A definition in the list with all seven keys equal to the `DEFAULT_IPMI_*` values or to the built-in ones is not a login of its own: it marks where the `DEFAULT_IPMI_*` login goes. mssh writes one there (the list starts with one, and `--store_config_file` puts it first when the command line had IPMI options, as they were tried first). Config files written by mssh 6.31 and earlier can hold such a copy of the built-in `admin` / `admin` definition: it is read the same way, so it no longer makes mssh try `admin` / `admin` before your login.
+
 ## Environment Variables for Hostname Aliases
 
 multissh3 is able to read hostname grouping / aliases from environment variables.
@@ -540,6 +566,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Will replace the host's resolved IP address header with `DEFAULT_IPMI_INTERFACE_IP_PREFIX` in this mode
 - Ex: `10.0.0.1` + `DEFAULT_IPMI_INTERFACE_IP_PREFIX='192.168'` -> `192.168.0.1`
 - Will retry using original ip and run `ipmitool` over ssh if ipmi connection had failed. ( Will append ipmitool to the command if not present )
+- Which IPMI logins it tries, and in which order: see [IPMI Logins](#ipmi-logins).
 
 ### `-mpre, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX` | _`DEFAULT_IPMI_INTERFACE_IP_PREFIX`_
 - The prefix of the IPMI interfaces. Will replace the resolved IP address with the given prefix when using ipmi mode.

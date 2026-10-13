@@ -75,8 +75,10 @@ def test_ipmi_lockout_wait_after_unreached_attempt_still_waits_on_rejection(fake
 	monkeypatch.setattr(multiSSH3.time, "sleep", sleeps.append)
 	monkeypatch.setattr(multiSSH3, "__handle_writing_stream", lambda *args: 0)
 	definitions = []
-	for lockout in (5, 7):
+	# two logins: the same login twice is run once
+	for user, lockout in (("u1", 5), ("u2", 7)):
 		definition = multiSSH3.get_default_ipmi_definition()
+		definition["username"] = user
 		definition["retry_lockout_time"] = lockout
 		definitions.append(definition)
 
