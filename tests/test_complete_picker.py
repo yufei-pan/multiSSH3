@@ -149,6 +149,66 @@ def test_run_is_unavailable_on_a_tiny_terminal():
 	assert mc.Picker(items('a'), []).run(FakeTerminal([], rows=4)) == 'unavailable'
 
 
+# A line break that chooses in the middle of a paste leaves the rest of the paste to the shell, which
+# runs it (its own line breaks are Enter there): a paste only ever filters.
+
+def test_a_paste_filters_and_never_chooses():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	term = FakeTerminal(['\x1b[200~stor\r\necho INJECTED\n\x1b[201~', '\x1b'])
+	assert picker.run(term) == 'cancel'
+	# line breaks and runs of white space are one space: words for the filter
+	assert picker.query == 'stor echo INJECTED '
+
+
+def test_a_pasted_line_with_its_line_break_waits_for_enter():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	term = FakeTerminal(['\x1b[200~stor\n\x1b[201~', '\r'])
+	assert picker.run(term) == 'choose'
+	assert picker.query == 'stor ' and picker.chosen().text == 'storage1'
+
+
+def test_a_paste_adds_to_the_filter_without_control_characters():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal(['gp', '\x1b[200~u\x1b[A\x03\t01\x1b[201~', '\x1b'])) == 'cancel'
+	assert picker.query == 'gpu 01'
+
+
+def test_a_long_paste_is_cut_for_the_filter():
+	# the filter is matched against every row at every key: a whole file pasted would freeze it
+	picker = mc.Picker(items('gpu01'), [], 'hosts')
+	assert picker.run(FakeTerminal(['\x1b[200~' + 'gpu ' * 5000 + '\x1b[201~', '\x1b'])) == 'cancel'
+	assert len(picker.query) == mc.PICKER_FILTER_LIMIT
+
+
+@pytest.mark.parametrize('paste', ['stor\recho INJECTED\r', 'stor\recho INJECTED', '\recho INJECTED\r'])
+def test_a_paste_the_terminal_does_not_mark_never_chooses(paste):
+	# bracketed paste off (bash before 5.1; fish 4 and ble.sh turn it off while the picker runs): a line
+	# break with more keys right behind it is in a paste, as is all that comes with it
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal([paste, '\x1b'])) == 'cancel'
+	assert picker.query.split() == paste.split()
+
+
+def test_enter_typed_alone_chooses():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal(['s', 't', '\r'])) == 'choose'
+	assert picker.chosen().text == 'storage1'
+
+
+def test_enter_typed_ahead_after_the_filter_chooses():
+	# typed before the picker was ready: nothing comes after the line break
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal([], typed_ahead='st\r')) == 'choose'
+	assert picker.chosen().text == 'storage1'
+
+
+def test_enter_typed_ahead_first_chooses_and_leaves_the_keys_after_it():
+	term = FakeTerminal([], typed_ahead='\rXY')
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(term) == 'choose'
+	assert picker.chosen().text == 'gpu01' and [name for name, _ in term.queue] == ['X', 'Y']
+
+
 def request(before, after='', history=()):
 	return mc.Request('bash', before, after, '', history=list(history))
 

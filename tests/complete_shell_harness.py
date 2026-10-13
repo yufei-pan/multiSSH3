@@ -148,16 +148,17 @@ bind -x '"\C-t": printf "@@LINE[%s]@@\n" "$READLINE_LINE"'
 _fakecmd() {{ COMPREPLY=($(compgen -W "alpha beta" -- "$2")); }}
 complete -F _fakecmd fakecmd
 {glue_line}
+{extra}
 [[ ${{BLE_VERSION-}} ]] && ble-attach
 '''
 
-def blesh_session(home, env, glue=None):
-	'''An interactive bash running ble.sh, with the glue unless glue is None (ble.sh caches warmed first).'''
+def blesh_session(home, env, glue=None, extra=''):
+	'''An interactive bash running ble.sh, with the glue unless glue is None (ble.sh caches warmed first); extra runs after the glue.'''
 	blesh = require_blesh()
 	require_shell('bash')
 	rc = home / 'blesh.bashrc'
 	glue_line = '[ -r {0} ] && . {0} 2>/dev/null'.format(glue) if glue else ''
-	rc.write_text(BLESH_TEST_RC.format(blesh=blesh, glue_line=glue_line))
+	rc.write_text(BLESH_TEST_RC.format(blesh=blesh, glue_line=glue_line, extra=extra))
 	env = dict(env, USER=env.get('USER') or 'mssh-test')
 	argv = ['bash', '--noprofile', '--rcfile', str(rc), '-i']
 	if not (home / '.cache' / 'blesh').exists():

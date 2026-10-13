@@ -142,11 +142,13 @@ class FakeTerminal(object):
 	What the picker and the editor need from a Terminal, drawing into a Grid. Keys come in scripted
 	bursts (what the operator typed at once), one key per read; queue holds the burst's unread keys.
 	A burst of None is the operator waiting: a read with a timeout returns None (timeouts records them).
+	typed_ahead: a burst already there when the program starts reading (typed before it was ready).
 	'''
-	def __init__(self, bursts, rows=24, columns=80, grid=None):
+	def __init__(self, bursts, rows=24, columns=80, grid=None, typed_ahead=None):
+		import mssh_complete as mc
 		self.grid = grid or Grid(rows, columns)
 		self.bursts = list(bursts)
-		self.queue = []
+		self.queue = mc.decode_keys(typed_ahead.encode('utf-8')) if typed_ahead else []
 		self.timeouts = []
 
 	def size(self):
@@ -169,5 +171,16 @@ class FakeTerminal(object):
 			self.queue = mc.decode_keys(burst.encode('utf-8') if isinstance(burst, str) else burst)
 		return self.queue.pop(0)
 
-	def has_input(self):
+	def has_input(self, timeout=0):
+		# the next burst comes after a pause longer than any wait for more of this one
 		return bool(self.queue)
+
+	def read_paste(self, limit=65536):
+		'''After the paste key: the burst's text up to the end of the paste (all of it when the end is missing).'''
+		data = b''
+		while self.queue:
+			name, raw = self.queue.pop(0)
+			if name == 'paste-end':
+				break
+			data += raw
+		return data[:limit].decode('utf-8', 'replace')

@@ -3162,6 +3162,8 @@ _KEY_SEQUENCES = {
 	'\x1b[1;5C': 'ctrl-right', '\x1b[1;5D': 'ctrl-left', '\x1b[5C': 'ctrl-right', '\x1b[5D': 'ctrl-left',
 	'\x1bOc': 'ctrl-right', '\x1bOd': 'ctrl-left',
 	'\x1b[1;3C': 'alt-right', '\x1b[1;3D': 'alt-left', '\x1b\x1b[C': 'alt-right', '\x1b\x1b[D': 'alt-left',
+	# bracketed paste (the shell turned it on): what comes between these was pasted, not typed
+	'\x1b[200~': 'paste', '\x1b[201~': 'paste-end',
 }
 _KEY_NAMES = {'\r': 'enter', '\n': 'enter', '\t': 'tab', '\x7f': 'backspace', '\x08': 'backspace', '\x00': 'ctrl-space'}
 
@@ -3326,10 +3328,31 @@ class Terminal(object):
 			return None
 		return os.read(self.fd, 1) or None
 
-	def has_input(self):
-		'''Whether more typed keys are waiting.'''
+	def has_input(self, timeout=0):
+		'''Whether more typed keys are waiting, or arrive within timeout seconds.'''
 		import select
-		return bool(select.select([self.fd], [], [], 0)[0])
+		return bool(select.select([self.fd], [], [], timeout)[0])
+
+	def read_paste(self, limit=65536, idle=0.5):
+		'''
+		After the paste key: the pasted text, read up to the mark that ends the paste and no further
+		(keys typed after it stay in the terminal). All of the paste is read, so none of it reaches the
+		shell as typed keys, but only its first limit bytes are kept. A paste whose end mark does not
+		come within idle seconds of its last byte is taken as ended there.
+		'''
+		end = b'\x1b[201~'
+		kept = bytearray()
+		tail = b''
+		while tail != end:
+			byte = self._byte(idle)
+			if byte is None:
+				break
+			tail = (tail + byte)[-len(end):]
+			if len(kept) < limit + len(end):
+				kept += byte
+		if kept.endswith(end):
+			del kept[-len(end):]
+		return bytes(kept[:limit]).decode('utf-8', 'replace')
 
 	def read_key(self, timeout=None):
 		'''
@@ -3397,6 +3420,10 @@ def text_layout(text, width, row=0, column=0):
 #%% ------------ Picker ----------------
 PICKER_ROWS = 10       # candidate rows the picker shows at most
 HISTORY_LIMIT = 5000   # distinct past invocations the history tab offers
+# characters a paste brings to the filter at most: the filter is matched against every row at every key
+PICKER_FILTER_LIMIT = 1000
+# seconds: keys that come closer together than this came together (a paste, not typing)
+PASTE_GAP = 0.05
 
 class PickItem(object):
 	'''A picker row: text replaces the word (slot tab) or the whole line (history tab).'''
@@ -3507,6 +3534,39 @@ class Picker(object):
 			self.selected = self.offset = 0
 		return None
 
+	def paste(self, text):
+		'''
+		Add pasted text to the filter. Its line breaks, tabs and other control characters only part
+		words (a run of them is one space); escape sequences in it are left out.
+		'''
+		import re
+		text = re.sub('[\\s\\x00-\\x1f\\x7f]+', ' ', strip_escapes(text))
+		if not self.query or self.query.endswith(' '):
+			text = text.lstrip(' ')
+		self.query += text[:max(PICKER_FILTER_LIMIT - len(self.query), 0)]
+		self.selected = self.offset = 0
+
+	def _rest_of_paste(self, term):
+		'''
+		The keys that come right behind each other from here on (the rest of a paste the terminal did
+		not mark), as text: line breaks and tabs as they are, keys that are not text left out.
+		'''
+		parts = []
+		size = 0
+		while term.has_input(PASTE_GAP):
+			name = term.read_key()[0]
+			if name in ('enter', 'tab'):
+				text = '\n'
+			elif len(name) == 1 and name >= ' ':
+				text = name
+			else:
+				continue
+			# all of it is read (none may reach the shell), what the filter can take is kept
+			if size < PICKER_FILTER_LIMIT:
+				parts.append(text)
+				size += len(text)
+		return ''.join(parts)
+
 	def chosen(self):
 		matches = self.matches()
 		return matches[self.selected] if 0 <= self.selected < len(matches) else None
@@ -3599,15 +3659,31 @@ class Picker(object):
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		try:
 			draw = True
+			# A choice in the middle of a paste leaves the rest of it to the shell, which runs it (its
+			# line breaks are Enter there): a line break with more keys right behind it is pasted. One
+			# typed ahead (read before the picker first waited for a key) chooses unless text came
+			# right before it: keys typed ahead after a choice are for the shell.
+			live = not term.has_input()
+			after_text = False
 			while True:
 				if draw:
 					menu = self.render(width - 1, height)
 					term.write(''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
-				outcome = self.handle(term.read_key()[0])
-				if outcome:
-					return outcome
+				name = term.read_key()[0]
+				if name == 'paste':
+					# the terminal marks the paste: all of it filters
+					self.paste(term.read_paste())
+				elif name == 'enter' and (live or after_text) and term.has_input(PASTE_GAP):
+					# a paste the terminal does not mark (bracketed paste off): it filters up to a pause
+					self.paste('\n' + self._rest_of_paste(term))
+				else:
+					outcome = self.handle(name)
+					if outcome:
+						return outcome
+				after_text = len(name) == 1 and name >= ' '
 				# keys already typed are handled before the menu is drawn again
 				draw = not term.has_input()
+				live = live or draw
 		finally:
 			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
 
