@@ -2740,8 +2740,10 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 						host.returncode = -1
 				host.output.append(f'Command finished with return code {host.returncode}')
 				if host.stderr:
-					# filter out the error messages that we want to ignore
-					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
+					# filter out the error messages that we want to ignore, in the list itself: a reader still
+					# running (after Ctrl C, or where pipes cannot be polled) appends to it, and those lines stay
+					count = len(host.stderr)
+					host.stderr[:count] = [line for line in host.stderr[:count] if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
 			except OSError as e:
 				if e.errno == errno.EMFILE and proc is None:
 					retry_after_emfile = True

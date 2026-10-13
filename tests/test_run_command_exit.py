@@ -11,6 +11,20 @@ import pytest
 import multiSSH3
 
 
+class FakeProc:
+	def __init__(self, stdout=b"", stderr=b"", returncode=0):
+		self.stdout = io.BytesIO(stdout)
+		self.stderr = io.BytesIO(stderr)
+		self.stdin = io.BytesIO()
+		self.returncode = returncode
+
+	def poll(self):
+		return self.returncode
+
+	def communicate(self, *args, **kwargs):
+		return b"", b""
+
+
 class PausingPipe:
 	"""A command pipe whose reader stops for a while: after its first output, or before its first read."""
 	def __init__(self, pipe, pause, before_first_read=False):
@@ -85,6 +99,19 @@ def test_output_is_complete_when_a_reader_lags_behind_the_exit(fake_host, monkey
 	assert ended["stdout"].is_set()  # nothing is appended later
 	assert not any(line.startswith("Trying to read the rest") for line in host.output)
 	assert host.returncode == 0
+
+
+def test_the_stderr_filter_keeps_the_list_the_reader_appends_to(fake_host, monkeypatch):
+	host = fake_host("mock-a", "cmd")
+	stderr = host.stderr
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen",
+		lambda *a, **k: FakeProc(stderr=b"Connection to mock-a closed.\nboom\n", returncode=1))
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert host.stderr is stderr  # a line a late reader appends is not lost in a list nobody looks at
+	assert host.stderr == ["boom"]
 
 
 def test_a_background_process_holding_the_pipes_does_not_hold_up_the_command(fake_host, monkeypatch, tmp_path):
