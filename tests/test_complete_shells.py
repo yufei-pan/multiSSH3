@@ -97,6 +97,38 @@ def test_zsh_gives_up_on_a_slow_engine(setup):
 		session.close()
 
 
+@pytest.fixture
+def first_build(tmp_path):
+	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
+	env, home = make_home(tmp_path, HISTORY)
+	assert mc.take_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
+	# more than the engine needs, less than the 2 s it used to wait for the first build
+	return dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+
+
+def test_bash_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
+def test_zsh_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	session = zsh_session(home, env, glue_file(home, 'zsh'))
+	try:
+		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
+def test_fish_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	assert [text for text, _ in fish_complete(env, glue_file(home, 'fish'), 'mssh --no_wa')] == ['--no_watch']
+
+
 def test_fish_completes(setup):
 	env, home = setup
 	glue = glue_file(home, 'fish')
@@ -185,8 +217,44 @@ def test_install_finds_its_block_however_the_file_was_edited(tmp_path, change):
 	assert 'mssh completion' not in rc.read_text() and 'alias ll="ls -l"' in rc.read_text()
 
 
+@pytest.fixture
+def install_env(tmp_path, monkeypatch):
+	'''HOME and XDG_RUNTIME_DIR of a test home in os.environ, and install() writing nothing.'''
+	env, home = make_home(tmp_path, HISTORY)
+	monkeypatch.setenv('HOME', env['HOME'])
+	monkeypatch.setenv('XDG_RUNTIME_DIR', env['XDG_RUNTIME_DIR'])
+	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (0, ['wrote the glue']))
+	return home
+
+
+def test_install_builds_the_index_right_away(install_env, capsys):
+	# the first TAB in a new shell then answers from the index instead of starting its build
+	assert mc.completion_command(['install', 'bash']) == 0
+	path = os.path.join(mc.cache_dir(), mc.INDEX_NAME)
+	assert capsys.readouterr().out.splitlines() == ['wrote the glue', 'built the completion index ' + path]
+	assert 'storage1' in mc.HostTable(mc.NsvIndex.load(path)).names
+
+
+def test_install_says_when_it_cannot_build_the_index(install_env, monkeypatch, capsys):
+	def fail(directory):
+		raise OSError(28, 'No space left on device')
+	monkeypatch.setattr(mc, 'build_index', fail)
+	assert mc.completion_command(['install', 'bash']) == 0
+	assert capsys.readouterr().out.splitlines()[-1] == 'could not build the completion index now ([Errno 28] No space left on device): the first TAB tries again'
+	monkeypatch.setattr(mc, 'cache_dir', lambda create=True: None)
+	assert mc.completion_command(['install', 'bash']) == 0
+	assert capsys.readouterr().out.splitlines()[-1] == 'no private runtime directory for the completion index: TAB offers options and shell history only'
+
+
+def test_uninstall_builds_nothing(install_env, monkeypatch):
+	monkeypatch.setattr(mc, 'uninstall', lambda shell: (0, []))
+	monkeypatch.setattr(mc, 'build_index', lambda directory: pytest.fail('built an index'))
+	assert mc.completion_command(['uninstall', 'bash']) == 0
+
+
 def test_completion_command_takes_the_editor_word(monkeypatch):
 	calls = []
+	monkeypatch.setattr(mc, 'prepare_index', lambda: 'built the completion index')
 	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (calls.append((shell, editor)), (0, []))[1])
 	assert mc.completion_command(['install', 'bash', 'editor']) == 0
 	assert mc.completion_command(['install', 'bash', '--editor']) == 0
