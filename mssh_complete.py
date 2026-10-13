@@ -3602,7 +3602,8 @@ class Picker(object):
 			while True:
 				if draw:
 					menu = self.render(width - 1, height)
-					term.write(''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
+					# from the saved place below the line: between draws the cursor is in the line
+					term.write('\x1b8' + ''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
 				outcome = self.handle(term.read_key()[0])
 				if outcome:
 					return outcome

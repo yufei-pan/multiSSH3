@@ -145,6 +145,23 @@ def test_run_on_a_wrapped_line_opens_below_all_of_it():
 	assert grid.cursor == (0, 0)
 
 
+def test_run_on_a_wrapped_line_draws_again_below_all_of_it():
+	# between draws the cursor is in the line, on its first row here: the next draw starts below the line
+	grid = Grid(24, 20)
+	seen = []
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append(grid.lines())
+			return FakeTerminal.read_key(self, timeout)
+
+	line = '$ mssh gpu[01-16] nvidia-smi -q'
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
+	shown = seen[1]
+	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
+	assert ' 2/2 ' in shown[2] and '> gpu02' in shown[4] and shown[2 + 1 + 10].startswith('└') and shown[2 + 1 + 10 + 1] == ''
+
+
 def test_run_is_unavailable_on_a_tiny_terminal():
 	assert mc.Picker(items('a'), []).run(FakeTerminal([], rows=4)) == 'unavailable'
 
