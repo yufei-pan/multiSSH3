@@ -175,11 +175,30 @@ def _one_line(text):
 	'''text on one line, with NUL, tabs and newlines turned into single spaces.'''
 	return ' '.join(str(text).replace('\0', ' ').split())
 
+def _password_free_help(help, password):
+	'''
+	The help of a password option with the password taken out. Older multiSSH3 wrote the configured
+	password into the help as "(default: ...)", and older indexes keep that help and the password.
+	'''
+	if not password:
+		return help
+	help = help.replace('(default: {})'.format(password), '(default: set, not shown)')
+	# named some other way: the whole text goes rather than any part of the password
+	return 'A password (not shown)' if password in help else help
+
 class OptionSpec(object):
-	'''One mssh option: its dest, every string naming it and how many values it takes.'''
+	'''
+	One mssh option: its dest, every string naming it and how many values it takes.
+
+	A password option keeps no default, and no password in its help: both reach the index, the
+	descriptions zsh and fish show and the picker.
+	'''
 	__slots__ = ('dest', 'strings', 'nargs', 'repeat', 'group', 'default', 'help')
 
 	def __init__(self, dest, strings, nargs='0', repeat=False, group='', default='', help=''):
+		if dest in PASSWORD_DESTS:
+			help = _password_free_help(help, default)
+			default = ''
 		self.dest = dest
 		self.strings = tuple(strings)
 		self.nargs = nargs

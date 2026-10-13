@@ -4941,6 +4941,10 @@ def _plain_help(text):
 	'''
 	return text.replace('%', '%%')
 
+def _password_shown(password):
+	'''What -h says about a default password: whether there is one, never the password.'''
+	return 'set, not shown' if password else 'none'
+
 def get_parser():
 	parser = argparse.ArgumentParser(
 		description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
@@ -4956,7 +4960,7 @@ def get_parser():
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=_plain_help(f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})'),default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=_plain_help(f'The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})'),default=DEFAULT_USERNAME)
-	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, (default: {DEFAULT_PASSWORD})'),default=DEFAULT_PASSWORD)
+	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, (default: {_password_shown(DEFAULT_PASSWORD)})'),default=DEFAULT_PASSWORD)
 	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=_plain_help(f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})'),const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=_plain_help(f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})'), default=DEFAULT_USE_KEY)
 	parser.add_argument('-ea','--extraargs',type=str,help=_plain_help(f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})'),default=DEFAULT_EXTRA_ARGS)
@@ -4974,7 +4978,7 @@ def get_parser():
 	parser.add_argument("-mpre","--ipmi_interface_ip_prefix", type=str, help=_plain_help(f"The prefix of the IPMI interfaces (default: {DEFAULT_IPMI_INTERFACE_IP_PREFIX})"), default=DEFAULT_IPMI_INTERFACE_IP_PREFIX)
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=_plain_help(f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})"), default=DEFAULT_INTERFACE_IP_PREFIX)
 	parser.add_argument('-iu','--ipmi_username', type=str,help=_plain_help(f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})'),default=DEFAULT_IPMI_USERNAME)
-	parser.add_argument('-ip','--ipmi_password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_PASSWORD})'),default=DEFAULT_IPMI_PASSWORD)
+	parser.add_argument('-ip','--ipmi_password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ipmi. (default: {_password_shown(DEFAULT_IPMI_PASSWORD)})'),default=DEFAULT_IPMI_PASSWORD)
 	parser.add_argument('-ia','--ipmi_args',type=str,help=_plain_help(f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_ARGS})'),default=DEFAULT_IPMI_ARGS)
 	parser.add_argument('-im','--ipmi_method', type=str,help=_plain_help(f'The method to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_METHOD})'),default=DEFAULT_IPMI_METHOD)
 	parser.add_argument('-irlt','--ipmi_retry_lockout_time', type=int,help=_plain_help(f'The time in seconds to retry the lockout of the hosts via ipmi. (default: {DEFAULT_IPMI_RETRY_LOCKOUT_TIME})'),default=DEFAULT_IPMI_RETRY_LOCKOUT_TIME)

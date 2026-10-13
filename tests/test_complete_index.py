@@ -65,6 +65,16 @@ def test_index_never_holds_passwords(home):
 		assert b'topsecret' not in f.read()
 
 
+def test_index_never_holds_configured_passwords(home, monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_PASSWORD', "Hunter2 pa%ss it's")
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_IPMI_PASSWORD', 'Bmc 100% s3cret')
+	index, directory = build()
+	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
+		data = f.read()
+	assert b'Hunter2' not in data and b's3cret' not in data
+	assert mc.ParserSpec.from_rows([index.row('spec', number) for number in range(index.count('spec'))]).lookup('-p')[0]
+
+
 def test_snapshot_and_memory_knowledge_agree(home):
 	index, _ = build()
 	snapshot = mc.SnapshotKnowledge(index, NOW)

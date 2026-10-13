@@ -47,6 +47,25 @@ SECRET_CONFIG = {
 }
 
 
+def test_help_never_shows_a_configured_password(tmp_path):
+	cfg = tmp_path / "multiSSH3.config.json"
+	cfg.write_text(json.dumps(SECRET_CONFIG))
+
+	r = run_cli(["--config_file", str(cfg), "-h"])
+
+	assert r.returncode == 0, r.stderr
+	assert "Hunter2" not in r.stdout + r.stderr and "s3cret" not in r.stdout + r.stderr
+	assert "via ssh, (default: set, not shown)" in r.stdout
+	assert "via ipmi. (default: set, not shown)" in r.stdout
+	# the other defaults are still shown, % and all
+	assert "(default: -o ControlPath=~/.ssh/cm-%r@%h:%p)" in r.stdout
+
+
+def test_help_says_when_no_password_is_set(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", "")
+	assert "via ssh, (default: none)" in multiSSH3.get_parser().format_help()
+
+
 def test_a_percent_in_a_config_default_does_not_stop_mssh(tmp_path):
 	# Python 3.14+ rejects a help string argparse cannot %-format when the option is added: every run failed
 	cfg = tmp_path / "multiSSH3.config.json"
@@ -72,6 +91,7 @@ def test_help_shows_every_default_as_it_is(monkeypatch):
 			"DEFAULT_HISTORY_FILE", "DEFAULT_ENCODING", "DEFAULT_HOST_FILE", "FORCE_TRUECOLOR", "__working_config_file"):
 		assert name + value in text, name
 	assert "%%" not in text
+	assert "DEFAULT_PASSWORD" not in text and "DEFAULT_IPMI_PASSWORD" not in text
 
 
 def test_malformed_config_returns_empty(tmp_path, capsys):

@@ -83,6 +83,56 @@ def test_passwords_are_never_completed():
 	assert texts(response) == [] and 'nodefault' in response.directives
 
 
+def spec_with_config_passwords(monkeypatch):
+	'''The spec mssh-complete builds while the config sets both passwords (spaces, quotes and % in them).'''
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_PASSWORD', "Hunter2 pa%ss it's")
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_IPMI_PASSWORD', 'Bmc 100% s3cret')
+	return mc.spec_from_parser(multiSSH3.get_parser())
+
+
+def holds_a_password(text):
+	return 'Hunter2' in text or 's3cret' in text
+
+
+def test_option_descriptions_never_show_a_configured_password(monkeypatch):
+	spec = spec_with_config_passwords(monkeypatch)
+	for shell in mc.SHELLS:
+		for before in ('mssh -', 'mssh -p', 'mssh --pass', 'mssh -i', 'mssh --ipmi_p', 'mssh -p '):
+			response = mc.Engine(spec, [], None).query(mc.Request(shell, before, '', before.split(' ')[-1]))
+			assert not holds_a_password(mc.format_response(response, nul=False).decode('utf-8')), (shell, before)
+	descriptions = {candidate.text: candidate.description for candidate in mc.Engine(spec, [], None).query(mc.Request('zsh', 'mssh -', '', '-')).candidates}
+	assert descriptions['--password'].endswith('via ssh, (default: set, not shown)')
+	assert descriptions['-ip'].endswith('via ipmi. (default: set, not shown)')
+
+
+def test_the_index_spec_holds_no_configured_password(monkeypatch):
+	spec = spec_with_config_passwords(monkeypatch)
+	assert not [row for row in spec.to_rows() if any(holds_a_password(field) for field in row)]
+	assert [option.default for option in spec.options if option.dest in mc.PASSWORD_DESTS] == ['', '']
+
+
+def test_index_rows_written_before_lose_their_password():
+	# indexes built by 0.4 hold the configured passwords in the spec rows: in the default and the help
+	rows = [
+		['password', '1', '0', '', "Hunter2 pa%ss it's", "The password to use to connect to the hosts via ssh, (default: Hunter2 pa%ss it's)", '-p', '--password'],
+		['ipmi_password', '1', '0', '', 'Bmc 100% s3cret', 'The password to use to connect to the hosts via ipmi. (default: Bmc 100% s3cret)', '-ip', '--ipmi_password'],
+		['username', '1', '0', '', 'root', 'The general username to use (default: root)', '-u', '--username'],
+	]
+	spec = mc.ParserSpec.from_rows(rows)
+	assert not [option for option in spec.options if holds_a_password(option.default + option.help)]
+	assert spec.options[0].help == 'The password to use to connect to the hosts via ssh, (default: set, not shown)'
+	assert (spec.options[2].default, spec.options[2].help) == ('root', 'The general username to use (default: root)')
+	for before in ('mssh -', 'mssh -p '):
+		response = mc.Engine(spec, [], None).query(mc.Request('zsh', before, '', before.split(' ')[-1]))
+		assert not holds_a_password(mc.format_response(response, nul=False).decode('utf-8'))
+
+
+def test_a_password_left_anywhere_in_a_help_is_never_shown():
+	# a help that names the password other than as "(default: ...)" loses its text, not just the password
+	option = mc.OptionSpec('password', ['-p'], '1', default='Hunter2', help='The password, Hunter2 by default')
+	assert not holds_a_password(option.help) and option.help and option.default == ''
+
+
 def test_option_descriptions_show_a_percent_once(monkeypatch):
 	monkeypatch.setattr(multiSSH3, 'DEFAULT_EXTRA_ARGS', '-o ControlPath=~/.ssh/cm-%r@%h:%p')
 	option, _ = mc.spec_from_parser(multiSSH3.get_parser()).lookup('-ea')
