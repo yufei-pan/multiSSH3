@@ -83,6 +83,27 @@ def test_zsh_completes_in_a_real_shell(setup):
 		session.close()
 
 
+# a command whose completion is built on _arguments, as most of zsh's are
+ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
+
+
+def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
+	# the remote command's completion runs as zsh runs it: with the completion system's options
+	# (_arguments misreads its specs without them) and with the operator's own (glob_dots)
+	env, home = setup
+	(home / 'dots').mkdir()
+	(home / 'dots' / '.zzhidden').write_text('')
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKEOPTS + '\nsetopt glob_dots')
+	try:
+		assert session.line_after('fakeopts --appa') == 'fakeopts --apparent-size '
+		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
+		assert session.line_after('ls dots/') == 'ls dots/.zzhidden '
+		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
 def test_zsh_gives_up_on_a_slow_engine(setup):
 	env, home = setup
 	slow = home / 'slow-engine'
