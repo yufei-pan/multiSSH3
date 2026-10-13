@@ -483,8 +483,9 @@ mssh -f ./data/ allServers /tmp/data/
 - Likely you will need to combine with the [Command String Replacement](#command-string-replacement) feature to let each host transfer to a different local path.
 
 ### `-t, --timeout TIMEOUT` | _`DEFAULT_CLI_TIMEOUT`_
-- Timeout for each command in seconds.
+- Idle timeout in seconds: a host's command is stopped when it has printed nothing for this long. A command that keeps printing is not stopped, however long it runs.
 - When using 0, timeout is disabled.
+- mssh stops only its own ssh ( or scp, rsync, ... ) on this machine, as Ctrl-C does. Without a terminal, the command on the host gets no signal: it runs on until it ends, or until it next writes output to the closed connection. The host shows `Timeout!` and what was stopped, with return code 124; a host stopped by Ctrl-C shows `Ctrl C detected, Emergency Stop!` and return code 130. To have the command end with its connection, give it a terminal with `-ea=-tt` ( for commands, not file copies ): its stdout and stderr then come as one stream.
 - For CLI interface, will use `DEFAULT_CLI_TIMEOUT` as default.
 - For module interface, will use `DEFAULT_TIMEOUT` as default.
 
@@ -735,7 +736,7 @@ options:
   -G, -gm, --gather_mode
                         Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS> (default: False)
   -t, --timeout TIMEOUT
-                        Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: 0)
+                        Idle timeout in seconds: stop a host's command after this long without output. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: 0)
   -T, --use_script_timeout
                         Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: 50)
   -r, --repeat REPEAT   Repeat the command for a number of times (default: 1)
@@ -879,7 +880,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		hosts (str or iterable): Hosts to run the command on. Can be a string (comma/space-separated) or iterable. Default: DEFAULT_HOSTS.
 		commands (list or None): List of commands to run on the hosts. If files are used, defines the destination. Default: None.
 		oneonone (bool): If True, run each command on the corresponding host (1:1 mapping). Default: DEFAULT_ONE_ON_ONE.
-		timeout (int): Timeout for each command in seconds. Default: DEFAULT_TIMEOUT.
+		timeout (int): Idle timeout: stop a host's command after this many seconds without output. Default: DEFAULT_TIMEOUT.
 		password (str): Password for SSH/IPMI authentication. Default: DEFAULT_PASSWORD.
 		no_watch (bool): If True, do not use curses TUI; just print output. Default: DEFAULT_NO_WATCH.
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.

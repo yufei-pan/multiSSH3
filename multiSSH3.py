@@ -2212,6 +2212,23 @@ def _record_host_exception(host, exc):
 	host.output.extend(traceback.format_exc().split('\n'))
 	host.returncode = -1
 
+def _stopped_command_note(formatedCMD):
+	'''
+	What mssh stopped when it stopped formatedCMD (-t, Ctrl C), and what that leaves behind.
+
+	Only the local program ends: a command ssh runs on a host gets no signal (it has no terminal), it
+	runs on until it ends, or until it writes to the closed connection.
+	'''
+	program = formatedCMD[0] if formatedCMD else ''
+	if program == _binPaths.get('sshpass') and len(formatedCMD) > 3:
+		program = formatedCMD[3]
+	if program == _binPaths.get('ssh'):
+		return 'ssh was stopped: the command may still run on the host'
+	name = os.path.basename(str(program))
+	if program in (_binPaths.get('rsync'), _binPaths.get('scp')):
+		return f'{name} was stopped: the copy may be incomplete'
+	return f'{name} was stopped'
+
 def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 	'''Return True when the next IPMI password should wait out retry_lockout_time.
 
@@ -2548,12 +2565,17 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				timeoutLineAppended = False
 				sleep_interval = 1.0e-7 # 100 nanoseconds
 				timed_out = False
+				stopped_by_ctrl_c = False
 				while proc.poll() is None:  # while the process is still running
 					if timeout > 0:
 						if time.monotonic() - host.lastUpdateTime > timeout:
 							timed_out = True
 							host.stderr.append('Timeout!')
 							host.output.append('Timeout!')
+							# -t counts the time since the last output, not since the start
+							stopped = f'No output for {timeout} s, so {_stopped_command_note(formatedCMD)}.'
+							host.stderr.append(stopped)
+							host.output.append(stopped)
 							proc.send_signal(signal.SIGINT)
 							time.sleep(0.1)
 							proc.terminate()
@@ -2575,6 +2597,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 					if _emo:
 						host.stderr.append('Ctrl C detected, Emergency Stop!')
 						host.output.append('Ctrl C detected, Emergency Stop!')
+						stopped_by_ctrl_c = True
 						proc.send_signal(signal.SIGINT)
 						time.sleep(0.1)
 						proc.terminate()
@@ -2610,12 +2633,19 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				host.returncode = proc.poll()
 				if timed_out:
 					host.returncode = 124
+				elif stopped_by_ctrl_c or _emo:
+					# Ctrl C. The terminal's reaches the command too, which may end before mssh stops it: ssh then
+					# says only "Killed by signal 2." (hidden), sshpass exits 0. Either way it did not finish
+					if not stopped_by_ctrl_c:
+						host.stderr.append('Ctrl C detected, Emergency Stop!')
+						host.output.append('Ctrl C detected, Emergency Stop!')
+					stopped = _stopped_command_note(formatedCMD) + '.'
+					host.stderr.append(stopped)
+					host.output.append(stopped)
+					host.returncode = 130
 				elif host.returncode is None:
-					# process been killed via timeout or sigkill
-					if host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
-						host.returncode = 137
-					else:
-						host.returncode = -1
+					# process been killed via sigkill
+					host.returncode = -1
 				host.output.append(f'Command finished with return code {host.returncode}')
 				if host.stderr:
 					# filter out the error messages that we want to ignore
@@ -4455,7 +4485,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		hosts (str or iterable): Hosts to run the command on. Can be a string (comma/space-separated) or iterable. Default: DEFAULT_HOSTS.
 		commands (list or None): List of commands to run on the hosts. If files are used, defines the destination. Default: None.
 		oneonone (bool): If True, run each command on the corresponding host (1:1 mapping). Default: DEFAULT_ONE_ON_ONE.
-		timeout (int): Timeout for each command in seconds. Default: DEFAULT_TIMEOUT.
+		timeout (int): Idle timeout: stop a host's command after this many seconds without output. Default: DEFAULT_TIMEOUT.
 		password (str): Password for SSH/IPMI authentication. Default: DEFAULT_PASSWORD.
 		no_watch (bool): If True, do not use curses TUI; just print output. Default: DEFAULT_NO_WATCH.
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.
@@ -4964,7 +4994,7 @@ def get_parser():
 	parser.add_argument('-W','--scp', action='store_true', help=f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})', default=DEFAULT_SCP)
 	parser.add_argument('-G','-gm','--gather_mode', action='store_true', help='Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
-	parser.add_argument("-t","--timeout", type=int, help=f"Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})", default=DEFAULT_CLI_TIMEOUT)
+	parser.add_argument("-t","--timeout", type=int, help=f"Idle timeout in seconds: stop a host's command after this long without output. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})", default=DEFAULT_CLI_TIMEOUT)
 	parser.add_argument('-T','--use_script_timeout',action='store_true', help=f'Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: {DEFAULT_TIMEOUT})', default=False)
 	parser.add_argument("-r","--repeat", type=_positive_int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
 	parser.add_argument("-i","--interval", type=int, help=f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})", default=DEFAULT_INTERVAL)
