@@ -89,8 +89,9 @@ def _effective(ran, original, typed_hosts=True):
 	'''
 	skip = NOT_REPLAYED + (IPMI_LOGIN if original['ipmi_password'] != multiSSH3.DEFAULT_IPMI_PASSWORD else ())
 	settings = {key: value for key, value in ran.items() if key not in skip and (typed_hosts or key != 'hosts')}
-	if settings.get('config_file'):
-		settings['config_file'] = os.path.abspath(settings['config_file'])
+	for name in ('config_file', 'host_file'):
+		if settings.get(name):
+			settings[name] = os.path.abspath(settings[name])
 	return settings
 
 
@@ -149,6 +150,7 @@ ROUND_TRIPS = [
 	(['-uk'], {}, '127.0.0.1', ['true']),
 	(['-k', 'T/keys'], {}, '127.0.0.1', ['true']),
 	(['--host_file', 'T/hosts'], {}, 'replay-node', ['true']),
+	(['--host_file', 'hosts'], {}, 'replay-node', ['true']),
 	(['--config_file', 'T/replay.config.json'], {}, '127.0.0.1', ['true']),
 	(['--config_file', 'replay.config.json', '-t', '0', '-i', '0'], {}, '127.0.0.1', ['true']),
 	(['-i', '0', '-r', '2'], {'DEFAULT_INTERVAL': 5}, '127.0.0.1', ['true']),
@@ -269,6 +271,14 @@ def test_config_file_is_recorded_with_its_absolute_path(replay_env, capsys):
 	_run_main(_case_argv(['--config_file', 'replay.config.json'], '127.0.0.1', ['true'], replay_env), capsys)
 	line = (replay_env / 'history').read_text().splitlines()[-1]
 	assert '--config_file={}'.format(replay_env / 'replay.config.json') in shlex.split(line.split('\t')[2])
+
+
+def test_host_file_is_recorded_with_its_absolute_path(replay_env, capsys):
+	# like --config_file: a replay in another directory reads the same hosts
+	_, echo = _run_main(_case_argv(['--host_file', 'hosts'], 'replay-node', ['true'], replay_env), capsys)
+	line = (replay_env / 'history').read_text().splitlines()[-1]
+	assert '--host_file={}'.format(replay_env / 'hosts') in shlex.split(line.split('\t')[2])
+	assert '--host_file={}'.format(replay_env / 'hosts') in shlex.split(echo)
 
 
 def test_file_sync_does_not_take_the_hosts_as_a_path(replay_env, capsys):

@@ -4324,7 +4324,10 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	option('env_file', '--env_file', '-ef')
 	# only env files given explicitly: listing the defaults would make a replayed line trust them all
 	options('env_files', '--env_files', '-efs')
-	option('host_file', '--host_file')
+	host_file = kwargs.get('host_file')
+	if host_file is not None and host_file != defaults.get('host_file'):
+		# absolute (mssh does not expand ~ in it): a replay in another directory reads the same hosts
+		argsList.append('--host_file={}'.format(_shell_quote(os.path.abspath(host_file) if host_file else host_file)))
 	if kwargs.get('config_file'):
 		# a config file can set any global (even the ssh binary): a replay elsewhere must load this one,
 		# not one a relative path finds in the directory it runs in
