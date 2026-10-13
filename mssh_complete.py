@@ -1532,6 +1532,13 @@ def _is_ip(text):
 	except ValueError:
 		return False
 
+def _in_environ(name):
+	'''Whether name is an environment variable. A name the locale cannot encode (Python 3.6 in the C locale) is none.'''
+	try:
+		return name in os.environ
+	except UnicodeEncodeError:
+		return False
+
 _ALIAS_VALUE_CHARS = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-,[]@*?:$')
 
 def collect_aliases(mssh, history_tokens, known):
@@ -1567,7 +1574,7 @@ def collect_aliases(mssh, history_tokens, known):
 		if name in history_tokens or ',' in value or '[' in value or all(_is_ip(member) or member in known for member in members):
 			aliases[name] = ('env_file', members, users)
 	for name in history_tokens:
-		if name in aliases or not name.isidentifier() or name not in os.environ:
+		if name in aliases or not name.isidentifier() or not _in_environ(name):
 			continue
 		members, users = expand(name)
 		if members and members != [name]:
@@ -3344,7 +3351,7 @@ class Engine(object):
 		config files (mssh reads them at Enter, from the shell's directory), or the name is a variable
 		of the shell (the prober may have started from another shell).
 		'''
-		return reach[3] or name.rsplit('@', 1)[-1].strip().strip('$') in os.environ
+		return reach[3] or _in_environ(name.rsplit('@', 1)[-1].strip().strip('$'))
 
 	def _valid_at_once(self, name):
 		'''An IP address or a hosts-file name: valid without DNS.'''
@@ -6359,6 +6366,73 @@ def render_glue(shell, command=None):
 	quote = _fish_quote if shell.startswith('fish') else shlex.quote
 	return _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
 
+#%% ------------ Printing to a reader that may go ----------------
+# the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`
+SIGPIPE_STATUS = 141
+
+def _discard_stdout():
+	'''
+	Point stdout, and stderr when it is the same file (2>&1), at devnull, after a write to it failed
+	(as the Python docs suggest for a reader that has gone): what is left in the buffer then goes
+	nowhere, and the flush at exit does not fail again.
+	'''
+	try:
+		stdout_fd = sys.stdout.fileno()
+		fds = [stdout_fd]
+		try:
+			if os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (a caller's own stream): nothing to redirect
+		pass
+
+def _flush_stdout():
+	'''
+	Flush stdout now, in the command rather than at exit, where a failure is out of reach ("Exception
+	ignored" and status 120; Python 3.6 and 3.13 even exited 0 when the fish glue could not be written).
+	A failure other than a reader gone (a full disk) is raised once: stdout is discarded.
+	'''
+	if sys.stdout is None:
+		return
+	try:
+		sys.stdout.flush()
+	except BrokenPipeError:
+		raise
+	except OSError:
+		_discard_stdout()
+		raise
+
+def _quiet_when_stdout_is_gone(command):
+	'''
+	command, ending as SIGPIPE ends other tools when the reader of its output exits early
+	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS.
+
+	stdout is flushed before command returns, also when it exits through argparse (--help): an output
+	that fits stdout's buffer would otherwise only fail in the flush at exit.
+	'''
+	def run(*args, **kwargs):
+		try:
+			try:
+				code = command(*args, **kwargs)
+			except SystemExit:
+				_flush_stdout()
+				raise
+			_flush_stdout()
+			return code
+		except BrokenPipeError:
+			_discard_stdout()
+			return SIGPIPE_STATUS
+	run.__name__, run.__doc__, run.__wrapped__ = command.__name__, command.__doc__, command
+	return run
+
 #%% ------------ Install ----------------
 RC_BEGIN = '# >>> mssh completion >>>'
 RC_BEGIN_CREATED = '# >>> mssh completion (created this file) >>>'
@@ -6379,13 +6453,21 @@ def detect_shell(environ=None):
 	return name if name in SHELLS else None
 
 def _fish_major():
-	'''The major version of the fish on PATH, or None.'''
+	'''
+	The major version of the fish on PATH, or None.
+
+	From `fish --version`, which reads no configuration: `fish -c` runs the operator's config.fish and
+	conf.d first, which may print, be slow or do things. The line may be translated ("fish, Version
+	3.7.1"), and old releases wrote it to stderr: its first number is the version.
+	'''
+	import re
 	import subprocess
 	try:
-		output = subprocess.run(['fish', '-c', 'echo $FISH_VERSION'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
-		return int(output.decode('ascii', 'replace').strip().split('.')[0])
-	except (OSError, ValueError, subprocess.SubprocessError):
+		output = subprocess.run(['fish', '--version'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5).stdout
+	except (OSError, subprocess.SubprocessError):
 		return None
+	found = re.search(r'\b(\d+)\.\d+', output.decode('ascii', 'replace'))
+	return int(found.group(1)) if found else None
 
 def _ours(path):
 	try:
@@ -6576,6 +6658,9 @@ def completion_command(values):
 		values = values[:-1]
 	if action in ('install', 'uninstall') and len(values) <= 2:
 		shell = values[1] if len(values) == 2 else detect_shell()
+		if shell not in SHELLS and len(values) == 2:
+			print('mssh: autocomplete is for bash, zsh and fish, not {}'.format(shell), file=sys.stderr)
+			return 2
 		if shell not in SHELLS:
 			print('mssh: cannot tell which shell to set up, name it: mssh --completion {} bash|zsh|fish'.format(action), file=sys.stderr)
 			return 2
@@ -6590,6 +6675,9 @@ def completion_command(values):
 		return code
 	print('usage: mssh --completion bash|zsh|fish | install [SHELL] [editor] | uninstall [SHELL]', file=sys.stderr)
 	return 2
+
+# as main is: mssh --completion calls this directly, not through main
+completion_command = _quiet_when_stdout_is_gone(completion_command)
 
 #%% ------------ Replay evaluation ----------------
 def _tab(candidates, typed, policy, quoted, nospace):
@@ -7128,6 +7216,23 @@ def _cmd_probe(args):
 		if lock:
 			release_lock(lock, owner)
 
+def _print_as_stdout_can(text):
+	'''
+	Print text that may hold host names from the history, as stdout can: characters that came from bytes
+	that are not UTF-8 as those bytes, characters stdout's encoding lacks (all but ASCII in the C locale
+	on Python 3.6) as backslash escapes. print() failed on either.
+	'''
+	import re
+	buffer = getattr(sys.stdout, 'buffer', None)
+	if buffer is None:
+		sys.stdout.write(text)
+		return
+	encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+	parts = re.split('([\udc80-\udcff]+)', text)
+	sys.stdout.flush()
+	buffer.write(b''.join(part.encode('ascii', 'surrogateescape') if index % 2 else part.encode(encoding, 'backslashreplace')
+		for index, part in enumerate(parts)))
+
 def _cmd_eval(args):
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete eval', description='Replay mssh history and report how much typing completion saves.')
@@ -7146,7 +7251,7 @@ def _cmd_eval(args):
 	if options.diagnostics:
 		lines = _newest([line for line in lines if _entry_time(line) >= options.since], options.limit)
 		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
-		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
+		_print_as_stdout_can(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)))
 		return 0
 	print(format_report(evaluate(lines, spec, options.since, options.limit)))
 	return 0
@@ -7156,6 +7261,7 @@ def _entry_time(line):
 	head = line.split('\t', 1)[0]
 	return int(head) if _is_digits(head) else 0
 
+@_quiet_when_stdout_is_gone
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv
 	command = argv[0] if argv else ''
