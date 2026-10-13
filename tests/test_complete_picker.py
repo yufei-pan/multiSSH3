@@ -237,6 +237,15 @@ def test_a_line_mssh_did_not_record_counts_each_time():
 	assert offered([], ['mssh -I login1 w'] * 2) == ([('login1', 2)], [('mssh -I login1 w', 2)])
 
 
+def test_runs_only_the_shell_holds_count_with_the_history_tab_full(monkeypatch):
+	# HISTORY_LIMIT bounds the rows, not the uses
+	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 2)
+	history = runs(1, '-su', 'node1', 'uptime') + runs(1, '-su', 'node2', 'uptime') + runs(1, '-su', 'node1', 'df')
+	slot, rows = offered(history, ['mssh -I login1 w'] * 2 + ['mssh node1 df'])
+	assert ('login1', 2) in slot and ('node1', 2) in slot
+	assert rows == [('mssh -su node1 df', 1), ('mssh -su node2 uptime', 1)]
+
+
 def test_spellings_of_one_run_are_one_row():
 	# the program's name and path, option spellings, their order and quoting
 	shell = ['mssh3 -u root -t 5 storage1 "df -h /data"', "multissh storage1 --timeout=5 --username root 'df -h /data'",
@@ -385,13 +394,14 @@ def test_picker_warnings_come_from_the_line(tmp_path, monkeypatch):
 
 
 def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
-	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed
+	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed.
+	# The shell's lines are all read (they count as uses): the shell sends a bounded tail
 	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 10)
 	lex = mc.lex
+	shell = ['mssh -su host{} date'.format(number) for number in range(20)]
 
 	def parses(count):
 		history = [line(NOW - number, '-su', 'node{}'.format(number), 'uptime') for number in range(count)]
-		shell = ['mssh -su host{} date'.format(number) for number in range(count)]
 		built = engine()
 		parsed = []
 		monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))

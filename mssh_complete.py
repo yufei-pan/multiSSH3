@@ -3699,6 +3699,8 @@ def _history_items(request, engine, history_lines, name, features):
 
 	A run is in mssh's history and, as typed, in the shell's: the shell's lines add the rows and
 	the uses mssh's history does not hold (runs with -I, and those it no longer holds).
+	HISTORY_LIMIT bounds the rows (lines of mssh's history past it are not read); every line the
+	shell sent is.
 
 	Returns:
 		tuple: (PickItem list, MemoryKnowledge of the runs only the shell's history holds)
@@ -3726,53 +3728,52 @@ def _history_items(request, engine, history_lines, name, features):
 		parsed.append((len(entries), entry.hosts, tuple(entry.commands), line))
 		entries.append([len(features & set(entry.features())), entry.ts, text, 1])
 	unrecorded = MemoryKnowledge()
-	if len(entries) < HISTORY_LIMIT:
-		typed = {}  # run key -> [times in the shell's history, its features, its newest line]
-		runs = []   # the run keys, newest first
-		keys = {}   # line -> run key (None: not offered), so a line typed often is read once
-		for line in request.history[::-1] if request.shell != 'fish' else request.history:
-			line = line.strip()
-			if line not in keys:
-				found = _typed_run(line, engine)
-				keys[line] = found[0] if found is not None else None
-				if found is not None and found[0] not in typed:
-					typed[found[0]] = [0, found[1], line]
-					runs.append(found[0])
-			if keys[line] is not None:
-				typed[keys[line]][0] += 1
-		# the entries of mssh's history with the hosts and commands of those runs, and their options
-		candidates = {}
-		wanted = set(key[:2] for key in runs)
-		for number, hosts, commands, line in parsed:
-			if (hosts, commands) in wanted:
-				entry = parse_history_line(line, engine.spec)
-				candidates.setdefault((hosts, commands), []).append((number, _run_options(entry.options, engine)))
-		pools = {}  # the entries some runs' lines count towards -> [times typed, the newest of those runs]
-		for key in runs:
-			count, run_features, line = typed[key]
-			bucket = candidates.get(key[:2], ())
-			# the record of this run, else one mssh may have written in another form
-			found = [number for number, pairs in bucket if pairs == key[2]]
-			loose = _loose_dests(key[2]) if not found else ()
-			if loose:
-				kept = [pair for pair in key[2] if pair[0] not in loose]
-				found = [number for number, pairs in bucket if [pair for pair in pairs if pair[0] not in loose] == kept]
-			if found:
-				pool = pools.setdefault(tuple(found), [0, key])
-				pool[0] += count
-				continue
-			if len(entries) < HISTORY_LIMIT:
-				# the newest spelling of a run only the shell's history holds
-				entries.append([len(features & set(run_features)), 0, line, count])
+	typed = {}  # run key -> [times in the shell's history, its features, its newest line]
+	runs = []   # the run keys, newest first
+	keys = {}   # line -> run key (None: not offered), so a line typed often is read once
+	for line in request.history[::-1] if request.shell != 'fish' else request.history:
+		line = line.strip()
+		if line not in keys:
+			found = _typed_run(line, engine)
+			keys[line] = found[0] if found is not None else None
+			if found is not None and found[0] not in typed:
+				typed[found[0]] = [0, found[1], line]
+				runs.append(found[0])
+		if keys[line] is not None:
+			typed[keys[line]][0] += 1
+	# the entries of mssh's history with the hosts and commands of those runs, and their options
+	candidates = {}
+	wanted = set(key[:2] for key in runs)
+	for number, hosts, commands, line in parsed:
+		if (hosts, commands) in wanted:
+			entry = parse_history_line(line, engine.spec)
+			candidates.setdefault((hosts, commands), []).append((number, _run_options(entry.options, engine)))
+	pools = {}  # the entries some runs' lines count towards -> [times typed, the newest of those runs]
+	for key in runs:
+		count, run_features, line = typed[key]
+		bucket = candidates.get(key[:2], ())
+		# the record of this run, else one mssh may have written in another form
+		found = [number for number, pairs in bucket if pairs == key[2]]
+		loose = _loose_dests(key[2]) if not found else ()
+		if loose:
+			kept = [pair for pair in key[2] if pair[0] not in loose]
+			found = [number for number, pairs in bucket if [pair for pair in pairs if pair[0] not in loose] == kept]
+		if found:
+			pool = pools.setdefault(tuple(found), [0, key])
+			pool[0] += count
+			continue
+		if len(entries) < HISTORY_LIMIT:
+			# the newest spelling of a run only the shell's history holds
+			entries.append([len(features & set(run_features)), 0, line, count])
+		for _ in range(count):
+			unrecorded.add(run_features, 0.0)
+	for found, (count, key) in pools.items():
+		# mssh's history holds this many of the shell's lines; any more are runs it does not hold
+		count -= sum(entries[number][3] for number in found)
+		if count > 0:
+			entries[found[0]][3] += count
 			for _ in range(count):
-				unrecorded.add(run_features, 0.0)
-		for found, (count, key) in pools.items():
-			# mssh's history holds this many of the shell's lines; any more are runs it does not hold
-			count -= sum(entries[number][3] for number in found)
-			if count > 0:
-				entries[found[0]][3] += count
-				for _ in range(count):
-					unrecorded.add(typed[key][1], 0.0)
+				unrecorded.add(typed[key][1], 0.0)
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
 	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order], unrecorded
 
