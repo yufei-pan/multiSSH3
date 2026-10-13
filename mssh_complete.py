@@ -24,14 +24,15 @@ SHELLS = ('bash', 'zsh', 'fish')
 
 #%% ------------ Shell lexing ----------------
 class Token(object):
-	'''One shell word. text is the dequoted value, raw the text as typed.'''
-	__slots__ = ('text', 'raw', 'quoted', 'open_quote')
+	'''One shell word. text is the dequoted value, raw the text as typed, start where raw starts in the line (-1: unknown).'''
+	__slots__ = ('text', 'raw', 'quoted', 'open_quote', 'start')
 
-	def __init__(self, text, raw, quoted=False, open_quote=''):
+	def __init__(self, text, raw, quoted=False, open_quote='', start=-1):
 		self.text = text
 		self.raw = raw
 		self.quoted = quoted
 		self.open_quote = open_quote
+		self.start = start
 
 	def __repr__(self):
 		return 'Token({!r}, raw={!r}, quoted={!r}, open_quote={!r})'.format(self.text, self.raw, self.quoted, self.open_quote)
@@ -128,7 +129,7 @@ def lex(line):
 			else:
 				parts.append(char)
 				index += 1
-		tokens.append(Token(''.join(parts), line[start:min(index, length)], quoted, open_quote))
+		tokens.append(Token(''.join(parts), line[start:min(index, length)], quoted, open_quote, start))
 
 # marks the cursor while lexing; a private use character that does not appear in command lines
 CURSOR = '\ue000'
@@ -940,6 +941,16 @@ class HostTable(object):
 	def aliases_with_prefix(self, prefix):
 		lo, hi = _prefix_range(self.alias_names, prefix)
 		return [(index, self.alias_names[index]) for index in range(lo, hi)]
+
+	def sources(self, name):
+		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
+		number = bisect_left(self.names, name)
+		if number >= len(self.names) or self.names[number] != name or number >= self.index.count('host_meta'):
+			return 0
+		try:
+			return int(self.index.row('host_meta', number)[0])
+		except (IndexError, ValueError):
+			return 0
 
 	def alias_index(self, name):
 		index = bisect_left(self.alias_names, name)
@@ -1888,6 +1899,143 @@ def spawn_probe(directory):
 	'''Start a detached `probe` unless one is running. Returns whether one was started.'''
 	return _spawn_detached(directory, PROBE_LOCK_NAME, 'probe')
 
+#%% ------------ Diagnostics ----------------
+DIAGNOSTIC_KINDS = ('unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
+MAX_MESSAGE = 160
+
+class Diagnostic(object):
+	'''A warning about part of an mssh line: line[start:end] is marked, message says why.'''
+	__slots__ = ('start', 'end', 'kind', 'message')
+
+	def __init__(self, start, end, kind, message):
+		self.start = start
+		self.end = end
+		self.kind = kind
+		self.message = message
+
+	def __repr__(self):
+		return 'Diagnostic({}, {}, {!r}, {!r})'.format(self.start, self.end, self.kind, self.message)
+
+def _punctuation():
+	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
+	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
+
+# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
+_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+
+def _host_parts(token):
+	'''
+	(host name without user@, (start, end) in the line) for each host of a hosts word. A quoted or
+	escaped word is marked whole: its parts have no exact place in the line.
+	'''
+	text = token.text
+	exact = token.raw == text and token.start >= 0
+	parts = []
+	position = 0
+	while position < len(text):
+		if text[position] in _HOST_SEPARATORS:
+			position += 1
+			continue
+		end = position
+		while end < len(text) and text[end] not in _HOST_SEPARATORS:
+			end += 1
+		name = text[position:end].rsplit('@', 1)[-1].strip('$')
+		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
+		parts.append((name, span))
+		position = end
+	return parts
+
+def _is_ip_address(name):
+	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
+	parts = name.split('.')
+	if len(parts) == 4 and all(_is_digits(part) and int(part) <= 255 for part in parts):
+		return True
+	return ':' in name
+
+def _range_count(text):
+	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
+	start = text.find('[')
+	end = text.find(']', start + 1)
+	if start < 0 or end < 0:
+		return 1
+	count = 0
+	for part in text[start + 1:end].split(','):
+		low, sep, high = part.strip().partition('-')
+		if sep and _is_digits(low) and _is_digits(high):
+			count += max(int(high) - int(low) + 1, 0)
+		elif not sep and part.strip():
+			count += 1
+		else:
+			return None
+	rest = _range_count(text[end + 1:])
+	return None if rest is None else count * rest
+
+def _iter_range(text):
+	'''The names expand_ranges makes of text, one at a time (text must be one _range_count can count).'''
+	start = text.find('[')
+	end = text.find(']', start + 1)
+	if start < 0 or end < 0:
+		yield text
+		return
+	head, tail = text[:start], text[end + 1:]
+	for part in text[start + 1:end].split(','):
+		low, sep, high = part.strip().partition('-')
+		if sep:
+			width = min(len(low), len(high))
+			values = ('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
+		else:
+			values = [part.strip()]
+		for value in values:
+			for name in _iter_range(head + value + tail):
+				yield name
+
+def _padded_range(name):
+	'''node[1-16] -> node[01-16]: the one range of name with its lower bound padded to the upper's width, or None.'''
+	start = name.find('[')
+	end = name.find(']', start + 1)
+	if start < 0 or end < 0 or '[' in name[end:]:
+		return None
+	low, sep, high = name[start + 1:end].partition('-')
+	if not sep or not _is_digits(low) or not _is_digits(high) or low.startswith('0') or len(low) >= len(high):
+		return None
+	return '{}[{}-{}]{}'.format(name[:start], low.zfill(len(high)), high, name[end + 1:])
+
+def _strip_zeros(name):
+	'''name with leading zeros dropped from every run of digits: gpu017 -> gpu17.'''
+	out = []
+	index = 0
+	while index < len(name):
+		end = index
+		while end < len(name) and name[end] in _DIGITS:
+			end += 1
+		if end > index:
+			out.append(name[index:end].lstrip('0') or '0')
+			index = end
+		else:
+			out.append(name[index])
+			index += 1
+	return ''.join(out)
+
+def _one_edit(typed, other):
+	'''Whether other is one insertion, deletion, substitution or swap of adjacent characters away from typed.'''
+	if typed == other:
+		return False
+	if len(typed) == len(other):
+		differ = [index for index in range(len(typed)) if typed[index] != other[index]]
+		if len(differ) == 1:
+			return True
+		return (len(differ) == 2 and differ[1] == differ[0] + 1
+			and typed[differ[0]] == other[differ[1]] and typed[differ[1]] == other[differ[0]])
+	if abs(len(typed) - len(other)) != 1:
+		return False
+	short, long_ = (typed, other) if len(typed) < len(other) else (other, typed)
+	return any(long_[:index] + long_[index + 1:] == short for index in range(len(long_)))
+
+def _unique(names):
+	'''names without repeats, in order.'''
+	seen = set()
+	return [name for name in names if not (name in seen or seen.add(name))]
+
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
 GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most this many
@@ -1934,7 +2082,7 @@ class Response(object):
 
 	candidates are replacements for the request's word, best first. delegate is
 	(word index, prefix, words) when the shell should add its own completion of a remote
-	command. ghost (SP2) and diagnostics (SP3) are not filled in yet.
+	command. ghost is the grey suggestion (SP2), diagnostics the warnings about the line (SP3).
 	'''
 	__slots__ = ('context', 'candidates', 'directives', 'delegate', 'ghost', 'diagnostics')
 
@@ -2059,11 +2207,24 @@ class Engine(object):
 		self.knowledges = [knowledge for knowledge in knowledges if knowledge is not None]
 		self.hosts = hosts if hosts is not None else HostTable()
 		self.users = list(users)
+		# the runtime directory: host states, the probe queue; None runs without them
+		self.directory = None
 
 	def query(self, request, deadline=None):
-		if request.flags.get('ghost') == '1':
+		ghost = request.flags.get('ghost') == '1'
+		diag = request.flags.get('diag') == '1'
+		if ghost or diag:
+			# grey text and warnings come without candidates
 			response = Response(parse_context(request.before, request.after, self.spec))
-			response.ghost = self.suggest(request, deadline)
+			if ghost:
+				response.ghost = self.suggest(request, deadline)
+			if diag:
+				try:
+					response.diagnostics, pending = self.diagnose(request)
+					if pending:
+						response.directives.add('pending')
+				except Exception as e:
+					_debug('diagnostics failed: {!r}'.format(e))
 			return response
 		context = parse_context(request.before, request.after, self.spec)
 		response = Response(context)
@@ -2081,6 +2242,154 @@ class Engine(object):
 			response.directives.add('nosort')
 		response.candidates = self._frame(candidates, context, request, response.directives)
 		return response
+
+	def host_states(self):
+		'''What the prober learned (host -> HostState), from the runtime directory.'''
+		return read_host_states(self.directory) if self.directory else {}
+
+	def diagnose(self, request, probe=True, now=None):
+		'''
+		Warnings for the words of the request's line (before + after) already typed, most
+		important first, and whether the prober still owes answers for hosts on the line.
+
+		Args:
+			probe (bool): queue those hosts and start the prober (needs self.directory)
+
+		Returns:
+			tuple: (list of Diagnostic, pending)
+		'''
+		now = time.time() if now is None else now
+		line = request.before + request.after
+		tokens = lex(line)
+		start = _mssh_start(tokens)
+		if start is None:
+			return [], False
+		cursor = len(request.before)
+		words = tokens[start + 1:]
+		states = self.host_states()
+		wanted = []
+		found = []
+		for token, (role, _) in zip(words, assign_roles(words, self.spec)):
+			if token.start <= cursor <= token.start + len(token.raw):
+				# still being typed
+				continue
+			if role == ROLE_HOSTS:
+				found.extend(self._host_diagnostics(token, states, now, wanted))
+		wanted = _unique(wanted)
+		if probe and wanted and self.directory:
+			try:
+				queue_probes(self.directory, wanted)
+				spawn_probe(self.directory)
+			except OSError as e:
+				_debug('cannot queue hosts: {!r}'.format(e))
+		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
+		return found, bool(wanted)
+
+	def _host_diagnostics(self, token, states, now, wanted):
+		'''Unknown hosts and range surprises in a hosts word.'''
+		found = []
+		for name, (start, end) in _host_parts(token):
+			if not name:
+				continue
+			members = self._host_members(name)
+			if members is None:
+				if self._verdict(name, states, now, wanted) == 'invalid':
+					found.append(Diagnostic(start, end, 'unknown', self._unknown_message(name, states, now)))
+			elif members:
+				item = self._range_diagnostic(name, members[0], members[1], (start, end), states, now, wanted)
+				if item is not None:
+					found.append(item)
+		return found
+
+	def _host_members(self, name):
+		'''
+		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
+		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
+		'''
+		number = self.hosts.alias_index(name)
+		if number is not None:
+			members = self.hosts.alias_members(number)
+			return members, len(members)
+		if '[' not in name:
+			return None
+		total = _range_count(name)
+		if total is None:
+			return ()
+		members = []
+		for member in _iter_range(name):
+			if len(members) >= RANGE_MEMBERS_LIMIT:
+				break
+			members.append(member)
+		return (members, total) if members != [name] else None
+
+	def _valid_at_once(self, name):
+		'''An IP address or a hosts-file name: valid without DNS.'''
+		return bool(self.hosts.sources(name) & SRC_HOSTS_FILE) or _is_ip_address(name)
+
+	def _verdict(self, name, states, now, wanted):
+		'''
+		What is known about one host: 'valid', 'invalid', 'unsure', or '' (the prober is asked).
+		A host whose answer or ping is not fresh goes into wanted.
+		'''
+		state = states.get(name)
+		if self._valid_at_once(name):
+			# no DNS needed, only a ping
+			if state is None or not state.fresh_ping(now):
+				wanted.append(name)
+			return 'valid'
+		if needs_probe(state, now):
+			wanted.append(name)
+		return state.fresh_validity(now) if state is not None else ''
+
+	def _unknown_message(self, name, states, now):
+		dash, _ = _punctuation()
+		meant = self._did_you_mean(name, states, now)
+		return '{}: unknown host'.format(name) + (dash + 'did you mean {}?'.format(meant) if meant else '')
+
+	def _did_you_mean(self, name, states, now):
+		'''
+		The one known host name meant instead of name: the same once leading zeros are dropped
+		(gpu017 -> gpu17), else one edit away (names of at least 4 characters); None when there is
+		no such name or more than one.
+		'''
+		def possible(candidate):
+			state = states.get(candidate)
+			return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
+		stripped = _strip_zeros(name)
+		same = [candidate for candidate in self.hosts.names if _strip_zeros(candidate) == stripped and possible(candidate)]
+		if same:
+			return same[0] if len(same) == 1 else None
+		if len(name) < 4:
+			return None
+		close = [candidate for candidate in self.hosts.names
+			if abs(len(candidate) - len(name)) <= 1 and possible(candidate) and _one_edit(name, candidate)]
+		return close[0] if len(close) == 1 else None
+
+	def _range_diagnostic(self, name, members, total, span, states, now, wanted):
+		'''The warning for a range or an alias with members mssh would reject, or None.'''
+		unknown = []
+		checked = 0
+		for member in members:
+			verdict = self._verdict(member, states, now, wanted)
+			if verdict:
+				checked += 1
+				if verdict == 'invalid':
+					unknown.append(member)
+		if not unknown:
+			return None
+		dash, more = _punctuation()
+		if checked < total:
+			message = '{}: {} of {} checked, {} unknown so far'.format(name, checked, total, len(unknown))
+		else:
+			shown = ', '.join(unknown[:3] + ([more] if len(unknown) > 3 else []))
+			message = '{}: {} of {} hosts unknown ({})'.format(name, len(unknown), total, shown)
+			padded = _padded_range(name)
+			if padded is not None:
+				# every member is asked about, so the suggestion can appear once the prober answers
+				verdicts = [self._verdict(member, states, now, wanted) for member in _iter_range(padded)]
+				if all(verdict == 'valid' for verdict in verdicts):
+					message += dash + 'did you mean {}?'.format(padded)
+		return Diagnostic(span[0], span[1], 'range', message)
 
 	def suggest(self, request, deadline=None):
 		'''
@@ -2530,6 +2839,8 @@ def format_response(response, nul=True):
 			lines.append('C {}\t{}\t{}{}'.format(candidate.text, _clean(candidate.description), candidate.group, raw))
 	if response.ghost is not None and safe_field(response.ghost.text) and '\t' not in response.ghost.text:
 		lines.append('G {}\t{}'.format(response.ghost.kind, response.ghost.text))
+	for item in response.diagnostics:
+		lines.append('W {}\t{}\t{}\t{}'.format(item.start, item.end, item.kind, _clean(item.message)[:MAX_MESSAGE]))
 	if response.delegate is not None:
 		index, prefix, words = response.delegate
 		fields = [str(index), prefix] + list(words)
@@ -2571,6 +2882,7 @@ def engine_for(request, directory=Ellipsis, now=None):
 		knowledges.append(shell_history_knowledge(history, spec))
 	engine = Engine(spec, knowledges, HostTable(index), users)
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
+	engine.directory = directory
 	return engine
 
 #%% ------------ Terminal ----------------
