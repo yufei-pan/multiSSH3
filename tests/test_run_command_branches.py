@@ -110,7 +110,7 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	assert host.returncode == 0
 	assert rsync_calls[0] == [
 		"rsync", "-ahlX", "--partial", "--inplace", "--info=name",
-		"--rsh", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
 
@@ -299,6 +299,95 @@ def test_requested_scp_copies_a_trailing_slash_directory_itself(fake_host, monke
 	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], [str(src) + "/"], scp=True)
 
 	assert calls[0][-3:] == ["--", str(src) + "/", "mock-a:/dest/"]
+
+
+@pytest.mark.parametrize("name,remote", [
+	("root@fd00::5", "root@[fd00::5]"),
+	("fd00::5", "[fd00::5]"),
+	("fe80::1%eth0", "[fe80::1%eth0]"),
+	("root@[fd00::5]", "root@[fd00::5]"),
+	("root@10.0.0.5", "root@10.0.0.5"),
+])
+@pytest.mark.parametrize("scp", [False, True], ids=["rsync", "scp"])
+def test_copy_brackets_an_ipv6_address(fake_host, monkeypatch, name, remote, scp):
+	# rsync and scp take the first colon as the end of the host: fd00::5:/dest/ means host fd00
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	push = fake_host(name, "/dest/", files=["/src/a"], scp=scp)
+	gather = fake_host(name, "/local/", files=["/remote/a"], scp=scp, gatherMode=True)
+
+	multiSSH3.run_command(push, threading.Semaphore(1), timeout=5)
+	multiSSH3.run_command(gather, threading.Semaphore(1), timeout=5)
+
+	assert calls[0][-2:] == ["/src/a", remote + ":/dest/"]
+	assert calls[1][-2:] == [remote + ":/remote/a", "/local/"]
+
+
+def test_ssh_command_keeps_an_ipv6_address_as_given(fake_host, monkeypatch):
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	host = fake_host("root@fd00::5", "uptime")
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert calls[0][-2:] == ["root@fd00::5", "uptime"]
+
+
+def _rsync_split(command):
+	'''Split an rsync --rsh command into words as rsync does (main.c do_cmd): spaces separate words,
+	single or double quotes keep spaces, a doubled quote inside the same quotes is one literal quote,
+	backslashes are not special.'''
+	words = []
+	i = 0
+	while i < len(command):
+		if command[i] == " ":
+			i += 1
+			continue
+		word = []
+		in_quote = ""
+		while i < len(command) and (command[i] != " " or in_quote):
+			char = command[i]
+			if char in "'\"" and not in_quote:
+				in_quote = char
+				i += 1
+				continue
+			if char == in_quote:
+				if command[i + 1:i + 2] == in_quote:
+					word.append(char)
+					i += 2
+				else:
+					in_quote = ""
+					i += 1
+				continue
+			word.append(char)
+			i += 1
+		assert not in_quote, "rsync rejects a missing trailing quote"
+		words.append("".join(word))
+	return words
+
+
+@pytest.mark.parametrize("identity_file", [
+	"/home/u/my keys/id_ed25519",
+	"/home/u/o'brien/id_rsa",
+	'/home/u/"quoted" \\back/id',
+	"~/.ssh/id_ed25519",
+])
+def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, monkeypatch, identity_file):
+	# rsync splits --rsh on spaces: an identity path with a space became two arguments, and the
+	# configured ssh was ignored for a plain "ssh"
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	calls = []
+	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "/opt/open ssh/bin/ssh")
+	host = fake_host("mock-a", "/dest/", files=["/src/a"], identity_file=identity_file)
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	rsh = calls[0][calls[0].index("--rsh") + 1]
+	assert _rsync_split(rsh) == ["/opt/open ssh/bin/ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
+		"-i", identity_file]
 
 
 def test_run_command_ipmitool_local(fake_host, monkeypatch):

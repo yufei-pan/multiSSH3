@@ -501,7 +501,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -510,7 +510,7 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "file has vanished: \"/src/a/x\"",
    "Command finished with return code 24"
   ],
@@ -534,7 +534,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -552,7 +552,7 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "bash: line 1: rsync: command not found",
    "rsync: connection unexpectedly closed (0 bytes received so far) [sender]",
    "Command finished with return code 12",
@@ -581,7 +581,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -599,7 +599,7 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "bash: line 1: rsync: command not found",
    "rsync: connection unexpectedly closed (0 bytes received so far) [sender]",
    "Command finished with return code 12",
@@ -615,7 +615,7 @@
   "sleeps": [],
   "stderr": [
    "Resolved name: node1",
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "bash: line 1: rsync: command not found",
    "rsync: connection unexpectedly closed (0 bytes received so far) [sender]",
    "Rsync is not available on the host! Trying SCP connection...",
@@ -636,7 +636,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "node1:/remote/a",
     "/local/"
@@ -645,7 +645,7 @@
   "command": "/local/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1:/remote/a /local/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- node1:/remote/a /local/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -700,7 +700,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--delete",
     "--",
     "/src/a",
@@ -711,7 +711,7 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null --delete -- /src/a /src/b node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' --delete -- /src/a /src/b node1:/dest/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -768,7 +768,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -778,7 +778,7 @@
   "name": "node1",
   "output": [
    "scp not found on the local machine! Trying to use rsync...",
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -1158,7 +1158,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -1170,7 +1170,7 @@
     "--inplace",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -1188,9 +1188,9 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "Warning: Too many open files. retrying...",
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "ssh: connect to host node1 port 22: Connection refused",
    "Command finished with return code 255",
    "Rsync connection failed! Trying SCP connection...",

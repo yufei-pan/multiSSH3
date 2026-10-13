@@ -2378,7 +2378,8 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False):
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
-		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(sshLocalExtraArgs)]
+		# rsync splits --rsh on spaces and honours quotes: quoted, an identity path with a space stays one argument
+		rsyncLocalExtraArgs = ['--rsh',' '.join(shlex.quote(arg) for arg in [_binPaths.get('ssh', 'ssh')] + sshLocalExtraArgs)]
 		host.address = host.name
 		if '@' in host.name:
 			username, host.address = host.name.rsplit('@',1)
@@ -2536,13 +2537,17 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False):
 					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
 					return attempt('stop')
+				# rsync and scp end the host at the first colon, an IPv6 address goes in brackets
+				remoteName = host.resolvedName
+				if ':' in host.address and not host.address.startswith('['):
+					remoteName = f'{username}@[{host.address}]' if username else f'[{host.address}]'
 				if host.gatherMode:
-					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
+					fileArgs = [f'{remoteName}:{file}' for file in host.files] + [host.command]
 				elif useScp and scp_like_rsync:
 					sources, destination = _scp_sources_like_rsync(host.files, host.command)
-					fileArgs = sources + [f'{host.resolvedName}:{destination}']
+					fileArgs = sources + [f'{remoteName}:{destination}']
 				else:
-					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
+					fileArgs = host.files + [f'{remoteName}:{host.command}']
 				if useScp:
 					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
 				else:
