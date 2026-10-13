@@ -702,6 +702,25 @@ Host *
 
 Use ```mssh --help``` for more info.
 
+### Remote commands with options
+
+mssh reads its options anywhere on the line, also among the words after the hosts. Quote a remote command that has options of its own, so it reaches mssh as one word:
+
+```bash
+mssh web1 'ls -la /var/log'
+mssh web1 "bash -c 'echo \$HOSTNAME'"
+mssh gpu[01-16] 'tail -n 50 /var/log/slurmd.log' -q   # -q is mssh's own: no curses window
+```
+
+Left unquoted, a word starting with `-` is read by mssh:
+
+- A word that names an mssh option is that option: `mssh web1 df -h` prints mssh's help, `mssh web1 journalctl -u slurmd` connects as user `slurmd` (`-u, --username`), `mssh web1 tail -f /var/log/x` copies this machine's `/var/log/x` to the hosts, as `tail` (`-f, --file`), and `mssh web1 ps -aux` reads `-a -u x`. This is also what lets mssh's options follow the command (`mssh web1 uptime -q`).
+- Any other word stops mssh with an error (`mssh web1 ls -la`: `unrecognized arguments: -la`) that says to quote the command. On Python 3.6, mssh warns and adds such words to the commands instead.
+
+Option names count in full only: `--user` is not `--username` and `-c` is not `-ci`, so `mssh web1 bash -c 'echo hi'` stops with an error instead of running `ssh-copy-id`. Short options can still be written together (`-qj` is `-q -j`, `-SCRIPT` is `-S -C -R -I -P -T`) and take their value attached (`-uroot`, `-t30`).
+
+Putting the command after `--` is no substitute for quotes: every word after the hosts is a command of its own, so `mssh web1 -- bash -c 'echo hi'` runs `bash`, `-c` and `echo hi` one after another (when each word is a single word, as in `mssh web1 -- ls -la`, mssh asks whether to join them).
+
 Below is a sample help message output from multiSSH3 6.02 @ 2025-11-10
 
 ```bash
