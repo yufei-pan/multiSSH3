@@ -526,7 +526,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The password to use to connect to the hosts via ipmi.
 - This will be used when `--ipmi` is specified.
 - If this is not specified, `DEFAULT_PASSWORD` will be used in ipmi mode.
-- Unlike `-p`, it is neither echoed in the `> mssh ...` line nor recorded in the history file: give it again when you replay a history line.
+- Unlike `-p`, it is neither echoed in the `> mssh ...` line nor recorded in the history file, and when it is given, neither are `-iu`, `-ia`, `-im`, `-mpre` and `-irlt`: with the configured password they would make a login you did not give, tried on every BMC (each failed login counts towards the BMC locking the account). A replayed history line tries the configured logins, as `--ipmi` alone does; give the IPMI options again to use yours.
 
 ### `-S, -q, -nw, --no_watch` | _`DEFAULT_NO_WATCH`_
 - Disable the curses terminal display and only print the output.
@@ -663,7 +663,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The file to store command history.
 - By default, mssh store command history in `~/.mssh_history`.
 - The history file is a TSV ( tab separated values ) file with each line containing: timestamp, mssh_path, options, hosts, commands.
-- A line records the command so that replaying it (the Ctrl-R picker, `mssh-complete`) runs it the same way: the hosts as typed and every option that changes what runs, where, or what is shown; a flag when it is on, an option with a value when the value is not the default (the config files' `DEFAULT_*`). `-T`, `-uk` (or `-k` with a folder), `--script` and `-s PATH` are recorded as the timeout, key file and options they chose, `--config_file` with its absolute path. Not recorded: `-ip`, and `--generate_config_file`, `--store_config_file` and `--add_control_master_config`, which do something besides the run. The `> mssh ...` line mssh prints at start lists the same options.
+- A line records the command so that replaying it (the Ctrl-R picker, `mssh-complete`) runs it the same way: the hosts as typed and every option that changes what runs, where, or what is shown; a flag when it is on, an option with a value when the value is not the default (the config files' `DEFAULT_*`). `-T`, `-uk` (or `-k` with a folder), `--script` and `-s PATH` are recorded as the timeout, key file and options they chose, `--config_file` with its absolute path. Not recorded: `-ip` (and with it the other IPMI options, see `-ip`), and `--generate_config_file`, `--store_config_file` and `--add_control_master_config`, which do something besides the run. The `> mssh ...` line mssh prints at start lists the same options.
 
 ### `--script` | False
 - Script mode, syntatic sugar for `-SCRIPT` or `--no_watch --skip_unreachable --no_env --no_history --greppable --error_only`.

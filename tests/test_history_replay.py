@@ -14,14 +14,34 @@ import mssh_complete as mc
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 
-# Settings a replay does not reproduce, on purpose: -ip is never recorded (an IPMI password is not
-# spread further; -p is, by design), and -T / -uk are folded by main() into the timeout / key file
-# they choose, which are recorded instead.
-NOT_REPLAYED = ('ipmi_password', 'use_script_timeout', 'use_key')
+# Settings a replay does not reproduce, on purpose: -T / -uk are folded by main() into the timeout /
+# key file they choose, which are recorded instead.
+NOT_REPLAYED = ('use_script_timeout', 'use_key')
+# -ip is never recorded (an IPMI password is not spread further; -p is, by design), and with it none
+# of the IPMI options: a replay of such a run tries the configured logins, as a plain --ipmi run does
+IPMI_LOGIN = ('ipmi_password', 'ipmi_username', 'ipmi_args', 'ipmi_method', 'ipmi_interface_ip_prefix',
+	'ipmi_retry_lockout_time', 'ipmi_definitions', 'ipmi_logins')
+# an IPMI login the config file lists
+CONFIGURED_LOGIN = {'username': 'x', 'password': 'px'}
 
 # module state main() changes (process_args, --config_file, set_global_with_args), restored after a run
 RUN_STATE = ('FORCE_TRUECOLOR', '_encoding', '__DEBUG_MODE', '__returnZero', '__global_suppress_printout',
 	'_no_env', '_env_files', '_explicit_env_files', '__mainReturnCode', '__failedHosts', '_emo', '_etc_hosts')
+
+
+def _ipmi_logins(password):
+	'''The IPMI logins (username, password) a run tries on 127.0.0.1, in order, without running any.'''
+	logins = []
+	remaining = ...
+	for _ in range(50):
+		host = multiSSH3.Host('127.0.0.1', 'power status', ipmi=True, ip='127.0.0.1')
+		attempt = multiSSH3._build_command(host, password, remaining)
+		if not attempt.ipmi_definition:
+			break  # every login was tried
+		if attempt.action != 'rebuild':
+			logins.append((attempt.ipmi_definition.get('username'), attempt.ipmi_definition.get('password')))
+		remaining = attempt.ipmi_definitions_list
+	return logins
 
 
 def _run_main(argv, capsys):
@@ -39,6 +59,8 @@ def _run_main(argv, capsys):
 		# the echo lists the hosts expanded, the history as typed: both must reach the same hosts
 		ran['expanded_hosts'] = sorted(multiSSH3.expand_hostnames_local(kwargs['hosts'])[0])
 		ran['ipmi_definitions'] = [dict(definition) for definition in multiSSH3.DEFAULT_IPMI_DEFINITIONS]
+		if kwargs.get('ipmi'):
+			ran['ipmi_logins'] = _ipmi_logins(kwargs.get('password'))
 		return []
 
 	names = [name for name in vars(multiSSH3) if name.startswith('DEFAULT_')] + list(RUN_STATE)
@@ -49,6 +71,8 @@ def _run_main(argv, capsys):
 		for name in names:
 			patch.setattr(multiSSH3, name, copy.deepcopy(getattr(multiSSH3, name)))
 		patch.setattr(multiSSH3, 'run_command_on_hosts', fake_run)
+		# never run: _ipmi_logins only builds the command lines
+		patch.setitem(multiSSH3._binPaths, 'ipmitool', '/nonexistent/ipmitool')
 		# --repeat sleeps --interval between runs
 		patch.setattr(multiSSH3.time, 'sleep', lambda seconds: None)
 		with pytest.raises(SystemExit):
@@ -58,10 +82,13 @@ def _run_main(argv, capsys):
 	return ran, (echo[0][2:] if echo else None)
 
 
-def _effective(ran, typed_hosts=True):
-	'''The settings of a run a replay must reproduce (the hosts as typed, else only where they lead).'''
-	settings = {key: value for key, value in ran.items() if key not in NOT_REPLAYED and (typed_hosts or key != 'hosts')}
-	settings['ipmi_definitions'] = [dict(definition, password=None) for definition in ran['ipmi_definitions']]
+def _effective(ran, original, typed_hosts=True):
+	'''
+	The settings of a run a replay of original must reproduce (the hosts as typed, else only where
+	they lead): all of them, but for -T / -uk, and the IPMI login when original gave its password.
+	'''
+	skip = NOT_REPLAYED + (IPMI_LOGIN if original['ipmi_password'] != multiSSH3.DEFAULT_IPMI_PASSWORD else ())
+	settings = {key: value for key, value in ran.items() if key not in skip and (typed_hosts or key != 'hosts')}
 	if settings.get('config_file'):
 		settings['config_file'] = os.path.abspath(settings['config_file'])
 	return settings
@@ -112,6 +139,9 @@ ROUND_TRIPS = [
 	(['-t', '20', '-M', '-iu', 'bmcadmin', '-ip', 'bmcpw', '-ia=-I lanplus'], {}, '127.0.0.1', ['power status']),
 	(['-M', '-mpre', '10.1.', '-im', 'ipmiutil', '-irlt', '30'], {}, '127.0.0.1', ['power status']),
 	(['-M', '-iu', 'admin', '-ia', ''], {'DEFAULT_IPMI_USERNAME': 'root', 'DEFAULT_IPMI_ARGS': '-I lanplus'}, '127.0.0.1', ['power status']),
+	(['-M', '-iu', 'a'], {'DEFAULT_IPMI_DEFINITIONS': [CONFIGURED_LOGIN]}, '127.0.0.1', ['power status']),
+	# the password given is the default one: the replay tries the same logins
+	(['-M', '-iu', 'a', '-ip', 'admin', '-ia=-I lanplus'], {'DEFAULT_IPMI_DEFINITIONS': [CONFIGURED_LOGIN]}, '127.0.0.1', ['power status']),
 	(['-B', '-ww', '80', '-wh', '5'], {}, '127.0.0.1', ['true']),
 	(['-Q'], {}, '127.0.0.1', ['true']),
 	(['-w', '-Z', '--debug'], {}, '127.0.0.1', ['true']),
@@ -155,7 +185,7 @@ def test_history_line_replays_the_same_run(options, config, hosts, commands, rep
 
 	replayed, _ = _run_main(_history_argv(line), capsys)
 
-	assert _effective(replayed) == _effective(first), line
+	assert _effective(replayed, first) == _effective(first, first), line
 	assert 'bmcpw' not in line
 
 
@@ -170,7 +200,7 @@ def test_command_echo_replays_the_same_run(options, config, hosts, commands, rep
 
 	replayed, _ = _run_main(shlex.split(echo)[1:], capsys)
 
-	assert _effective(replayed, typed_hosts=False) == _effective(first, typed_hosts=False), echo
+	assert _effective(replayed, first, typed_hosts=False) == _effective(first, first, typed_hosts=False), echo
 	assert 'bmcpw' not in echo
 
 
@@ -196,12 +226,34 @@ def test_script_timeout_is_recorded_as_the_timeout_it_chose(replay_env, capsys):
 	assert '-t={}'.format(multiSSH3.DEFAULT_TIMEOUT) in shlex.split(line.split('\t')[2])
 
 
+@pytest.mark.parametrize('config, options', [
+	({'DEFAULT_IPMI_DEFINITIONS': [CONFIGURED_LOGIN]}, ['-iu', 'a', '-ip', 'b']),
+	({'DEFAULT_IPMI_DEFINITIONS': [CONFIGURED_LOGIN]}, ['-iu', 'a', '-ip', 'b', '-ia=-I lanplus', '-mpre', '10.9.', '-irlt', '30']),
+	({'DEFAULT_IPMI_DEFINITIONS': [CONFIGURED_LOGIN]}, ['-ip', 'b', '-ia=-I lanplus']),
+	({'DEFAULT_IPMI_USERNAME': 'u', 'DEFAULT_IPMI_PASSWORD': 'p'}, ['-iu', 'a', '-ip', 'b']),
+	({}, ['-iu', 'a', '-ip', 'b', '-im', 'ipmitool']),
+])
+def test_replay_without_the_ipmi_password_tries_only_the_configured_logins(config, options, replay_env, monkeypatch, capsys):
+	# -ip is not recorded: an IPMI option recorded without it would pair with the configured password
+	# into a login nobody gave, tried first on every BMC, a failed login each towards locking it
+	for name, value in config.items():
+		monkeypatch.setattr(multiSSH3, name, value)
+	first, _ = _run_main(_case_argv(['-M'] + options, '127.0.0.1', ['power status'], replay_env), capsys)
+	plain, _ = _run_main(_case_argv(['-M', '-nh'], '127.0.0.1', ['power status'], replay_env), capsys)
+	line = (replay_env / 'history').read_text().splitlines()[-1]
+
+	replayed, _ = _run_main(_history_argv(line), capsys)
+
+	assert first['ipmi_logins'][0] == ('a', 'b') or '-iu' not in options
+	assert replayed['ipmi_logins'] == plain['ipmi_logins'], line
+	assert ('a', multiSSH3.DEFAULT_IPMI_PASSWORD) not in replayed['ipmi_logins']
+
+
 def test_ipmi_password_is_neither_recorded_nor_echoed(replay_env, capsys):
 	ran, echo = _run_main(_case_argv(['-M', '-iu', 'bmcadmin', '-ip', 'bmcpw', '--ipmi_password=bmcpw2'], '127.0.0.1', ['power status'], replay_env), capsys)
 	line = (replay_env / 'history').read_text()
 	assert ran['ipmi_password'] == 'bmcpw2'
 	assert 'bmcpw' not in line and 'bmcpw' not in echo
-	assert '-iu=bmcadmin' in line and '--ipmi_username=bmcadmin' in echo
 
 
 def test_config_file_is_recorded_with_its_absolute_path(replay_env, capsys):
