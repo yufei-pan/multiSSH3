@@ -1,4 +1,6 @@
+import io
 import os
+import shlex
 
 import pytest
 
@@ -317,7 +319,46 @@ def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 			will_update_unreachable_hosts=False,
 		)
 
-	assert [h.command for h in started] == ["sshpass -p 'p@ss word;' ssh-copy-id bob@mock-a"]
+	# the password stays out of the command mssh shows, the run is as before: sshpass in front, quoted
+	assert [h.command for h in started] == ["ssh-copy-id bob@mock-a"]
+	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
+	attempt = multiSSH3._build_command(started[0], "p@ss word;", ...)
+	assert attempt.argv == ["/bin/sh", "-c", "sshpass -p 'p@ss word;' ssh-copy-id bob@mock-a"]
+
+
+class _FakeProc:
+	def __init__(self, argv, **kwargs):
+		self.stdout, self.stderr, self.stdin, self.returncode = io.BytesIO(b"ok\n"), io.BytesIO(b""), None, 0
+
+	def poll(self):
+		return self.returncode
+
+	def communicate(self, timeout=None):
+		return b"", b""
+
+
+@pytest.mark.parametrize("json", [False, True])
+def test_copy_id_never_shows_the_password(monkeypatch, tmp_path, capsys, json):
+	secret = "Hunter2 it's #HOST# 100%"
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_binPaths", {"sh": "/bin/sh", "ssh": "/bin/ssh", "sshpass": "/bin/sshpass", "ssh-copy-id": "/bin/ssh-copy-id"})
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", secret)  # from the config: never echoed
+	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
+	monkeypatch.setattr(multiSSH3, "__global_suppress_printout", False)
+	argvs = []
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: argvs.append(argv) or _FakeProc(argv))
+
+	# as on the command line: the output of every host, its command included
+	with pytest.raises(SystemExit):
+		multiSSH3.run_command_on_hosts(hosts="mock-a", copy_id=True, password=secret, json=json, no_watch=True,
+			no_history=True, called=False, will_update_unreachable_hosts=False)
+
+	out = capsys.readouterr()
+	assert "Hunter2" not in out.out + out.err
+	assert "ssh-copy-id mock-a" in out.out
+	# run with the password as it is: no magic string replaced in it
+	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -p {} /bin/ssh-copy-id mock-a".format(shlex.quote(secret))]]
 
 
 def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):

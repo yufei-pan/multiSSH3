@@ -179,6 +179,18 @@ def test_history_tab_never_offers_passwords():
 	assert not [text for text in texts if 'hunter2' in text or 's3cret' in text]
 
 
+def test_options_slot_never_shows_a_configured_password(monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_PASSWORD', "Hunter2 pa%ss it's")
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_IPMI_PASSWORD', 'Bmc 100% s3cret')
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	for before in ('mssh -', 'mssh -p', 'mssh --ipmi_p'):
+		slot, title, history, _ = mc.picker_items(request(before), mc.Engine(spec, []), [], NOW)
+		assert title == 'options' and slot
+		shown = [item.text + ' ' + item.description for item in slot]
+		shown += mc.Picker(slot, history, title, now=NOW, unicode=True).render(200, len(slot))
+		assert not [text for text in shown if 'Hunter2' in text or 's3cret' in text], before
+
+
 def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	# what is typed (-u root) ranks the lines that share it first, then recency
 	req = request('multissh -u root ', history=['ls', 'multissh -u admin login1 uptime'])

@@ -262,6 +262,7 @@ Not indexed. Each request carries the shell's in-memory tail (default 1000 entri
 ### Privacy and safety
 
 - Values of `-p`, `--password`, `-ip`, `--ipmi_password` (in any `-x value` / `-x=value` form) are dropped at parse time and never reach the index.
+- Neither do their defaults (passwords from the mssh config): the parser spec keeps no default for these options, and their help only says whether a password is set. The spec drops a password left in an older index when it reads it.
 - Otherwise the index holds nothing the user's own history files do not, in a private directory, as data only: a tampered file can produce bad suggestions but never execute code.
 - Completion never executes anything taken from history. Delegation only calls completion functions the shell already has registered for that command.
 - Env files are read through mssh's existing trust checks.

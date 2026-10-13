@@ -107,7 +107,8 @@ def test_run_command_debug_ssh_ipmitool_preserves_auth_argv(fake_host, monkeypat
 	]]
 	assert host.returncode == 0
 	assert any("SSH_USERNAME cli-user" in line for line in host.stderr)
-	assert any("SSH_PASSWORD  cli-pass" in line for line in host.stderr)
+	assert any("SSH_PASSWORD is provided" in line for line in host.stderr)
+	assert not [line for line in host.output + host.stderr if "cli-pass" in line or "bmc-pass" in line]
 	assert any("DEFAULT_IPMI_INTERFACE_IP_PREFIX" in line for line in host.stderr)
 
 

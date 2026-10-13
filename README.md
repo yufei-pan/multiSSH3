@@ -135,7 +135,7 @@ Configed values can be inspected by simply running
 ```bash
 mssh -h
 ```
-to print the help message with current default values.
+to print the help message with current default values. Passwords are the exception: for `-p` and `-ip` it only says whether one is set.
 
 Defaults are read from the following chain map stored as json files, top ones overwrite the bottom ones.:
 | `CONFIG_FILE_CHAIN`                        |
@@ -374,7 +374,7 @@ mssh --completion bash        # or print the script (bash, zsh or fish)
 ```
 
 - **Hosts:** host strings you typed before, env file aliases, `/etc/hosts`, ssh config `Host` entries, `known_hosts` and the ARP table. Large clusters are offered as ranges (`node[0001-2000]`) until what you typed narrows them down. Hosts mssh recently found unreachable come last.
-- **Options and values:** option names, and values you used before (`-u`, `-t`, ...). Paths complete as files. Passwords are never completed.
+- **Options and values:** option names, and values you used before (`-u`, `-t`, ...). Paths complete as files. Passwords are never completed or shown, the ones in your config file included.
 - **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`), and the magic strings (`#HOST#`, ...).
 
 Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[01-16] "` the commands you run on those hosts come first, and in the hosts of `mssh ▮ "systemctl restart slurmd"` the hosts you restarted slurmd on come first.
@@ -441,6 +441,7 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 ### `-p, --password PASSWORD` | _`DEFAULT_PASSWORD`_
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
 - Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed. mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
+- mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. Like a password typed on the command line, they reach `sshpass` and `ipmitool` as arguments, where other local users can briefly see them in `ps`.
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
@@ -769,7 +770,7 @@ options:
   -u, --username USERNAME
                         The general username to use to connect to the hosts. Will get overwrote by individual username@host if specified. (default: None)
   -p, --password PASSWORD
-                        The password to use to connect to the hosts, (default: )
+                        The password to use to connect to the hosts via ssh, (default: none)
   -k, --identity_file, --key, --identity [IDENTITY_FILE]
                         The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use ~/.ssh/ (default: None)
   -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
@@ -797,7 +798,7 @@ options:
   -iu, --ipmi_username IPMI_USERNAME
                         The username to use to connect to the hosts via ipmi. (default: ADMIN)
   -ip, --ipmi_password IPMI_PASSWORD
-                        The password to use to connect to the hosts via ipmi. (default: )
+                        The password to use to connect to the hosts via ipmi. (default: set, not shown)
   -S, -q, -nw, --no_watch
                         Quiet mode, no curses watch, only print the output. (default: False)
   -ww, --window_width WINDOW_WIDTH
