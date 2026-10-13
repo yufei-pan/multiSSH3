@@ -1,4 +1,5 @@
 """The printed results: their order, and printing them to a closed pipe or a narrow encoding."""
+import codecs
 import json
 import os
 import subprocess
@@ -164,30 +165,33 @@ def test_greppable_lines_keep_the_spaces_the_output_ends_with(fake_host):
 	assert "127.0.0.1 | rc: 0       | stdout      | two spaces  " in lines
 
 
-# Runs two commands on 127.0.0.[1-4] (.2 and .4 fail) through main, with ssh replaced; each command run is logged
+# Runs two commands (or the arguments) on 127.0.0.[1-4] (.2 and .4 fail) through main, with run_command
+# replaced (nothing is run, IP addresses need no lookup) and no env files; each command run is logged
 _CLI_SCRIPT = (
 	"import sys\n"
 	"sys.path.insert(0, {root!r})\n"
 	"import multiSSH3\n"
 	"def fake_run(host, sem, timeout=60, passwds=None, **kwargs):\n"
-	"\twith open({ran!r}, 'a') as ran:\n"
+	"\twith open({ran!r}, 'a', encoding='utf-8', errors='surrogateescape') as ran:\n"
 	"\t\tran.write(host.command + '\\n')\n"
-	"\thost.stdout.extend({stdout!r})\n"
+	"\thost.stdout.extend({stdout!a})\n"
 	"\thost.returncode = 1 if host.name in ('127.0.0.2', '127.0.0.4') else 0\n"
 	"multiSSH3.run_command = fake_run\n"
-	"multiSSH3.main(['127.0.0.[1-4]', 'echo first', 'echo second', '--no_watch', '--no_history'])\n"
+	"multiSSH3.main(['127.0.0.[1-4]'] + (sys.argv[1:] or ['echo first', 'echo second']) + ['--no_watch', '--no_history', '-ef', '/dev/null'])\n"
 )
 
 
-def _run_cli_script(tmp_path, stdout_lines, **popen_args):
+def _run_cli_script(tmp_path, stdout_lines, env_changes=None, drop_env=(), commands=(), **popen_args):
 	run_dir = tmp_path / "run"
 	run_dir.mkdir(mode=0o700)
 	ran = tmp_path / "ran"
 	script = tmp_path / "mssh_cli.py"
 	script.write_text(_CLI_SCRIPT.format(root=ROOT, ran=str(ran), stdout=list(stdout_lines)))
-	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(run_dir))
-	result = subprocess.run([sys.executable, str(script)], env=env, cwd=str(tmp_path), timeout=60, **popen_args)
-	return result, ran.read_text().splitlines() if ran.exists() else []
+	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(run_dir), **(env_changes or {}))
+	for name in drop_env:
+		env.pop(name, None)
+	result = subprocess.run([sys.executable, str(script)] + list(commands), env=env, cwd=str(tmp_path), timeout=60, **popen_args)
+	return result, ran.read_text(encoding="utf-8").splitlines() if ran.exists() else []
 
 
 def _closed_pipe():
@@ -237,3 +241,41 @@ def test_output_that_fits_the_pipe_buffer_still_ends_quietly(tmp_path):
 	assert "Traceback" not in stderr and "BrokenPipeError" not in stderr
 	assert result.returncode == 2, stderr
 	assert ran == ["echo first"] * 4
+
+
+def test_characters_stdout_cannot_encode_print_as_escapes(tmp_path):
+	# PYTHONIOENCODING=latin-1 (or ascii): the output step used to raise UnicodeEncodeError after the commands ran
+	result, ran = _run_cli_script(
+		tmp_path, ["check \u2713 ok", "\u4e2d\u6587"], {"PYTHONIOENCODING": "ascii"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+	stdout = result.stdout.decode("ascii")
+	stderr = result.stderr.decode("ascii", "replace")
+
+	assert "Traceback" not in stderr and "UnicodeEncodeError" not in stderr
+	assert result.returncode == 2, stderr
+	assert "check \\u2713 ok" in stdout
+	assert "\\u4e2d\\u6587" in stdout
+	assert ran == ["echo first"] * 4 + ["echo second"] * 4
+
+
+def test_the_c_locale_prints_the_output(tmp_path):
+	# Python 3.6 under cron on CentOS 7: an ASCII stdout. Newer Pythons switch the C locale to UTF-8 themselves
+	result, ran = _run_cli_script(
+		tmp_path, ["check \u2713 ok"], {"LANG": "C", "LC_ALL": "C"}, ("PYTHONIOENCODING", "PYTHONUTF8", "LC_CTYPE"),
+		commands=["echo mark \u2713", "echo second"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+	stdout = result.stdout.decode("utf-8")
+	stderr = result.stderr.decode("utf-8", "replace")
+
+	assert "Traceback" not in stderr and "UnicodeEncodeError" not in stderr
+	assert result.returncode == 2, stderr
+	assert "check \u2713 ok" in stdout or "check \\u2713 ok" in stdout
+	# the command came in as bytes the C locale cannot decode (3.6): it is printed back as those bytes
+	assert "echo mark \u2713" in stdout
+
+
+def test_the_escape_handler_writes_undecodable_bytes_back_and_escapes_the_rest():
+	codecs.register_error("test-mssh-escape", multiSSH3._escape_or_restore_bytes)
+	# an argument decoded with surrogateescape, then a character ASCII lacks
+	text = "argv \udce2\udc9c\udc93 output \u2713"
+
+	assert text.encode("ascii", "test-mssh-escape") == b"argv \xe2\x9c\x93 output \\u2713"
+	assert text.encode("utf-8", "test-mssh-escape") == b"argv \xe2\x9c\x93 output \xe2\x9c\x93"

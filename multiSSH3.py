@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 import argparse
+import codecs
 import errno
 import functools
 import getpass
@@ -5271,10 +5272,49 @@ def _completion_command(values):
 			return 1
 	return mssh_complete.completion_command(values)
 
+def _escape_or_restore_bytes(error):
+	'''
+	Encoding error handler for our output: what came in as undecodable bytes (an argument or path read
+	with surrogateescape, as Python does in the C locale) goes out as those bytes, anything else the
+	encoding lacks as a backslash escape (\\u2713).
+	'''
+	try:
+		return codecs.lookup_error('surrogateescape')(error)
+	except UnicodeError:
+		return codecs.lookup_error('backslashreplace')(error)
+
+_OUTPUT_ERRORS = 'multissh3-escape'
+
+def _escape_unencodable_output():
+	'''
+	Make stdout and stderr print what their encoding lacks as escapes instead of failing.
+
+	With an ASCII stdout (the C locale on Python 3.6, e.g. cron on CentOS 7) or PYTHONIOENCODING=latin-1,
+	printing the results raised UnicodeEncodeError after the commands had run, and their output was lost.
+	Python's stderr already escapes; streams set to another lenient handler are left alone.
+	'''
+	codecs.register_error(_OUTPUT_ERRORS, _escape_or_restore_bytes)
+	for name in ('stdout', 'stderr'):
+		stream = getattr(sys, name, None)
+		if getattr(stream, 'errors', None) not in ('strict', 'surrogateescape'):
+			continue
+		try:
+			if hasattr(stream, 'reconfigure'):
+				stream.reconfigure(errors=_OUTPUT_ERRORS)
+			elif isinstance(stream, io.TextIOWrapper) and stream is getattr(sys, '__{}__'.format(name), None):
+				# Python 3.6 has no reconfigure: a new wrapper on the same buffer. The old one stays
+				# referenced as sys.__stdout__, so it is never collected (which would close the buffer)
+				stream.flush()
+				setattr(sys, name, io.TextIOWrapper(stream.buffer, encoding=stream.encoding, errors=_OUTPUT_ERRORS,
+					line_buffering=stream.line_buffering))
+		except (AttributeError, OSError, ValueError):
+			pass
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
+	_escape_unencodable_output()
 	args = process_args(args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))

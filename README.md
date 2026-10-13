@@ -678,6 +678,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-e, --encoding ENCODING` | _`DEFAULT_ENCODING`_
 - The encoding to use for decoding the output from the hosts.
 - Default is `utf-8`.
+- Characters the local terminal's encoding cannot show (for example under `LANG=C` with Python 3.6) are printed as escapes like `\u2713`.
 
 ### `-dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD` | _`DEFAULT_DIFF_DISPLAY_THRESHOLD`_
 - The threshold of different lines to total lines ratio to trigger N-body diff display mode.
