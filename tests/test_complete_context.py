@@ -135,6 +135,56 @@ def test_a_password_being_typed_is_the_password_slot(before):
 	assert (context.slot, context.option.dest in mc.PASSWORD_DESTS) == ('value', True)
 
 
+# argparse (3.6 to 3.15) takes a word starting with "-" as an option's value only when it holds a
+# space and names no option: not whole, not before "=", not as -xVALUE, not as the start of options
+DASH_VALUES = [
+	('-o StrictHostKeyChecking=no', True),
+	('--user name', True),
+	('-- x', True),
+	('-5 x', True),
+	('-nw x', True),        # -n names no option, and no option starts with "-nw x"
+	('-zz=a b', True),
+	('-o', False),          # no space
+	('-o\tStrict', False),  # only a space counts
+	('-5', False),          # mssh's -11 makes argparse read negative numbers as options
+	('-q foo', False),      # -q, then " foo"
+	('-my secret', False),  # -m "y secret"
+	('-u=x y', False),
+	('--usern=a b', False),
+	('--no=a b', False),    # --no starts several options
+]
+
+
+@pytest.mark.parametrize('word, is_value', DASH_VALUES)
+def test_a_dash_word_is_an_option_value_as_argparse_reads_it(word, is_value):
+	tokens = [mc.Token('-ea', '-ea'), mc.Token(word, shlex.quote(word), quoted=True), mc.Token('h', 'h')]
+	roles = mc.assign_roles(tokens, SPEC)
+	assert (roles[1][0] == 'value') == is_value
+	assert roles[2][0] == 'hosts'
+
+
+@pytest.mark.parametrize('word, is_value', DASH_VALUES)
+def test_dash_values_are_what_mssh_parses(word, is_value):
+	parser = multiSSH3.get_parser()
+	parse = getattr(parser, 'parse_intermixed_args', parser.parse_args)
+	try:
+		parsed = parse(['-ea', word, 'h'])
+	except SystemExit:
+		parsed = None
+	assert (parsed is not None and parsed.extraargs == word) == is_value
+
+
+def test_a_spaced_dash_value_is_learned_as_the_value():
+	features = mc.line_features(mc.lex('-ea "-o StrictHostKeyChecking=no" h uptime'), SPEC)
+	assert 'v:extraargs=-o StrictHostKeyChecking=no' in features and 'h:h' in features and 'c:uptime' in features
+	assert not [feature for feature in features if feature.startswith('c:-o')]
+
+
+def test_a_spaced_dash_value_being_typed_is_the_value_slot():
+	context = mc.parse_context('mssh -ea "-o Str', '', SPEC)
+	assert (context.slot, context.option.dest, context.value) == ('value', 'extraargs', '-o Str')
+
+
 def test_passwords_never_become_features():
 	context = mc.parse_context('mssh -p=secret -ip hunter2 -u ', ' h c', SPEC)
 	assert not any('secret' in feature or 'hunter2' in feature or 'password' in feature for feature in context.features)

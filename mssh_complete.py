@@ -212,6 +212,19 @@ class ParserSpec(object):
 			for string in option.strings:
 				self.by_string[string] = option
 		self._long = sorted(string for string in self.by_string if string.startswith('--'))
+		self._strings = sorted(self.by_string)
+
+	def names_option(self, text):
+		'''
+		Whether argparse reads a word starting with "-" as an option, a wrong or ambiguous one
+		included: its first two characters (one dash) or its part before "=" name an option, or
+		options start with that part (Python 3.12+; 3.11 matches a one-dash word whole).
+		'''
+		if text[1:2] != '-' and text[:2] in self.by_string:
+			return True
+		name = text.partition('=')[0]
+		at = bisect_left(self._strings, name)
+		return at < len(self._strings) and self._strings[at].startswith(name)
 
 	def lookup(self, text):
 		'''
@@ -340,8 +353,10 @@ def assign_roles(words, spec, current=None):
 			option = pending
 			pending = None
 			# the word after a password option is its password, whatever it looks like: argparse stops
-			# at "-p -secret", but the shell's history keeps the line, and a password is never another word
-			if not dashed or option.dest in PASSWORD_DESTS:
+			# at "-p -secret", but the shell's history keeps the line, and a password is never another word.
+			# argparse takes a dash word as the value when it holds a space and names no option
+			# (-ea "-o StrictHostKeyChecking=no"); mssh's -11 makes it read negative numbers as options
+			if not dashed or option.dest in PASSWORD_DESTS or (' ' in text and not spec.names_option(text)):
 				roles.append((ROLE_VALUE, option))
 				continue
 		if text == '--' and not is_current and not after_separator:

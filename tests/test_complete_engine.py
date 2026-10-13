@@ -78,6 +78,12 @@ def test_used_options_are_hidden():
 	assert '--no_skip_unreachable' not in texts(query('mssh -x --no_'))
 
 
+def test_a_value_starting_with_a_dash_completes_once_it_holds_a_space():
+	# argparse takes "-o StrictHostKeyChecking=no" as -ea's value: it names no option and holds a space
+	knowledge = memory([line(NOW, '-su -ea="-o StrictHostKeyChecking=no"', 'h', '"uptime"')])
+	assert texts(query('mssh -ea "-o Str', word='-o Str', knowledges=[knowledge])) == ['-o StrictHostKeyChecking=no']
+
+
 def test_passwords_are_never_completed():
 	response = query('mssh -p ')
 	assert texts(response) == [] and 'nodefault' in response.directives
