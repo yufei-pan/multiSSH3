@@ -2310,6 +2310,13 @@ def _rsync_failure_scp_reason(host, line_starts=(0, 0, 0)):
 		return 'Rsync could not start on the host!'
 	return None
 
+def _rsync_xattr_error(host, line_starts=(0, 0, 0)):
+	'''Return the failed attempt's first complaint about extended attributes, or None.'''
+	for line in host.stderr[line_starts[2]:]:
+		if 'xattr' in str(line).lower():
+			return str(line).strip()
+	return None
+
 def _scp_sources_like_rsync(files, destination):
 	'''
 	Return (sources, destination) that make scp lay the local files out as rsync does.
@@ -2360,7 +2367,7 @@ next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fi
 attempt's state into the retry decisions and the next attempt.
 '''
 
-def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False):
+def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, rsync_xattrs=True):
 	'''
 	Build the command line for one attempt to run host.command, without running it.
 
@@ -2373,6 +2380,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False):
 		passwds (str): The password for the host
 		ipmi_definitions_list (list): The IPMI definitions left to try, ... for the matching defaults
 		scp_like_rsync (bool): scp stands in for a failed rsync, so it copies what rsync would have
+		rsync_xattrs (bool): rsync copies extended attributes (-X)
 
 	Returns:
 		_CommandAttempt: What to do next
@@ -2563,7 +2571,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False):
 				if useScp:
 					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
 				else:
-					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
+					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
@@ -2739,8 +2747,9 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 	Run the command on the host. Main execution function.
 
 	Builds the command (_build_command), runs it (_execute_command) and retries on failure: the
-	next IPMI definition, or scp when rsync could not run on the host (see _rsync_failure_scp_reason).
-	Every retry uses up one of retry_limit.
+	next IPMI definition, rsync without -X when the destination cannot keep extended attributes, or
+	scp when rsync could not run on the host (see _rsync_failure_scp_reason). Every retry uses up one
+	of retry_limit.
 
 	Args:
 		host (Host): The host object
@@ -2755,13 +2764,14 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 		# resolved at call time, the CLI and config files can add ipmi definitions after import
 		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
 	scp_like_rsync = False
+	rsync_xattrs = True
 	while True:
 		if retry_limit < 0:
 			host.output.append('Error: Retry limit reached!')
 			host.stderr.append('Error: Retry limit reached!')
 			host.returncode = 1
 			return
-		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync)
+		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync, rsync_xattrs)
 		if action == 'stop':
 			return
 		if action == 'rebuild':
@@ -2808,6 +2818,23 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				ipmi_definition['password'] = passwds
 				ipmi_definition['ipmi_method'] = 'ssh_ipmitool'
 				ipmi_definitions_list.append(ipmi_definition)
+			retry_limit -= 1
+			continue
+		# mssh asks rsync for extended attributes on its own: where the destination cannot keep them
+		# (NFSv3, vfat, ...), rsync copies the data and exits 23. Copying again without -X is a quick
+		# pass that ends with the result of the copy itself.
+		elif host.files and not useScp and rsync_xattrs and host.returncode == 23:
+			xattr_error = _rsync_xattr_error(host, attempt_line_starts)
+			if not xattr_error:
+				return
+			host.returncode = None
+			host.output.append('Rsync could not set extended attributes! Copying again without them...')
+			if __DEBUG_MODE:
+				host.stderr.append('Rsync could not set extended attributes! Copying again without them...')
+			else:
+				host.stderr = []
+			host.stderr.append(f'Warning: copied without extended attributes, rsync could not set them: {xattr_error}')
+			rsync_xattrs = False
 			retry_limit -= 1
 			continue
 		# rsync could not run on the host: try scp, if it can copy what rsync would have

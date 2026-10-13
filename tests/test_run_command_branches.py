@@ -209,6 +209,34 @@ def test_rsync_that_never_ran_is_retried_with_scp(fake_host, monkeypatch, return
 	assert host.scp is True
 
 
+# what rsync -X says when the destination (NFSv3, vfat, ...) keeps no extended attributes; the data is copied
+RSYNC_XATTRS_UNSUPPORTED = (b'rsync: [receiver] rsync_xal_set: fsetxattr("/dest/a","user.origin") failed: Operation not supported (95)\n'
+	b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n")
+
+
+@pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
+def test_rsync_that_cannot_set_xattrs_copies_again_without_them(fake_host, monkeypatch, gather):
+	# mssh adds -X on its own: a destination that cannot keep extended attributes is no failed copy
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_XATTRS_UNSUPPORTED, returncode=23), FakeProc()], ["/src/a"], gatherMode=gather)
+
+	assert [argv[:2] for argv in calls] == [["rsync", "-ahlX"], ["rsync", "-ahl"]]
+	assert calls[0][2:] == calls[1][2:]
+	assert host.returncode == 0
+	assert host.scp is False
+	assert any("extended attributes" in line and "Operation not supported" in line for line in host.stderr)
+
+
+def test_rsync_without_xattrs_keeps_its_other_errors(fake_host, monkeypatch):
+	permission = (b'rsync: [sender] send_files failed to open "/src/a/secret": Permission denied (13)\n'
+		b"rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n")
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_XATTRS_UNSUPPORTED + permission, returncode=23), FakeProc(stderr=permission, returncode=23)], ["/src/a"])
+
+	assert [argv[:2] for argv in calls] == [["rsync", "-ahlX"], ["rsync", "-ahl"]]
+	assert host.returncode == 23
+
+
 def test_scp_retry_copies_the_contents_of_a_trailing_slash_directory(fake_host, monkeypatch, tmp_path):
 	# rsync puts the contents of src/ into /dest/, scp src/ would make /dest/src
 	src = tmp_path / "src"
