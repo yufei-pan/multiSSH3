@@ -2224,6 +2224,22 @@ def __handle_writing_stream(stream,stop_event,host):
 def _emfile_backoff_seconds(attempt):
 	return min(0.1 * (2 ** attempt), 1.0)
 
+def _start_waiting_thread(function):
+	'''
+	Start a daemon thread that calls function(*args) once it is given args.
+
+	Returns:
+		tuple: (thread, give): give(args) hands the thread its arguments, give(None) ends it without the call
+	'''
+	given = queue.Queue()
+	def run():
+		args = given.get()
+		if args is not None:
+			function(*args)
+	thread = threading.Thread(target=run, daemon=True)
+	thread.start()
+	return thread, given.put
+
 def _record_host_exception(host, exc):
 	'''Record an exception raised while running the host's command as a failure. Call from an except block.'''
 	import traceback
@@ -2516,7 +2532,9 @@ def _build_command(host, passwds, ipmi_definitions_list):
 
 def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 	'''
-	Run one built command, retrying (within retry_limit) while too many files are open.
+	Run one built command, retrying (within retry_limit) while too many files are open, or no process or
+	thread can be started. Waiting for processes or threads uses no retries while other commands run:
+	they give theirs back when they end.
 
 	Args:
 		host (Host): The host object
@@ -2532,9 +2550,12 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 	# where this attempt's lines start, earlier ipmi attempts must not affect the lockout decision
 	attempt_line_starts = (len(host.output), len(host.stdout), len(host.stderr))
 	emfile_attempt = 0
+	retry_reason = None
 	while True:
-		retry_after_emfile = False
+		previous_reason, retry_reason = retry_reason, None
 		proc = None
+		lines_before = (len(host.output), len(host.stderr))
+		give_streams = []
 		with sem:
 			try:
 				host.output.append('Running command: '+' '.join(formatedCMD))
@@ -2545,21 +2566,24 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
 				interactive_stdin = host.interactive_stdin
 				stdin = subprocess.PIPE if interactive_stdin else subprocess.DEVNULL
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
-				__running_procs.add(proc)
-				# create a thread to handle stdout
-				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
-				stdout_thread.start()
-				# create a thread to handle stderr
-				#host.stderr = []
-				stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host,host.stderr_buffer), daemon=True)
-				stderr_thread.start()
-				# create a thread to handle stdin
+				# the threads handling stdout, stderr and stdin start before the command: when the system allows
+				# no more threads (ulimit -u, pids limit), the command has not run yet and can be tried again
+				stdout_thread, give_stdout = _start_waiting_thread(__handle_reading_stream)
+				give_streams.append(give_stdout)
+				stderr_thread, give_stderr = _start_waiting_thread(__handle_reading_stream)
+				give_streams.append(give_stderr)
 				stdin_stop_event = threading.Event()
 				stdin_thread = None
 				if interactive_stdin:
-					stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
-					stdin_thread.start()
+					stdin_thread, give_stdin = _start_waiting_thread(__handle_writing_stream)
+					give_streams.append(give_stdin)
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
+				__running_procs.add(proc)
+				give_stdout((proc.stdout,host.stdout, host,host.stdout_buffer))
+				give_stderr((proc.stderr,host.stderr, host,host.stderr_buffer))
+				if interactive_stdin:
+					give_stdin((proc.stdin,stdin_stop_event, host))
+				give_streams = []
 				# Monitor the subprocess and terminate it after the timeout
 				host.lastUpdateTime = time.monotonic()
 				timeoutLineAppended = False
@@ -2639,7 +2663,18 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
 			except OSError as e:
 				if e.errno == errno.EMFILE and proc is None:
-					retry_after_emfile = True
+					retry_reason = 'open files'
+					host.returncode = None
+				elif e.errno == errno.EAGAIN and proc is None:
+					# fork failed: the process limit is reached
+					retry_reason = 'processes or threads'
+					host.returncode = None
+				else:
+					_record_host_exception(host, e)
+			except RuntimeError as e:
+				if proc is None:
+					# a thread for the command's streams could not start
+					retry_reason = 'processes or threads'
 					host.returncode = None
 				else:
 					_record_host_exception(host, e)
@@ -2647,17 +2682,27 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				_record_host_exception(host, e)
 			finally:
 				__running_procs.discard(proc)
-		if not retry_after_emfile:
+				for give in give_streams:
+					# the command did not start: end the threads started for it
+					give(None)
+		if not retry_reason:
 			break
-		if retry_limit <= 0:
-			host.output.append("Error: Retry limit reached after too many open files!")
-			host.stderr.append("Error: Retry limit reached after too many open files!")
+		waiting_for_others = retry_reason == 'processes or threads' and bool(__running_procs)
+		if retry_limit <= 0 and not waiting_for_others:
+			host.output.append(f"Error: Retry limit reached after too many {retry_reason}!")
+			host.stderr.append(f"Error: Retry limit reached after too many {retry_reason}!")
 			host.returncode = 1
 			return True, retry_limit, attempt_line_starts
-		host.output.append("Warning: Too many open files. retrying...")
+		if retry_reason == previous_reason == 'processes or threads':
+			# still waiting: one warning however long it takes
+			del host.output[lines_before[0]:]
+			del host.stderr[lines_before[1]:]
+		else:
+			host.output.append(f"Warning: Too many {retry_reason}. retrying...")
 		time.sleep(_emfile_backoff_seconds(emfile_attempt))
 		emfile_attempt += 1
-		retry_limit -= 1
+		if not waiting_for_others:
+			retry_limit -= 1
 	return False, retry_limit, attempt_line_starts
 
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
@@ -2769,6 +2814,11 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
 
+	Up to max_connections worker threads run the hosts in the given order (IPMI hosts: one each), so
+	the number of threads does not grow with the number of hosts: a process / thread limit (ulimit -u,
+	a container's pids limit) counts every thread. When the system allows fewer threads, the ones
+	started run all the hosts; when none can start, every host fails with a message saying why.
+
 	Args:
 		hosts (list): A list of Host objects
 		timeout (int, optional): The timeout for the command. Defaults to 60.
@@ -2776,18 +2826,66 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 		max_connections (int, optional): The maximum number of concurrent SSH sessions. Defaults to 4 * os.cpu_count().
 
 	Returns:
-		list: A list of threads that get started. Hosts skipped as unreachable are not started.
+		list: The worker threads started, they end once no host is left to start. Hosts skipped as
+			unreachable are not started.
 	'''
 	global __thread_start_delay
 	hosts = [host for host in hosts if not host.skipped]
 	if len(hosts) == 0:
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
-	threads = [threading.Thread(target=_run_command_thread, args=(host, sem,timeout,password), daemon=True) for host in hosts]
-	for thread, host in zip(threads, hosts):
-		thread.start()
-		host.thread = thread
+	waiting = deque(hosts)
+	lock = threading.Lock()
+	# between two IPMI passwords a host waits out retry_lockout_time running nothing, outside the
+	# semaphore: IPMI hosts keep a thread each, as before, so their waits overlap
+	wanted = len(hosts) if any(host.ipmi for host in hosts) else min(max_connections, len(hosts))
+	# workers: how many may take hosts (lowered when no more threads can start), alive: how many run
+	pool = {'workers': max(1, wanted), 'alive': 0}
+	def worker():
+		while True:
+			with lock:
+				if not waiting or pool['alive'] > pool['workers']:
+					pool['alive'] -= 1
+					return
+				host = waiting.popleft()
+			host.thread = threading.current_thread()
+			try:
+				_run_command_thread(host, sem, timeout, password)
+			except BaseException:
+				# e.g. SystemExit: it would end this worker, and the hosts left could wait forever
+				pass
+	threads = []
+	back_offs = 0
+	while len(threads) < pool['workers']:
+		thread = threading.Thread(target=worker, daemon=True)
+		with lock:
+			pool['alive'] += 1
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads allowed (ulimit -u, pids limit)
+			with lock:
+				pool['alive'] -= 1
+				if threads:
+					# the workers started took what was left, and each command they run needs more (ssh,
+					# the threads reading its output): half of them stop before taking another host
+					pool['workers'] = max(1, len(threads) // 2)
+			if threads or _emo or back_offs >= 6:
+				break
+			# none started yet: wait for processes to end, as for too many open files
+			time.sleep(_emfile_backoff_seconds(back_offs))
+			back_offs += 1
+			continue
+		threads.append(thread)
 		time.sleep(__thread_start_delay)
+	if not threads:
+		message = 'Error: No thread could be started to run the command, the system allows no more processes or threads (ulimit -u, pids limit)!'
+		for host in waiting:
+			host.output.append(message)
+			host.stderr.append(message)
+			host.returncode = 1
+	elif pool['workers'] < min(max_connections, len(hosts)) and not __global_suppress_printout:
+		eprint(f"Warning: The system allows no more threads (ulimit -u, pids limit), running the hosts at most {pool['workers']} at a time.")
 	return threads
 
 #%% ------------ Display Block ----------------

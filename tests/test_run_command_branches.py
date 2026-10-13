@@ -257,6 +257,166 @@ def test_run_command_post_launch_emfile_does_not_launch_command_again(
 	assert "post-launch too many open files" in host.stderr[0]
 
 
+def _out_of_processes():
+	# what fork fails with under a process limit (ulimit -u, a container's pids limit)
+	return OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+
+def _limit_threads(monkeypatch, allowed):
+	'''Let only `allowed` more threads start, as under a process / thread limit. Returns the count left, to change.'''
+	left = [allowed]
+
+	class LimitedThread(threading.Thread):
+		def start(self):
+			if left[0] <= 0:
+				raise RuntimeError("can't start new thread")
+			left[0] -= 1
+			super().start()
+
+	monkeypatch.setattr(multiSSH3.threading, "Thread", LimitedThread)
+	return left
+
+
+def test_run_command_retries_when_no_process_can_be_started(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	attempts = []
+	delays = []
+
+	def fake_popen(*args, **kwargs):
+		attempts.append(args[0])
+		if len(attempts) == 1:
+			raise _out_of_processes()  # fork failed: nothing ran
+		return FakeProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", delays.append)
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
+
+	assert len(attempts) == 2
+	assert delays == [0.1]
+	assert host.returncode == 0
+	assert "Warning: Too many processes or threads. retrying..." in host.output
+
+
+def test_run_command_starts_no_command_without_threads_for_its_output(fake_host, monkeypatch):
+	# the threads reading the output start before the command: when they cannot, it has not run yet
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "non-idempotent-command")
+	left = _limit_threads(monkeypatch, 1)  # the stdout reader starts, the stderr one does not
+	launches = []
+	delays = []
+
+	def fake_popen(argv, **kwargs):
+		launches.append(argv)
+		return FakeProc(stdout=b"ok\n")
+
+	def fake_sleep(seconds):
+		delays.append(seconds)
+		left[0] = 10  # threads ended meanwhile
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", fake_sleep)
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
+
+	assert len(launches) == 1  # once, after its threads could start
+	assert delays == [0.1]
+	assert host.returncode == 0
+	assert host.stdout == ["ok"]
+
+
+def test_run_command_waits_for_running_commands_when_out_of_processes(fake_host, monkeypatch):
+	# commands still running give back their processes and threads when they end: waiting for
+	# them uses up no retries, and adds no line per try
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	failures = [5]
+
+	def fake_popen(argv, **kwargs):
+		if failures[0]:
+			failures[0] -= 1
+			raise _out_of_processes()
+		return FakeProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	monkeypatch.setattr(multiSSH3, "__running_procs", {object()})  # another host's command
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=1)
+
+	assert host.returncode == 0
+	running = "Running command: " + " ".join(multiSSH3._build_command(fake_host("mock-a", "true"), None, ...).argv)
+	assert host.output == [running, "Warning: Too many processes or threads. retrying...", running,
+		"Command finished with return code 0"]
+
+
+def test_run_command_out_of_processes_uses_up_the_retries_when_nothing_else_runs(fake_host, monkeypatch):
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	attempts = []
+
+	def always_out_of_processes(*args, **kwargs):
+		attempts.append(args[0])
+		raise _out_of_processes()
+
+	_patch_popen(monkeypatch, always_out_of_processes)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	monkeypatch.setattr(multiSSH3, "__running_procs", set())
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=1)
+
+	assert len(attempts) == 2
+	assert host.returncode == 1
+	assert "Error: Retry limit reached after too many processes or threads!" in host.stderr
+
+
+def test_run_command_post_launch_thread_error_does_not_launch_command_again(fake_host, monkeypatch):
+	class PostLaunchThreadErrorProc(FakeProc):
+		def poll(self):
+			raise RuntimeError("can't start new thread")
+
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "non-idempotent-command")
+	launches = []
+
+	def fake_popen(argv, **kwargs):
+		launches.append(argv)
+		return PostLaunchThreadErrorProc()
+
+	_patch_popen(monkeypatch, fake_popen)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	multiSSH3.run_command(host, sem, timeout=5, retry_limit=2)
+
+	assert len(launches) == 1
+	assert host.returncode == -1
+	assert "can't start new thread" in host.stderr[0]
+
+
+def test_run_command_ends_its_threads_when_the_command_cannot_start(fake_host, monkeypatch):
+	import time
+
+	sem = threading.Semaphore(1)
+	host = fake_host("mock-a", "true")
+	host.interactive_stdin = True  # three threads: stdout, stderr and stdin
+
+	def missing_ssh(argv, **kwargs):
+		raise FileNotFoundError(errno.ENOENT, "No such file or directory", "/missing/ssh")
+
+	_patch_popen(monkeypatch, missing_ssh)
+	before = threading.active_count()
+
+	multiSSH3.run_command(host, sem, timeout=5)
+
+	deadline = time.monotonic() + 2
+	while threading.active_count() > before and time.monotonic() < deadline:
+		threading.Event().wait(0.01)
+	assert threading.active_count() == before
+	assert host.returncode == -1
+
+
 def test_run_command_magic_user_ip_uuid(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("alice@mock-a", "echo #USER# #IP# #UUID#")
