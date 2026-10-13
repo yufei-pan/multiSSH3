@@ -12,18 +12,25 @@ NOW = 1790000000.0
 HOSTS_FILE, HISTORY = mc.SRC_HOSTS_FILE, mc.SRC_HISTORY
 
 
-def index(tmp_path, hosts, aliases=None):
-	'''An index holding hosts (name -> sources) and aliases (name -> members).'''
+def index(tmp_path, hosts, aliases=None, alias_users=None):
+	'''
+	An index holding hosts (name -> sources) and aliases (name -> members). alias_users (name -> the
+	user of each member, '' for none) adds the section for members written user@host; without it the
+	index is like one built before that section existed.
+	'''
 	names = sorted(hosts)
 	number = {name: str(position) for position, name in enumerate(names)}
 	aliases = aliases or {}
 	path = str(tmp_path / 'index.nsv')
-	mc.write_nsv(path, {}, [
+	sections = [
 		('host_names', [names]),
 		('host_meta', [[str(hosts[name]), ''] for name in names]),
 		('alias_names', [sorted(aliases)]),
 		('aliases', [['env'] + [number[member] for member in aliases[name]] for name in sorted(aliases)]),
-	])
+	]
+	if alias_users is not None:
+		sections.append(('alias_users', [alias_users.get(name, []) for name in sorted(aliases)]))
+	mc.write_nsv(path, {}, sections)
 	return mc.NsvIndex.load(path)
 
 
@@ -340,6 +347,8 @@ def pinged(engine, host, ping, pinged_ago, answered_ago=None):
 def test_a_host_that_stopped_answering_ping(skipping):
 	pinged(skipping, 'login1', 'silent', 10, answered_ago=240)
 	assert warnings(skipping, 'mssh login1 uptime') == ([('login1', 'unreachable', 'login1: no answer to ping (answered 4 min ago)')], False)
+	# ping is the same for every user
+	assert warnings(skipping, 'mssh -u root admin@login1 uptime')[0] == [('admin@login1', 'unreachable', 'login1: no answer to ping (answered 4 min ago)')]
 
 
 @pytest.mark.parametrize('pinged_ago, answered_ago', [
@@ -432,6 +441,130 @@ def test_an_unknown_host_is_not_also_unreachable(skipping):
 	seed(skipping, gpu017='invalid')
 	unavailable(skipping, 'gpu017')
 	assert [kind for _, kind, _ in warnings(skipping, 'mssh gpu017 uptime')[0]] == ['unknown']
+
+
+# mssh records a failure under the name the run gave the host, user@host when a user applies (typed
+# or -u) and the bare name otherwise, and skips a host only when that very name is recorded
+
+def test_a_failure_recorded_for_user_at_host(skipping):
+	unavailable(skipping, 'root@node05')
+	assert warnings(skipping, 'mssh root@node05 uptime')[0] == [('root@node05', 'unreachable', 'node05: will be skipped — unreachable in a recent mssh run')]
+	# without a user, or with another one, it is another name: mssh runs it
+	assert warnings(skipping, 'mssh node05 uptime')[0] == []
+	assert warnings(skipping, 'mssh admin@node05 uptime')[0] == []
+
+
+@pytest.mark.parametrize('options', ['-u root ', '-u=root ', '-uroot ', '--username root ', '--username=root '])
+def test_u_gives_the_hosts_its_user(skipping, options):
+	unavailable(skipping, 'root@node05')
+	assert warnings(skipping, 'mssh {}node05 uptime'.format(options))[0] == [('node05', 'unreachable', 'node05: will be skipped — unreachable in a recent mssh run')]
+
+
+def test_a_user_typed_with_the_host_wins_over_u(skipping):
+	unavailable(skipping, 'root@node05')
+	assert warnings(skipping, 'mssh -u admin root@node05 uptime')[0] == [('root@node05', 'unreachable', 'node05: will be skipped — unreachable in a recent mssh run')]
+	assert warnings(skipping, 'mssh -u root admin@node05 uptime')[0] == []
+
+
+def test_the_user_from_the_mssh_config_is_the_default_of_u(skipping, monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_USERNAME', 'root')
+	skipping.spec = mc.spec_from_parser(multiSSH3.get_parser())
+	unavailable(skipping, 'root@node05')
+	assert warnings(skipping, 'mssh node05 uptime')[0] == [('node05', 'unreachable', 'node05: will be skipped — unreachable in a recent mssh run')]
+	assert warnings(skipping, 'mssh -u admin node05 uptime')[0] == []
+
+
+@pytest.mark.parametrize('line', ['mssh root@node05 uptime', 'mssh -u root node05 uptime'])
+def test_a_failure_without_a_user_does_not_skip_user_at_host(skipping, line):
+	# the run that failed was the current user's: mssh tries root@node05
+	unavailable(skipping, 'node05')
+	assert warnings(skipping, line)[0] == []
+
+
+@pytest.mark.parametrize('line, word', [
+	('mssh root@node[01-08] uptime', 'root@node[01-08]'),
+	('mssh -u root node[01-08] uptime', 'node[01-08]'),
+])
+def test_unreachable_members_of_a_range_with_a_user(skipping, line, word):
+	# mssh runs root@node03 ... root@node07: node07 failed without the user
+	unavailable(skipping, 'root@node03', 'node07')
+	assert warnings(skipping, line)[0] == [(word, 'unreachable', 'node[01-08]: 1 unreachable (node03)')]
+
+
+@pytest.mark.parametrize('line, word', [('mssh root@all uptime', 'root@all'), ('mssh -u root all uptime', 'all')])
+def test_unreachable_members_of_an_alias_with_a_user(skipping, line, word):
+	unavailable(skipping, 'root@node01', 'ghost1')
+	assert warnings(skipping, line)[0] == [(word, 'unreachable', 'all: 1 unreachable (node01)')]
+
+
+@pytest.mark.parametrize('line, failed, down', [
+	('mssh dbs uptime', ['postgres@db1'], 'db1'),
+	('mssh dbs uptime', ['db1'], None),
+	# a member written with its user keeps it, -u is for the others
+	('mssh -u root dbs uptime', ['postgres@db1', 'root@node02'], 'db1, node02'),
+	('mssh -u root dbs uptime', ['root@db1'], None),
+	# a user typed with the alias goes in front of the member's: mssh runs root@postgres@db1
+	('mssh root@dbs uptime', ['root@postgres@db1'], 'db1'),
+	('mssh root@dbs uptime', ['root@db1'], None),
+])
+def test_unreachable_members_of_an_alias_written_with_users(skipping, tmp_path, line, failed, down):
+	# dbs=postgres@db1,node02 in an env file
+	hosts = {'db1': mc.SRC_ALIAS, 'node02': HOSTS_FILE}
+	skipping.hosts = mc.HostTable(index(tmp_path, hosts, {'dbs': ['db1', 'node02']}, {'dbs': ['postgres', '']}))
+	unavailable(skipping, *failed)
+	word = line.split()[-2]
+	expected = [(word, 'unreachable', 'dbs: {} unreachable ({})'.format(len(down.split(', ')), down))] if down else []
+	assert warnings(skipping, line)[0] == expected
+
+
+@pytest.mark.parametrize('line', [
+	'mssh root@node05 uptime',
+	'mssh -u root node05 uptime',
+	'mssh -u admin root@node05 uptime',
+	'mssh root@node[04-05] uptime',
+	'mssh -u root node[04-05] uptime',
+	'mssh dbs uptime',
+	'mssh -u root dbs uptime',
+	'mssh root@dbs uptime',
+])
+def test_warnings_follow_what_mssh_skips(skipping, monkeypatch, tmp_path, line):
+	# mssh itself (run_command_on_hosts, nothing started) decides which hosts it skips for each recorded name
+	monkeypatch.setattr(multiSSH3, '_resolve_dns', lambda hostname: '10.9.9.9')
+	monkeypatch.setattr(multiSSH3, '_env_files', [str(tmp_path / 'none.env')])
+	monkeypatch.setattr(multiSSH3, '_get_boot_id', lambda: 'boot-a')
+	monkeypatch.setattr(multiSSH3, '_unavailable_hosts_file_path', lambda create=True: os.path.join(skipping.directory, 'unavailable_hosts.csv'))
+	monkeypatch.setenv('dbs', 'postgres@node04,node05')
+	multiSSH3.getIP.cache_clear()
+	# the index as build_index makes it
+	_, members, users = mc.collect_aliases(multiSSH3, {'dbs'}, set())['dbs']
+	hosts = {'node04': HOSTS_FILE, 'node05': HOSTS_FILE}
+	skipping.hosts = mc.HostTable(index(tmp_path, hosts, {'dbs': members}, {'dbs': users}))
+	words = line.split()
+	word = words[-2]
+	def mssh_runs():
+		multiSSH3.__globalUnavailableHosts.clear()
+		return {host.name for host in multiSSH3.run_command_on_hosts(hosts=word, commands=['true'],
+			username=words[2] if words[1] == '-u' else None, no_start=True, no_watch=True, quiet=True,
+			no_history=True, called=True, will_update_unreachable_hosts=False)}
+	unavailable(skipping)
+	every = mssh_runs()
+	skips = 0
+	try:
+		for recorded in [user + host for host in ('node04', 'node05') for user in ('', 'root@', 'admin@', 'postgres@', 'root@postgres@')]:
+			unavailable(skipping, recorded)
+			skipped = sorted(name.rpartition('@')[2] for name in every - mssh_runs())
+			skips += len(skipped)
+			if not skipped:
+				expected = []
+			elif '[' in word or 'dbs' in word:
+				expected = [(word, 'unreachable', '{}: 1 unreachable ({})'.format(word.rpartition('@')[2], skipped[0]))]
+			else:
+				expected = [(word, 'unreachable', '{}: will be skipped — unreachable in a recent mssh run'.format(skipped[0]))]
+			assert (recorded, warnings(skipping, line)[0]) == (recorded, expected)
+	finally:
+		multiSSH3.getIP.cache_clear()
+	# each name mssh runs was recorded once, alone
+	assert skips == len(every) > 0
 
 
 def test_options_of_one_exclusive_group(skipping):
