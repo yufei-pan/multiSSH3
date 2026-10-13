@@ -4064,6 +4064,22 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 	return clean
 
 
+# ssh's own message for a host it could not reach, directly or through a ProxyJump host (older OpenSSH).
+# A remote command printing the same words (curl: ... No route to host) did reach its host.
+_SSH_UNREACHABLE_RE = re.compile(r'^(?:ssh: connect to host \S+ port \S+|channel \d+: open failed: connect failed): (?:No route to host|Connection timed out)$')
+
+def _found_unreachable(host):
+	'''
+	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
+
+	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
+	cannot be reached. A command stopped by the timeout (-t) counts too: a host that never
+	answers looks like that.
+	'''
+	if host.returncode == 255 and host.stderr and _SSH_UNREACHABLE_RE.match(host.stderr[0].strip()):
+		return True
+	return host.returncode == 124 and any(line.strip().startswith('Timeout!') for line in host.stderr)
+
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
@@ -4119,7 +4135,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		if will_update_unreachable_hosts:
 			availableHosts = set()
 			for host in hosts:
-				if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.returncode == 124 and any(line.strip().startswith('Timeout!') for line in host.stderr))):
+				if _found_unreachable(host):
 					unavailableHosts[host.name] =  int(time.monotonic() + unavailable_host_expiry)
 					__globalUnavailableHosts[host.name] =  int(time.monotonic() + unavailable_host_expiry)
 				else:

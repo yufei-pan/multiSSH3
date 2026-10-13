@@ -435,3 +435,48 @@ def test_skipped_host_is_printed_with_the_failures(monkeypatch, tmp_path, capsys
 	assert "Success" not in out
 	assert "mock-a" in out and "rc: 255" in out and "unreachable" in out
 	assert "mock-b" not in out
+
+
+def _unreachable_after_run(monkeypatch, tmp_path, host, cached=()):
+	'''Let processRunOnHosts record a finished host; returns the hosts it then counts as unreachable.'''
+	expiry = int(multiSSH3.time.monotonic() + 300)
+	unavailable = {name: expiry for name in cached}
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", dict(unavailable))
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda *args, **kwargs: [])
+	multiSSH3.processRunOnHosts(timeout=1, password=None, max_connections=1, hosts=[host], return_unfinished=False,
+		no_watch=True, json=False, no_output=True, greppable=False, unavailableHosts=unavailable,
+		will_update_unreachable_hosts=True, pre_merge=False)
+	return set(unavailable)
+
+
+@pytest.mark.parametrize("line", [
+	"ssh: connect to host web1 port 22: No route to host",
+	"ssh: connect to host 10.0.0.5 port 2222: Connection timed out",
+	# a ProxyJump host that cannot reach the target (older OpenSSH prints this)
+	"channel 0: open failed: connect failed: No route to host",
+])
+def test_ssh_failing_to_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path, line):
+	host = fake_host("mock-a", "true")
+	host.returncode = 255
+	host.stderr = [line]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+
+
+@pytest.mark.parametrize("returncode, line", [
+	# the remote command's own errors: ssh connected
+	(7, "curl: (7) Failed to connect to repo.example port 443: No route to host"),
+	(255, "rsync: failed to connect to mirror.example: Connection timed out (110)"),
+	(1, "ssh: connect to host other-host port 22: No route to host"),
+	# ssh reached the host but could not log in
+	(255, "Permission denied (publickey)."),
+])
+def test_remote_errors_mentioning_routes_or_timeouts_do_not_mark_the_host_unreachable(
+	fake_host, monkeypatch, tmp_path, returncode, line
+):
+	host = fake_host("mock-a", "true")
+	host.returncode = returncode
+	host.stderr = [line]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
