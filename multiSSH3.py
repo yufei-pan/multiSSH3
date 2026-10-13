@@ -154,6 +154,16 @@ _etc_hosts = {}
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
+def _setting_type(value):
+	'''(type, item type) of a built-in setting, the item type when it is a list whose items share one.'''
+	item_types = {type(item) for item in value} if isinstance(value, list) else set()
+	return type(value), (item_types.pop() if len(item_types) == 1 else None)
+
+# the settings above (what config files can change) with the type of their built-in values,
+# to check the values config files give them against
+_SETTING_TYPES = {name: _setting_type(value) for name, value in list(globals().items())
+	if not (name.startswith('__') and name.endswith('__')) and not callable(value) and not isinstance(value, type(os))}
+
 #%% ------------ Pre Helper Functions ----------------
 def cache_decorator(user_function):
 	def _make_hashable(item):
@@ -535,6 +545,151 @@ def _json_kind(value):
 		return 'a list'
 	return 'an object'
 
+def _encoding_problem(name):
+	'''Why output cannot be decoded with the encoding called name (unknown, or not a text encoding), or None.'''
+	try:
+		# the reader decodes with backslashreplace: idna, for one, refuses that handler
+		b'\xff\n'.decode(name, 'backslashreplace')
+		'\xe9\n'.encode(name, 'backslashreplace')
+	except (LookupError, ValueError) as e:
+		# UnicodeError is a ValueError
+		return 'cannot decode output with {!r}: {}'.format(name, e)
+	return None
+
+def _text_encoding(name):
+	'''argparse type of -e: refuse an encoding the reader threads would die on, before any host runs.'''
+	problem = _encoding_problem(name)
+	if problem:
+		raise argparse.ArgumentTypeError(problem)
+	return name
+
+def _regex_problem(pattern):
+	'''Why pattern is not a regular expression, or None.'''
+	try:
+		re.compile(pattern)
+	except re.error as e:
+		return '{!r} is not a valid regular expression: {}'.format(pattern, e)
+	return None
+
+def _config_number(value):
+	'''value as an int or a float when it is a number or a string holding one, else None.'''
+	if isinstance(value, str):
+		try:
+			return int(value.strip())
+		except ValueError:
+			try:
+				value = float(value.strip())
+			except ValueError:
+				return None
+	if isinstance(value, bool):
+		return None
+	if isinstance(value, int):
+		return value
+	if isinstance(value, float) and math.isfinite(value):
+		return value
+	return None
+
+def _config_value_text(value):
+	'''value for a warning: strings and numbers as they are, anything else by its JSON kind.'''
+	if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+		return repr(value)
+	return _json_kind(value)
+
+_TRUE_WORDS = ('true', 'yes', 'on', '1')
+_FALSE_WORDS = ('false', 'no', 'off', '0')
+# keys naming the program mssh runs, e.g. _sshPath (see check_path)
+_PROGRAM_PATH_KEY = re.compile(r'_.+Path$')
+
+def _check_config_value(name, value):
+	'''
+	Check the value a config file gives setting name against the type of its built-in value.
+
+	Values whose meaning is clear are converted: "false" for a true / false setting, "50" for a
+	number, 1234 for a string, a list of host names for a host string.
+
+	Returns:
+		tuple: (value, None) when it can be used, else (None, why not)
+	'''
+	if name not in _SETTING_TYPES:
+		# a program path such as _sshPath: null or empty for the one on PATH
+		if value is None or isinstance(value, str):
+			return value, None
+		return None, 'expected the path to the program, got {}'.format(_config_value_text(value))
+	kind, item_kind = _SETTING_TYPES[name]
+	list_of_strings = isinstance(value, list) and all(isinstance(item, str) for item in value)
+	if name in ('DEFAULT_HOSTS', 'DEFAULT_SKIP_HOSTS') and list_of_strings:
+		return ','.join(value), None
+	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
+		return value, None
+	if value is None and (kind is type(None) or name == 'DEFAULT_MAX_CONNECTIONS'):
+		# --store_config_file writes null for the built-in max_connections
+		return None, None
+	if kind is bool:
+		if isinstance(value, bool):
+			return value, None
+		word = str(value).strip().lower() if isinstance(value, (str, int)) else None
+		if word in _TRUE_WORDS or word in _FALSE_WORDS:
+			return word in _TRUE_WORDS, None
+		expected = 'true or false'
+	elif kind in (int, float):
+		number = _config_number(value)
+		if number is not None and kind is float:
+			return float(number), None
+		if number is not None:
+			# whole numbers as int, as the command line gives them; a fraction of a second still works
+			return (int(number) if number == int(number) else number), None
+		expected = 'a number or null' if name == 'DEFAULT_MAX_CONNECTIONS' else 'a number'
+	elif kind in (str, type(None)):
+		if isinstance(value, (int, float)) and not isinstance(value, bool):
+			value = str(value)
+		if not isinstance(value, str):
+			expected = 'a string' if kind is str else 'a string or null'
+		elif name == 'DEFAULT_ENCODING':
+			problem = _encoding_problem(value)
+			return (None, problem) if problem else (value, None)
+		elif name == '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+			problem = _regex_problem(value)
+			return (None, problem) if problem else (value, None)
+		else:
+			return value, None
+	elif kind is list:
+		if not isinstance(value, list):
+			expected = {str: 'a list of strings', dict: 'a list of objects'}.get(item_kind, 'a list')
+		elif item_kind and not all(isinstance(item, item_kind) for item in value):
+			odd = next(item for item in value if not isinstance(item, item_kind))
+			return None, 'expected {}, got a list holding {}'.format(
+				{str: 'a list of strings', dict: 'a list of objects'}.get(item_kind, 'a list'), _json_kind(odd))
+		elif name == 'ERROR_MESSAGES_TO_IGNORE':
+			problem = _regex_problem('|'.join(value))
+			return (None, problem) if problem else (value, None)
+		else:
+			return value, None
+	elif kind is dict:
+		if isinstance(value, dict):
+			return value, None
+		expected = 'an object'
+	else:
+		return None, 'not a setting a config file can change'
+	return None, 'expected {}, got {}'.format(expected, _config_value_text(value))
+
+def _check_config(config, config_file):
+	'''
+	The settings of config_file that can be used.
+
+	A value of the wrong type is left out with a warning naming the file and the key, so the
+	setting keeps its built-in (or less specific config file's) value. Keys that are not settings
+	are kept as they are: --store_config_file writes them back.
+	'''
+	checked = {}
+	for name, value in config.items():
+		if name in _SETTING_TYPES or _PROGRAM_PATH_KEY.match(name):
+			value, problem = _check_config_value(name, value)
+			if problem:
+				eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
+				continue
+		checked[name] = value
+	return checked
+
 def load_config_file(config_file, check_trust=True):
 	global __working_config_file
 	'''
@@ -546,7 +701,7 @@ def load_config_file(config_file, check_trust=True):
 			files the user named explicitly.
 
 	Returns:
-		dict: The config
+		dict: The config, without values of the wrong type (see _check_config)
 	'''
 	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
@@ -564,7 +719,7 @@ def load_config_file(config_file, check_trust=True):
 		eprint(f"Error: Cannot load config file {config_file!r}: it holds {_json_kind(config)}, not an object of settings")
 		return {}
 	__working_config_file = config_file
-	return config
+	return _check_config(apply_config_key_compat(config), config_file)
 
 
 def apply_config_key_compat(configs):
@@ -586,7 +741,6 @@ __configs_from_file = {}
 __working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
-apply_config_key_compat(__configs_from_file)
 globals().update(__configs_from_file)
 # form the regex from the list
 if __ERROR_MESSAGES_TO_IGNORE_REGEX:
@@ -5016,7 +5170,7 @@ def get_parser():
 	parser.add_argument('-I','-nh','--no_history', action='store_true', help=f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}', default=DEFAULT_NO_HISTORY)
 	parser.add_argument('-hf','--history_file', type=str, help=f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})', default=DEFAULT_HISTORY_FILE)
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
-	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
+	parser.add_argument('-e','--encoding', type=_text_encoding, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
 	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
@@ -5034,7 +5188,6 @@ def process_args(args = None):
 		if cfpa.config_file:
 			if os.path.exists(cfpa.config_file):
 				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
-				apply_config_key_compat(configs)
 				globals().update(configs)
 				__configs_from_file.update(configs)
 			else:
