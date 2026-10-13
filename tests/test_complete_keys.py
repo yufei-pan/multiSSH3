@@ -153,6 +153,31 @@ def test_bash_picker_leaves_keys_typed_after_the_choice(home):
 		session.close()
 
 
+def test_bash_picker_draws_again_when_the_terminal_is_resized(home):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		session.read_until(b'type to filter', 10)
+		session.resize(24, 50)
+		session.read_until(b'type to filter', 10)
+		rows = rendered(session).lines()
+		box = rows[1:13]
+		assert rows[0] == '@@READY@@ mssh gpu[01-16]' and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
+		assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 50 and rows[13:] == [''] * 11, rows
+		# Esc: the line as it was, nothing left of the menu; bash knows the new width
+		session.send('\x1b')
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		session.send('\x15echo "[$COLUMNS]"\r')
+		session.read_until(b'[50]', 10)
+		rows = settled(session)
+		assert not [row for row in rows if 'filter' in row or '│' in row or '|' in row] and rows[-2:] == ['[50]', '@@READY@@'], rows
+	finally:
+		session.close()
+
+
 def test_bash_ctrl_r_keeps_the_last_argument(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))
@@ -340,6 +365,27 @@ def test_editor_ctrl_c_leaves_the_line_on_screen(home):
 		session.close()
 
 
+def test_editor_draws_again_when_the_terminal_is_resized(home):
+	# at once, wrapped at the new width; and bash knows the new width after the editor
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.resize(24, 30)
+		session.read_until(b'nvidia-smi', 10)
+		grid = rendered(session)
+		assert grid.lines()[:3] == ['@@READY@@ mssh gpu[01-16] "nvi', 'dia-smi"', ''] and grid.cursor == (0, 17)
+		session.send('\x03')
+		session.read_until(b'^C', 10)
+		session.send('echo "[$COLUMNS]"\r')
+		session.read_until(b'[30]', 10)
+		rows = settled(session)
+		assert rows[-4:] == ['@@READY@@ mssh gp^C', '@@READY@@ echo "[$COLUMNS]"', '[30]', '@@READY@@'], rows
+	finally:
+		session.close()
+
+
 def test_editor_ctrl_r_opens_the_picker(home):
 	env, home = home
 	session = editor_session(env, home)
@@ -502,10 +548,15 @@ def known(env, **validities):
 
 
 def rendered(session):
-	"""The terminal after everything the session printed."""
+	"""The terminal after everything the session printed, resized where the test resized it."""
 	from vt_grid import Grid
 	grid = Grid(24, 80)
-	grid.feed(session.output.decode('utf-8', 'replace'))
+	start = 0
+	for end, rows, columns in session.resizes:
+		grid.feed(session.output[start:end].decode('utf-8', 'replace'))
+		grid.resize(rows, columns)
+		start = end
+	grid.feed(session.output[start:].decode('utf-8', 'replace'))
 	return grid
 
 
@@ -642,6 +693,31 @@ def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15\x12aa\x12\r')
 		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+	finally:
+		session.close()
+
+
+def test_zsh_picker_draws_again_when_the_terminal_is_resized(home):
+	# zsh leaves its line on screen: the menu opens again below the cursor's row
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		session.read_until(b'type to filter', 10)
+		session.resize(24, 50)
+		session.read_until(b'type to filter', 10)
+		rows = rendered(session).lines()
+		box = rows[1:13]
+		assert rows[0].startswith('@@READY@@ mssh gpu[01-16]') and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
+		assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 50 and rows[13:] == [''] * 11, rows
+		session.send('\x1b')
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		session.send('\x15echo "[$COLUMNS]"\r')
+		session.read_until(b'[50]', 10)
+		rows = settled(session)
+		assert not [row for row in rows if 'filter' in row or '│' in row or '|' in row] and rows[-2:] == ['[50]', '@@READY@@'], rows
 	finally:
 		session.close()
 

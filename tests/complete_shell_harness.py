@@ -63,6 +63,8 @@ class Session(object):
 				os.chdir(str(cwd))
 			os.execvpe(argv[0], argv, env)
 		self.output = b''
+		# (where in output, rows, columns) for each resize
+		self.resizes = []
 
 	def read_until(self, marker, timeout=10.0):
 		'''Read until marker (bytes) shows up after what was read so far; return the new output.'''
@@ -79,6 +81,12 @@ class Session(object):
 					break
 				self.output += chunk
 		return self.output[start:].decode('utf-8', 'replace')
+
+	def resize(self, rows, columns):
+		'''Change the terminal's size: the kernel sends SIGWINCH to what runs in it. Read what was drawn first.'''
+		self.read_until(b'@@never@@', 0.3)
+		self.resizes.append((len(self.output), rows, columns))
+		fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
 
 	def send(self, data):
 		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)

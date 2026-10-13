@@ -3,7 +3,7 @@ import pytest
 
 import multiSSH3
 import mssh_complete as mc
-from vt_grid import FakeTerminal, Grid
+from vt_grid import FakeTerminal, Grid, Resize
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 NOW = 1790000000
@@ -160,6 +160,41 @@ def test_run_on_a_wrapped_line_draws_again_below_all_of_it():
 	shown = seen[1]
 	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
 	assert ' 2/2 ' in shown[2] and '> gpu02' in shown[4] and shown[2 + 1 + 10].startswith('└') and shown[2 + 1 + 10 + 1] == ''
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_run_opens_again_at_the_new_size(shell):
+	# bash cleared the line, so the picker draws it; zsh left it on screen, the cursor in it
+	grid = Grid(24, 80)
+	seen = []
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append((grid.lines(), grid.cursor))
+			return FakeTerminal.read_key(self, timeout)
+
+	picker = mc.Picker(items('gpu01', 'gpu02'), [], 'hosts', unicode=True)
+	term = Watching([Resize(24, 30), '\x1b'], grid=grid)
+	if shell == 'bash':
+		assert picker.run(term, '$ mssh gp x', '$ mssh gp') == 'cancel'
+	else:
+		grid.feed('$ mssh gp x\x1b[2D')
+		assert picker.run(term) == 'cancel'
+	shown, cursor = seen[1]
+	assert shown[0] == '$ mssh gp x' and cursor == (0, 9)
+	box = shown[1:13]
+	assert box[0].startswith('┌ hosts ') and box[0].endswith('┐') and box[-1].startswith('└') and box[-1].endswith('┘')
+	assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 30 and '> gpu01' in box[1]
+	assert shown[13:] == [''] * 11
+	# closed: the line alone, and the cursor where the shell redraws it
+	assert grid.lines() == ['$ mssh gp x'] + [''] * 23
+	assert grid.cursor == ((0, 0) if shell == 'bash' else (0, 9))
+
+
+def test_run_cancels_when_the_terminal_gets_too_small():
+	grid = Grid(24, 80)
+	assert mc.Picker(items('gpu01'), [], 'hosts').run(FakeTerminal([Resize(24, 15)], grid=grid), '$ mssh gp', '$ mssh gp') == 'cancel'
+	assert grid.lines() == ['$ mssh gp'] + [''] * 23 and grid.cursor == (0, 0)
 
 
 def test_run_is_unavailable_on_a_tiny_terminal():

@@ -3264,11 +3264,17 @@ def ghost_style(term):
 	return '\x1b[2m'
 
 class Terminal(object):
-	'''The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on SIGTERM / SIGHUP.'''
+	'''
+	The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on
+	SIGTERM / SIGHUP; a resize (SIGWINCH) ends the wait for a key (read_key returns 'resize').
+	'''
 	def __init__(self, path='/dev/tty'):
 		self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
 		self._saved = None
 		self._handlers = {}
+		# a pipe the SIGWINCH handler writes to, so the wait for a key ends: Python would retry an
+		# interrupted select() after running the handler
+		self._resized = None
 
 	def __enter__(self):
 		import signal
@@ -3277,6 +3283,11 @@ class Terminal(object):
 		self._saved = termios.tcgetattr(self.fd)
 		for number in (signal.SIGTERM, signal.SIGHUP):
 			self._handlers[number] = signal.signal(number, self._interrupted)
+		if hasattr(signal, 'SIGWINCH'):
+			self._resized = os.pipe()
+			for end in self._resized:
+				os.set_blocking(end, False)
+			self._handlers[signal.SIGWINCH] = signal.signal(signal.SIGWINCH, self._resize)
 		# TCSANOW: TCSAFLUSH (the default) would drop keys typed while the program started
 		tty.setraw(self.fd, termios.TCSANOW)
 		return self
@@ -3284,6 +3295,13 @@ class Terminal(object):
 	def _interrupted(self, number, frame):
 		self.restore()
 		raise SystemExit(128 + number)
+
+	def _resize(self, number, frame):
+		try:
+			os.write(self._resized[1], b'.')
+		except OSError:
+			# the pipe is full: a resize is waiting already
+			pass
 
 	def restore(self):
 		import termios
@@ -3298,6 +3316,10 @@ class Terminal(object):
 		self.restore()
 		for number, handler in self._handlers.items():
 			signal.signal(number, handler)
+		# after the handler is gone, which writes to it
+		for end in self._resized or ():
+			os.close(end)
+		self._resized = None
 		os.close(self.fd)
 
 	def size(self):
@@ -3333,12 +3355,25 @@ class Terminal(object):
 
 	def read_key(self, timeout=None):
 		'''
-		The next key typed, as (name, raw bytes) like decode_keys; None when timeout seconds pass first
-		(None: wait forever). Reads that key's bytes and no more: what was typed after it stays in the
-		terminal, in order, for whoever reads next (the shell, once the picker or the editor is done).
+		The next key typed, as (name, raw bytes) like decode_keys; ('resize', b'') when the terminal
+		changed size first (keys typed meanwhile stay for the next reads); None when timeout seconds
+		pass first (None: wait forever). Reads that key's bytes and no more: what was typed after it
+		stays in the terminal, in order, for whoever reads next (the shell, once the picker or the
+		editor is done).
 		'''
-		data = self._byte(timeout)
-		if data is None:
+		import select
+		waiting = [self.fd] + ([self._resized[0]] if self._resized else [])
+		ready = select.select(waiting, [], [], timeout)[0]
+		if self._resized and self._resized[0] in ready:
+			try:
+				# one report for all the resizes so far
+				while os.read(self._resized[0], 64):
+					pass
+			except OSError:
+				pass
+			return 'resize', b''
+		data = os.read(self.fd, 1) if ready else b''
+		if not data:
 			return None
 		if data == b'\x1b':
 			data += self._escape()
@@ -3571,14 +3606,59 @@ class Picker(object):
 				cursor's row and the cursor ends where it was.
 			before (str): With line: its part before the cursor
 
+		When the terminal changes size, the menu opens again at the new size, from the line's start
+		(line given) or the cursor as they were drawn: the terminal keeps what it shows, as readline
+		assumes. It closes as cancelled when it no longer fits.
+
 		Returns:
 			str: 'choose', 'cancel', or 'unavailable' when the terminal is too small
 		'''
-		rows, width = term.size()
-		height = min(PICKER_ROWS, rows - 4 - len(self.warnings))
+		height, width = self._size(term)
 		if height < 1 or width < 20:
 			return 'unavailable'
-		up = 0
+		up, row, cursor = self._open(term, line, before, height, width)
+		try:
+			draw = True
+			while True:
+				if draw:
+					menu = self.render(width - 1, height)
+					# from the saved place below the line: between draws the cursor is in the line
+					term.write('\x1b8' + ''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
+				name = term.read_key()[0]
+				if name == 'resize':
+					if line is not None:
+						# back to the line's start, as it was drawn
+						term.write(('\x1b[{}A'.format(row) if row else '') + '\r')
+					height, width = self._size(term)
+					up, row, cursor = self._open(term, line, before, height, width)
+					# clear what is left of the menu drawn at the old size
+					term.write('\r\n\x1b[J')
+					if height < 1 or width < 20:
+						return 'cancel'
+					draw = True
+					continue
+				outcome = self.handle(name)
+				if outcome:
+					return outcome
+				# keys already typed are handled before the menu is drawn again
+				draw = not term.has_input()
+		finally:
+			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+
+	def _size(self, term):
+		'''(candidate rows, columns) the menu gets: it fits with at least 1 row and 20 columns.'''
+		rows, width = term.size()
+		return min(PICKER_ROWS, rows - 4 - len(self.warnings)), width
+
+	def _open(self, term, line, before, height, width):
+		'''
+		Draw the line when given (see run), make room below it for the menu and save that place.
+
+		Returns:
+			tuple: rows from the saved place up to the line's start, the row of the line the cursor is
+				on, and the moves from the saved place to the cursor (line given)
+		'''
+		up = row = 0
 		cursor = ''
 		if line is not None:
 			end_row, end_column = text_layout(line, width)
@@ -3595,22 +3675,9 @@ class Picker(object):
 			# while the menu is open the cursor shows where it is in the line
 			cursor = ('\x1b[{}A'.format(end_row - row) if end_row > row else '') + '\r' + ('\x1b[{}C'.format(column) if column else '')
 		# make room below the line (the screen may scroll), come back to the same column and save it
-		lines = height + 2 + len(self.warnings)
+		lines = max(height, 1) + 2 + len(self.warnings)
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
-		try:
-			draw = True
-			while True:
-				if draw:
-					menu = self.render(width - 1, height)
-					# from the saved place below the line: between draws the cursor is in the line
-					term.write('\x1b8' + ''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
-				outcome = self.handle(term.read_key()[0])
-				if outcome:
-					return outcome
-				# keys already typed are handled before the menu is drawn again
-				draw = not term.has_input()
-		finally:
-			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+		return up, row, cursor
 
 def reason_line(diagnostics, unicode=None):
 	'''The one line shown under the prompt: the first warning, and how many more there are ('' for none).'''
@@ -4109,6 +4176,11 @@ class LineEditor(object):
 				self.draw(term, prompt, style)
 				continue
 			name, raw = key
+			if name == 'resize':
+				# draw again at the new width, from the prompt's row as the old width put it (the terminal
+				# keeps what it shows, as readline assumes)
+				self.draw(term, prompt, style)
+				continue
 			self.busy = term.has_input()
 			outcome = self.handle(name, raw)
 			if outcome is not None:
