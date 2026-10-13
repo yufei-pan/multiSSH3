@@ -507,3 +507,17 @@ def test_with_no_skip_unreachable_a_host_is_skipped_after_an_earlier_command_wit
 
 	assert [(host.command, host.skipped) for host in hosts] == [("first", False), ("second", True)]
 	assert hosts[1].stderr == ["Skipped: unreachable in an earlier command of this run"]
+
+
+@pytest.mark.parametrize("stdout, stderr", [
+	(["connected-and-running"], ["Timeout!"]),
+	([], ["make: warning: jobserver unavailable", "Timeout!"]),
+])
+def test_host_that_printed_before_timing_out_is_not_unreachable(fake_host, monkeypatch, tmp_path, stdout, stderr):
+	# it answered, the command was just quiet for longer than -t
+	host = fake_host("mock-a", "true")
+	host.returncode = 124
+	host.stdout = stdout
+	host.stderr = stderr
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()

@@ -4086,15 +4086,19 @@ def _found_unreachable(host):
 
 	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
 	cannot be reached; a remote command printing the same words (curl: ... No route to host)
-	did reach its host. A command stopped by the timeout (-t) counts too: a host that never
-	answers looks like that.
+	did reach its host. A command stopped by the timeout (-t) counts too if nothing at all came
+	back before it: a host that never answers looks like that, but so does a command that was
+	quiet from the start, which mssh cannot tell apart. Output means the host answered.
 	'''
 	if host.returncode == 255 and host.stderr:
 		first_line = host.stderr[0].strip()
 		connect_error = _ssh_connect_error(first_line)
 		if (connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS) or _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
 			return True
-	return host.returncode == 124 and any(line.strip().startswith('Timeout!') for line in host.stderr)
+	if host.returncode != 124 or host.stdout or not host.stderr:
+		return False
+	# a stderr line before the timeout's means the host answered, lines after it come from stopping the command
+	return host.stderr[0].strip().startswith('Timeout!')
 
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
@@ -5130,8 +5134,8 @@ def get_parser():
 	parser.add_argument('-w',"--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as well. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
 	parser.add_argument('-P',"-g","--greppable",'--table', action='store_true', help=f"Output in greppable table. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
 	su_group = parser.add_mutually_exclusive_group()
-	su_group.add_argument('-x',"-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
-	su_group.add_argument('-a',"-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
+	su_group.add_argument('-x',"-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
+	su_group.add_argument('-a',"-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
 	parser.add_argument('-uhe','--unavailable_host_expiry', type=int, help=f"Time in seconds to expire the unavailable hosts (default: {DEFAULT_UNAVAILABLE_HOST_EXPIRY})", default=DEFAULT_UNAVAILABLE_HOST_EXPIRY)
 	parser.add_argument('-X',"-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
 	parser.add_argument('--generate_config_file', action='store_true', help='Restore / generate using the build-in default configs with default config file chain and command line argument to write to --store_config_file / stdout')

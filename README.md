@@ -609,7 +609,7 @@ mssh -f ./data/ allServers /tmp/data/
 
 ### `-x, -su, --skip_unreachable` | _`DEFAULT_SKIP_UNREACHABLE`_
 - Skip unreachable hosts.
-- Note: Timedout Hosts are considered unreachable.
+- Note: a host whose command hits `-t, --timeout` before printing anything is considered unreachable: mssh cannot tell a host that never answers from a command that is quiet from the start. A host that printed something answered, so it is not.
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
 - A skipped host is not run and counts as a failed host: it shows return code 255 ( what ssh returns when it cannot connect ) with a line saying it was skipped, and the summary lists it after `failed_hosts:` as `Skipped N hosts unreachable in a recent run, without trying them: ...`. So mssh does not exit 0 or print `Success` when it skipped a host.
@@ -790,9 +790,9 @@ options:
   -P, -g, --greppable, --table
                         Output in greppable table. (default: False)
   -x, -su, --skip_unreachable
-                        Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: True)
+                        Skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: True)
   -a, -nsu, --no_skip_unreachable
-                        Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: False)
+                        Do not skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: False)
   -uhe, --unavailable_host_expiry UNAVAILABLE_HOST_EXPIRY
                         Time in seconds to expire the unavailable hosts (default: 600)
   -X, -sh, --skip_hosts SKIP_HOSTS
