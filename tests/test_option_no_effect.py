@@ -16,7 +16,7 @@ def test_entries_name_real_options():
 
 @pytest.fixture
 def ipmi_definitions(monkeypatch):
-	'''process_args rewrites DEFAULT_IPMI_DEFINITIONS: start each call from the same list.'''
+	'''process_args with each call starting from the same DEFAULT_IPMI_DEFINITIONS.'''
 	saved = [dict(definition) for definition in multiSSH3.DEFAULT_IPMI_DEFINITIONS]
 
 	def processed(argv):
@@ -29,7 +29,7 @@ def built(processed, argv):
 	'''What mssh would run for the first host of argv.'''
 	args = processed(argv)
 	host = multiSSH3.Host(args.hosts, ' '.join(args.commands), ipmi=args.ipmi)
-	attempt = multiSSH3._build_command(host, None, list(multiSSH3.DEFAULT_IPMI_DEFINITIONS))
+	attempt = multiSSH3._build_command(host, None, ...)
 	return attempt.action, attempt.argv
 
 

@@ -411,7 +411,8 @@ def test_run_command_default_retry_limit_counts_current_ipmi_definitions(fake_ho
 	host = fake_host("127.0.0.1", "power status", ipmi=True)
 	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
 	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
-	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [_ipmi_failure() for _ in range(5)])
+	# five different logins: copies of one login are tried once
+	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [_ipmi_failure(username="u{}".format(i)) for i in range(5)])
 	launches = []
 
 	def fake_popen(argv, **kwargs):
