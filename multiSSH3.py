@@ -118,14 +118,17 @@ DEFAULT_ENCODING = 'utf-8'
 DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
 SSH_STRICT_HOST_KEY_CHECKING = False
 FORCE_TRUECOLOR = False
+# ssh's own notices, left out of each host's stderr. Each regex is searched in every stderr line; these
+# are anchored to the lines OpenSSH prints, so a remote program's error using the same words is kept.
+# Connection resets stay: "kex_exchange_identification: read: Connection reset by peer" is how sshd's
+# MaxStartups turns away connections opened at once.
 ERROR_MESSAGES_TO_IGNORE = [
-	'Pseudo-terminal will not be allocated because stdin is not a terminal',
-	'Connection to .* closed',
-	'Warning: Permanently added',
-	'mux_client_request_session',
-	'disabling multiplexing',
-	'Killed by signal',
-	'Connection reset by peer',
+	r'^Pseudo-terminal will not be allocated because stdin is not a terminal',
+	r'^Connection to \S+ closed( by remote host)?\.$',
+	r'^Warning: Permanently added ',
+	r'^mux_client_request_session: ',
+	r'^ControlSocket .* already exists, disabling multiplexing$',
+	r'^Killed by signal \d+\.$',
 ]
 POSSIBLE_SSH_KEY_FILES = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
 __DEFAULT_COLOR_PALETTE = {
@@ -549,17 +552,34 @@ def load_config_file(config_file, check_trust=True):
 	return config
 
 
+# The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.18,
+# --store_config_file wrote it into config files. Unanchored, it also hid remote programs' errors.
+_OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE = [
+	'Pseudo-terminal will not be allocated because stdin is not a terminal',
+	'Connection to .* closed',
+	'Warning: Permanently added',
+	'mux_client_request_session',
+	'disabling multiplexing',
+	'Killed by signal',
+	'Connection reset by peer',
+]
+
 def apply_config_key_compat(configs):
 	'''
 	Normalize legacy / misspelled config keys in-place.
 
 	Configs written before 6.24 used DEAFULT_IPMI_ARGS (typo). Map it to
 	DEFAULT_IPMI_ARGS when the correct key is absent.
+
+	Configs written before 6.20 hold a copy of the built-in ERROR_MESSAGES_TO_IGNORE of the
+	time. An unchanged copy is dropped, so the current built-in list applies.
 	'''
 	if not configs:
 		return configs
 	if 'DEAFULT_IPMI_ARGS' in configs and 'DEFAULT_IPMI_ARGS' not in configs:
 		configs['DEFAULT_IPMI_ARGS'] = configs['DEAFULT_IPMI_ARGS']
+	if configs.get('ERROR_MESSAGES_TO_IGNORE') in (_OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE, _OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE[:5]):
+		del configs['ERROR_MESSAGES_TO_IGNORE']
 	return configs
 
 #%% Load Config Based Default Global variables
@@ -3644,6 +3664,12 @@ def pre_merge_hosts(hosts):
 	return hosts
 
 _SSH_CONNECT_ERROR = re.compile(r'ssh: connect to host (\S+) port (\S+): (.+)')
+# ssh's reason: the summary the pretty output shows for it
+_SSH_CONNECT_ERROR_SUMMARIES = {
+	'Connection refused': 'SSH not reachable!',
+	'Connection timed out': 'SSH connection timed out!',
+	'No route to host': 'Cannot find host!',
+}
 
 def _ssh_connect_error(line):
 	'''
@@ -3653,6 +3679,23 @@ def _ssh_connect_error(line):
 	'''
 	match = _SSH_CONNECT_ERROR.fullmatch(line.strip())
 	return match.groups() if match else None
+
+def _displayed_stderr(host):
+	'''
+	The stderr lines the pretty output shows for host.
+
+	When ssh could not connect (it exits 255 right after saying why), its line is shown as a summary
+	without the host name, so unreachable hosts merge into one block: "SSH connection timed out!
+	(port 22: Connection timed out)". host.stderr keeps ssh's line for JSON and greppable output.
+	'''
+	if host.returncode != 255 or not host.stderr:
+		return host.stderr
+	connect_error = _ssh_connect_error(host.stderr[-1])
+	if not connect_error or connect_error[2] not in _SSH_CONNECT_ERROR_SUMMARIES:
+		return host.stderr
+	_address, port, reason = connect_error
+	summary = '{} (port {}: {})'.format(_SSH_CONNECT_ERROR_SUMMARIES[reason], port, reason)
+	return host.stderr[:-1] + [summary]
 
 def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
@@ -3698,28 +3741,22 @@ def get_host_raw_output(hosts, terminal_width):
 				lineBag.update(zip(host.stdout, host.stdout[1:]))
 			lineBag.update(host.stdout)
 			prevLine = host.stdout[-1]
-		if host.stderr:
-			if host.stderr[0].strip().startswith('ssh: connect to host ') and host.stderr[0].strip().endswith('Connection refused'):
-				host.stderr[0] = 'SSH not reachable!'
-			elif host.stderr[-1].strip().endswith('Connection timed out'):
-				host.stderr[-1] = 'SSH connection timed out!'
-			elif host.stderr[-1].strip().endswith('No route to host'):
-				host.stderr[-1] = 'Cannot find host!'
-			if host.stderr:
-				hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
-				# for line in host.stderr:
-				# 	if len(line) < terminal_width - 2:
-				# 		hostPrintOut.append(f" {line}")
-				# 	else:
-				# 		hostPrintOut.extend(text_wrapper.wrap(line))
-				hostPrintOut.extend(f" {line}" for line in host.stderr)
-				max_length = max(max_length, max(map(len, host.stderr)))
-				lineBag.add((prevLine,2))
-				lineBag.add((2,host.stderr[0]))
-				lineBag.update(host.stderr)
-				if len(host.stderr) > 1:
-					lineBag.update(zip(host.stderr, host.stderr[1:]))
-				prevLine = host.stderr[-1]
+		stderr = _displayed_stderr(host)
+		if stderr:
+			hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
+			# for line in stderr:
+			# 	if len(line) < terminal_width - 2:
+			# 		hostPrintOut.append(f" {line}")
+			# 	else:
+			# 		hostPrintOut.extend(text_wrapper.wrap(line))
+			hostPrintOut.extend(f" {line}" for line in stderr)
+			max_length = max(max_length, max(map(len, stderr)))
+			lineBag.add((prevLine,2))
+			lineBag.add((2,stderr[0]))
+			lineBag.update(stderr)
+			if len(stderr) > 1:
+				lineBag.update(zip(stderr, stderr[1:]))
+			prevLine = stderr[-1]
 		if host.returncode != 0:
 			codeColor = red_str
 		else:

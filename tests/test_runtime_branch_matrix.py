@@ -184,8 +184,9 @@ def test_generate_output_plain_formats_connection_refused(fake_host, monkeypatch
 
 	text = multiSSH3.generate_output([host], greppable=False, quiet=False)
 
-	assert " SSH not reachable!" in text
-	assert host.stderr == ["SSH not reachable!"]
+	assert " SSH not reachable! (port 22: Connection refused)" in text
+	# the summary is only shown: the host keeps ssh's line for JSON / greppable output
+	assert host.stderr == ["ssh: connect to host mock-a port 22: Connection refused"]
 
 
 def test_generate_output_greppable_marks_empty_host_and_user_input(fake_host):
