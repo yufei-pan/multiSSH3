@@ -124,6 +124,7 @@ def _clear_expand_caches():
 		"__expand_hostname",
 		"__expand_hostnames",
 		"_ssh_config_target",
+		"_ssh_config_mapping",
 		"_ssh_config_values",
 		"get_terminal_color_capability",
 		"rgb_to_ansi_color_string",

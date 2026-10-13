@@ -3,6 +3,7 @@ import errno
 import os
 import socket
 import subprocess
+import time
 import types
 
 import pytest
@@ -180,3 +181,56 @@ def test_one_prober_at_a_time(tmp_path, monkeypatch):
 	assert mc.spawn_probe(str(tmp_path)) is True
 	assert mc.spawn_probe(str(tmp_path)) is False
 	assert len(started) == 1 and started[0][-3:] == ['probe', '--lock', os.path.join(str(tmp_path), mc.PROBE_LOCK_NAME)]
+
+
+def take_over(lock):
+	'''What the next query does once the lock looks stale: takes it for a prober of its own. Returns what it wrote.'''
+	stale = time.time() - mc.LOCK_STALE - 1
+	os.utime(lock, (stale, stale))
+	assert mc.take_lock(lock)
+	with open(lock) as f:
+		return f.read()
+
+
+def test_a_prober_removes_its_own_lock(env, monkeypatch):
+	monkeypatch.setattr(mc, 'cache_dir', lambda: env.directory)
+	lock = os.path.join(env.directory, mc.PROBE_LOCK_NAME)
+	assert mc.take_lock(lock)
+	mc.queue_probes(env.directory, ['node1'])
+	assert mc.main(['probe', '--lock', lock]) == 0
+	assert sorted(states(env)) == ['node1']
+	assert not os.path.exists(lock)
+
+
+def test_a_prober_leaves_a_lock_taken_over_from_it(env, monkeypatch):
+	# a prober that looked stale (one batch past LOCK_STALE, a suspended machine) has lost its lock to
+	# the next one: removing that lock would let a third prober start beside the second
+	monkeypatch.setattr(mc, 'cache_dir', lambda: env.directory)
+	lock = os.path.join(env.directory, mc.PROBE_LOCK_NAME)
+	assert mc.take_lock(lock)
+	successor = []
+	monkeypatch.setattr(mc, 'run_probe', lambda directory, lock, **kwargs: successor.append(take_over(lock)))
+	assert mc.main(['probe', '--lock', lock]) == 0
+	with open(lock) as f:
+		assert f.read() == successor[0]
+
+
+def test_a_prober_whose_lock_was_taken_over_stops(env, monkeypatch):
+	# the prober holding the lock now writes host-state.tsv: this one writes nothing more, which would
+	# undo that one's results, and leaves its hosts queued
+	monkeypatch.setattr(mc, 'cache_dir', lambda: env.directory)
+	monkeypatch.setattr(mc, 'probe_parallelism', lambda mssh: 2)
+	lock = os.path.join(env.directory, mc.PROBE_LOCK_NAME)
+	assert mc.take_lock(lock)
+	mc.queue_probes(env.directory, ['node10', 'node11', 'node12', 'node13'])
+	probe_batch = mc._probe_batch
+
+	def batch_then_lose_the_lock(*args):
+		retry = probe_batch(*args)
+		take_over(lock)
+		return retry
+	monkeypatch.setattr(mc, '_probe_batch', batch_then_lose_the_lock)
+	assert mc.main(['probe', '--lock', lock]) == 0
+	assert states(env) == {}
+	assert mc.take_probe_queue(env.directory) == ['node13', 'node12', 'node11', 'node10']
+	assert os.path.exists(lock)

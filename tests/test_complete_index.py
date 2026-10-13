@@ -125,6 +125,26 @@ def test_lock_blocks_a_second_rebuild_until_stale(tmp_path):
 	assert mc.take_lock(lock, now=time.time() + mc.LOCK_STALE + 1)
 
 
+def test_a_rebuild_leaves_a_lock_taken_over_from_it(home, monkeypatch):
+	# a rebuild that ran past LOCK_STALE has lost its lock to the next one: it must not remove that one
+	directory = mc.cache_dir()
+	lock = os.path.join(directory, mc.LOCK_NAME)
+	assert mc.take_lock(lock)
+	successor = []
+
+	def overtaken_build(directory):
+		stale = time.time() - mc.LOCK_STALE - 1
+		os.utime(lock, (stale, stale))
+		assert mc.take_lock(lock)
+		with open(lock) as f:
+			successor.append(f.read())
+		return os.path.join(directory, mc.INDEX_NAME)
+	monkeypatch.setattr(mc, 'build_index', overtaken_build)
+	assert mc.main(['rebuild', '--lock', lock]) == 0
+	with open(lock) as f:
+		assert f.read() == successor[0]
+
+
 def test_first_query_builds_the_index(home):
 	directory = mc.cache_dir()
 	index, tail = mc.load_for_query(directory, time.time())

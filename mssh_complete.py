@@ -1551,7 +1551,13 @@ def check_freshness(index, now):
 	return 'tail', lines
 
 def take_lock(path, now=None):
-	'''Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).'''
+	'''
+	Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).
+
+	The file says who took it (pid, time and a random token), so the process the lock was taken for
+	can tell later whether it still holds it (see release_lock).
+	'''
+	import binascii
 	now = time.time() if now is None else now
 	for _ in range(2):
 		try:
@@ -1571,9 +1577,32 @@ def take_lock(path, now=None):
 		except OSError:
 			return False
 		with os.fdopen(fd, 'w') as f:
-			f.write('{} {}\n'.format(os.getpid(), int(now)))
+			f.write('{} {} {}\n'.format(os.getpid(), int(now), binascii.hexlify(os.urandom(8)).decode('ascii')))
 		return True
 	return False
+
+def read_lock(path):
+	'''What the lock file at path says, or None when it cannot be read (gone, for one).'''
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			return f.read()
+	except OSError:
+		return None
+
+def release_lock(path, owner):
+	'''
+	Remove the lock at path if it still says owner (what read_lock gave when its holder started).
+
+	A lock older than LOCK_STALE is taken over by the next process that wants it, even when its
+	holder is still running (stuck past that, or the machine was suspended): that holder must leave
+	the new lock alone, or a third process would start beside the second.
+	'''
+	if owner is None or read_lock(path) != owner:
+		return
+	try:
+		os.unlink(path)
+	except OSError:
+		pass
 
 def _spawn_detached(directory, lock_name, command):
 	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
@@ -1909,16 +1938,22 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 		thread.join()
 	return sorted(retry, key=hosts.index)
 
-def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
+def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=None):
 	'''
 	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
 	learned in host-state.tsv after each batch, until the queue is empty or limit seconds have
 	passed. Hosts left over go back into the queue. Never connects to a host itself: only DNS,
 	ssh -G (which reads the ssh config, running the commands of its Match exec lines) and ping.
 
+	With lock (the lock file this run holds; owner is what it said when the run started, read now
+	when not given), the run keeps the lock fresh after each batch, and stops, leaving its hosts
+	queued, once the lock says something else: another prober took it over as stale.
+
 	Returns:
 		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
 	'''
+	if lock and owner is None:
+		owner = read_lock(lock)
 	try:
 		os.nice(10)
 	except (AttributeError, OSError):
@@ -1941,6 +1976,12 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 				return {'checked': checked, 'parallel': parallel}
 			batch, todo = todo[:parallel], todo[parallel:]
 			retry = _probe_batch(mssh, batch, states, now, ping_available)
+			if lock and read_lock(lock) != owner:
+				# the lock was taken over (this batch ran past LOCK_STALE, or the machine was
+				# suspended): the prober holding it writes host-state.tsv now, and writing ours would
+				# undo its results; it takes these hosts from the queue instead
+				queue_probes(directory, (batch + todo)[::-1])
+				return {'checked': checked, 'parallel': parallel}
 			checked += len(batch) - len(retry)
 			write_host_states(directory, states)
 			if lock:
@@ -6024,6 +6065,8 @@ def _cmd_edit(args):
 
 def _cmd_rebuild(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	# what the query that started us wrote into the lock, read before anything else
+	owner = read_lock(lock) if lock else None
 	try:
 		directory = cache_dir()
 		if directory is None:
@@ -6037,28 +6080,24 @@ def _cmd_rebuild(args):
 		return 1
 	finally:
 		if lock:
-			try:
-				os.unlink(lock)
-			except OSError:
-				pass
+			release_lock(lock, owner)
 
 def _cmd_probe(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	# what the query that started us wrote into the lock, read before anything else
+	owner = read_lock(lock) if lock else None
 	try:
 		directory = cache_dir()
 		if directory is None:
 			return 1
-		run_probe(directory, lock)
+		run_probe(directory, lock, owner=owner)
 		return 0
 	except Exception as e:
 		_debug('probe failed: {!r}'.format(e))
 		return 1
 	finally:
 		if lock:
-			try:
-				os.unlink(lock)
-			except OSError:
-				pass
+			release_lock(lock, owner)
 
 def _cmd_eval(args):
 	import argparse

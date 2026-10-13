@@ -363,7 +363,7 @@ def _clear_ip_caches():
 	'''getIP.cache_clear(): forget every lookup result getIP depends on, failures included.'''
 	_getIP.cache_clear()
 	_dns_cache.clear()
-	for cached_function in (_ssh_config_values, _ssh_config_target):
+	for cached_function in (_ssh_config_values, _ssh_config_mapping, _ssh_config_target):
 		# tests (or embedders) may have replaced them with plain functions
 		getattr(cached_function, 'cache_clear', lambda: None)()
 
@@ -403,25 +403,26 @@ def _ssh_config_values(hostname):
 	return config
 
 @cache_decorator
-def _ssh_config_target(hostname):
+def _ssh_config_mapping(hostname):
 	'''
-	The host ssh really connects to for hostname, when the ssh config maps it.
+	What the ssh config does with hostname, before any DNS lookup (see _ssh_config_target).
 
 	Returns:
-		str: The HostName ssh would use, when the config gives hostname another HostName or a
-			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
-			None for names the config does not single out, so typos are still caught.
+		tuple: (target, templated). target is the HostName ssh would use when the config gives
+			hostname another HostName or a ProxyJump / ProxyCommand, else None. templated is True
+			when only a catch-all HostName template (Host * / HostName %h.example) gives it, which
+			applies to typos too: such a target counts only when it resolves.
 	'''
 	if 'ssh' not in _binPaths or not hostname or hostname.startswith('-'):
-		return None
+		return None, False
 	config = _ssh_config_values(hostname)
 	if not config or not config.get('hostname'):
-		return None
+		return None, False
 	target = config['hostname']
 	proxies = [config.get(key, 'none').lower() for key in ('proxyjump', 'proxycommand')]
 	# for a name it does not know, ssh -G prints the name back (lowercased) as the hostname
 	if target.lower() == hostname.lower() and all(proxy == 'none' for proxy in proxies):
-		return None
+		return None, False
 	# a catch-all block (Host * with HostName %h.example or a ProxyJump) applies to every name,
 	# typos included: only accept names the config treats differently from a made-up one
 	probe = _ssh_config_values(_SSH_CONFIG_PROBE_NAME)
@@ -432,9 +433,24 @@ def _ssh_config_target(hostname):
 		probe_proxies = [as_for_this_name(probe.get(key, 'none')) for key in ('proxyjump', 'proxycommand')]
 		if probe_target == target.lower() and probe_proxies == proxies:
 			# a HostName template (Host * / HostName %h.example) is only real for names whose target resolves
-			if target.lower() != hostname.lower() and (getIP(target,local=True) or _resolve_dns(target)):
-				return target
-			return None
+			if target.lower() != hostname.lower():
+				return target, True
+			return None, False
+	return target, False
+
+@cache_decorator
+def _ssh_config_target(hostname):
+	'''
+	The host ssh really connects to for hostname, when the ssh config maps it.
+
+	Returns:
+		str: The HostName ssh would use, when the config gives hostname another HostName or a
+			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
+			None for names the config does not single out, so typos are still caught.
+	'''
+	target, templated = _ssh_config_mapping(hostname)
+	if templated and not (getIP(target,local=True) or _resolve_dns(target)):
+		return None
 	return target
 
 
@@ -1601,12 +1617,13 @@ def host_validity(hostname, timeout=2.0):
 	file alias, a name DNS resolves, a name the ssh config maps to another HostName or puts
 	behind a ProxyJump / ProxyCommand), except that DNS answers in three ways: only "no such name"
 	(EAI_NONAME, EAI_NODATA) can make a name invalid. A lookup failing otherwise or taking longer
-	than timeout seconds, or an ssh -G that fails, makes it 'unsure'. This does not connect to the
-	host, but ssh -G runs the commands of Match exec lines in the ssh config, which may.
+	than timeout seconds, or an ssh -G that fails, makes it 'unsure', and so does such a lookup of
+	the target a catch-all HostName template gives the name. This does not connect to the host,
+	but ssh -G runs the commands of Match exec lines in the ssh config, which may.
 
 	Args:
 		hostname (str): One host name, user@ allowed
-		timeout (float): Seconds the DNS lookup may take
+		timeout (float): Seconds each DNS lookup may take (the name's, its template target's)
 	'''
 	if '@' in hostname:
 		hostname = hostname.rsplit('@', 1)[1]
@@ -1621,8 +1638,17 @@ def host_validity(hostname, timeout=2.0):
 	if 'ssh' in _binPaths and not hostname.startswith('-'):
 		if _ssh_config_values(hostname) is None:
 			return 'unsure'
-		if _ssh_config_target(hostname):
+		target, templated = _ssh_config_mapping(hostname)
+		if target and not templated:
 			return 'valid'
+		if target:
+			# a HostName template: as _ssh_config_target decides, with the target's lookup bounded
+			# too (_resolve_dns waits as long as the resolver does, a minute with timeout:30)
+			if getIP(target,local=True):
+				return 'valid'
+			target_answer = _dns_answer(target, timeout)
+			if target_answer != 'no':
+				return 'valid' if target_answer == 'yes' else 'unsure'
 	return 'invalid' if answer == 'no' else 'unsure'
 
 @cache_decorator
