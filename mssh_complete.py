@@ -991,6 +991,11 @@ class HostTable(object):
 		'''Member host names of the alias at index.'''
 		return [self.names[int(member)] for member in self.index.row('aliases', index)[1:]]
 
+	def alias_member_users(self, index):
+		'''The user each member of the alias at index is written with (user@host), '' for none.'''
+		users = self.index.row('alias_users', index) if index < self.index.count('alias_users') else []
+		return users + [''] * (self.alias_size(index) - len(users))
+
 	def alias_size(self, index):
 		return len(self.index.row('aliases', index)) - 1
 
@@ -1328,8 +1333,16 @@ def collect_aliases(mssh, history_tokens, known):
 	characters (paths, prompts, ...) never count.
 
 	Returns:
-		dict: name -> (source, member host names)
+		dict: name -> (source, member host names, the user each member is written with or '')
 	'''
+	def expand(name):
+		'''(member host names, their users): mssh keeps a member's user@ over -u.'''
+		members, users = [], []
+		for member in mssh.expand_hostnames_local([name])[0]:
+			user, at, host = member.partition('@')
+			members.append(host if at else member)
+			users.append(user if at else '')
+		return members, users
 	aliases = {}
 	try:
 		variables = mssh.readEnvFromFile()
@@ -1338,17 +1351,17 @@ def collect_aliases(mssh, history_tokens, known):
 	for name, value in variables.items():
 		if not name.isidentifier() or not value or not set(value) <= _ALIAS_VALUE_CHARS:
 			continue
-		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
+		members, users = expand(name)
 		if not members or members == [name]:
 			continue
 		if name in history_tokens or ',' in value or '[' in value or all(_is_ip(member) or member in known for member in members):
-			aliases[name] = ('env_file', members)
+			aliases[name] = ('env_file', members, users)
 	for name in history_tokens:
 		if name in aliases or not name.isidentifier() or name not in os.environ:
 			continue
-		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
+		members, users = expand(name)
 		if members and members != [name]:
-			aliases[name] = ('env', members)
+			aliases[name] = ('env', members, users)
 	return aliases
 
 def file_signature(path):
@@ -1442,13 +1455,20 @@ def build_index(directory, now=None, mssh=None):
 					add(member, SRC_HISTORY)
 			continue
 		add(name, SRC_HISTORY)
-	for _, members in aliases.values():
+	for _, members, _ in aliases.values():
 		for member in members:
 			add(member, SRC_ALIAS)
 	names = sorted(hosts)
 	host_number = {name: number for number, name in enumerate(names)}
 	alias_names = sorted(aliases)
-	alias_rows = [[aliases[name][0]] + [str(host_number[member]) for member in aliases[name][1] if member in host_number] for name in alias_names]
+	alias_rows = []
+	# the user of each member in alias_rows, '' for none; a row without any is left empty
+	alias_user_rows = []
+	for name in alias_names:
+		source, members, member_users = aliases[name]
+		kept = [(member, user) for member, user in zip(members, member_users) if member in host_number]
+		alias_rows.append([source] + [str(host_number[member]) for member, _ in kept])
+		alias_user_rows.append([user for _, user in kept] if any(user for _, user in kept) else [])
 	group_rows = []
 	for text in mssh.compact_hostnames_local(names):
 		if '[' in text and safe_field(text):
@@ -1494,6 +1514,7 @@ def build_index(directory, now=None, mssh=None):
 		('host_meta', [[str(hosts[name][0]), hosts[name][1]] for name in names]),
 		('alias_names', [alias_names]),
 		('aliases', alias_rows),
+		('alias_users', alias_user_rows),
 		('groups', group_rows),
 		('unavailable', [unavailable]),
 		# option combinations main() ignores: [option, kind, why, others...]
@@ -1988,8 +2009,8 @@ _HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
 
 def _host_parts(token):
 	'''
-	(host name without user@, (start, end) in the line) for each host of a hosts word. A quoted or
-	escaped word is marked whole: its parts have no exact place in the line.
+	(user typed before the @ or '', host name without user@, (start, end) in the line) for each host
+	of a hosts word. A quoted or escaped word is marked whole: its parts have no exact place in the line.
 	'''
 	text = token.text
 	exact = token.raw == text and token.start >= 0
@@ -2002,11 +2023,24 @@ def _host_parts(token):
 		end = position
 		while end < len(text) and text[end] not in _HOST_SEPARATORS:
 			end += 1
-		name = text[position:end].rsplit('@', 1)[-1].strip('$')
+		user, _, name = text[position:end].rpartition('@')
 		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
-		parts.append((name, span))
+		parts.append((user, name.strip('$'), span))
 		position = end
 	return parts
+
+def _run_name(host, typed_user, line_user, own_user=''):
+	'''
+	The name mssh gives a host in this run: what it records a failure under in unavailable_hosts.csv
+	and looks up to skip the host. The user typed with the host, else -u (line_user), else none.
+	own_user: the user an alias member is written with. -u does not replace it, a user typed with the
+	alias goes in front of it (for root@dbs with dbs=postgres@db1 mssh runs root@postgres@db1).
+	'''
+	if own_user:
+		host = own_user + '@' + host
+		line_user = ''
+	user = typed_user or line_user
+	return user + '@' + host if user else host
 
 def _is_ip_address(name):
 	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
@@ -2426,13 +2460,15 @@ class Engine(object):
 		'''
 		Unknown hosts, range surprises and unreachable hosts in a hosts word. reach is (the hosts
 		in mssh's unavailable list, whether they are skipped, the ping expiry, whether the line
-		names its own lookup files).
+		names its own lookup files, the user -u gives).
 		'''
 		def verdict(host):
 			answer = self._verdict(host, states, now, wanted)
 			return 'unsure' if answer == 'invalid' and self._mssh_may_know(host, reach) else answer
+		def unreachable(host, user, own_user=''):
+			return self._unreachable(host, _run_name(host, user, reach[4], own_user), states.get(host), now, reach)
 		found = []
-		for name, (start, end) in _host_parts(token):
+		for user, name, (start, end) in _host_parts(token):
 			if not name:
 				continue
 			members = self._host_members(name)
@@ -2440,17 +2476,17 @@ class Engine(object):
 				if verdict(name) == 'invalid':
 					found.append(Diagnostic(start, end, 'unknown', self._unknown_message(name, states, now)))
 				else:
-					why = self._unreachable(name, states.get(name), now, reach)
+					why = unreachable(name, user)
 					if why:
 						found.append(Diagnostic(start, end, 'unreachable', why))
 			elif members:
-				members, total = members
+				members, total, own_users = members
 				verdicts = [verdict(member) for member in members]
 				item = self._range_diagnostic(name, members, verdicts, total, (start, end), states, now, wanted)
 				if item is not None:
 					found.append(item)
-				down = [member for member, verdict in zip(members, verdicts)
-					if verdict != 'invalid' and self._unreachable(member, states.get(member), now, reach)]
+				down = [member for member, own_user, verdict in zip(members, own_users, verdicts)
+					if verdict != 'invalid' and unreachable(member, user, own_user)]
 				if down:
 					_, more = _punctuation()
 					shown = ', '.join(down[:3] + ([more] if len(down) > 3 else []))
@@ -2459,16 +2495,18 @@ class Engine(object):
 
 	def _host_members(self, name):
 		'''
-		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
-		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
-		The members of an IPv4 range are addresses: they are only pinged, never unknown.
+		(members, how many, the user each member is written with or '') for an alias or a range, the
+		members up to RANGE_MEMBERS_LIMIT; None for one host; () for a range that cannot be expanded
+		here (letters, hex): nothing is said about it. The members of an IPv4 range are addresses: they
+		are only pinged, never unknown. Only alias members have users (an env file's dbs=postgres@db1).
 		'''
 		if _ipv4_range(name):
-			return _ipv4_members(name)
+			members, total = _ipv4_members(name)
+			return members, total, [''] * len(members)
 		number = self.hosts.alias_index(name)
 		if number is not None:
 			members = self.hosts.alias_members(number)
-			return members, len(members)
+			return members, len(members), self.hosts.alias_member_users(number)
 		if '[' not in name:
 			return None
 		total = _range_count(name)
@@ -2479,7 +2517,7 @@ class Engine(object):
 			if len(members) >= RANGE_MEMBERS_LIMIT:
 				break
 			members.append(member)
-		return (members, total) if members != [name] else None
+		return (members, total, [''] * len(members)) if members != [name] else None
 
 	def _mssh_may_know(self, name, reach):
 		'''
@@ -2553,16 +2591,18 @@ class Engine(object):
 	def _line_settings(self, words, roles):
 		'''
 		(whether unreachable hosts are skipped, the ping expiry in seconds, whether the line names
-		its own lookup files) for the options of a line.
+		its own lookup files, the user -u gives or '') for the options of a line.
 
 		Skipping: the last of -su / -nsu on the line, else the mssh config's default; --script
 		always skips (process_args); --ipmi never does (mssh reaches the host's BMC). Ping expiry:
 		$MSSH_COMPLETE_PING_TTL, else mssh's unreachable host expiry (-uhe on the line, else its
-		default). Lookup files: --env_file(s), --host_file, --config_file.
+		default). Lookup files: --env_file(s), --host_file, --config_file. User: the last -u on the
+		line, else the mssh config's default, stripped as run_command_on_hosts strips it.
 		'''
 		flags = {}
 		expiry = None
 		lookup = False
+		user = None
 		for token, (role, option) in zip(words, roles):
 			if option is None:
 				continue
@@ -2574,6 +2614,10 @@ class Engine(object):
 				value = token.text if role == ROLE_VALUE else self.spec.lookup(token.text)[1]
 				if value is not None and _is_digits(value):
 					expiry = int(value)
+			elif option.dest == 'username':
+				value = token.text if role == ROLE_VALUE else self.spec.lookup(token.text)[1]
+				if value is not None:
+					user = value
 		def flag(dest):
 			return flags.get(dest, self.flag_defaults.get(dest, False))
 		skipping = (flag('script') or flag('skip_unreachable')) and not flag('ipmi')
@@ -2583,12 +2627,18 @@ class Engine(object):
 		if expiry is None:
 			default = next((option.default for option in self.spec.options if option.dest == 'unavailable_host_expiry'), '')
 			expiry = int(default) if _is_digits(default) else 600
-		return skipping, expiry, lookup
+		if user is None:
+			user = next((option.default for option in self.spec.options if option.dest == 'username'), '')
+		return skipping, expiry, lookup, user.strip()
 
-	def _unreachable(self, name, state, now, reach):
-		'''Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering ping.'''
-		unavailable, skipping, expiry, _ = reach
-		if name in unavailable:
+	def _unreachable(self, name, run_name, state, now, reach):
+		'''
+		Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering
+		ping. run_name: the name the host has in this run (_run_name), which mssh's list is keyed by;
+		ping does not depend on the user.
+		'''
+		unavailable, skipping, expiry = reach[:3]
+		if run_name in unavailable:
 			dash, _ = _punctuation()
 			return '{}: {}unreachable in a recent mssh run'.format(name, 'will be skipped' + dash if skipping else '')
 		if (state is not None and state.fresh_ping(now) == 'silent' and state.answered_at

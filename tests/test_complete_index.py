@@ -59,6 +59,16 @@ def test_build_index_collects_every_source(home):
 	assert index.header['history_offset'] == str(os.path.getsize(str(home / '.mssh_history')))
 
 
+def test_alias_members_keep_their_users(home):
+	# mssh runs postgres@db1 for dbs, and records its failures under that name
+	with open(str(home / 'hosts.env'), 'a') as f:
+		f.write('dbs=postgres@db1,db2\n')
+	hosts = mc.HostTable(build()[0])
+	dbs = hosts.alias_index('dbs')
+	assert sorted(zip(hosts.alias_members(dbs), hosts.alias_member_users(dbs))) == [('db1', 'postgres'), ('db2', '')]
+	assert hosts.alias_member_users(hosts.alias_index('racks')) == ['', '', '']
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
