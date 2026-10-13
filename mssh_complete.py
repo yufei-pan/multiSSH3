@@ -4501,8 +4501,21 @@ def _age(seconds):
 	return 'now'
 
 def _unicode_terminal():
-	import locale
-	return (locale.getpreferredencoding(False) or '').lower().replace('-', '') == 'utf8'
+	'''
+	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG. Python's own encoding says
+	UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
+	always runs in UTF-8 mode.
+	'''
+	def utf8(name):
+		return 'utf8' in (name or '').lower().replace('-', '')
+	environ = os.environ
+	if environ.get('LC_ALL'):
+		return utf8(environ['LC_ALL'])
+	ctype = environ.get('LC_CTYPE')
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not utf8(environ.get('LANG')):
+		# what Python sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
+		return False
+	return utf8(ctype or environ.get('LANG'))
 
 class Picker(object):
 	'''
@@ -5746,8 +5759,11 @@ _mssh_complete_previous() {
 	local line
 	_mssh_complete_found=
 	while IFS= read -r line; do
-		[[ $line == '"\C-r": "'*'"' ]] || continue
-		line=${line#'"\C-r": "'}
+		# bind -X prints '"\C-r": "command"', from bash 5.3 on '"\C-r" "command"'
+		[[ $line == '"\C-r": "'*'"' || $line == '"\C-r" "'*'"' ]] || continue
+		line=${line#'"\C-r"'}
+		line=${line#:}
+		line=${line#' "'}
 		line=${line%'"'}
 		line=${line//'\"'/'"'}
 		_mssh_complete_found=x:${line//'\\'/'\'}
@@ -5855,8 +5871,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 			((_ble_edit_ind == ${#_ble_edit_str})) || return 1
 			_mssh_complete_is_mssh "$_ble_edit_str" || return 1
 			local request=$_ble_base_run/$$.mssh-complete.request answer=$_ble_base_run/$$.mssh-complete.answer line text= status
-			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' > "$request" 2>/dev/null || return 1
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			# >|: the files are written again for every question, which > refuses under noclobber
+			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' >| "$request" 2>/dev/null || return 1
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
 			status=$?
 			((status == 148)) && return 148
 			((status == 0)) || return 1
@@ -5893,8 +5910,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		local line reason= pending=0 status start
 		local -a ranges=() starts=()
 		if _mssh_complete_is_mssh "$_ble_edit_str"; then
-			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" > "$request" 2>/dev/null || return 0
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			# >| for noclobber, as for the grey text
+			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" >| "$request" 2>/dev/null || return 0
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
 			status=$?
 			if ((status == 148)); then
 				# typing interrupted: ask again at the next redraw
@@ -5990,6 +6008,9 @@ elif [[ $- == *i* ]]; then
 			# take Ctrl-R only when its binding can be called back (and is not already ours)
 			if _mssh_complete_previous "$keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
 				printf -v "_mssh_complete_previous_${keymap//-/_}" '%s' "$_mssh_complete_found"
+				# a Ctrl-R bound with bind -x (fzf, atuin) is unbound first: when a bind replaces a bind -x
+				# key, bash 5.1 drops the command of another bind -x key (our hook key, or the operator's)
+				[[ $_mssh_complete_found == x:* ]] && bind -m "$keymap" -r '\C-r'
 				# "$_" last: bash sets $_ to a command's last argument, so it keeps the operator's $_
 				if [[ $keymap == emacs ]]; then
 					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs "$_"'

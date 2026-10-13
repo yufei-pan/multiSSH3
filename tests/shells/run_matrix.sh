@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Run the autocomplete tests in the Docker shell matrix: modern, current (the newest Python), legacy and centos7 images.
+# Run the autocomplete tests in the Docker shell matrix: modern, current (the newest Python), legacy and centos7 images,
+# and bash 5.1 and 5.3 alone (readline key bindings change between bash versions: see their Dockerfiles).
 # The images run at once (the tests mostly wait on shells, not the CPU); each one's output is shown when all are done.
-# Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [centos7]   (default: all four)
+# Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [centos7] [bash5.1] [bash5.3]   (default: all six)
 # MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py)
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 images=("$@")
-[ ${#images[@]} -gt 0 ] || images=(modern current legacy centos7)
+[ ${#images[@]} -gt 0 ] || images=(modern current legacy centos7 bash5.1 bash5.3)
 logs=$(mktemp -d)
 trap 'rm -rf "$logs"' EXIT
 required=()
@@ -15,6 +16,7 @@ pids=()
 for name in "${images[@]}"; do
 	case $name in
 		centos7) required+=(bash,blesh) ;;
+		bash5.1|bash5.3) required+=(bash) ;;
 		modern|current|legacy) required+=(bash,zsh,fish,blesh,zas,zsh-syntax-highlighting) ;;
 		*) echo "unknown image: $name" >&2; exit 2 ;;
 	esac

@@ -3,6 +3,7 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import types
 
 import pytest
@@ -503,6 +504,46 @@ def test_an_ascii_terminal_gets_ascii_messages(engine, monkeypatch):
 	monkeypatch.setattr(mc, '_unicode_terminal', lambda: False)
 	seed(engine, gpu017='invalid')
 	assert warnings(engine, 'mssh gpu017 uptime')[0][0][2] == 'gpu017: unknown host - did you mean gpu17?'
+
+
+@pytest.mark.parametrize('variables, unicode', [
+	({'LANG': 'en_US.UTF-8'}, True),
+	({'LANG': 'C.utf8'}, True),
+	({'LANG': 'C'}, False),
+	({'LANG': 'POSIX'}, False),
+	({}, False),
+	({'LANG': 'en_US'}, False),
+	({'LANG': 'en_US.UTF-8', 'LC_ALL': 'C'}, False),
+	({'LANG': 'C', 'LC_ALL': 'en_US.UTF-8'}, True),
+	({'LANG': 'en_US.UTF-8', 'LC_ALL': ''}, True),
+	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8'}, True),
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C'}, False),
+	# what Python 3.7+ sets for a C locale: not the shell's
+	({'LANG': 'C', 'LC_CTYPE': 'C.UTF-8'}, False),
+	({'LC_CTYPE': 'C.UTF-8'}, False),
+	({'LC_CTYPE': 'C.utf8'}, False),
+	({'LC_CTYPE': 'UTF-8'}, False),
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
+])
+def test_a_utf8_terminal_is_told_by_the_locale_variables(monkeypatch, variables, unicode):
+	for name in ('LC_ALL', 'LC_CTYPE', 'LANG'):
+		monkeypatch.delenv(name, raising=False)
+	for name, value in variables.items():
+		monkeypatch.setenv(name, value)
+	assert mc._unicode_terminal() is unicode
+
+
+@pytest.mark.parametrize('lang, unicode', [('C', False), ('POSIX', False), (None, False), ('C.UTF-8', True)])
+def test_a_c_locale_gets_ascii_whatever_python_makes_of_it(lang, unicode):
+	# Python 3.7+ starts a C locale as C.UTF-8 (PEP 538) and 3.15 always in UTF-8 mode: its own encoding
+	# says UTF-8 where the shell shows the bytes of a ⚠ as \M-b\M-^Z\M-
+	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin')}
+	if lang is not None:
+		env['LANG'] = lang
+	code = 'import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete; print(mssh_complete._unicode_terminal())'
+	output = subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], env=env,
+		stdout=subprocess.PIPE, check=True, timeout=30).stdout
+	assert output.decode().strip() == str(unicode)
 
 
 def test_a_range_mssh_completion_cannot_expand_says_nothing(engine):

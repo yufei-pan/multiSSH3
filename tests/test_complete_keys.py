@@ -170,6 +170,51 @@ def test_bash_ctrl_r_on_other_lines_calls_a_previous_shell_command(home, where):
 		session.close()
 
 
+# Ctrl-R as fzf's key-bindings.bash binds it from bash 4 on (atuin and mcfly bind it with bind -x too)
+FZF_CTRL_R = r'''_fakefzf() { READLINE_LINE=FZF; READLINE_POINT=3; }
+bind -m emacs-standard -x '"\C-r": _fakefzf'
+bind -m vi-command -x '"\C-r": _fakefzf'
+bind -m vi-insert -x '"\C-r": _fakefzf'
+'''
+VI_PRINT_KEY = 'set -o vi\nbind -m vi-insert -x \'"\\C-x\\C-p": printf "@@LINE[%s]@@\\n" "$READLINE_LINE"\'\n'
+
+
+@pytest.mark.parametrize('mode', ['emacs', 'vi'])
+def test_bash_ctrl_r_over_fzf_keeps_every_shell_command_key(home, mode):
+	# bash 5.1, when a plain bind replaces a bind -x key, drops the command of another bind -x key:
+	# Ctrl-R then said "cannot find keymap for command", and a key of the operator's could stop working
+	env, home = home
+	if bash_version(env) < 43:
+		pytest.skip('bash 4.2 cannot list bind -x bindings: Ctrl-R stays the shell command')
+	session = bash_session(home, env, glue_file(home, 'bash'), pre=(VI_PRINT_KEY if mode == 'vi' else '') + FZF_CTRL_R)
+	try:
+		assert printed(session, 'ls\x12') == 'FZF'
+		session.send('\x15mssh gpu[01-16] \x12')
+		assert 'commands for' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
+		if mode == 'vi':
+			# vi command mode keeps fzf's Ctrl-R: the glue leaves that keymap alone
+			session.send('\x15ls\x1b')
+			time.sleep(0.3)
+			assert printed(session, '\x12A') == 'FZF'
+		assert b'cannot find keymap' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('separator', [': ', ' '])
+def test_bash_reads_a_shell_command_binding_in_both_formats(home, separator):
+	# bind -X prints "\C-r": "command" before bash 5.3, "\C-r" "command" from 5.3 on (same escapes)
+	env, home = home
+	script = r'''. "$1"
+bind() { [[ $3 == -X ]] && printf '%s\n' '"\C-x\C-p"SEP"echo x"' '"\C-r"SEP"__fzf_history__ \"a\\b\""'; }
+_mssh_complete_previous emacs && printf '%s\n' "$_mssh_complete_found"
+'''.replace('SEP', separator)
+	result = subprocess.run([require_shell('bash'), '-c', script, 'bash', str(glue_file(home, 'bash'))], env=env,
+		stdout=subprocess.PIPE, timeout=30)
+	assert result.stdout.decode() == 'x:__fzf_history__ "a\\b"\n'
+
+
 def test_bash_picker_leaves_keys_typed_after_the_choice(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))
@@ -297,8 +342,7 @@ def test_bash_ctrl_r_keeps_the_last_argument(home):
 
 def test_bash_vi_mode_ctrl_r(home):
 	env, home = home
-	pre = 'set -o vi\nbind -m vi-insert -x \'"\\C-x\\C-p": printf "@@LINE[%s]@@\\n" "$READLINE_LINE"\''
-	session = bash_session(home, env, glue_file(home, 'bash'), pre=pre)
+	session = bash_session(home, env, glue_file(home, 'bash'), pre=VI_PRINT_KEY)
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
@@ -630,6 +674,27 @@ def test_blesh_warning_appears_when_the_prober_answers(home):
 		known(env, gpu099='invalid')
 		# no key pressed: the glue asks again while the prober works
 		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 15)
+	finally:
+		session.close()
+
+
+def test_blesh_keeps_suggesting_and_warning_with_noclobber(home):
+	# the glue's request and answer files are kept per shell: with noclobber, writing them with > failed
+	# from the second time on, which took the grey text and the warnings away
+	env, home = home
+	known(env, gpu017='invalid', gpu018='invalid')
+	session = blesh_session(home, env, glue_file(home, 'bash'), extra='set -o noclobber')
+	try:
+		for host in ('gpu017', 'gpu018'):
+			session.send('mssh gp')
+			assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 10)
+			session.send('\x03')
+			session.read_until(b'@@READY@@', 10)
+			session.send('mssh %s ' % host)
+			assert host + ': unknown host' in plain(session.read_until(b'unknown host', 15))
+			session.send('\x03')
+			session.read_until(b'@@READY@@', 10)
+		assert b'cannot overwrite' not in session.output
 	finally:
 		session.close()
 
