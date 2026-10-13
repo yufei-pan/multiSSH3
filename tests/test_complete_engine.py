@@ -78,6 +78,12 @@ def test_used_options_are_hidden():
 	assert '--no_skip_unreachable' not in texts(query('mssh -x --no_'))
 
 
+def test_a_value_starting_with_a_dash_completes_once_it_holds_a_space():
+	# argparse takes "-o StrictHostKeyChecking=no" as -ea's value: it names no option and holds a space
+	knowledge = memory([line(NOW, '-su -ea="-o StrictHostKeyChecking=no"', 'h', '"uptime"')])
+	assert texts(query('mssh -ea "-o Str', word='-o Str', knowledges=[knowledge])) == ['-o StrictHostKeyChecking=no']
+
+
 def test_passwords_are_never_completed():
 	response = query('mssh -p ')
 	assert texts(response) == [] and 'nodefault' in response.directives
@@ -156,6 +162,13 @@ def test_unquoted_command_words():
 	assert texts(query('mssh login1 up')) == ['uptime']
 	response = query('mssh login1 systemctl rest')
 	assert response.delegate == (1, '', ['systemctl', 'rest'])
+
+
+def test_double_dash_leaves_the_hosts_first():
+	# argparse reads the word after "--" as the hosts, then the command
+	assert texts(query('mssh -- lo')) == ['login1']
+	assert texts(query('mssh -u root -- login1 up')) == ['uptime']
+	assert query('mssh -- login1 systemctl rest').delegate == (1, '', ['systemctl', 'rest'])
 
 
 def test_quoted_command_delegates_with_prefix():
@@ -332,6 +345,22 @@ def test_passwords_in_shell_history_are_never_offered():
 			('mssh h "pyth', 'pyth'), ('mssh h "./mu', './mu'), ('mssh h "cd', 'cd'), ('mssh h ', ''), ('mssh h -', '-')):
 		for candidate in query(before, word=word, knowledges=[shell]).candidates:
 			assert secret not in candidate.text, (before, candidate.text)
+
+
+def test_passwords_starting_with_a_dash_are_never_offered():
+	# argparse stops at these lines (it reads the password as an option), but the shell's history keeps them
+	shell = mc.shell_history_knowledge([
+		'mssh -p -Tr0ub4dor web1 uptime',
+		'mssh --password -Tr0ub4dor web1 uptime',
+		'mssh -ip "-my s3cr3t" -M bmc1 power status',
+	] + ['mssh -ip "-my p4ss" node1 "df"'] * 3, SPEC)
+	engine = mc.Engine(SPEC, [shell])
+	for before, word in (('mssh web1 ', ''), ('mssh -m ', ''), ('mssh ', ''), ('mssh -', '-'), ('mssh -M bmc1 ', ''),
+			('mssh node1 ', ''), ('mssh h "', ''), ('mssh h -', '-'), ('mssh -u ', '')):
+		shown = [candidate.text for candidate in engine.query(mc.Request('bash', before, '', word)).candidates]
+		ghost = engine.suggest(mc.Request('bash', before, '', ''))
+		shown.append(ghost.text if ghost else '')
+		assert not [text for text in shown if 'Tr0ub4dor' in text or 's3cr3t' in text or 'p4ss' in text], (before, shown)
 
 
 def test_mssh_behind_a_wrapper_is_read_as_mssh():

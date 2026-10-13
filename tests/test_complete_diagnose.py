@@ -66,6 +66,18 @@ def test_an_unknown_host_is_marked_with_the_host_it_was_meant_to_be(engine):
 	assert warnings(engine, 'mssh gpu017 nvidia-smi') == ([('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')], False)
 
 
+@pytest.mark.parametrize('line', ['mssh -- gpu017 nvidia-smi', 'mssh -u root -- gpu017 nvidia-smi'])
+def test_the_hosts_after_double_dash_are_checked(engine, line):
+	# "--" ends the options; argparse still reads the next word as the hosts
+	seed(engine, gpu017='invalid')
+	assert warnings(engine, line)[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+
+
+def test_a_command_word_after_double_dash_is_no_host(engine):
+	seed(engine, gpu017='invalid', gpu17='valid')
+	assert warnings(engine, 'mssh gpu17 -- gpu017 uptime')[0] == []
+
+
 @pytest.mark.parametrize('options', ['--env_files lab.env ', '-ef lab.env ', '--host_file lab.hosts ', '--config_file lab.json '])
 def test_a_line_with_its_own_lookup_files_calls_no_host_unknown(engine, options):
 	# mssh reads those files at Enter, from the shell's directory: the prober cannot see what they define

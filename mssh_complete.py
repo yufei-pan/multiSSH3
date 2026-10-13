@@ -232,6 +232,15 @@ class ParserSpec(object):
 				self.by_string[string] = option
 		self._passwords = [option for option in self.options if option.dest in PASSWORD_DESTS]
 
+	def names_option(self, text):
+		'''
+		Whether argparse reads a word starting with "-" as an option, a wrong or ambiguous one
+		included: its first two characters (one dash) or its part before "=" name an option. mssh
+		takes option names in full only (_MsshArgumentParser), so a word that only starts an option
+		name is not one.
+		'''
+		return (text[1:2] != '-' and text[:2] in self.by_string) or text.partition('=')[0] in self.by_string
+
 	def lookup(self, text):
 		'''
 		The option a word names, and the value attached to it ("-x=value", "--long=value", "-xVALUE").
@@ -360,6 +369,10 @@ def assign_roles(words, spec, current=None):
 	words[current] is the word being completed: a dash starting it means an option name,
 	except after unquoted command words, where it belongs to the remote command.
 
+	The first "--" ends the options, as in argparse (Python 3.12+; 3.6's parse_known_args too):
+	every later word is a positional, the hosts when none came before it, then command words,
+	dash words and another "--" included.
+
 	Returns:
 		list: (role, OptionSpec or None) per word
 	'''
@@ -378,17 +391,16 @@ def assign_roles(words, spec, current=None):
 			pending = None
 			# the word after a password option is its password, whatever it looks like: argparse stops
 			# at "-p -secret", but the shell's history keeps the line, and a password is never another word.
-			if not dashed or option.dest in PASSWORD_DESTS:
+			# argparse takes a dash word as the value when it holds a space and names no option
+			# (-ea "-o StrictHostKeyChecking=no"); mssh's -11 makes it read negative numbers as options
+			if not dashed or option.dest in PASSWORD_DESTS or (' ' in text and not spec.names_option(text)):
 				roles.append((ROLE_VALUE, option))
 				continue
-		if after_separator:
-			roles.append((ROLE_COMMAND, None))
-			continue
-		if text == '--' and not is_current:
+		if text == '--' and not is_current and not after_separator:
 			roles.append((ROLE_SEPARATOR, None))
 			after_separator = True
 			continue
-		if dashed:
+		if dashed and not after_separator:
 			if is_current and command_seen and not commands_quoted:
 				roles.append((ROLE_COMMAND, None))
 				continue
@@ -624,16 +636,20 @@ def parse_context(before, after, spec):
 			else:
 				command_words = None
 		else:
-			# the unquoted command words the current word continues
+			# the unquoted command words the current word continues; argparse drops a "--" between them
+			def joins(index):
+				role = roles[index][0]
+				return role == ROLE_SEPARATOR or (role == ROLE_COMMAND and not words[index].quoted)
 			first = current
-			while first > 0 and roles[first - 1][0] == ROLE_COMMAND and not words[first - 1].quoted:
+			while first > 0 and joins(first - 1):
 				first -= 1
 			last = current
-			while last + 1 < len(words) and roles[last + 1][0] == ROLE_COMMAND and not words[last + 1].quoted:
+			while last + 1 < len(words) and joins(last + 1):
 				last += 1
 			skip = set(range(first, last + 1))
-			command_words = [token.text for token in words[first:current]] + [prefix]
-			command_word_index = current - first
+			typed = [token.text for token, (role, _) in zip(words[first:current], roles[first:current]) if role != ROLE_SEPARATOR]
+			command_words = typed + [prefix]
+			command_word_index = len(typed)
 			command_prefix = ''
 	options, hosts, commands = _collect(words, roles, skip)
 	return Context(slot=slot, option=option, prefix=prefix, value_start=value_start,
