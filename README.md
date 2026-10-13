@@ -510,12 +510,12 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-mpre, --ipmi_interface_ip_prefix IPMI_INTERFACE_IP_PREFIX` | _`DEFAULT_IPMI_INTERFACE_IP_PREFIX`_
 - The prefix of the IPMI interfaces. Will replace the resolved IP address with the given prefix when using ipmi mode.
 - This will take precedence over `INTERFACE_IP_PREFIX` when in ipmi mode.
-- Ex: `10.0.0.1` + `-mpre '192.168'` -> `192.168.0.1`
+- Ex: `10.0.0.1` + `-mpre '192.168'` (or `'192.168.'`) -> `192.168.0.1`
 
 ### `-pre, --interface_ip_prefix INTERFACE_IP_PREFIX` | _`DEFAULT_INTERFACE_IP_PREFIX`_
 - The prefix of the for the interfaces. Will replace the resolved IP address with the given prefix when connecting to the host.
 - Will prioritize `IPMI_INTERFACE_IP_PREFIX` if it exists when in ipmi mode.
-- Ex: `10.0.0.1` + `-pre '172.30'` -> `172.30.0.1`
+- Ex: `10.0.0.1` + `-pre '172.30'` (or `'172.30.'`) -> `172.30.0.1`
 
 ### `-iu, --ipmi_username IPMI_USERNAME` | _`DEFAULT_IPMI_USERNAME`_
 - The username to use to connect to the hosts via ipmi.

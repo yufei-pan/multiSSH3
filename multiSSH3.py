@@ -2417,7 +2417,8 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				if ':' in str(host.ip):
 					raise ValueError('interface_ip_prefix only applies to IPv4 addresses')
 				hostOctets = host.ip.split('.')
-				prefixOctets = ip_prefix.split('.')
+				# '172.30.' means the same as '172.30', not an empty third octet
+				prefixOctets = ip_prefix.rstrip('.').split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
 			except Exception:
 				host.output.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')

@@ -267,6 +267,22 @@ def test_interface_ip_prefix_leaves_ipv6_hosts_alone(fake_host, monkeypatch):
 	assert any("ip_prefix" in line for line in host.output)
 
 
+@pytest.mark.parametrize("prefix, address", [
+	("172.30", "172.30.5.7"),
+	("172.30.", "172.30.5.7"),  # was 172.30..7
+	("192.168.9.", "192.168.9.7"),
+])
+def test_interface_ip_prefix_with_or_without_a_trailing_dot(fake_host, monkeypatch, prefix, address):
+	host = fake_host("node7", "true", interface_ip_prefix=prefix, ip="10.0.5.7")
+	commands = []
+	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda cmd, **kwargs: commands.append(cmd) or FakeProc())
+
+	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
+
+	assert commands[0][-2] == address  # [ssh, ..., '--', target, command]
+
+
 def test_stdin_closes_when_the_tui_exits_early(fake_host, monkeypatch):
 	import curses
 	import time
