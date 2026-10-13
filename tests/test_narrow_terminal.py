@@ -1,4 +1,4 @@
-'''A terminal that is very narrow or tells no size (0 columns): the results still print.'''
+'''A terminal that is very narrow or tells no size (0 columns): the results still print, the curses display copes.'''
 import json
 import os
 import select
@@ -208,3 +208,56 @@ def test_mssh_prints_its_results_whatever_width_the_terminal_reports(tmp_path, r
 	assert status == 0
 	with open(fake_ssh_log) as log:
 		assert '127.0.0.1 echo narrow-ok' in log.read()
+
+
+# runs __generate_display (then the whole curses_print) under real curses on the pty it is given
+CURSES_CHILD = '''
+import json, sys, threading, time, curses
+import multiSSH3
+multiSSH3.getIP = lambda hostname, local=False: hostname
+results = []
+def finish_soon(hosts):
+	time.sleep(0.05)
+	for host in hosts:
+		host.returncode = 0
+def run(stdscr):
+	curses.curs_set(0)
+	curses.start_color()
+	curses.use_default_colors()
+	curses.init_pair(1, -1, -1)
+	for width, height, single in json.loads(sys.argv[1]):
+		hosts = []
+		for number in range(3):
+			host = multiSSH3.Host(name='host{}'.format(number), command='echo a command line {}'.format(number))
+			host.output = ['line {} of the output, long enough to wrap around'.format(line) for line in range(5)]
+			host.lineNumToPrintSet = set(range(5))
+			hosts.append(host)
+		threading.Thread(target=finish_soon, args=(hosts,), daemon=True).start()
+		shown = getattr(multiSSH3, '__generate_display')(stdscr, hosts, -1, 0, width, height, single, False)
+		results.append([stdscr.getmaxyx(), width, height, single, shown and shown[6]])
+		for host in hosts:
+			host.returncode = None
+		threading.Thread(target=finish_soon, args=(hosts,), daemon=True).start()
+		multiSSH3.curses_print(stdscr, hosts, [], min_char_len=width, min_line_len=height, single_window=single)
+curses.wrapper(run)
+sys.stderr.write('RESULTS ' + json.dumps(results) + '\\n')
+'''
+
+
+@pytest.mark.parametrize('rows, columns', [(1, 1), (2, 5), (3, 10), (3, 11), (24, 2), (2, 80)])
+def test_curses_display_on_a_tiny_terminal(tmp_path, rows, columns):
+	pytest.importorskip('curses')
+	env, _ = _scratch_home(tmp_path)
+	env['TERM'] = 'xterm-256color'
+	env['PYTHONPATH'] = PACKAGE_ROOT
+	# -ww / -wh at their extremes: 0 and negative are taken as 1, larger than the terminal as all of it
+	settings = [[40, 1, False], [0, 0, False], [-5, -5, True], [100000, 100000, False], [1, 1, False]]
+
+	output, status = _run_in_pty([sys.executable, '-c', CURSES_CHILD, json.dumps(settings)], rows, columns, env)
+
+	assert status == 0, output
+	results = json.loads(output[output.index('RESULTS ') + len('RESULTS '):].split('\n')[0])
+	assert [result[:4] for result in results] == [[[rows, columns]] + setting for setting in settings]
+	for result in results:
+		# None: it showed the hosts until they finished
+		assert result[4] in (None, 'Terminal too small'), result
