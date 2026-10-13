@@ -490,6 +490,7 @@ def test_a_host_token_naming_no_hosts_fails_the_run_but_the_rest_runs(monkeypatc
 	assert ran == ["127.0.0.1", "127.0.0.1"]
 	assert code == 1  # counted once, like a host name that does not resolve
 	assert err.count("Error: 'node[10-1]' names no hosts: the range [10-1] counts down") == 1
+	assert "failed_hosts: node[10-1]" in err
 
 
 def test_target_of_invalid_names_only_stops_with_their_count(monkeypatch, tmp_path, capsys):
@@ -517,3 +518,29 @@ def test_library_call_on_a_target_naming_no_hosts_returns_nothing(monkeypatch, c
 
 	assert hosts == []
 	assert "names no hosts" not in capsys.readouterr().err
+
+
+def test_failed_hosts_lists_names_that_do_not_resolve(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["nosuch-a,127.0.0.1", "uptime", "--success_hosts"])
+
+	err = capsys.readouterr().err
+	assert ran == ["127.0.0.1"]
+	assert code == 1
+	assert "failed_hosts: nosuch-a\n" in err
+	assert "succeeded_hosts: 127.0.0.1\n" in err
+
+
+def test_summary_does_not_repeat_host_name_errors(monkeypatch, tmp_path, capsys):
+	# an alias naming $nosuch_a validates "$nosuch_a"; the summary must not validate "nosuch_a" again
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+	monkeypatch.setenv("MSSH_TEST_GROUP", "127.0.0.1,$nosuch_a")
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["MSSH_TEST_GROUP", "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == ["127.0.0.1"]
+	assert code == 1
+	assert err.count("Error: 'nosuch_a' is not a valid hostname or IP address!") == 1
+	assert "failed_hosts: nosuch_a\n" in err

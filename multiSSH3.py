@@ -5323,6 +5323,17 @@ def _completion_command(values):
 			return 1
 	return mssh_complete.completion_command(values)
 
+def _summary_host_list(names):
+	'''
+	The hosts for a summary line, compacted into ranges without DNS.
+
+	Names are not validated again: names that did not resolve stay listed, and their errors are
+	not printed a second time. Host tokens that name no host (node[10-1]) are listed as given.
+	'''
+	names = set(names)
+	as_given = sorted((name for name in names if __expand_hostname(name, validate=False) != {name}), key=_natural_sort_key)
+	return ','.join(compact_hostnames_local(names.difference(as_given)) + as_given)
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
@@ -5387,18 +5398,18 @@ def main(args = None):
 	if __mainReturnCode > 0:
 		if not __global_suppress_printout: 
 			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
-			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts))}')
+			eprint(f'failed_hosts: {_summary_host_list(__failedHosts)}')
 			if skippedHostNames:
 				eprint('Skipped {} unreachable in a recent run, without trying {}: {}'.format(
 					'1 host' if len(skippedHostNames) == 1 else '{} hosts'.format(len(skippedHostNames)),
 					'it' if len(skippedHostNames) == 1 else 'them',
-					','.join(compact_hostnames_local(skippedHostNames))))
+					_summary_host_list(skippedHostNames)))
 	else:
 		if not __global_suppress_printout: 
 			eprint('Complete. All hosts returned 0.')
 	
 	if args.success_hosts and not __global_suppress_printout:
-		eprint(f'succeeded_hosts: {",".join(compact_hostnames(succeededHosts))}')
+		eprint(f'succeeded_hosts: {_summary_host_list(succeededHosts)}')
 
 	if threading.active_count() > 1 and not __global_suppress_printout: 
 		eprint(f'Remaining active thread: {threading.active_count()}')
