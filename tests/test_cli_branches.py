@@ -124,9 +124,19 @@ def test_set_global_with_args_env_file_and_host_file(tmp_path):
 	assert multiSSH3.DEFAULT_HOST_FILE == str(hf)
 
 
-def test_find_ssh_key_file(tmp_path, monkeypatch):
-	key = tmp_path / "id_ed25519"
-	key.write_text("k")
-	# Also create .pub companion expected by some search logic — check find_ssh_key_file
-	found = multiSSH3.find_ssh_key_file(str(tmp_path))
-	assert found is None or os.path.basename(found) in multiSSH3.POSSIBLE_SSH_KEY_FILES or found.endswith("id_ed25519")
+def test_find_ssh_key_file(tmp_path):
+	(tmp_path / "id_rsa").write_text("k")
+	assert multiSSH3.find_ssh_key_file(str(tmp_path)) == str(tmp_path / "id_rsa")
+	# with several, the first in POSSIBLE_SSH_KEY_FILES: id_ed25519 before id_rsa
+	(tmp_path / "id_ed25519").write_text("k")
+	assert multiSSH3.find_ssh_key_file(str(tmp_path)) == str(tmp_path / "id_ed25519")
+
+
+def test_find_ssh_key_file_without_a_key(tmp_path, monkeypatch):
+	assert multiSSH3.find_ssh_key_file(str(tmp_path)) is None
+	# by default in ~/.ssh, returned as written there (ssh -i gets it expanded)
+	monkeypatch.setenv("HOME", str(tmp_path))
+	assert multiSSH3.find_ssh_key_file() is None
+	(tmp_path / ".ssh").mkdir()
+	(tmp_path / ".ssh" / "id_ecdsa").write_text("k")
+	assert multiSSH3.find_ssh_key_file() == "~/.ssh/id_ecdsa"

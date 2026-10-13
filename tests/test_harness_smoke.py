@@ -31,8 +31,20 @@ def test_parse_hosts_default(monkeypatch):
 	assert all(h.startswith("127.") for h in hosts)
 
 
-def test_ssh_probe_returns_bool():
-	assert isinstance(ssh_localhost_works(), bool)
+def test_ssh_probe_reports_whether_ssh_got_in(monkeypatch, tmp_path):
+	calls = tmp_path / "calls"
+	fake_ssh = tmp_path / "ssh"
+	# gets in on 127.0.0.1 only, and records its arguments
+	fake_ssh.write_text('#!/bin/sh\necho "$@" >> {}\ncase "$*" in *" 127.0.0.1 true") exit 0 ;; esac\nexit 255\n'.format(calls))
+	fake_ssh.chmod(0o755)
+	monkeypatch.setenv("PATH", str(tmp_path))
+
+	assert ssh_localhost_works() is True
+	assert ssh_hosts_works(["127.0.0.2"]) is False
+	# never waits for a password prompt
+	assert all("-o BatchMode=yes" in line for line in calls.read_text().splitlines())
+	monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+	assert ssh_localhost_works() is False
 
 
 def test_parse_hosts_rejects_non_loopback(monkeypatch):
