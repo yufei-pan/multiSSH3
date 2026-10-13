@@ -115,7 +115,8 @@ def test_run_command_rsync_files(fake_host, monkeypatch):
 	assert host.returncode == 0
 	assert rsync_calls[0] == [
 		"rsync", "-ahlX", "--partial-dir=.rsync-partial", "--info=name",
-		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
+		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'"
+			" -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4",
 		"--", "/tmp/a", "mock-a:/tmp/dest",
 	]
 
@@ -465,7 +466,7 @@ def test_rsync_rsh_is_the_configured_ssh_with_each_argument_intact(fake_host, mo
 
 	rsh = calls[0][calls[0].index("--rsh") + 1]
 	assert _rsync_split(rsh) == ["/opt/open ssh/bin/ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
-		"-i", os.path.expanduser(identity_file)]
+		"-i", os.path.expanduser(identity_file), "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
 
 
 MSSH_SSH_OPTIONS = ["ssh", "-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null"]
@@ -498,6 +499,9 @@ def test_rsync_hands_ssh_options_from_extraargs_to_ssh(fake_host, monkeypatch, e
 	# rsync read -ea "-o ConnectTimeout=5" as --owner and a file to copy named ConnectTimeout=5
 	# a host run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
 	monkeypatch.setattr(multiSSH3, "_ssh_cannot_ask", lambda host, passwds: False)
+	# and no ssh timeout options (ssh-timeouts, whose own tests check -ea winning over them)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_SSH_CONNECT_TIMEOUT", 0)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_SSH_SERVER_ALIVE_INTERVAL", 0)
 	monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
 	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, gatherMode=gather)
 
@@ -516,6 +520,9 @@ def test_rsync_hands_ssh_options_from_extraargs_to_ssh(fake_host, monkeypatch, e
 def test_scp_gets_ssh_options_from_extraargs_its_way(fake_host, monkeypatch, extraargs, scp_words):
 	# a host run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
 	monkeypatch.setattr(multiSSH3, "_ssh_cannot_ask", lambda host, passwds: False)
+	# and no ssh timeout options (ssh-timeouts, whose own tests check -ea winning over them)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_SSH_CONNECT_TIMEOUT", 0)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_SSH_SERVER_ALIVE_INTERVAL", 0)
 	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, scp=True)
 
 	argv = calls[0]
@@ -525,6 +532,9 @@ def test_scp_gets_ssh_options_from_extraargs_its_way(fake_host, monkeypatch, ext
 def test_ssh_command_gets_extraargs_as_given(fake_host, monkeypatch):
 	# a host run alone on the terminal: no NumberOfPasswordPrompts=0 (no-tty-prompts) among the words checked here
 	monkeypatch.setattr(multiSSH3, "_ssh_cannot_ask", lambda host, passwds: False)
+	# and no ssh timeout options (ssh-timeouts, whose own tests check -ea winning over them)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_SSH_CONNECT_TIMEOUT", 0)
+	monkeypatch.setattr(multiSSH3, "DEFAULT_SSH_SERVER_ALIVE_INTERVAL", 0)
 	calls = []
 	_patch_popen(monkeypatch, lambda argv, **kwargs: calls.append(argv) or FakeProc())
 	host = fake_host("mock-a", "uptime", extraargs="-p 2222 -o ConnectTimeout=5")

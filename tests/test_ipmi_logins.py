@@ -237,7 +237,8 @@ def test_command_line_ipmi_args_with_config_login_only(monkeypatch):
 	assert logins_tried(monkeypatch, config, ['-ia=-I lanplus']) == [('cfguser', 'cfgpass', '-I lanplus')]
 
 
-SSH_FALLBACK = ['/bin/ssh', '-o StrictHostKeyChecking=no', '-o UserKnownHostsFile=/dev/null', '--', 'bmc1', 'ipmitool power status']
+SSH_FALLBACK = ['/bin/ssh', '-o StrictHostKeyChecking=no', '-o UserKnownHostsFile=/dev/null',
+	'-o', 'ConnectTimeout=30', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4', '--', 'bmc1', 'ipmitool power status']
 
 
 def test_ssh_fallback_runs_once_after_every_login_failed(monkeypatch):
@@ -350,7 +351,8 @@ def test_end_to_end_definitions_only(tmp_path):
 	runs = _mssh_ipmi_run(tmp_path, {'DEFAULT_IPMI_DEFINITIONS': [{'username': 'u1', 'password': 'p1'}, {'username': 'u2', 'password': 'p2'}]})
 	assert _ipmitool_logins(runs) == [('u1', 'p1'), ('u2', 'p2')]
 	# then ipmitool on the host over ssh, once
-	assert [run for run in runs if run[0] == 'ssh'] == [['ssh', '-o StrictHostKeyChecking=no', '-o UserKnownHostsFile=/dev/null', '--', '127.0.0.1', 'ipmitool power status']]
+	assert [run for run in runs if run[0] == 'ssh'] == [['ssh', '-o StrictHostKeyChecking=no', '-o UserKnownHostsFile=/dev/null',
+		'-o', 'ConnectTimeout=30', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4', '--', '127.0.0.1', 'ipmitool power status']]
 
 
 def test_end_to_end_command_line_login_with_config_login(tmp_path):

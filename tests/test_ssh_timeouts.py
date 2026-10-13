@@ -141,7 +141,8 @@ def test_an_ssh_option_in_an_rsync_copys_extraargs_wins_too(fake_host, monkeypat
 	# rsync's own -o takes no value: -o ConnectTimeout=5 can only be meant for its ssh
 	argv = _run(fake_host, monkeypatch, command="/tmp/dest", files=["/tmp/a"], extraargs="-o ConnectTimeout=5")
 
-	assert _rsh_options(argv) == {"serveraliveinterval": "15", "serveralivecountmax": "4"}
+	# file-copy-real-tools puts -ea's ssh options into --rsh too: -ea's ConnectTimeout, not mssh's
+	assert _rsh_options(argv) == {"connecttimeout": "5", "serveraliveinterval": "15", "serveralivecountmax": "4"}
 
 
 def test_zero_leaves_an_option_to_ssh(fake_host, monkeypatch):

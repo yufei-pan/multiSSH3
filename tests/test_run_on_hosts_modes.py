@@ -295,7 +295,7 @@ def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_
 		will_update_unreachable_hosts=False,
 	)
 
-	assert commands == ["ssh-copy-id -i '{}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null bob@mock-a".format(
+	assert commands == ["ssh-copy-id -i '{}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a".format(
 		os.path.expanduser("~/my key"))]
 
 
@@ -321,10 +321,10 @@ def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 	)
 
 	# the password stays out of the command mssh shows, the run is as before: sshpass in front, quoted
-	assert [h.command for h in started] == ["ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null bob@mock-a"]
+	assert [h.command for h in started] == ["ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
 	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
 	attempt = multiSSH3._build_command(started[0], "p@ss word;", ...)
-	assert attempt.argv == ["/bin/sh", "-c", "sshpass -p 'p@ss word;' ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null bob@mock-a"]
+	assert attempt.argv == ["/bin/sh", "-c", "sshpass -p 'p@ss word;' ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
 
 
 class _FakeProc:
@@ -359,7 +359,7 @@ def test_copy_id_never_shows_the_password(monkeypatch, tmp_path, capsys, json):
 	assert "/bin/ssh-copy-id -o StrictHostKeyChecking=no" in out.out
 	# run with the password as it is: no magic string replaced in it
 	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -p {} /bin/ssh-copy-id -o StrictHostKeyChecking=no "
-		"-o UserKnownHostsFile=/dev/null mock-a".format(shlex.quote(secret))]]
+		"-o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 mock-a".format(shlex.quote(secret))]]
 
 
 def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
