@@ -136,6 +136,16 @@ def test_ssh_config_lines_in_the_index_are_split_as_ssh_splits_them(home):
 	assert index.row('config', 0) == ['users', 'ops']
 
 
+def test_aliases_with_loops_open_ranges_or_no_hosts_are_indexed_as_mssh_expands_them(home):
+	(home / 'hosts.env').write_text("racks='rack[1-3]'\nweb=\"web1,app\"\napp=\"app1,web\"\nbroken='node[1-],rack1'\nempty=''\n")
+	index, _ = build()
+	hosts = mc.HostTable(index)
+	members = {name: hosts.alias_members(number) for number, name in enumerate(hosts.alias_names)}
+	# web inside its own expansion is the host web; an open range is one (invalid) host name; empty has no hosts
+	assert members == {'app': ['app', 'app1', 'web1'], 'broken': ['node[1-]', 'rack1'],
+		'racks': ['rack1', 'rack2', 'rack3'], 'web': ['app1', 'web', 'web1']}
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:

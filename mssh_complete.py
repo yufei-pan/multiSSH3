@@ -2476,6 +2476,20 @@ def _range_size(text):
 		runs_on = len(widths) > 1 and (following == '[' or _is_digits(following))
 		position = end + 1
 
+def _has_open_range(text):
+	'''Whether a [] group of text holds a range with an end missing (node[1-], rack[-x]), as multiSSH3._has_open_range.'''
+	start = text.find('[')
+	while start >= 0:
+		end = text.find(']', start + 1)
+		if end < 0:
+			return False
+		for part in text[start + 1:end].split(','):
+			low, sep, high = part.partition('-')
+			if sep and not (low.strip() and high.strip()):
+				return True
+		start = text.find('[', end + 1)
+	return False
+
 def _range_count(text):
 	'''
 	How many hosts expand_ranges makes of text: each name once, as mssh keeps it. None when it
@@ -2952,7 +2966,8 @@ class Engine(object):
 		are addresses: they are only pinged, never unknown. Only alias members have users (an env file's
 		dbs=postgres@db1). A range makes each name once, as mssh checks it once (n[1-11][1-11] makes n111
 		twice); an alias lists a host once per user it is written with (a@node1,b@node1 are two runs of
-		node1), and how many counts each host once.
+		node1), and how many counts each host once. A range with an end missing (node[1-]) is one host
+		name, as mssh takes it (an invalid one).
 		'''
 		if _ipv4_range(name):
 			members, total = _ipv4_members(name)
@@ -2964,7 +2979,7 @@ class Engine(object):
 			# the member limit, as a range is
 			pairs = _unique(list(zip(members, self.hosts.alias_member_users(number))))[:RANGE_MEMBERS_LIMIT]
 			return [member for member, _ in pairs], len(set(members)), [user for _, user in pairs]
-		if '[' not in name:
+		if '[' not in name or _has_open_range(name):
 			return None
 		total = _range_count(name)
 		if total is None:

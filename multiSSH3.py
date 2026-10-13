@@ -1288,7 +1288,8 @@ def readEnvFromFile():
 							values = values.strip().strip("'")
 							if '$' in values:
 								scrubCounter += 16
-							if key and values and key != values:
+							# an empty value is kept: an empty host group (eu='') stands for no hosts
+							if key and key != values:
 								environemnt[key] = values
 						except Exception:
 							continue
@@ -1300,9 +1301,10 @@ def readEnvFromFile():
 				for match in replacement_re.findall(value):
 					ref_key = match.strip('${}')
 					ref_value = environemnt.get(ref_key) if ref_key != key else None
-					if not ref_value and not _no_env:
+					if ref_value is None and not _no_env:
 						ref_value = _consult_env(ref_key)
-					if ref_value:
+					# a variable set to nothing is replaced by nothing, as the shell does
+					if ref_value is not None:
 						environemnt[key] = value.replace(match, ref_value)
 						found = True
 		if not found:
@@ -1951,13 +1953,15 @@ def __compact_hostnames(Hostnames):
 			rtnSet.add(''.join(hostnameList))
 	return frozenset(rtnSet)
 
-def compact_hostnames(Hostnames,verify = True):
+def compact_hostnames(Hostnames,verify = True, hosts_only = False):
 	"""
 	Compact a list of hostnames.
 	Compact numeric numbers into ranges.
 
 	Args:
 		Hostnames (list): A list of hostnames.
+		hosts_only (bool): The names are hosts mssh expanded already, to be shown: one that is
+			also an alias's name (web="web,web-b") is that host, not the alias.
 
 	Returns:
 		list: A list of comapcted hostname list.
@@ -1981,14 +1985,14 @@ def compact_hostnames(Hostnames,verify = True):
 	# 	hostSet = frozenset(Hostnames)
 	# else:
 	# 	hostSet = Hostnames
-	hostSet = frozenset(expand_hostnames(
+	hostSet = frozenset(expand_hostnames((
 		hostname.strip()
 		for hostnames_str in Hostnames
 		for hostname in hostnames_str.split(',')
-	))
+	), hosts_only=hosts_only))
 	compact_hosts = __compact_hostnames(hostSet)
 	if verify:
-		if frozenset(expand_hostnames(compact_hosts)) != hostSet:
+		if frozenset(expand_hostnames(compact_hosts, hosts_only=hosts_only)) != hostSet:
 			if not __global_suppress_printout:
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 			compact_hosts = hostSet
@@ -1997,6 +2001,8 @@ def compact_hostnames(Hostnames,verify = True):
 #%% ------------ Expanding Hostnames ----------------
 # invalid host names reported during the current run_command_on_hosts call
 _reported_invalid_hosts = set()
+# aliases met inside themselves that are no host either, each counted once towards the exit code
+_counted_alias_loops = set()
 
 # env files mssh read from the current directory before 6.27, for a hint when a name is missing
 _FORMER_CURRENT_DIR_ENV_FILES = ('.env', 'host.env', 'hosts.env')
@@ -2096,7 +2102,7 @@ def host_validity(hostname, timeout=2.0):
 @cache_decorator
 def __validate_expand_hostname(hostname):
 	'''
-	Validate the hostname and expand it if it is a range of IP addresses
+	Validate the hostname and expand it if it is an env / env file alias
 
 	Args:
 		hostname (str): The hostname to be validated and expanded
@@ -2109,32 +2115,141 @@ def __validate_expand_hostname(hostname):
 	source = _local_hostname_source(hostname)
 	if source == 'ip':
 		return [hostname]
-	elif source == 'env':
-		# we will expand these hostnames again
-		return expand_hostnames(os.environ[hostname].split(','))
-	elif source == 'env_file':
-		# we will expand these hostnames again
-		return expand_hostnames(readEnvFromFile()[hostname].split(','))
-	elif getIP(hostname,local=False):
+	if source in ('env', 'env_file'):
+		return _expand_alias(hostname, source)
+	return _validate_host(hostname)
+
+def _validate_host(hostname, loop=None):
+	'''
+	[hostname] when DNS or the ssh config knows it, else [] after reporting it (once per run).
+
+	Args:
+		hostname (str): A host name that is not an IP address, hosts file name or alias
+		loop (tuple, optional): The aliases walked to reach hostname, when it is an alias met
+			inside its own expansion (see _alias_members)
+	'''
+	if getIP(hostname,local=False):
 		return [hostname]
-	elif _ssh_config_target(hostname):
+	if _ssh_config_target(hostname):
 		# ssh reaches it through the ssh config, e.g. a host behind a ProxyJump
 		return [hostname]
-	else:
-		global __mainReturnCode
-		global __failedHosts
-		# validated again after the caches refresh: report once per run_command_on_hosts call
-		if hostname not in _reported_invalid_hosts:
+	global __mainReturnCode
+	global __failedHosts
+	# validated again after the caches refresh: report once per run_command_on_hosts call
+	if hostname not in _reported_invalid_hosts:
+		if loop:
+			eprint(f"Error: alias loop through {hostname!r} ({' -> '.join(loop)}): {hostname!r} is not a valid hostname or IP address!")
+		else:
 			eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
 			defined_in = _current_dir_env_file_defining(hostname)
 			if defined_in:
 				eprint(f"Note: {hostname!r} is defined in ./{defined_in}, which is no longer read automatically; use --env_files {defined_in}")
-			_reported_invalid_hosts.add(hostname)
-		# and count once towards the exit code
-		if hostname not in __failedHosts:
-			__mainReturnCode += 1
-			__failedHosts.add(hostname)
-		return []
+		_reported_invalid_hosts.add(hostname)
+	# and count once towards the exit code. The failed hosts are expanded again to be listed:
+	# an alias name there would list the alias's members, so a loop is counted on its own
+	counted = _counted_alias_loops if loop else __failedHosts
+	if hostname not in counted:
+		__mainReturnCode += 1
+		counted.add(hostname)
+	return []
+
+def _validate_shown_hostname(hostname):
+	'''
+	__validate_expand_hostname for a host name mssh expanded already: an alias's name there is
+	the host of that name, which an alias inside its own expansion stands for (_alias_members).
+	'''
+	hostname = hostname.strip().strip('$')
+	if _local_hostname_source(hostname) in ('env', 'env_file'):
+		return [hostname]
+	return __validate_expand_hostname(hostname)
+
+def _alias_value(name, source):
+	'''The hosts string an alias holds: source 'env' (an environment variable) or 'env_file'.'''
+	value = _consult_env(name) if source == 'env' else readEnvFromFile().get(name)
+	return value or ''
+
+def _host_names_in(text, user=None):
+	'''
+	(user, name, source) for each host name in a hosts string, ranges expanded, aliases not.
+
+	The string is split as the hosts argument is (, space ; | / &). user is the name's user@
+	prefix, else the user given; source is _local_hostname_source(name): 'ip', 'env',
+	'env_file', or None when only DNS or the ssh config could confirm the name.
+	'''
+	for token in _split_host_str(text):
+		token_user = user
+		if '@' in token:
+			token_user, token = token.split('@', 1)
+			token_user = token_user.strip() or user
+		token = token.strip()
+		if not token:
+			continue
+		if _IPV4_RANGE_RE.match(token):
+			for address in __expandIPv4Address(frozenset([token])):
+				yield token_user, address, 'ip'
+			continue
+		# sorted: which name closes an alias loop must not depend on the order of a set
+		for name in sorted(__expand_hostname(token, validate=False)):
+			name = name.strip().strip('$')
+			if name:
+				yield token_user, name, _local_hostname_source(name)
+
+def _alias_members(alias, source, user=None):
+	'''
+	The host names an alias stands for, with the aliases inside it expanded, without DNS.
+
+	An alias met again inside its own expansion (directly or through other aliases) is not
+	expanded again: there it names the host of that name, as bash does with an alias inside its
+	own definition, so web="web,web-b" stands for the host web and web-b. When no such host
+	exists, mssh reports an alias loop. Each alias is walked once per user, so aliases that are
+	shared or fan out (AA='BB,BB', BB='AA,AA') cost no more than one walk each.
+
+	Args:
+		alias (str): The alias name
+		source (str): 'env' or 'env_file', as _local_hostname_source gives it
+		user (str, optional): The user@ the alias was given with
+
+	Returns:
+		list: (user, name, source, loop) per member. source is 'ip' (an IP address or hosts file
+			name) or None (only DNS or the ssh config could confirm it); loop is the aliases walked
+			to reach a member that is an alias met inside itself (web -> app -> web), else None.
+	'''
+	members = []
+	walked = {(alias, user)}
+	path = [alias]
+	# a stack instead of recursion: a long chain of aliases cannot reach the recursion limit
+	walks = [_host_names_in(_alias_value(alias, source), user)]
+	while walks:
+		item = next(walks[-1], None)
+		if item is None:
+			walks.pop()
+			path.pop()
+			continue
+		name_user, name, name_source = item
+		if name_source not in ('env', 'env_file'):
+			members.append((name_user, name, name_source, None))
+		elif name in path:
+			members.append((name_user, name, None, tuple(path) + (name,)))
+		elif (name, name_user) not in walked:
+			walked.add((name, name_user))
+			path.append(name)
+			walks.append(_host_names_in(_alias_value(name, name_source), name_user))
+	return members
+
+def _expand_alias(alias, source):
+	'''The valid host names (user@ kept) an alias stands for; the members mssh rejects are reported.'''
+	members = _alias_members(alias, source)
+	_prefetch_ips([name for _, name, _, loop in members if not loop])
+	hosts = []
+	for user, name, _, loop in members:
+		# other members through the cache, as if typed: each is looked up and reported once
+		if not (_validate_host(name, loop) if loop else __validate_expand_hostname(name)):
+			continue
+		if user:
+			hosts.extend(f'{each}@{name}' for each in sorted(__expand_hostname(user, validate=False)))
+		else:
+			hosts.append(name)
+	return hosts
 
 @cache_decorator
 def __expandIPv4Address(hosts):
@@ -2181,6 +2296,15 @@ def __expandIPv4Address(hosts):
 	expandedHosts.extend(expandedHost)
 	return expandedHosts
 
+def _has_open_range(text):
+	'''Whether a [] group of text holds a range with an end missing: node[1-], node[-3], rack[a-].'''
+	for group in re.findall(r'\[(.*?)]', text):
+		for part in group.split(','):
+			range_start, dash, range_end = part.partition('-')
+			if dash and not (range_start.strip() and range_end.strip()):
+				return True
+	return False
+
 @cache_decorator 
 def __expand_hostname(text, validate=True):# -> set:
 	'''
@@ -2202,7 +2326,11 @@ def __expand_hostname(text, validate=True):# -> set:
 		- Mixed alphanumeric ranges walk string.digits + string.ascii_letters in that order
 		  (0-9 then A-Z then a-z), so [9-A] yields 9,A and [Z-a] yields Z then a — not a
 		  contiguous Unicode range.
+		- A range with an end missing (node[1-], node[-3], rack[a-]) makes the name invalid: it
+		  is kept whole and unexpanded, so mssh reports it instead of guessing the other end.
 	'''
+	if _has_open_range(text):
+		return set(__validate_expand_hostname(text)) if validate else {text}
 	expandinghosts = [text]
 	expandedhosts = set()
 	# all valid alphanumeric characters
@@ -2225,6 +2353,10 @@ def __expand_hostname(text, validate=True):# -> set:
 					continue
 				range_start = range_start.strip()
 				range_end = range_end.strip()
+				if not range_start or not range_end:
+					# an open range only an earlier expansion made (a[x,[]1-]): _has_open_range saw none
+					expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
+					continue
 				if range_start.isdigit() and range_end.isdigit():
 					padding_length = min(len(range_start), len(range_end))
 					format_str = "{:0" + str(padding_length) + "d}"
@@ -2308,12 +2440,13 @@ def _run_in_threads(function, items, max_workers=32):
 			thread.join(0.1)
 
 @cache_decorator
-def __expand_hostnames(hosts) -> dict:
+def __expand_hostnames(hosts, hosts_only=False) -> dict:
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
+		hosts_only (bool): Names that are also an alias's name are hosts (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -2350,8 +2483,9 @@ def __expand_hostnames(hosts) -> dict:
 			iplist = hostSetToAdd
 		else:
 			# validate the names expanded (and cached) for the prefetch instead of expanding again
+			validate = _validate_shown_hostname if hosts_only else __validate_expand_hostname
 			hostSetToAdd = sorted(set(itertools.chain.from_iterable(
-				__validate_expand_hostname(name) for name in __expand_hostname(host, validate=False))))
+				validate(name) for name in __expand_hostname(host, validate=False))))
 			for host in hostSetToAdd:
 				iplist.append(getIP(host,local=False))
 		if username:
@@ -2364,12 +2498,14 @@ def __expand_hostnames(hosts) -> dict:
 			[expandedhosts.update({host:ip}) for host,ip in zip(hostSetToAdd,iplist)]
 	return expandedhosts
 
-def expand_hostnames(hosts):
+def expand_hostnames(hosts, hosts_only=False):
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
+		hosts_only (bool): The names are hosts mssh expanded already: one that is also an
+			alias's name is that host (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -2379,15 +2515,18 @@ def expand_hostnames(hosts):
 	# change data type to frozenset if it is not hashable
 	if not isinstance(hosts, frozenset):
 		hosts = frozenset(hosts)
+	if hosts_only:
+		return __expand_hostnames(hosts, hosts_only=True)
 	return __expand_hostnames(hosts)
 
 def expand_hostnames_local(hosts):
 	'''
 	Expand host strings without DNS or ssh config lookups.
 
-	Ranges, IPv4 ranges and env / env file aliases (recursively) are expanded like
-	expand_hostnames does. A name that is not an IP address, in the hosts file or an alias
-	is kept as it is and also listed as unresolved: only DNS or the ssh config could confirm it.
+	Ranges, IPv4 ranges and env / env file aliases (recursively, with _alias_members, as
+	expand_hostnames does) are expanded. A name that is not an IP address, in the hosts file or
+	an alias is kept as it is and also listed as unresolved: only DNS or the ssh config could
+	confirm it. So is an alias met inside its own expansion, which there names a host.
 	Nothing is printed and no failure is counted.
 
 	Args:
@@ -2400,39 +2539,17 @@ def expand_hostnames_local(hosts):
 		hosts = [hosts]
 	expanded = set()
 	unresolved = set()
-	# each alias is expanded once per user: shared and looping aliases cannot multiply the work
-	walked = set()
-	def walk(text, user, depth):
-		for token in _split_host_str(text):
-			token_user = user
-			if '@' in token:
-				token_user, token = token.split('@', 1)
-				token_user = token_user.strip() or user
-			token = token.strip()
-			if not token:
-				continue
-			if _IPV4_RANGE_RE.match(token):
-				names = __expandIPv4Address(frozenset([token]))
-			else:
-				names = __expand_hostname(token, validate=False)
-			for name in names:
-				name = name.strip().strip('$')
-				if not name:
-					continue
-				source = _local_hostname_source(name)
-				if source in ('env', 'env_file'):
-					# an alias loop expands to nothing
-					if depth < 32 and (name, token_user) not in walked:
-						walked.add((name, token_user))
-						value = os.environ.get(name) if source == 'env' else readEnvFromFile().get(name)
-						walk(value or '', token_user, depth + 1)
-					continue
-				full = '{}@{}'.format(token_user, name) if token_user else name
-				expanded.add(full)
-				if source is None:
-					unresolved.add(full)
 	for host in hosts:
-		walk(str(host), None, 0)
+		for user, name, source in _host_names_in(str(host)):
+			if source in ('env', 'env_file'):
+				members = _alias_members(name, source, user)
+			else:
+				members = [(user, name, source, None)]
+			for member_user, member, member_source, _ in members:
+				full = '{}@{}'.format(member_user, member) if member_user else member
+				expanded.add(full)
+				if member_source is None:
+					unresolved.add(full)
 	return sorted(expanded, key=_natural_sort_key), sorted(unresolved, key=_natural_sort_key)
 
 def compact_hostnames_local(names):
@@ -4756,7 +4873,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				working_index_keys -= buddy
 		if not defer:
 			if buddy != previousBuddies:
-				hostnameStr = ','.join(compact_hostnames(buddy))
+				hostnameStr = ','.join(compact_hostnames(buddy, hosts_only=True))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
@@ -4803,7 +4920,7 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append(color_line+'─'*(line_length)+color_reset)
 	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
-		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
+		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname], hosts_only=True)))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
 		output.extend(hostnameLines)
@@ -4830,7 +4947,7 @@ def pre_merge_hosts(hosts):
 		identity = host.get_output_hash()
 		output_groups[identity].append(host)
 	for group in output_groups.values():
-		group[0].name = ','.join(compact_hostnames(host.name for host in group))
+		group[0].name = ','.join(compact_hostnames((host.name for host in group), hosts_only=True))
 		for i in range(1,len(group)):
 			hosts.remove(group[i])
 	return hosts
@@ -6059,7 +6176,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
-		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
+		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet, hosts_only=True))}\"")
 	if not called:
 		_report_tokens_naming_no_hosts(hostTokens)
 		if not targetHostDic:

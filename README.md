@@ -296,6 +296,10 @@ When hostname need to be resolved, mssh will check in the following order:
 >
 > ipv4 address expansion -> range expansion -> identify ipv4 -> resolve using environment variables ( if not no_env ) -> env map from env_files -> remote hostname resolution
 
+An alias's value is split into hosts as the hosts argument is (`,`, spaces, `;`, ...). An alias with an empty value (`eu=''`) stands for no hosts.
+
+Inside its own expansion, directly or through other aliases, an alias's name is not expanded again but taken as a host name, as bash does with aliases: `web="web,web-b"` runs on the host `web` and on `web-b`. When no host has that name, mssh reports the loop and runs on the rest: `Error: alias loop through 'web' (web -> app -> web): 'web' is not a valid hostname or IP address!`
+
 
 ### Default Env Files
 
@@ -342,6 +346,8 @@ For example:
 mssh testrig[1-10] lsblk
 mssh ww[a-c],10.100.0.* 'cat /etc/fstab' 'sed -i "/lustre/d' /etc/fstab' 'cat /etc/fstab'
 ```
+
+A range needs both ends: `node[1-]` or `node[-3]` is not expanded, and mssh rejects it as an invalid host name.
 
 A host you give that names no host at all, such as a range counting down ( `node[10-1]`, `10.0.0.20-10` ) or an empty alias, is an error like a name that does not resolve: mssh says why, counts it as a failed host and lists it in `failed_hosts`. When none of the hosts you gave names a host, mssh stops with `Exiting: no hosts to run on` without running anything. Empty groups inside an alias ( like `eu=''` in the example above ) are fine. If `-X, --skip_hosts` excludes every host, mssh warns.
 
