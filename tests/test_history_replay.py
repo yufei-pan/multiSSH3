@@ -259,6 +259,25 @@ def test_replay_without_the_ipmi_password_tries_only_the_configured_logins(confi
 	assert ('a', multiSSH3.DEFAULT_IPMI_PASSWORD) not in replayed['ipmi_logins']
 
 
+def _ipmi_words(words):
+	return [word for word in words if word.partition('=')[0] in ('-iu', '-ia', '-im', '-mpre', '-irlt', '-ip') or word.startswith('--ipmi_')]
+
+
+@pytest.mark.parametrize('options, recorded, echoed', [
+	([], [], []),
+	(['-M'], [], []),
+	(['-M', '-iu', 'a'], ['-iu=a'], ['--ipmi_username=a']),
+])
+def test_runs_record_only_the_ipmi_options_given(options, recorded, echoed, replay_env, capsys):
+	# options are compared with the parser's defaults as config files set them, taken before
+	# process_args changes any (a "not given" marker for the IPMI options, say): taken after, every
+	# line would list IPMI options nobody gave, or (the password unlike its marker) none
+	_, echo = _run_main(_case_argv(options, '127.0.0.1', ['true'], replay_env), capsys)
+	line = (replay_env / 'history').read_text().splitlines()[-1]
+	assert _ipmi_words(shlex.split(line.split('\t')[2])) == recorded
+	assert _ipmi_words(shlex.split(echo)) == echoed
+
+
 def test_ipmi_password_is_neither_recorded_nor_echoed(replay_env, capsys):
 	ran, echo = _run_main(_case_argv(['-M', '-iu', 'bmcadmin', '-ip', 'bmcpw', '--ipmi_password=bmcpw2'], '127.0.0.1', ['power status'], replay_env), capsys)
 	line = (replay_env / 'history').read_text()
