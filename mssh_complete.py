@@ -1091,13 +1091,14 @@ def expand_ranges(text, limit=100000):
 			return [text]
 	return out
 
-def range_union(texts, limit, budget, deadline=None):
+def range_union(texts, limit, budget):
 	'''
 	What expand_ranges(text, limit) gives for each of texts, as one set, writing each name once:
 	the number ranges of texts with one [...] are merged first, so hundreds of overlapping wide
 	ranges cost what the hosts they cover cost, not what all their members cost. Writing stops
-	after budget names or at the deadline; texts come most important first, and the merged
-	numbers are written in the order texts first name them, then the texts with more [...].
+	after budget names (no deadline: the answer must not depend on how fast the machine is);
+	texts come most important first, and the merged numbers are written in the order texts
+	first name them, then the texts with more [...].
 	'''
 	names = set()
 	spans = {}   # (text before the [, text after the ], digits) -> [(low, high)] of the a-b parts
@@ -1153,17 +1154,19 @@ def range_union(texts, limit, budget, deadline=None):
 			else:
 				merged.append([low, high])
 		for low, high in merged:
-			if written >= budget or (deadline is not None and time.monotonic() > deadline):
+			if written >= budget:
 				return names
 			last = min(high, low + budget - written - 1)
 			names.update('{}{:0{}d}{}'.format(head, number, width, tail) for number in range(low, last + 1))
 			written += last - low + 1
 	for text in other:
-		if written >= budget or (deadline is not None and time.monotonic() > deadline):
+		if written >= budget:
 			break
 		members = expand_ranges(text, limit)
 		names.update(members)
-		written += len(members)
+		# a range past the limit comes back whole after about the limit's worth of names
+		count = _range_count(text)
+		written += max(len(members), min(count, limit) if count is not None else 0)
 	return names
 
 #%% ------------ Cache directory ----------------
@@ -3138,13 +3141,13 @@ class Engine(object):
 		# ranges typed before, e.g. node[1-3]: their members are not listed beside them, unless typed
 		# on their own before or named by the hosts argument (-X). range_union writes each member
 		# once (expanding hundreds of wide ranges one by one outlasted the shells' wait), up to
-		# HIDDEN_MEMBERS_LIMIT members and the deadline.
+		# HIDDEN_MEMBERS_LIMIT members.
 		ranges = []
 		for name, score in scores.items():
 			if '[' in name and name not in aliases:
 				out.append(Candidate(lead + name, 'used before', 'groups', score))
 				ranges.append((-score, name))
-		in_ranges = range_union([name for _, name in sorted(ranges)], RANGE_MEMBERS_LIMIT, HIDDEN_MEMBERS_LIMIT, deadline)
+		in_ranges = range_union([name for _, name in sorted(ranges)], RANGE_MEMBERS_LIMIT, HIDDEN_MEMBERS_LIMIT)
 		names -= in_ranges - set(boost) - set(scores)
 		if len(names) <= GROUP_THRESHOLD:
 			out.extend(single(name) for name in names)

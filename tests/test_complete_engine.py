@@ -198,12 +198,14 @@ def test_hiding_members_of_ranges_stops_at_its_limit(tmp_path, monkeypatch):
 	assert texts(query('mssh n', knowledges=_ranges_typed_before(), hosts=table)) == ['n[1-3]', 'n[4-6]', 'n4', 'n5', 'n6', 'n7', 'n8', 'n9']
 
 
-def test_past_the_deadline_members_of_ranges_are_listed(tmp_path):
+def test_past_the_deadline_members_of_ranges_are_still_not_listed(tmp_path):
+	# a late query listing every member made one group of all hosts top the list (a slow machine,
+	# or a short MSSH_COMPLETE_SOFT_DEADLINE): HIDDEN_MEMBERS_LIMIT bounds the work instead
 	import time
 	table = _host_table(tmp_path, ['n{}'.format(number) for number in range(1, 10)])
 	engine = mc.Engine(SPEC, _ranges_typed_before(), table)
 	response = engine.query(mc.Request('bash', 'mssh n', '', 'n'), deadline=time.monotonic() - 1)
-	assert texts(response) == ['n[1-3]', 'n[4-6]'] + ['n{}'.format(number) for number in range(1, 10)]
+	assert texts(response) == ['n[1-3]', 'n[4-6]', 'n7', 'n8', 'n9']
 
 
 def test_a_long_history_of_wide_ranges_is_not_expanded_whole(tmp_path, monkeypatch):

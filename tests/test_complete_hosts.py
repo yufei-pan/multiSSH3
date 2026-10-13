@@ -64,3 +64,7 @@ def test_range_union_writes_up_to_its_budget():
 	assert len(mc.range_union(texts, 4096, budget=10 ** 9)) == 33900
 	assert mc.range_union(texts, 4096, budget=1000) == {'node{:05d}'.format(number) for number in range(1000)}
 	assert len(mc.range_union(['a[1-5]b[1-5]', 'c[1-5]d[1-5]'], 4096, budget=20)) == 25
+	# a range past the limit comes back whole after writing out about the limit's worth of names:
+	# that counts against the budget too
+	texts = ['x{}[1-100][1-100]'.format(number) for number in range(10)]
+	assert mc.range_union(texts, 4096, budget=5000) == set(texts[:2])
