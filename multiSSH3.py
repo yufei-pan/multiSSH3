@@ -2276,13 +2276,23 @@ _RSYNC_MISSING_MARKERS = (
 	"'rsync' is not recognized",
 	'remote command not found',
 )
+# how an rsync turns down its command line before copying anything: rsync's popt (macOS's 2.6.9 has
+# neither -X nor --info), openrsync's getopt, and rsync's own words for exit code 1
+_RSYNC_OPTION_MARKERS = (
+	'unknown option',
+	'unrecognized option',
+	'illegal option',
+	'invalid option',
+	'syntax or usage error',
+)
 
 def _rsync_failure_scp_reason(host, line_starts=(0, 0, 0)):
 	'''Return why a failed rsync is worth retrying with scp, or None when rsync's result stands.
 
 	scp helps only when rsync copied nothing: the host has no rsync (127, or its shell's "not found",
-	which rsync reports as 12), ssh failed (rsync exits 255), or the host never answered rsync
-	("0 bytes received so far": rsync's own words, which are not translated, unlike the shell's).
+	which rsync reports as 12), an rsync here or there turned down mssh's options (1 or 2, e.g. an
+	rsync older than 3.1), ssh failed (rsync exits 255), or the host never answered rsync ("0 bytes
+	received so far": rsync's own words, which are not translated, unlike the shell's).
 	Any other failure is rsync's verdict on a copy it made (23 partial transfer, 24 files vanished,
 	a connection lost midway, ...), and scp would copy everything again.
 
@@ -2292,6 +2302,8 @@ def _rsync_failure_scp_reason(host, line_starts=(0, 0, 0)):
 	text = '\n'.join(str(line) for line in host.stderr[line_starts[2]:]).lower()
 	if host.returncode == 127 or any(marker in text for marker in _RSYNC_MISSING_MARKERS):
 		return 'Rsync is not available on the host!'
+	if host.returncode in (1, 2) and any(marker in text for marker in _RSYNC_OPTION_MARKERS):
+		return 'Rsync turned down its options!'
 	if host.returncode == 255:
 		return 'Rsync connection failed!'
 	if '(0 bytes received so far)' in text:

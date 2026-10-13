@@ -193,7 +193,12 @@ def test_rsync_error_stands_without_scp_retry(fake_host, monkeypatch, returncode
 	(127, b"rsync error: remote command not found (code 127) at io.c(232) [sender=3.2.7]\n"),
 	(255, b"ssh: connect to host mock-a port 22: Connection refused\n"
 		b"rsync: connection unexpectedly closed (0 bytes received so far) [sender]\n"),
-], ids=["bash", "dash", "zsh", "tcsh", "fish", "windows", "localized", "code127", "ssh_failed"])
+	# an rsync older than mssh's options (--info is 3.1, -X 3.0): macOS's stock 2.6.9, openrsync
+	(1, b"rsync: --info=name: unknown option\n"
+		b"rsync error: syntax or usage error (code 1) at /BuildRoot/Library/Caches/com.apple.xbs/Sources/rsync/rsync-55/rsync/main.c(1337) [client=2.6.9]\n"),
+	(1, b"rsync: unrecognized option `--info=name'\nusage: rsync [-0aBCcDEgHIJKkLlmnOoPpRrStuVvWx] [-e program] [--del] source ... directory\n"),
+	(2, b"rsync: -ahlX: unknown option\n"),
+], ids=["bash", "dash", "zsh", "tcsh", "fish", "windows", "localized", "code127", "ssh_failed", "rsync_2.6.9", "openrsync", "code2"])
 def test_rsync_that_never_ran_is_retried_with_scp(fake_host, monkeypatch, returncode, stderr):
 	host, calls = _copy_with_results(fake_host, monkeypatch,
 		[FakeProc(stderr=stderr, returncode=returncode), FakeProc()], ["/src/a"])
