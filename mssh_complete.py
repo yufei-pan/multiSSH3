@@ -5567,6 +5567,27 @@ def _bash_login_note(home, rc):
 	return ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile, and there is none to load {1};'
 		' for autocomplete there too, create {0}/.bash_profile holding: {2}').format(home, rc, line)
 
+def _zsh_rc(home, environ):
+	'''
+	The .zshrc zsh reads: the one in $ZDOTDIR when that is set (and not empty), else ~/.zshrc.
+
+	ZDOTDIR is often set in ~/.zshenv or /etc/zshenv, not always exported, so mssh's environment may
+	not hold it: zsh is asked, running only those zshenv files, as every zsh does. Without an answer
+	from zsh, the environment's ZDOTDIR is used.
+	'''
+	import subprocess
+	zdotdir = environ.get('ZDOTDIR')
+	try:
+		output = subprocess.run(['zsh', '-c', 'print -r -- "mssh-zdotdir:${ZDOTDIR-}"'], env=environ,
+			stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
+	except (OSError, subprocess.SubprocessError):
+		output = b''
+	# the last answer: a zshenv may print lines of its own
+	answers = [line for line in output.decode('utf-8', 'surrogateescape').splitlines() if line.startswith('mssh-zdotdir:')]
+	if answers:
+		zdotdir = answers[-1][len('mssh-zdotdir:'):]
+	return os.path.join(zdotdir or home, '.zshrc')
+
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
 	# fish's own configuration directory: $XDG_CONFIG_HOME/fish, else ~/.config/fish
@@ -5577,7 +5598,7 @@ def _paths(shell, home, environ):
 			'keys': os.path.join(config, 'fish', 'conf.d', 'mssh-complete.fish')}
 	if shell == 'zsh':
 		# zsh reads .zshrc from $ZDOTDIR when that is set (often in ~/.zshenv), and never reads ~/.zshrc then
-		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': os.path.join(environ.get('ZDOTDIR') or home, '.zshrc')}
+		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': _zsh_rc(home, environ)}
 	# always from ~/.bashrc: bash-completion's per-user directory only loads where bash-completion
 	# runs, which an installed package does not guarantee (stock Debian root shells do not load it)
 	return {'files': [os.path.join(data, 'multiSSH3', 'completion.bash')], 'rc': os.path.join(home, '.bashrc')}

@@ -392,6 +392,43 @@ def test_zsh_installs_where_zsh_reads_its_rc_file(tmp_path, zdotdir):
 	assert rc.read_text() == 'setopt nobeep\n'
 
 
+@pytest.mark.parametrize('answer', ['zdotdir', 'chatty zshenv', 'none', 'fails'])
+def test_zsh_install_asks_zsh_for_zdotdir(tmp_path, answer):
+	# ZDOTDIR set in ~/.zshenv without export is not in mssh's environment: zsh itself knows it
+	env, home = make_home(tmp_path)
+	zdotdir = home / '.config' / 'zsh'
+	zdotdir.mkdir(parents=True)
+	(home / 'bin').mkdir()
+	fake = home / 'bin' / 'zsh'
+	fake.write_text('#!/bin/sh\n' + {
+		'zdotdir': 'echo "mssh-zdotdir:{}"\n'.format(zdotdir),
+		'chatty zshenv': 'echo "mssh-zdotdir:/wrong"; echo hello from zshenv; echo "mssh-zdotdir:{}"\n'.format(zdotdir),
+		'none': 'echo "mssh-zdotdir:"\n',
+		'fails': 'exit 1\n'}[answer])
+	fake.chmod(0o755)
+	env = dict(env, PATH=str(home / 'bin') + os.pathsep + env['PATH'])
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	rc = home / '.zshrc' if answer in ('none', 'fails') else zdotdir / '.zshrc'
+	assert mc.RC_BEGIN_CREATED in rc.read_text()
+	assert mc.uninstall('zsh', home=str(home), environ=env)[0] == 0
+	assert not rc.exists()
+
+
+def test_a_new_zsh_loads_the_glue_from_an_unexported_zdotdir(tmp_path):
+	path = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	zdotdir = home / '.config' / 'zsh'
+	zdotdir.mkdir(parents=True)
+	(home / '.zshenv').write_text('ZDOTDIR=$HOME/.config/zsh\n')
+	(zdotdir / '.zshrc').write_text('autoload -Uz compinit && compinit -u -D\n')
+	assert 'ZDOTDIR' not in env
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	assert not (home / '.zshrc').exists()
+	result = subprocess.run([path, '-i', '-c', 'print -r -- "loaded=${+functions[_mssh]}"'], env=env, cwd=str(home),
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	assert 'loaded=1' in result.stdout.decode('utf-8', 'replace')
+
+
 def test_a_new_zsh_loads_the_glue_from_zdotdir(tmp_path):
 	path = require_shell('zsh')
 	env, home = make_home(tmp_path)
