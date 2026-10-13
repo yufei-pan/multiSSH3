@@ -132,8 +132,9 @@ def test_signal_handlers_leave_an_ignored_sigterm_alone(monkeypatch):
 
 	installed = {}
 	current = {signal.SIGINT: signal.default_int_handler, signal.SIGTERM: signal.SIG_IGN}
-	if hasattr(signal, "SIGHUP"):
-		current[signal.SIGHUP] = signal.SIG_DFL
+	for name in ("SIGHUP", "SIGQUIT"):
+		if hasattr(signal, name):
+			current[getattr(signal, name)] = signal.SIG_DFL
 	monkeypatch.setattr(multiSSH3.signal, "getsignal", lambda number: current[number])
 	monkeypatch.setattr(multiSSH3.signal, "signal", lambda number, handler: installed.update({number: handler}))
 
@@ -143,6 +144,27 @@ def test_signal_handlers_leave_an_ignored_sigterm_alone(monkeypatch):
 	assert signal.SIGTERM not in installed  # e.g. started by something that wants mssh to outlive it
 	if hasattr(signal, "SIGHUP"):
 		assert installed[signal.SIGHUP] is multiSSH3._stop_signal_handler
+
+
+@pytest.mark.parametrize("quit_handler, taken", [("default", True), ("ignored", False)])
+def test_signal_handlers_take_ctrl_backslash_unless_it_is_ignored(monkeypatch, quit_handler, taken):
+	# commands in sessions of their own (no-tty-prompts) do not get the terminal's SIGQUIT: mssh stops them
+	import signal
+
+	if not hasattr(signal, "SIGQUIT"):
+		pytest.skip("no SIGQUIT here")
+	installed = {}
+	current = {signal.SIGINT: signal.default_int_handler, signal.SIGTERM: signal.SIG_DFL,
+		signal.SIGQUIT: signal.SIG_DFL if quit_handler == "default" else signal.SIG_IGN}
+	if hasattr(signal, "SIGHUP"):
+		current[signal.SIGHUP] = signal.SIG_DFL
+	monkeypatch.setattr(multiSSH3.signal, "getsignal", lambda number: current[number])
+	monkeypatch.setattr(multiSSH3.signal, "signal", lambda number, handler: installed.update({number: handler}))
+
+	multiSSH3._install_signal_handlers()
+
+	assert (installed.get(signal.SIGQUIT) is multiSSH3._stop_signal_handler) == taken
+	assert taken or signal.SIGQUIT not in installed
 
 
 class _TerminalWithoutFileno:
@@ -897,9 +919,10 @@ _needs_proc = pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="reads 
 
 
 @_needs_proc
-@pytest.mark.parametrize("signal_name, exit_code", [("SIGTERM", 143), ("SIGHUP", 129)])
+@pytest.mark.parametrize("signal_name, exit_code", [("SIGTERM", 143), ("SIGHUP", 129), ("SIGQUIT", 131)])
 def test_sigterm_and_sighup_kill_the_running_commands(tmp_path, signal_name, exit_code):
-	# kill, batch schedulers and service managers stop mssh with SIGTERM: the ssh children must not outlive it
+	# kill, batch schedulers and service managers stop mssh with SIGTERM: the ssh children must not outlive it.
+	# Ctrl-\\ (SIGQUIT) too: commands in sessions of their own (no-tty-prompts) no longer get the terminal's
 	import signal
 	import subprocess
 	import sys

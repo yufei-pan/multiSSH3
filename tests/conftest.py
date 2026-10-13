@@ -211,9 +211,9 @@ def restore_module_globals():
 
 @pytest.fixture(autouse=True)
 def restore_signal_handlers():
-	"""main() and process_args install mssh's handlers for Ctrl C, SIGTERM and SIGHUP: keep them out of pytest."""
+	"""main() and process_args install mssh's handlers for Ctrl C, SIGTERM, SIGHUP and SIGQUIT: keep them out of pytest."""
 	import signal
-	numbers = [getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)]
+	numbers = [getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT") if hasattr(signal, name)]
 	saved = {number: signal.getsignal(number) for number in numbers}
 	yield
 	for number, handler in saved.items():

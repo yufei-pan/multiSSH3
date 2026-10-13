@@ -317,8 +317,9 @@ def _kill_commands_for_exit():
 
 def _stop_signal_handler(sig, frame):
 	'''
-	Handle SIGTERM and SIGHUP (kill, a batch scheduler or service manager stopping mssh, the terminal
-	closing) like a second Ctrl C: kill the running commands and exit with 128 + the signal number.
+	Handle SIGTERM, SIGHUP and SIGQUIT (kill, a batch scheduler or service manager stopping mssh, the
+	terminal closing, Ctrl-\\) like a second Ctrl C: kill the running commands and exit with 128 + the
+	signal number.
 
 	The exit unwinds curses.wrapper on the main thread, which restores the terminal.
 	'''
@@ -342,15 +343,16 @@ def _exit_replaced_by(error):
 def _install_signal_handlers():
 	'''
 	Install the command line's signal handlers: Ctrl C stops the commands (pressed again: kills them),
-	SIGTERM and SIGHUP kill them and exit.
+	SIGTERM, SIGHUP and SIGQUIT (Ctrl-\\) kill them and exit. Commands running in sessions of their own
+	do not get the terminal's Ctrl-\\, so mssh passes it on as it does a closing terminal.
 
-	Only on the main thread, the only one Python lets set them. SIGTERM and SIGHUP only when not
-	ignored: `nohup mssh ...` must keep running when its terminal closes.
+	Only on the main thread, the only one Python lets set them. SIGTERM, SIGHUP and SIGQUIT only when
+	not ignored: `nohup mssh ...` must keep running when its terminal closes.
 	'''
 	if threading.current_thread() is not threading.main_thread():
 		return
 	signal.signal(signal.SIGINT, signal_handler)
-	for name in ('SIGTERM', 'SIGHUP'):
+	for name in ('SIGTERM', 'SIGHUP', 'SIGQUIT'):
 		number = getattr(signal, name, None)
 		if number is not None and signal.getsignal(number) == signal.SIG_DFL:
 			signal.signal(number, _stop_signal_handler)
