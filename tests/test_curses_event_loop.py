@@ -618,3 +618,31 @@ def test_sent_line_echo_shows_what_was_sent(fake_host, monkeypatch):
 	writer.join(timeout=5)
 
 	assert host.output == ["> hé caf\\xe9↵"]
+
+
+@pytest.mark.parametrize("key", [266, 276, 331, 409], ids=["F2", "F12", "Insert", "mouse"])
+def test_function_keys_without_a_binding_type_nothing(stub_curses_harness, fake_host, monkeypatch, key):
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("a"), key, ord("b")])
+
+	assert multiSSH3.__keyPressesIn == [list("ab")]  # F2 used to type chr(266), "Ċ"
+
+
+def test_function_key_without_a_binding_leaves_a_history_line_alone(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [list("old\n"), []])
+	stub_curses_harness.inject_keys([266, 12])
+
+	result = multiSSH3.__generate_display(
+		stub_curses_harness.window, [host], lineToDisplay=-2, min_char_len=10, min_line_len=2
+	)
+
+	assert multiSSH3.__keyPressesIn == [list("old\n"), []]
+	assert result[0] == -2
+
+
+def test_keypad_enter_sends_the_line(stub_curses_harness, fake_host, monkeypatch):
+	import curses
+
+	_type_keys(stub_curses_harness, fake_host, monkeypatch, [ord("y"), curses.KEY_ENTER])
+
+	assert multiSSH3.__keyPressesIn == [list("y\n"), []]  # it used to type chr(343), "ŗ"

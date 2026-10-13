@@ -3334,6 +3334,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						refresh_all = True
 						#return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Help closed')
 					curses.panel.update_panels()
+				elif not isinstance(key, str) and key > 255 and key not in (263, 330, curses.KEY_ENTER):
+					# a function key without a binding (F2, Insert, ...; 263 Backspace, 330 Delete and KEY_ENTER are handled below):
+					# chr() of its code would type an unrelated letter
+					pass
 			# We are left with these are keys that mofidy the current line.
 				else:
 					# This means the user have done scrolling and is committing to modify the current line.
@@ -3342,8 +3346,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						__keyPressesIn[-1] = __keyPressesIn[lineToDisplay][:-1]
 						lineToDisplay = -1
 					curserPosition = max(0, min(curserPosition, len(__keyPressesIn[lineToDisplay])))
-					if key == 10: # 10 is the key code for newline
-						__keyPressesIn[-1].append(chr(key))
+					if key == 10 or key == curses.KEY_ENTER: # 10 is the key code for newline, KEY_ENTER the keypad's Enter
+						__keyPressesIn[-1].append('\n')
 						__keyPressesIn.append([])
 						lineToDisplay = -1
 						curserPosition = 0
