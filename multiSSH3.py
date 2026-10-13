@@ -4934,15 +4934,41 @@ OPTION_NO_EFFECT = (
 	('--ipmi_retry_lockout_time', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
 )
 
+REMOTE_OPTIONS_HINT = ("mssh reads words starting with '-' as its own options, also after the hosts. "
+	"To pass options to the remote command, quote the whole command: mssh web1 'ls -la'")
+
+class _MsshArgumentParser(argparse.ArgumentParser):
+	'''
+	argparse, taking option names in full only: a word is an mssh option by its name ('-u',
+	'--username', '-u=root'), or as a short option with its value or more short flags in the same
+	word ('-uroot', '-qj'), never as an abbreviation. mssh reads options among the remote command's
+	words too, where an abbreviation turned "bash -c" into -ci (ssh-copy-id) and "--user x" into
+	--username. allow_abbrev=False is no fix: before Python 3.12 it keeps single-dash abbreviations
+	("-c" still means -ci), and on 3.6 and 3.7 it also stops "-qj" from meaning "-q -j" (bpo-26967).
+	'''
+	def _get_option_tuples(self, option_string):
+		# argparse's readings of a word that is no option name, as (action, option string, ...):
+		# abbreviations alone do not count, and with a full-name reading argparse's answer stands
+		# ("-pr" is "-p r" or "-pre": ambiguous, an error as it always was)
+		readings = super(_MsshArgumentParser, self)._get_option_tuples(option_string)
+		name = option_string.partition('=')[0]
+		if any(reading[1] in (name, option_string[:2]) for reading in readings):
+			return readings
+		return []
+
+	def error(self, message):
+		super(_MsshArgumentParser, self).error('{}\n{}'.format(message, REMOTE_OPTIONS_HINT))
+
 def get_parser():
-	parser = argparse.ArgumentParser(
+	parser = _MsshArgumentParser(
 		description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
 		epilog=(
 			f"Terminal color capability: {get_terminal_color_capability()}\n"
 			f"Found bins: \n{pformat(set(_binPaths.values()))}\n"
 			f"Missing bins: \n{pformat(_binCalled - set(_binPaths.keys()))}\n"
 			f"Config file chain: \n{pformat(CONFIG_FILE_CHAIN)}\n"
-			f"Hosts Env files searched:\n{pformat(DEFAULT_ENV_FILES)}"
+			f"Hosts Env files searched:\n{pformat(DEFAULT_ENV_FILES)}\n\n"
+			f"{REMOTE_OPTIONS_HINT}"
 		),
 		formatter_class=argparse.RawTextHelpFormatter,
 	)
@@ -5009,7 +5035,7 @@ def get_parser():
 
 def process_args(args = None):
 	global __configs_from_file
-	cfp = 	parser = argparse.ArgumentParser(add_help=False)
+	cfp = 	parser = _MsshArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
 	try:
 		cfpa, args = cfp.parse_known_args(args)
@@ -5036,7 +5062,7 @@ def process_args(args = None):
 		args, unknown = parser.parse_known_args(args)
 		# if there are unknown arguments, we will try to parse them again using parse_args
 		if unknown:
-			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
+			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}\n{REMOTE_OPTIONS_HINT}")
 			args.commands += unknown
 	try:
 		args.config_file = cfpa.config_file
