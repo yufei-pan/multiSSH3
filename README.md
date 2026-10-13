@@ -508,6 +508,7 @@ mssh -q -- web1 grep -r TODO /srv
 
 ### `-p, --password PASSWORD` | _`DEFAULT_PASSWORD`_
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
+- `-p` needs `sshpass`, which types the password when ssh asks for it and answers nothing else. When ssh asks again or asks about a host key, sshpass gives up without a word, and mssh says why next to the return code: 5 the password was not accepted, 6 ssh asked whether to trust a host key that is not in `known_hosts` (the host's own with `SSH_STRICT_HOST_KEY_CHECKING` true, else a ProxyJump host's), 7 `known_hosts` has a different key for the host's IP address. A command of yours that prints nothing can exit with the same codes, so the line says `unless the command itself exited with N`; with `SSH_STRICT_HOST_KEY_CHECKING` false and no ProxyJump (or ProxyCommand) in the ssh config, 6 and 7 can only be the command's and mssh adds nothing.
 - Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed (an IPMI password, `-ip`, is not). mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
 - mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. Like a password typed on the command line, they reach `sshpass` and `ipmitool` as arguments, where other local users can briefly see them in `ps`.
 
@@ -750,8 +751,12 @@ mssh -f ./data/ allServers /tmp/data/
 
 ### `-ci, --copy_id` | False
 - `copy_id` mode, use `ssh-copy-id` to copy public key to the hosts.
-- Will use the identity file if specified in `-k, --key, --identity [KEY]`
-- Will respect `-u, --username` and `-p, --password` options for username and password. ( password will need `sshpass` to be installed, or it will prompt for password interactively )
+- Will use the identity file if specified in `-k, --key, --identity [KEY]` as the key to install.
+- Will respect `-u, --username` and `-p, --password` options for username and password. With `-p` and `sshpass`, the hosts get the key at once; without them, `ssh-copy-id` asks for the password on the terminal, one host after the other, and Ctrl-C stops before the next host.
+- `ssh-copy-id` checks host keys as every ssh mssh runs does: unless `SSH_STRICT_HOST_KEY_CHECKING` is true, it gets `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`, so new nodes, not yet in `known_hosts`, need no answer to a host key question (with `-p`, sshpass cannot give one). With `SSH_STRICT_HOST_KEY_CHECKING` true, it checks them as your ssh config says.
+- From `-ea, --extraargs` it gets what every `ssh-copy-id` takes (that of OpenSSH 7.4 on CentOS 7 and later): `-o` and `-p`, and ssh's `-J` as `-o ProxyJump=`. The other words are left out: ssh's `-i` (the `-i` of `ssh-copy-id` names the key to install), `-F` (the `ssh-copy-id` of OpenSSH 8.0 and older fails on it) and rsync's options.
+- A host `ssh-copy-id` failed on is a failed host: it counts towards the exit code and is listed in `failed_hosts`, also when a command runs after the copy. Without a command, mssh exits with 127 if it finds no `ssh-copy-id`.
+- Example: `mssh -ci -u admin -p 'PASSWORD' newnode[01-20]`
 
 ### `-I, -nh, --no_history` | _`DEFAULT_NO_HISTORY`_
 - Do not store command history.
@@ -1045,7 +1050,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		error_only (bool): Only print error output. Default: DEFAULT_ERROR_ONLY.
 		quiet (bool): Suppress all output (overrides other output options). Default: False.
 		identity_file (str or None): SSH identity file. Default: DEFAULT_IDENTITY_FILE.
-		copy_id (bool): Use ssh-copy-id to copy public key to hosts. Default: False.
+		copy_id (bool): Use ssh-copy-id to copy public key to hosts first. Without commands, the ssh-copy-id runs are returned as the hosts. Default: False.
 		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
 		no_history (bool): Do not record command history. Default: True.
 		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.

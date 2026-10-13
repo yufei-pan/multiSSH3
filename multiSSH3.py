@@ -3744,6 +3744,160 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=())
 			retry_limit -= 1
 	return False, retry_limit, attempt_line_starts
 
+# sshpass's own exit codes: 5 ssh asked for the password again, 6 ssh asked whether to trust a host key it
+# does not know, 7 ssh warned that the key known for the host's IP address differs and asked whether to go on
+_SSHPASS_EXIT_CODES = (5, 6, 7)
+# programs that never exit with those codes themselves (0, 1 or ssh's 255): the code is sshpass's
+_NEVER_EXIT_LIKE_SSHPASS = ('scp', 'ssh-copy-id')
+
+def _sshpass_program(formatedCMD):
+	'''
+	The name of the program formatedCMD runs under sshpass (ssh, scp, rsync, ssh-copy-id, ...), or None.
+
+	A shell host (--copy_id) runs sshpass inside its sh -c line.
+	'''
+	sshpass = _binPaths.get('sshpass')
+	words = [str(word) for word in formatedCMD or ()]
+	if sshpass and len(words) == 3 and words[0] == _binPaths.get('sh') and words[1] == '-c':
+		try:
+			words = shlex.split(words[2])
+		except ValueError:
+			return None
+	if not sshpass or len(words) < 4 or words[0] != sshpass or words[1] != '-p':
+		return None
+	return os.path.basename(words[3])
+
+def _may_go_through_a_proxy(host):
+	'''
+	Whether ssh may reach host through another host (ProxyJump, ProxyCommand), whose key mssh's host
+	key options do not cover. True when mssh cannot tell: no ssh -G, or -ea given (it may name one).
+	'''
+	if host.extraargs or 'ssh' not in _binPaths:
+		return True
+	config = _ssh_config_values(getattr(host, 'address', None) or host.name)
+	if config is None:
+		return True
+	return any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
+
+def _sshpass_failure(host, formatedCMD, line_starts=(0, 0, 0)):
+	'''
+	The lines saying why sshpass stopped host's command, or [] when it did not.
+
+	sshpass answers ssh's password prompt and no other question. When ssh asks for the password again
+	or asks about a host key, sshpass exits with its own code without a word: ssh asked on sshpass's
+	terminal, so the host showed only the code. ssh passes on the remote command's exit code and rsync
+	has codes 5 and 6 of its own: a host that printed on stdout got past ssh's questions, otherwise the
+	lines say that the code may be theirs. Without SSH_STRICT_HOST_KEY_CHECKING ssh does not check
+	the host's key, so 6 and 7 can only be about a host on the way. line_starts holds where the
+	attempt's lines begin in host.output, host.stdout and host.stderr.
+	'''
+	code = host.returncode
+	if code not in _SSHPASS_EXIT_CODES or host.stdout[line_starts[1]:]:
+		return []
+	program = _sshpass_program(formatedCMD)
+	if not program:
+		return []
+	if program in _NEVER_EXIT_LIKE_SSHPASS:
+		doubt = ''
+	elif code != 5 and not SSH_STRICT_HOST_KEY_CHECKING and not _may_go_through_a_proxy(host):
+		# no host key was checked: the code is the command's (curl -s exits 6 and 7, ...)
+		return []
+	elif program == 'ssh':
+		doubt = ', unless the command itself exited with {}'.format(code)
+	else:
+		doubt = ', unless {} itself exited with {}'.format(program, code)
+	address = getattr(host, 'address', None) or host.name
+	ip = host.ip or address
+	if code == 5:
+		return [f'sshpass: the password was not accepted, ssh asked for it again (exit code 5{doubt}). Check it, and that the host takes passwords for this user.']
+	if code == 6:
+		said = f'sshpass: ssh asked whether to trust a host key that is not in known_hosts, which sshpass does not answer (exit code 6{doubt}).'
+	else:
+		said = f"sshpass: ssh warned that known_hosts has a different key for the host's IP address and asked whether to go on, which sshpass does not answer (exit code 7{doubt})."
+	if not SSH_STRICT_HOST_KEY_CHECKING:
+		return [said, f"mssh does not check the key of {address} (SSH_STRICT_HOST_KEY_CHECKING is false), so the key is another host's, such as a ProxyJump host's: connect to that host once with ssh to {'accept its key' if code == 6 else 'see the warning'}."]
+	if code == 6:
+		return [said, f"SSH_STRICT_HOST_KEY_CHECKING is true, so ssh checks the key of {address} (and of any ProxyJump host): accept it by connecting once with ssh, or check it and add it with ssh-keyscan {address} >> ~/.ssh/known_hosts. StrictHostKeyChecking accept-new in ~/.ssh/config accepts new hosts' keys."]
+	return [said, f'If {address} is the host you expect (reinstalled, or {ip} belonged to another host before), remove the old key with ssh-keygen -R {ip}.']
+
+# the ssh options that take a value (ssh(1)): a word after one of them is its value, not an option
+_SSH_OPTIONS_WITH_VALUES = 'BbcDEeFIiJLlmOopQRSWw'
+
+def _copy_id_extra_args(extraargs):
+	'''
+	The words of -ea that every ssh-copy-id takes, read as ssh reads them: -o and -p, and ssh's -J as
+	-o ProxyJump=. ssh-copy-id's -i names the key to install, so ssh's -i (a key to log in with) is
+	left out, as is -F (the ssh-copy-id of OpenSSH 7.4 and 8.0 fails on it: "invalid option") and every word
+	ssh-copy-id has no option for (ssh's flags, rsync's options).
+	'''
+	if isinstance(extraargs, str):
+		try:
+			# as a shell splits them: -ea "-o ProxyCommand='ssh -W %h:%p bastion'" is two words
+			words = shlex.split(extraargs)
+		except ValueError:
+			words = extraargs.split()
+	else:
+		words = [str(word) for word in extraargs or ()]
+	taken = []
+	index = 0
+	while index < len(words):
+		word = words[index]
+		index += 1
+		if len(word) < 2 or word[0] != '-' or word[1] not in _SSH_OPTIONS_WITH_VALUES:
+			continue
+		# -p 2222 or -p2222
+		value = word[2:]
+		if not value and index < len(words):
+			value = words[index]
+			index += 1
+		if not value:
+			continue
+		if word[1] == 'J':
+			taken += ['-o', 'ProxyJump=' + value]
+		elif word[1] in 'op':
+			taken += ['-' + word[1], value]
+	return taken
+
+def _copy_id_command(host, identity_file=None, extraargs=None):
+	'''
+	The ssh-copy-id line (for sh) that installs the public key on host ([user@]host).
+
+	ssh-copy-id gets what mssh gives ssh, as far as it takes it: the host key options every ssh mssh runs
+	gets (none with SSH_STRICT_HOST_KEY_CHECKING), the key from -k as the key to install, and the words
+	of -ea it takes (_copy_id_extra_args). The ssh-copy-id of OpenSSH 7.4 (CentOS 7), 8.0 (EL8) and
+	later takes -o and -p, before the host.
+	'''
+	words = [_binPaths['ssh-copy-id']]
+	if identity_file:
+		words += ['-i', os.path.expanduser(identity_file)]
+	if not SSH_STRICT_HOST_KEY_CHECKING:
+		words += ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
+	words += _copy_id_extra_args(extraargs)
+	words.append(host)
+	return ' '.join(shlex.quote(word) for word in words)
+
+def _wait_status_return_code(status):
+	'''os.system's wait status as Popen gives a return code: the exit status, or -N when signal N ended it.'''
+	if hasattr(os, 'WIFSIGNALED') and os.WIFSIGNALED(status):
+		return -os.WTERMSIG(status)
+	if hasattr(os, 'WIFEXITED') and os.WIFEXITED(status):
+		return os.WEXITSTATUS(status)
+	# Windows: os.system returns the exit status itself
+	return status
+
+def _count_failed_copies(copied):
+	'''
+	Count each host ssh-copy-id failed on (--copy_id with a command) once towards the exit code, as a
+	failed host. main() leaves the hosts counted here out when it counts the command's failures.
+	'''
+	global __mainReturnCode
+	global __failedHosts
+	for host in copied:
+		# as main() counts: a host still running (None) has not failed
+		if host.returncode and host.name not in __failedHosts:
+			__mainReturnCode += 1
+			__failedHosts.add(host.name)
+
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
 	'''
 	Run the command on the host. Main execution function.
@@ -3794,6 +3948,12 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			ran.add(attempt)
 		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit, (passwds, ipmi_definition.get('password')))
 		if stop:
+			return
+		sshpass_failure = _sshpass_failure(host, formatedCMD, attempt_line_starts)
+		host.output.extend(sshpass_failure)
+		host.stderr.extend(sshpass_failure)
+		if sshpass_failure and not host.ipmi:
+			# ssh stopped at its question before the command ran: scp after rsync would stop there too
 			return
 		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
 		if host.ipmi and host.returncode != 0:
@@ -6066,7 +6226,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		error_only (bool): Only print error output. Default: DEFAULT_ERROR_ONLY.
 		quiet (bool): Suppress all output (overrides other output options). Default: False.
 		identity_file (str or None): SSH identity file. Default: DEFAULT_IDENTITY_FILE.
-		copy_id (bool): Use ssh-copy-id to copy public key to hosts. Default: False.
+		copy_id (bool): Use ssh-copy-id to copy public key to hosts first. Without commands, the ssh-copy-id runs are returned as the hosts. Default: False.
 		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
 		no_history (bool): Do not record command history. Default: True.
 		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.
@@ -6198,30 +6358,47 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
 			hosts = []
+			# the ssh-copy-id runs: their results are the hosts' results, a failed one is a failed host
+			copied = []
 			for host in targetHostDic:
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
 				# host already carries user@ when username is set, see hostStr above
-				command = f"{shlex.quote(_binPaths['ssh-copy-id'])} "
-				if identity_file:
-					command = f"{command}-i {shlex.quote(os.path.expanduser(identity_file))} "
-				command = f"{command}{shlex.quote(host)}"
+				command = _copy_id_command(host, identity_file, extraargs)
 				if password and 'sshpass' in _binPaths:
 					# _build_command puts sshpass in front: the password stays out of the command mssh shows
 					hosts.append(Host(host, command,identity_file=identity_file,shell=True,ip = targetHostDic[host]))
 				else:
+					# ssh-copy-id asks for the password on the terminal, one host after the other. Every word of
+					# command is quoted; os.system, not Popen, so a Ctrl-C reaches only ssh-copy-id (see below)
 					eprint(f"> {command}")
-					os.system(command)
+					typed = Host(host, command, identity_file=identity_file, shell=True, ip=targetHostDic[host])
+					typed.returncode = _wait_status_return_code(os.system(command))
+					copied.append(typed)
+					if typed.returncode == -signal.SIGINT:
+						# os.system ignores Ctrl-C, the ssh-copy-id it ran got it: stop, as a shell loop does
+						eprint('Ctrl C caught, not copying the id to the other hosts')
+						_emo = True
+						break
 			if hosts:
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
 					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
 					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
+				copied += hosts
+			if not commands:
+				# main() counts the hosts ssh-copy-id failed on, as for any command
+				return copied
+			if not called:
+				_count_failed_copies(copied)
+			if _emo:
+				_abort(1, 'Ctrl C caught, not starting the command', called=called)
 		else:
 			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
-		if not commands:
-			_abort(0, "Copy id finished, no commands to run", called=called)
+			if not commands:
+				# 127: the shell's code for a command it cannot find
+				_abort(127, "ssh-copy-id not found, no id copied", called=called)
 	if file and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
@@ -7248,8 +7425,8 @@ def main(args = None):
 					skippedHostNames.add(host.name)
 			else:
 				succeededHosts.add(host.name)
-	# each failing host counts once, however many runs or commands it failed
-	__mainReturnCode += len(failedHostNames)
+	# each failing host counts once, however many runs or commands it failed (or its --copy_id)
+	__mainReturnCode += len(failedHostNames - __failedHosts)
 	__failedHosts |= failedHostNames
 	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
