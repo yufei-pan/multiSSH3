@@ -3889,17 +3889,20 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 			# flushed now: a reader that is gone fails here, not in the flush at exit
 			print(rtnStr, flush=True)
 		except BrokenPipeError:
-			_stdout_reader_gone()
+			_output_reader_gone()
 	return rtnStr
 
-def _stdout_reader_gone():
+def _output_reader_gone(exit_code=None):
 	'''
-	Stop quietly when whatever reads stdout has gone (mssh ... | head, or q in less).
+	Stop quietly when whatever reads our output has gone (mssh ... | head, or q in less).
 
 	Like a program SIGPIPE ends: no traceback, and no more commands or repeats start. What ran
 	still counts towards the exit code, as after a Ctrl-C between runs. stdout, and stderr when
 	it is the same pipe (2>&1), are pointed at devnull as the Python docs suggest, so later
 	writes and the flush at exit do not fail again.
+
+	With exit_code, for output that comes before any run (-h, -V, a usage error): both stdout and
+	stderr go to devnull, either may be the one that broke, and the process exits with exit_code.
 	'''
 	global _emo
 	_emo = True
@@ -3907,7 +3910,7 @@ def _stdout_reader_gone():
 		stdout_fd = sys.stdout.fileno()
 		fds = [stdout_fd]
 		try:
-			if os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+			if exit_code is not None or os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
 				fds.append(sys.stderr.fileno())
 		except (OSError, ValueError, AttributeError):
 			pass
@@ -3920,6 +3923,8 @@ def _stdout_reader_gone():
 	except (OSError, ValueError, AttributeError):
 		# not a file descriptor (an embedding program's stream): nothing to redirect
 		pass
+	if exit_code is not None:
+		sys.exit(exit_code)
 
 #%% ------------ Run / Process Hosts Block ----------------
 def _private_dir(path, create=True):
@@ -5310,18 +5315,77 @@ def _escape_unencodable_output():
 		except (AttributeError, OSError, ValueError):
 			pass
 
+class _WatchedStream(object):
+	'''
+	Stands in for sys.stdout or sys.stderr and notes a write that failed because the reader has gone,
+	even when the caller swallows the error: newer argparse does, `mssh -h | head -1` then exited 0.
+	'''
+	def __init__(self, stream):
+		self.stream = stream
+		self.reader_gone = False
+
+	def write(self, text):
+		try:
+			return self.stream.write(text)
+		except BrokenPipeError:
+			self.reader_gone = True
+			raise
+
+	def flush(self):
+		try:
+			return self.stream.flush()
+		except BrokenPipeError:
+			self.reader_gone = True
+			raise
+
+	def __getattr__(self, name):
+		return getattr(self.stream, name)
+
+def _exit_if_output_closed(step, args):
+	'''
+	Run a step before the commands that may print and exit: -h, -V and usage errors (argparse),
+	--generate_config_file, the one word commands prompt, --add_control_master_config.
+
+	If whatever reads our output has gone, exit quietly with 141, the status of a program SIGPIPE
+	ends: nothing ran, there is no run status to report. Python exited 120, 1 with a traceback, or 0.
+	'''
+	watched = []
+	for name in ('stdout', 'stderr'):
+		if getattr(sys, name) is not None:
+			watched.append((name, _WatchedStream(getattr(sys, name))))
+			setattr(sys, name, watched[-1][1])
+	try:
+		try:
+			return step(args)
+		finally:
+			for name, stream in watched:
+				if getattr(sys, name) is stream:
+					setattr(sys, name, stream.stream)
+	except SystemExit:
+		# the step printed and exits: flush here, the flush at exit would fail with status 120
+		for _name, stream in watched:
+			try:
+				stream.flush()
+			except BrokenPipeError:
+				pass
+		if any(stream.reader_gone for _name, stream in watched):
+			_output_reader_gone(exit_code=141)
+		raise
+	except BrokenPipeError:
+		_output_reader_gone(exit_code=141)
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
 	_escape_unencodable_output()
-	args = process_args(args)
+	args = _exit_if_output_closed(process_args, args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))
-	args = process_config_file(args)
-	args = process_commands(args)
+	args = _exit_if_output_closed(process_config_file, args)
+	args = _exit_if_output_closed(process_commands, args)
 	args = process_keys(args)
-	args = process_control_master_config(args)
+	args = _exit_if_output_closed(process_control_master_config, args)
 	set_global_with_args(args)
 	
 	if args.use_script_timeout:

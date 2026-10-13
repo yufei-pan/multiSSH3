@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import multiSSH3
 
 ROOT = str(Path(multiSSH3.__file__).resolve().parent)
@@ -241,6 +243,45 @@ def test_output_that_fits_the_pipe_buffer_still_ends_quietly(tmp_path):
 	assert "Traceback" not in stderr and "BrokenPipeError" not in stderr
 	assert result.returncode == 2, stderr
 	assert ran == ["echo first"] * 4
+
+
+@pytest.mark.parametrize("option", ["-h", "-V", "--generate_config_file"])
+def test_output_only_options_to_a_closed_stdout_exit_quietly_with_141(tmp_path, option):
+	# mssh -h | head -1: argparse (or the config dump) prints and exits before any run; no run status to keep,
+	# so the status of a program SIGPIPE ends (Python exited 120, or 1 with a traceback on 3.6)
+	write_fd = _closed_pipe()
+	try:
+		result, ran = _run_cli_script(tmp_path, [], commands=[option], stdout=write_fd, stderr=subprocess.PIPE)
+	finally:
+		os.close(write_fd)
+	stderr = result.stderr.decode("utf-8", "replace")
+
+	assert "Traceback" not in stderr and "BrokenPipeError" not in stderr and "Exception ignored" not in stderr
+	assert result.returncode == 141, stderr
+	assert ran == []
+
+
+def test_help_to_a_closed_stdout_and_stderr_pipe_exits_with_141(tmp_path):
+	write_fd = _closed_pipe()
+	try:
+		result, ran = _run_cli_script(tmp_path, [], commands=["-h"], stdout=write_fd, stderr=write_fd)
+	finally:
+		os.close(write_fd)
+
+	assert result.returncode == 141
+	assert ran == []
+
+
+def test_a_usage_error_to_a_closed_stderr_exits_quietly_with_141(tmp_path):
+	write_fd = _closed_pipe()
+	try:
+		result, ran = _run_cli_script(tmp_path, [], commands=["--repeat", "0"], stdout=subprocess.PIPE, stderr=write_fd)
+	finally:
+		os.close(write_fd)
+
+	assert result.returncode == 141
+	assert result.stdout == b""
+	assert ran == []
 
 
 def test_characters_stdout_cannot_encode_print_as_escapes(tmp_path):
