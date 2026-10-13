@@ -2638,6 +2638,82 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 		retry_limit -= 1
 	return False, retry_limit, attempt_line_starts
 
+# sshpass's own exit codes: 5 ssh asked for the password again, 6 ssh asked whether to trust a host key it
+# does not know, 7 ssh warned that the key known for the host's IP address differs and asked whether to go on
+_SSHPASS_EXIT_CODES = (5, 6, 7)
+# programs that never exit with those codes themselves (0, 1 or ssh's 255): the code is sshpass's
+_NEVER_EXIT_LIKE_SSHPASS = ('scp', 'ssh-copy-id')
+
+def _sshpass_program(formatedCMD):
+	'''
+	The name of the program formatedCMD runs under sshpass (ssh, scp, rsync, ssh-copy-id, ...), or None.
+
+	A shell host (--copy_id) runs sshpass inside its sh -c line.
+	'''
+	sshpass = _binPaths.get('sshpass')
+	words = [str(word) for word in formatedCMD or ()]
+	if sshpass and len(words) == 3 and words[0] == _binPaths.get('sh') and words[1] == '-c':
+		try:
+			words = shlex.split(words[2])
+		except ValueError:
+			return None
+	if not sshpass or len(words) < 4 or words[0] != sshpass or words[1] != '-p':
+		return None
+	return os.path.basename(words[3])
+
+def _may_go_through_a_proxy(host):
+	'''
+	Whether ssh may reach host through another host (ProxyJump, ProxyCommand), whose key mssh's host
+	key options do not cover. True when mssh cannot tell: no ssh -G, or -ea given (it may name one).
+	'''
+	if host.extraargs or 'ssh' not in _binPaths:
+		return True
+	config = _ssh_config_values(getattr(host, 'address', None) or host.name)
+	if config is None:
+		return True
+	return any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
+
+def _sshpass_failure(host, formatedCMD, line_starts=(0, 0, 0)):
+	'''
+	The lines saying why sshpass stopped host's command, or [] when it did not.
+
+	sshpass answers ssh's password prompt and no other question. When ssh asks for the password again
+	or asks about a host key, sshpass exits with its own code without a word: ssh asked on sshpass's
+	terminal, so the host showed only the code. ssh passes on the remote command's exit code and rsync
+	has codes 5 and 6 of its own: a host that printed on stdout got past ssh's questions, otherwise the
+	lines say that the code may be theirs. Without SSH_STRICT_HOST_KEY_CHECKING ssh does not check
+	the host's key, so 6 and 7 can only be about a host on the way. line_starts holds where the
+	attempt's lines begin in host.output, host.stdout and host.stderr.
+	'''
+	code = host.returncode
+	if code not in _SSHPASS_EXIT_CODES or host.stdout[line_starts[1]:]:
+		return []
+	program = _sshpass_program(formatedCMD)
+	if not program:
+		return []
+	if program in _NEVER_EXIT_LIKE_SSHPASS:
+		doubt = ''
+	elif code != 5 and not SSH_STRICT_HOST_KEY_CHECKING and not _may_go_through_a_proxy(host):
+		# no host key was checked: the code is the command's (curl -s exits 6 and 7, ...)
+		return []
+	elif program == 'ssh':
+		doubt = ', unless the command itself exited with {}'.format(code)
+	else:
+		doubt = ', unless {} itself exited with {}'.format(program, code)
+	address = getattr(host, 'address', None) or host.name
+	ip = host.ip or address
+	if code == 5:
+		return [f'sshpass: the password was not accepted, ssh asked for it again (exit code 5{doubt}). Check it, and that the host takes passwords for this user.']
+	if code == 6:
+		said = f'sshpass: ssh asked whether to trust a host key that is not in known_hosts, which sshpass does not answer (exit code 6{doubt}).'
+	else:
+		said = f"sshpass: ssh warned that known_hosts has a different key for the host's IP address and asked whether to go on, which sshpass does not answer (exit code 7{doubt})."
+	if not SSH_STRICT_HOST_KEY_CHECKING:
+		return [said, f"mssh does not check the key of {address} (SSH_STRICT_HOST_KEY_CHECKING is false), so the key is another host's, such as a ProxyJump host's: connect to that host once with ssh to {'accept its key' if code == 6 else 'see the warning'}."]
+	if code == 6:
+		return [said, f"SSH_STRICT_HOST_KEY_CHECKING is true, so ssh checks the key of {address} (and of any ProxyJump host): accept it by connecting once with ssh, or check it and add it with ssh-keyscan {address} >> ~/.ssh/known_hosts. StrictHostKeyChecking accept-new in ~/.ssh/config accepts new hosts' keys."]
+	return [said, f'If {address} is the host you expect (reinstalled, or {ip} belonged to another host before), remove the old key with ssh-keygen -R {ip}.']
+
 # the ssh options that take a value (ssh(1)): a word after one of them is its value, not an option
 _SSH_OPTIONS_WITH_VALUES = 'BbcDEeFIiJLlmOopQRSWw'
 
@@ -2749,6 +2825,12 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			continue
 		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
 		if stop:
+			return
+		sshpass_failure = _sshpass_failure(host, formatedCMD, attempt_line_starts)
+		host.output.extend(sshpass_failure)
+		host.stderr.extend(sshpass_failure)
+		if sshpass_failure and not host.ipmi:
+			# ssh stopped at its question before the command ran: scp after rsync would stop there too
 			return
 		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
 		if host.ipmi and host.returncode != 0:
