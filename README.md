@@ -213,9 +213,9 @@ The block applies to every ssh you run, not only mssh's. ssh fails outright (exi
 
 1. `/run/user/<uid>`, the per-user directory systemd keeps while you have a login session.
 2. Else `/dev/shm/multiSSH3-<uid>` (under `su`, `sudo`, cron and in containers): mssh's runtime directory there, created with mode 0700 when missing, and used only if it is yours and nobody else can write to it. ssh trusts whatever listens where it looks for its master and hands it your terminal.
-3. Else ssh connects without sharing, as without the block (also on systems with neither, such as macOS).
+3. Else ssh connects without sharing, as without the block (also on systems that have neither).
 
-The sockets never go in your home directory: on clusters it is often NFS, GPFS or Lustre, where unix sockets may not work. The checks run in `/bin/sh` whatever your login shell (csh and fish too) and work with OpenSSH 7.4 and later; they add about 2 ms to each ssh. Each `Match exec` starts your `$SHELL`, so with a `$SHELL` that is not an executable every ssh fails. The checks also run when the autocomplete's background checker calls `ssh -G`; they only look at local directories (and may create `/dev/shm/multiSSH3-<uid>`).
+The sockets never go in your home directory: on clusters it is often NFS, GPFS or Lustre, where unix sockets may not work. The checks run in `/bin/sh` whatever your login shell (csh and fish too) and work with OpenSSH 7.4 and later. ssh runs each `Match exec` with your `$SHELL -c`, twice per ssh: that adds about 2 ms with bash, more with shells that read startup files for `-c` (tcsh reads `.cshrc` and `/etc/profile.d/*.csh`, fish its `config.fish`), and with a `$SHELL` that is not an executable every ssh fails. The checks also run when the autocomplete's background checker calls `ssh -G`; they only look at local directories (and may create `/dev/shm/multiSSH3-<uid>`).
 
 Up to multiSSH3 6.31 the block was `Host *` with `ControlPath /run/user/%i/ssh_sockets_%C`, which makes every ssh fail where `/run/user/<uid>` is missing. Run `mssh --add_control_master_config` again: it replaces that block, and only it, keeping the rest of the file and its permissions as they were. Running it once more changes nothing.
 
