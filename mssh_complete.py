@@ -16,7 +16,7 @@ import sys
 import time
 from bisect import bisect_left
 
-version = '0.2'
+version = '0.3'
 __version__ = version
 PROTOCOL = 'MSSHC1'
 MSSH_NAMES = ('mssh', 'mssh3', 'multissh', 'multissh3', 'multiSSH3')
@@ -24,14 +24,15 @@ SHELLS = ('bash', 'zsh', 'fish')
 
 #%% ------------ Shell lexing ----------------
 class Token(object):
-	'''One shell word. text is the dequoted value, raw the text as typed.'''
-	__slots__ = ('text', 'raw', 'quoted', 'open_quote')
+	'''One shell word. text is the dequoted value, raw the text as typed, start where raw starts in the line (-1: unknown).'''
+	__slots__ = ('text', 'raw', 'quoted', 'open_quote', 'start')
 
-	def __init__(self, text, raw, quoted=False, open_quote=''):
+	def __init__(self, text, raw, quoted=False, open_quote='', start=-1):
 		self.text = text
 		self.raw = raw
 		self.quoted = quoted
 		self.open_quote = open_quote
+		self.start = start
 
 	def __repr__(self):
 		return 'Token({!r}, raw={!r}, quoted={!r}, open_quote={!r})'.format(self.text, self.raw, self.quoted, self.open_quote)
@@ -128,7 +129,7 @@ def lex(line):
 			else:
 				parts.append(char)
 				index += 1
-		tokens.append(Token(''.join(parts), line[start:min(index, length)], quoted, open_quote))
+		tokens.append(Token(''.join(parts), line[start:min(index, length)], quoted, open_quote, start))
 
 # marks the cursor while lexing; a private use character that does not appear in command lines
 CURSOR = '\ue000'
@@ -165,6 +166,8 @@ def split_at_cursor(before, after):
 
 #%% ------------ Option spec ----------------
 PASSWORD_DESTS = frozenset(('password', 'ipmi_password'))
+# options naming files mssh reads its hosts and env aliases from, at Enter
+LOOKUP_DESTS = frozenset(('env_file', 'env_files', 'host_file', 'config_file'))
 PATH_DESTS = frozenset(('file', 'file_sync', 'env_file', 'env_files', 'config_file', 'store_config_file', 'host_file', 'history_file'))
 USER_DESTS = frozenset(('username', 'ipmi_username'))
 
@@ -270,6 +273,34 @@ def spec_from_parser(parser):
 		options.append(OptionSpec(action.dest, action.option_strings, nargs, repeat,
 			groups.get(id(action), ''), _one_line(default), _one_line(action.help or '')))
 	return ParserSpec(options)
+
+def flag_settings(parser):
+	'''
+	What the flags of an argparse parser do (index builder side): ({long string: the value it
+	sets}, {dest: its default}). The defaults follow the mssh config the parser was made with.
+	'''
+	import argparse
+	sets = {}
+	defaults = {}
+	for action in parser._actions:
+		if action.option_strings and isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+			sets[OptionSpec(action.dest, action.option_strings).long] = bool(action.const)
+			defaults[action.dest] = bool(parser.get_default(action.dest))
+	return sets, defaults
+
+def _flag_rows(sets, defaults):
+	'''flag_settings as index config rows.'''
+	return [['flag_sets'] + ['{}={}'.format(string, int(value)) for string, value in sorted(sets.items())],
+		['flag_defaults'] + ['{}={}'.format(dest, int(value)) for dest, value in sorted(defaults.items())]]
+
+def _flag_values(fields):
+	'''The 'name=0|1' fields of an index config row as name -> bool.'''
+	values = {}
+	for field in fields:
+		name, sep, value = field.rpartition('=')
+		if sep and value in ('0', '1'):
+			values[name] = value == '1'
+	return values
 
 #%% ------------ Context ----------------
 ROLE_OPTION = 'option'
@@ -630,7 +661,8 @@ class IndexCorrupt(Exception):
 
 def _has_control(text):
 	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
-	return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+	# nearly all text is printable, which one scan in C settles (the picker checks every history line)
+	return not text.isprintable() and any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
 
 def _printable(text):
 	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
@@ -941,6 +973,16 @@ class HostTable(object):
 		lo, hi = _prefix_range(self.alias_names, prefix)
 		return [(index, self.alias_names[index]) for index in range(lo, hi)]
 
+	def sources(self, name):
+		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
+		number = bisect_left(self.names, name)
+		if number >= len(self.names) or self.names[number] != name or number >= self.index.count('host_meta'):
+			return 0
+		try:
+			return int(self.index.row('host_meta', number)[0])
+		except (IndexError, ValueError):
+			return 0
+
 	def alias_index(self, name):
 		index = bisect_left(self.alias_names, name)
 		return index if index < len(self.alias_names) and self.alias_names[index] == name else None
@@ -1090,12 +1132,16 @@ def _owned_and_not_writable_by_others(path):
 		return False
 	return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
+# as in multiSSH3 (tests point them elsewhere)
+_RUN_USER_ROOT = '/run/user'
+_SHM_DIR = '/dev/shm'
+
 def cache_dir(create=True):
 	'''
-	mssh's private cache directory, where unavailable_hosts.csv lives, or None.
+	mssh's private runtime directory, where unavailable_hosts.csv and the index live, or None.
 
-	$XDG_RUNTIME_DIR/multiSSH3 when the runtime dir is ours, else <tempdir>/multiSSH3-<uid>,
-	exactly as multiSSH3._unavailable_hosts_file_path picks it.
+	Exactly as multiSSH3.runtime_dir picks it: $XDG_RUNTIME_DIR/multiSSH3 when that runtime dir
+	is ours, /run/user/<uid>/multiSSH3, /dev/shm/multiSSH3-<uid>, then <tempdir>/multiSSH3-<uid>.
 	'''
 	import tempfile
 	if hasattr(os, 'getuid'):
@@ -1107,6 +1153,12 @@ def cache_dir(create=True):
 	runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
 	if runtime_dir and _owned_and_not_writable_by_others(runtime_dir):
 		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
+	if hasattr(os, 'getuid'):
+		run_user = os.path.join(_RUN_USER_ROOT, str(user_id))
+		if _owned_and_not_writable_by_others(run_user):
+			candidates.append(os.path.join(run_user, 'multiSSH3'))
+		if os.path.isdir(_SHM_DIR):
+			candidates.append(os.path.join(_SHM_DIR, 'multiSSH3-{}'.format(user_id)))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for directory in candidates:
 		if _private_dir(directory, create):
@@ -1351,7 +1403,8 @@ def build_index(directory, now=None, mssh=None):
 	'''
 	now = time.time() if now is None else now
 	mssh = mssh or _import_mssh()
-	spec = spec_from_parser(mssh.get_parser())
+	parser = mssh.get_parser()
+	spec = spec_from_parser(parser)
 	history_path = os.path.expanduser(mssh.DEFAULT_HISTORY_FILE)
 	lines, offset, inode = read_history(history_path)
 	memory = MemoryKnowledge()
@@ -1429,7 +1482,7 @@ def build_index(directory, now=None, mssh=None):
 	}
 	sections = [
 		('spec', spec.to_rows()),
-		('config', [['users'] + sorted(user for user in users if safe_field(user))]),
+		('config', [['users'] + sorted(user for user in users if safe_field(user))] + _flag_rows(*flag_settings(parser))),
 		('sources', source_rows),
 		('features', [features]),
 		('fweights', [fweights]),
@@ -1443,6 +1496,8 @@ def build_index(directory, now=None, mssh=None):
 		('aliases', alias_rows),
 		('groups', group_rows),
 		('unavailable', [unavailable]),
+		# option combinations main() ignores: [option, kind, why, others...]
+		('no_effect', [[option, kind, why] + list(others) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]),
 	]
 	path = os.path.join(directory, INDEX_NAME)
 	write_nsv(path, header, sections)
@@ -1520,24 +1575,28 @@ def take_lock(path, now=None):
 		return True
 	return False
 
-def spawn_rebuild(directory):
-	'''Start a detached `rebuild` unless one is running. Returns whether one was started.'''
-	lock = os.path.join(directory, LOCK_NAME)
+def _spawn_detached(directory, lock_name, command):
+	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
+	lock = os.path.join(directory, lock_name)
 	if not take_lock(lock):
 		return False
 	import subprocess
 	try:
-		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), 'rebuild', '--lock', lock],
+		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), command, '--lock', lock],
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
-		_debug('cannot start rebuild: {!r}'.format(e))
+		_debug('cannot start {}: {!r}'.format(command, e))
 		try:
 			os.unlink(lock)
 		except OSError:
 			pass
 		return False
 	return True
+
+def spawn_rebuild(directory):
+	'''Start a detached `rebuild` unless one is running. Returns whether one was started.'''
+	return _spawn_detached(directory, LOCK_NAME, 'rebuild')
 
 def _load_index(path):
 	try:
@@ -1570,6 +1629,503 @@ def load_for_query(directory, now):
 	if state == 'rebuild':
 		spawn_rebuild(directory)
 	return index, tail
+
+#%% ------------ Host state ----------------
+HOST_STATE_NAME = 'host-state.tsv'
+PROBE_QUEUE_NAME = 'probe-queue'
+PROBE_LOCK_NAME = 'probe.lock'
+VALIDITY_FRESH = 600.0  # seconds a valid / invalid answer stays fresh
+UNSURE_FRESH = 60.0     # seconds an unsure answer stays fresh
+PING_FRESH = 60.0       # seconds a ping result stays fresh (a host on the line is pinged again after)
+
+def boot_id():
+	'''An identifier of the current boot, or None where the system has none.'''
+	try:
+		with open('/proc/sys/kernel/random/boot_id') as f:
+			return f.read().strip() or None
+	except OSError:
+		return None
+
+class HostState(object):
+	'''
+	What the prober learned about one host. Times are wall-clock seconds.
+
+	validity: 'valid', 'invalid' or 'unsure' (multiSSH3.host_validity), '' when never checked;
+	ping: 'answer', 'silent', 'none' (could not ping) or '' when never pinged;
+	answered_at: when the host last answered ping (0 when never).
+	'''
+	__slots__ = ('validity', 'checked_at', 'ping', 'pinged_at', 'answered_at')
+
+	def __init__(self, validity='', checked_at=0.0, ping='', pinged_at=0.0, answered_at=0.0):
+		self.validity = validity
+		self.checked_at = checked_at
+		self.ping = ping
+		self.pinged_at = pinged_at
+		self.answered_at = answered_at
+
+	def fresh_validity(self, now):
+		'''The validity while it is fresh, else ''.'''
+		limit = UNSURE_FRESH if self.validity == 'unsure' else VALIDITY_FRESH
+		return self.validity if self.validity and now - self.checked_at <= limit else ''
+
+	def fresh_ping(self, now):
+		'''The ping result while it is fresh, else ''.'''
+		return self.ping if self.ping and now - self.pinged_at <= PING_FRESH else ''
+
+def needs_probe(state, now):
+	'''Whether the prober must look at a host: its validity is not fresh, or it may be pinged and its ping is not.'''
+	if state is None:
+		return True
+	validity = state.fresh_validity(now)
+	return not validity or (validity != 'invalid' and not state.fresh_ping(now))
+
+_VALIDITIES = ('valid', 'invalid', 'unsure')
+_PINGS = ('', 'answer', 'silent', 'none')
+
+def read_host_states(directory):
+	'''host -> HostState from host-state.tsv; {} for a missing, foreign or other-boot file.'''
+	try:
+		with open(os.path.join(directory, HOST_STATE_NAME), encoding='utf-8', errors='replace') as f:
+			lines = f.read().split('\n')
+	except OSError:
+		return {}
+	head = lines[0].split(',', 1)
+	if len(head) != 2 or head[0] != '#boot_id':
+		return {}
+	current = boot_id()
+	if current and head[1] != current:
+		return {}
+	states = {}
+	for line in lines[1:]:
+		fields = line.split('\t')
+		if len(fields) != 6 or not fields[0] or fields[1] not in _VALIDITIES or fields[3] not in _PINGS:
+			continue
+		try:
+			states[fields[0]] = HostState(fields[1], float(fields[2]), fields[3], float(fields[4]), float(fields[5]))
+		except ValueError:
+			continue
+	return states
+
+def write_host_states(directory, states):
+	'''Replace host-state.tsv with states (host -> HostState), atomically.'''
+	import tempfile
+	lines = ['#boot_id,{}'.format(boot_id() or '')]
+	for host in sorted(states):
+		state = states[host]
+		lines.append('\t'.join([host, state.validity, repr(float(state.checked_at)), state.ping,
+			repr(float(state.pinged_at)), repr(float(state.answered_at))]))
+	fd, temporary = tempfile.mkstemp(prefix='.host-state.', dir=directory)
+	try:
+		with os.fdopen(fd, 'w', encoding='utf-8') as f:
+			f.write('\n'.join(lines) + '\n')
+		os.replace(temporary, os.path.join(directory, HOST_STATE_NAME))
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
+def read_unavailable(directory):
+	'''
+	The hosts mssh's unavailable_hosts.csv lists now: failed in a recent run of this boot, their
+	expiry (time.monotonic() seconds) not passed.
+	'''
+	try:
+		with open(os.path.join(directory, 'unavailable_hosts.csv'), encoding='utf-8', errors='replace') as f:
+			lines = f.read().split('\n')
+	except OSError:
+		return frozenset()
+	now = time.monotonic()
+	written = None
+	hosts = set()
+	for line in lines:
+		fields = line.strip().split(',')
+		if len(fields) != 2:
+			continue
+		if fields[0] == '#boot_id':
+			written = fields[1]
+		elif fields[0] and _is_digits(fields[1]) and int(fields[1]) > now:
+			hosts.add(fields[0])
+	current = boot_id()
+	if current and written and current != written:
+		return frozenset()
+	return frozenset(hosts)
+
+def _queueable(host):
+	return bool(host) and '\t' not in host and not _has_control(host)
+
+def queue_probes(directory, hosts):
+	'''
+	Append hosts to the probe queue in one write (queries do this; the prober takes them).
+
+	Hosts already waiting in the queue are left out: a query for a long range repeats on every
+	keystroke.
+	'''
+	path = os.path.join(directory, PROBE_QUEUE_NAME)
+	try:
+		with open(path, encoding='utf-8', errors='surrogateescape') as f:
+			waiting = set(f.read().split('\n'))
+	except OSError:
+		waiting = set()
+	new = []
+	for host in hosts:
+		if _queueable(host) and host not in waiting:
+			waiting.add(host)
+			new.append(host)
+	if not new:
+		return
+	data = ''.join(host + '\n' for host in new)
+	fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+	try:
+		os.write(fd, data.encode('utf-8', 'surrogateescape'))
+	finally:
+		os.close(fd)
+
+def take_probe_queue(directory):
+	'''
+	Empty the probe queue and return its hosts, newest first, each once.
+
+	The queue is renamed before it is read: a query appending meanwhile starts a new queue. A host
+	lost to that race is queued again by the next query that finds it without a fresh answer.
+	'''
+	path = os.path.join(directory, PROBE_QUEUE_NAME)
+	taken = path + '.taken'
+	try:
+		os.replace(path, taken)
+	except OSError:
+		return []
+	try:
+		with open(taken, encoding='utf-8', errors='surrogateescape') as f:
+			lines = f.read().split('\n')
+	except OSError:
+		lines = []
+	try:
+		os.unlink(taken)
+	except OSError:
+		pass
+	hosts = []
+	for host in reversed(lines):
+		if _queueable(host) and host not in hosts:
+			hosts.append(host)
+	return hosts
+
+#%% ------------ Prober ----------------
+PROBE_RUN_LIMIT = 120.0  # seconds one prober run may last; the next query starts another for what is left
+PING_COMMAND = ('ping', '-c2', '-i0.2', '-W1', '-q')
+PING_TIMEOUT = 10   # seconds: PING_COMMAND is done in about one, unless its own name lookup hangs
+DNS_TIMEOUT = 2.0
+
+def _out_of_resources(error):
+	'''Whether error says the system is out of descriptors or processes (a smaller batch may work).'''
+	import errno
+	return isinstance(error, OSError) and error.errno in (errno.EMFILE, errno.ENFILE, errno.EAGAIN)
+
+def probe_parallelism(mssh):
+	'''
+	How many hosts the prober checks at once: mssh's own rule for parallel ssh sessions (the mssh
+	config's DEFAULT_MAX_CONNECTIONS, default 4 x CPUs, clamped by the open-file limit), halved
+	while the 1-minute load average is at or above the CPU count; never below 4.
+	'''
+	try:
+		parallel = int(mssh._normalize_max_connections(mssh.DEFAULT_MAX_CONNECTIONS))
+	except Exception:
+		parallel = 4 * (os.cpu_count() or 1)
+	try:
+		if os.getloadavg()[0] >= (os.cpu_count() or 1):
+			parallel //= 2
+	except (AttributeError, OSError):
+		pass
+	return max(parallel, 4)
+
+def ping_host(host):
+	'''
+	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (no permission, a name it
+	cannot resolve) or runs out of time (stuck on its name lookup: a slow DNS server says nothing
+	about the host). Raises FileNotFoundError without a ping command, OSError when out of
+	descriptors or processes.
+	'''
+	import subprocess
+	argv = list(PING_COMMAND) + (['-6'] if ':' in host else []) + [host]
+	try:
+		code = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=PING_TIMEOUT).returncode
+	except subprocess.TimeoutExpired:
+		return 'none'
+	except FileNotFoundError:
+		raise
+	except OSError as e:
+		if _out_of_resources(e):
+			raise
+		return 'none'
+	return {0: 'answer', 1: 'silent'}.get(code, 'none')
+
+def _probe_batch(mssh, hosts, states, now, ping_available):
+	'''
+	Check and ping hosts at once, one thread each, updating states (host -> HostState).
+
+	Returns:
+		list: the hosts that could not be checked for lack of descriptors or processes, in order
+	'''
+	import threading
+	retry = []
+	guard = threading.Lock()
+
+	def check(host):
+		state = states.get(host) or HostState()
+		try:
+			if not state.fresh_validity(now()):
+				state.validity, state.checked_at = mssh.host_validity(host, timeout=DNS_TIMEOUT), now()
+			if state.validity != 'invalid' and not state.fresh_ping(now()):
+				answer = 'none'
+				if ping_available[0]:
+					try:
+						answer = ping_host(host)
+					except FileNotFoundError:
+						ping_available[0] = False
+				state.ping, state.pinged_at = answer, now()
+				if answer == 'answer':
+					state.answered_at = state.pinged_at
+		except Exception as e:
+			if _out_of_resources(e):
+				with guard:
+					retry.append(host)
+			else:
+				_debug('probing {} failed: {!r}'.format(host, e))
+			return
+		with guard:
+			states[host] = state
+
+	threads = []
+	for number, host in enumerate(hosts):
+		thread = threading.Thread(target=check, args=(host,), daemon=True)
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads: the rest waits for a smaller batch
+			retry.extend(hosts[number:])
+			break
+		threads.append(thread)
+	for thread in threads:
+		thread.join()
+	return sorted(retry, key=hosts.index)
+
+def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
+	'''
+	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
+	learned in host-state.tsv after each batch, until the queue is empty or limit seconds have
+	passed. Hosts left over go back into the queue. Never connects to a host itself: only DNS,
+	ssh -G (which reads the ssh config, running the commands of its Match exec lines) and ping.
+
+	Returns:
+		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
+	'''
+	try:
+		os.nice(10)
+	except (AttributeError, OSError):
+		pass
+	mssh = _import_mssh()
+	parallel = probe_parallelism(mssh)
+	started = now()
+	checked = 0
+	ping_available = [True]
+	while now() - started < limit:
+		hosts = take_probe_queue(directory)
+		if not hosts:
+			break
+		states = read_host_states(directory)
+		moment = now()
+		todo = [host for host in hosts if needs_probe(states.get(host), moment)]
+		while todo:
+			if now() - started >= limit:
+				queue_probes(directory, todo[::-1])
+				return {'checked': checked, 'parallel': parallel}
+			batch, todo = todo[:parallel], todo[parallel:]
+			retry = _probe_batch(mssh, batch, states, now, ping_available)
+			checked += len(batch) - len(retry)
+			write_host_states(directory, states)
+			if lock:
+				# a lock that keeps changing is not stale
+				try:
+					os.utime(lock, None)
+				except OSError:
+					pass
+			if retry:
+				if parallel == 1:
+					queue_probes(directory, (retry + todo)[::-1])
+					return {'checked': checked, 'parallel': parallel}
+				parallel = max(parallel // 2, 1)
+				todo = retry + todo
+	return {'checked': checked, 'parallel': parallel}
+
+def spawn_probe(directory):
+	'''Start a detached `probe` unless one is running. Returns whether one was started.'''
+	return _spawn_detached(directory, PROBE_LOCK_NAME, 'probe')
+
+#%% ------------ Diagnostics ----------------
+DIAGNOSTIC_KINDS = ('unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
+MAX_MESSAGE = 160
+WARNING_ASKS = (0.3, 1.0, 3.0)  # seconds after an answer with the prober still working when a frontend asks again
+
+class Diagnostic(object):
+	'''A warning about part of an mssh line: line[start:end] is marked, message says why.'''
+	__slots__ = ('start', 'end', 'kind', 'message')
+
+	def __init__(self, start, end, kind, message):
+		self.start = start
+		self.end = end
+		self.kind = kind
+		self.message = message
+
+	def __repr__(self):
+		return 'Diagnostic({}, {}, {!r}, {!r})'.format(self.start, self.end, self.kind, self.message)
+
+def _punctuation():
+	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
+	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
+
+# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
+_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+
+def _host_parts(token):
+	'''
+	(host name without user@, (start, end) in the line) for each host of a hosts word. A quoted or
+	escaped word is marked whole: its parts have no exact place in the line.
+	'''
+	text = token.text
+	exact = token.raw == text and token.start >= 0
+	parts = []
+	position = 0
+	while position < len(text):
+		if text[position] in _HOST_SEPARATORS:
+			position += 1
+			continue
+		end = position
+		while end < len(text) and text[end] not in _HOST_SEPARATORS:
+			end += 1
+		name = text[position:end].rsplit('@', 1)[-1].strip('$')
+		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
+		parts.append((name, span))
+		position = end
+	return parts
+
+def _is_ip_address(name):
+	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
+	parts = name.split('.')
+	if len(parts) == 4 and all(_is_digits(part) and int(part) <= 255 for part in parts):
+		return True
+	return ':' in name
+
+def _ipv4_range(name):
+	'''
+	Whether name is in mssh's IPv4 range syntax (an a-b range, x, * or ? in an octet, an octet in
+	[ ]) without being one address: its members are all IP addresses.
+	'''
+	parts = name.split('.')
+	if len(parts) != 4:
+		return False
+	plain = True
+	for part in parts:
+		if part.startswith('[') and part.endswith(']'):
+			part = part[1:-1]
+			plain = False
+		low, sep, high = part.partition('-')
+		for end in ((low, high) if sep else (low,)):
+			if end in ('x', '*', '?'):
+				plain = False
+			elif not (_is_digits(end) and int(end) <= 255):
+				return False
+		plain = plain and not sep
+	return not plain
+
+def _range_count(text):
+	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
+	start = text.find('[')
+	end = text.find(']', start + 1)
+	if start < 0 or end < 0:
+		return 1
+	count = 0
+	for part in text[start + 1:end].split(','):
+		low, sep, high = part.strip().partition('-')
+		if sep and _is_digits(low) and _is_digits(high):
+			count += max(int(high) - int(low) + 1, 0)
+		elif not sep and part.strip():
+			count += 1
+		else:
+			return None
+	rest = _range_count(text[end + 1:])
+	return None if rest is None else count * rest
+
+def _iter_range(text):
+	'''The names expand_ranges makes of text, one at a time (text must be one _range_count can count).'''
+	start = text.find('[')
+	end = text.find(']', start + 1)
+	if start < 0 or end < 0:
+		yield text
+		return
+	head, tail = text[:start], text[end + 1:]
+	for part in text[start + 1:end].split(','):
+		low, sep, high = part.strip().partition('-')
+		if sep:
+			width = min(len(low), len(high))
+			values = ('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
+		else:
+			values = [part.strip()]
+		for value in values:
+			for name in _iter_range(head + value + tail):
+				yield name
+
+def _padded_range(name):
+	'''node[1-16] -> node[01-16]: the one range of name with its lower bound padded to the upper's width, or None.'''
+	start = name.find('[')
+	end = name.find(']', start + 1)
+	if start < 0 or end < 0 or '[' in name[end:]:
+		return None
+	low, sep, high = name[start + 1:end].partition('-')
+	if not sep or not _is_digits(low) or not _is_digits(high) or low.startswith('0') or len(low) >= len(high):
+		return None
+	return '{}[{}-{}]{}'.format(name[:start], low.zfill(len(high)), high, name[end + 1:])
+
+def _strip_zeros(name):
+	'''name with leading zeros dropped from every run of digits: gpu017 -> gpu17.'''
+	out = []
+	index = 0
+	while index < len(name):
+		end = index
+		while end < len(name) and name[end] in _DIGITS:
+			end += 1
+		if end > index:
+			out.append(name[index:end].lstrip('0') or '0')
+			index = end
+		else:
+			out.append(name[index])
+			index += 1
+	return ''.join(out)
+
+def _one_edit(typed, other):
+	'''Whether other is one insertion, deletion, substitution or swap of adjacent characters away from typed.'''
+	if typed == other:
+		return False
+	if len(typed) == len(other):
+		differ = [index for index in range(len(typed)) if typed[index] != other[index]]
+		if len(differ) == 1:
+			return True
+		return (len(differ) == 2 and differ[1] == differ[0] + 1
+			and typed[differ[0]] == other[differ[1]] and typed[differ[1]] == other[differ[0]])
+	if abs(len(typed) - len(other)) != 1:
+		return False
+	short, long_ = (typed, other) if len(typed) < len(other) else (other, typed)
+	return any(long_[:index] + long_[index + 1:] == short for index in range(len(long_)))
+
+def _option_name(text, attached):
+	'''An option word without the value given with it: -ip=secret -> -ip, -uroot -> -u.'''
+	if attached is None:
+		return text
+	return text[:len(text) - len(attached)].rstrip('=')
+
+def _unique(names):
+	'''names without repeats, in order.'''
+	seen = set()
+	return [name for name in names if not (name in seen or seen.add(name))]
 
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
@@ -1617,7 +2173,7 @@ class Response(object):
 
 	candidates are replacements for the request's word, best first. delegate is
 	(word index, prefix, words) when the shell should add its own completion of a remote
-	command. ghost (SP2) and diagnostics (SP3) are not filled in yet.
+	command. ghost is the grey suggestion (SP2), diagnostics the warnings about the line (SP3).
 	'''
 	__slots__ = ('context', 'candidates', 'directives', 'delegate', 'ghost', 'diagnostics')
 
@@ -1742,11 +2298,29 @@ class Engine(object):
 		self.knowledges = [knowledge for knowledge in knowledges if knowledge is not None]
 		self.hosts = hosts if hosts is not None else HostTable()
 		self.users = list(users)
+		# the runtime directory: host states, the probe queue; None runs without them
+		self.directory = None
+		# what mssh's flags set ({long string: value}) and their defaults ({dest: value}): flag_settings
+		self.flag_sets = {}
+		self.flag_defaults = {}
+		# OPTION_NO_EFFECT entries from mssh: (long option, 'with' | 'without', other long options, why)
+		self.no_effect = []
 
 	def query(self, request, deadline=None):
-		if request.flags.get('ghost') == '1':
+		ghost = request.flags.get('ghost') == '1'
+		diag = request.flags.get('diag') == '1'
+		if ghost or diag:
+			# grey text and warnings come without candidates
 			response = Response(parse_context(request.before, request.after, self.spec))
-			response.ghost = self.suggest(request, deadline)
+			if ghost:
+				response.ghost = self.suggest(request, deadline)
+			if diag:
+				try:
+					response.diagnostics, pending = self.diagnose(request)
+					if pending:
+						response.directives.add('pending')
+				except Exception as e:
+					_debug('diagnostics failed: {!r}'.format(e))
 			return response
 		context = parse_context(request.before, request.after, self.spec)
 		response = Response(context)
@@ -1764,6 +2338,284 @@ class Engine(object):
 			response.directives.add('nosort')
 		response.candidates = self._frame(candidates, context, request, response.directives)
 		return response
+
+	def host_states(self):
+		'''What the prober learned (host -> HostState), from the runtime directory.'''
+		return read_host_states(self.directory) if self.directory else {}
+
+	def diagnose(self, request, probe=True, now=None, states=None):
+		'''
+		Warnings for the words of the request's line (before + after) already typed, most
+		important first, and whether the prober still owes answers for hosts on the line.
+
+		Args:
+			probe (bool): queue those hosts and start the prober (needs self.directory)
+			states: what is known about hosts (anything with get(host) -> HostState or None), instead
+				of what the prober wrote (the replay passes its own)
+
+		Returns:
+			tuple: (list of Diagnostic, pending)
+		'''
+		now = time.time() if now is None else now
+		line = request.before + request.after
+		tokens = lex(line)
+		start = _mssh_start(tokens)
+		if start is None:
+			return [], False
+		cursor = len(request.before)
+		words = tokens[start + 1:]
+		roles = assign_roles(words, self.spec)
+		states = self.host_states() if states is None else states
+		unavailable = read_unavailable(self.directory) if self.directory else frozenset()
+		reach = (unavailable,) + self._line_settings(words, roles)
+		wanted = []
+		found = []
+		options = []
+		def typing(token):
+			return token.start <= cursor <= token.start + len(token.raw)
+		for number, (token, (role, option)) in enumerate(zip(words, roles)):
+			if role == ROLE_OPTION and option is not None:
+				_, attached = self.spec.lookup(token.text)
+				value, value_done = attached, not typing(token)
+				if attached is None and number + 1 < len(words) and roles[number + 1][0] == ROLE_VALUE:
+					value, value_done = words[number + 1].text, not typing(words[number + 1])
+				options.append((token, option, _option_name(token.text, attached), value, not typing(token), value_done))
+			if typing(token):
+				# still being typed
+				continue
+			if role == ROLE_HOSTS:
+				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
+		found.extend(self._option_diagnostics(options))
+		wanted = _unique(wanted)
+		if probe and wanted and self.directory:
+			try:
+				queue_probes(self.directory, wanted)
+				spawn_probe(self.directory)
+			except OSError as e:
+				_debug('cannot queue hosts: {!r}'.format(e))
+		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
+		return found, bool(wanted)
+
+	def _host_diagnostics(self, token, states, now, wanted, reach):
+		'''
+		Unknown hosts, range surprises and unreachable hosts in a hosts word. reach is (the hosts
+		in mssh's unavailable list, whether they are skipped, the ping expiry, whether the line
+		names its own lookup files).
+		'''
+		def verdict(host):
+			answer = self._verdict(host, states, now, wanted)
+			return 'unsure' if answer == 'invalid' and self._mssh_may_know(host, reach) else answer
+		found = []
+		for name, (start, end) in _host_parts(token):
+			if not name or _ipv4_range(name):
+				# IP addresses only: nothing to say about them
+				continue
+			members = self._host_members(name)
+			if members is None:
+				if verdict(name) == 'invalid':
+					found.append(Diagnostic(start, end, 'unknown', self._unknown_message(name, states, now)))
+				else:
+					why = self._unreachable(name, states.get(name), now, reach)
+					if why:
+						found.append(Diagnostic(start, end, 'unreachable', why))
+			elif members:
+				members, total = members
+				verdicts = [verdict(member) for member in members]
+				item = self._range_diagnostic(name, members, verdicts, total, (start, end), states, now, wanted)
+				if item is not None:
+					found.append(item)
+				down = [member for member, verdict in zip(members, verdicts)
+					if verdict != 'invalid' and self._unreachable(member, states.get(member), now, reach)]
+				if down:
+					_, more = _punctuation()
+					shown = ', '.join(down[:3] + ([more] if len(down) > 3 else []))
+					found.append(Diagnostic(start, end, 'unreachable', '{}: {} unreachable ({})'.format(name, len(down), shown)))
+		return found
+
+	def _host_members(self, name):
+		'''
+		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
+		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
+		'''
+		number = self.hosts.alias_index(name)
+		if number is not None:
+			members = self.hosts.alias_members(number)
+			return members, len(members)
+		if '[' not in name:
+			return None
+		total = _range_count(name)
+		if total is None:
+			return ()
+		members = []
+		for member in _iter_range(name):
+			if len(members) >= RANGE_MEMBERS_LIMIT:
+				break
+			members.append(member)
+		return (members, total) if members != [name] else None
+
+	def _mssh_may_know(self, name, reach):
+		'''
+		Whether mssh may know a name the prober found nowhere: the line names its own hosts, env or
+		config files (mssh reads them at Enter, from the shell's directory), or the name is a variable
+		of the shell (the prober may have started from another shell).
+		'''
+		return reach[3] or name.rsplit('@', 1)[-1].strip().strip('$') in os.environ
+
+	def _valid_at_once(self, name):
+		'''An IP address or a hosts-file name: valid without DNS.'''
+		return bool(self.hosts.sources(name) & SRC_HOSTS_FILE) or _is_ip_address(name)
+
+	def _verdict(self, name, states, now, wanted):
+		'''
+		What is known about one host: 'valid', 'invalid', 'unsure', or '' (the prober is asked).
+		A host whose answer or ping is not fresh goes into wanted.
+		'''
+		state = states.get(name)
+		if self._valid_at_once(name):
+			# no DNS needed, only a ping
+			if state is None or not state.fresh_ping(now):
+				wanted.append(name)
+			return 'valid'
+		if needs_probe(state, now):
+			wanted.append(name)
+		return state.fresh_validity(now) if state is not None else ''
+
+	def _option_diagnostics(self, options):
+		'''
+		Conflicting options: two of one exclusive group (the later one is marked), a value option
+		given twice with different values (the earlier one), an option with no effect on this line
+		(OPTION_NO_EFFECT). options: (token, OptionSpec, name, value, word typed, value typed) per
+		option word, in order.
+		'''
+		found = []
+		on_line = {option.long for _, option, _, _, word_done, _ in options if word_done}
+		groups = {}
+		values = {}
+		for token, option, name, value, word_done, value_done in options:
+			if not word_done:
+				continue
+			span = (token.start, token.start + len(token.raw))
+			if option.group:
+				first = groups.setdefault(option.group, (option, name))
+				if first[0].long != option.long:
+					found.append(Diagnostic(span[0], span[1], 'options', '{} cannot be used with {} (mssh stops with an error)'.format(name, first[1])))
+			if option.nargs != '0' and not option.repeat and value is not None and value_done:
+				earlier = values.get(option.dest)
+				if earlier is not None and earlier[1] != value:
+					shown = 'the last one' if option.dest in PASSWORD_DESTS else value
+					found.append(Diagnostic(earlier[0].start, earlier[0].start + len(earlier[0].raw), 'options',
+						'{} given twice: mssh uses {}'.format(earlier[2], shown)))
+				values[option.dest] = (token, value, name)
+			for entry, kind, others, why in self.no_effect:
+				if entry != option.long:
+					continue
+				if kind == 'with':
+					applies = any(other in on_line for other in others)
+				else:
+					applies = not any(other in on_line or self._on_by_default(other) for other in others)
+				if applies:
+					found.append(Diagnostic(span[0], span[1], 'options', '{} does nothing: {}'.format(name, why)))
+		return found
+
+	def _on_by_default(self, string):
+		'''Whether a flag (by its long string) is on without being given: the mssh config turned it on.'''
+		option = self.spec.lookup(string)[0]
+		return option is not None and option.nargs == '0' and self.flag_sets.get(option.long) is True and self.flag_defaults.get(option.dest, False)
+
+	def _line_settings(self, words, roles):
+		'''
+		(whether unreachable hosts are skipped, the ping expiry in seconds, whether the line names
+		its own lookup files) for the options of a line.
+
+		Skipping: the last of -su / -nsu on the line, else the mssh config's default; --script
+		always skips (process_args); --ipmi never does (mssh reaches the host's BMC). Ping expiry:
+		$MSSH_COMPLETE_PING_TTL, else mssh's unreachable host expiry (-uhe on the line, else its
+		default). Lookup files: --env_file(s), --host_file, --config_file.
+		'''
+		flags = {}
+		expiry = None
+		lookup = False
+		for token, (role, option) in zip(words, roles):
+			if option is None:
+				continue
+			if role == ROLE_OPTION and option.dest in LOOKUP_DESTS:
+				lookup = True
+			if role == ROLE_OPTION and option.nargs == '0' and option.long in self.flag_sets:
+				flags[option.dest] = self.flag_sets[option.long]
+			elif option.dest == 'unavailable_host_expiry':
+				value = token.text if role == ROLE_VALUE else self.spec.lookup(token.text)[1]
+				if value is not None and _is_digits(value):
+					expiry = int(value)
+		def flag(dest):
+			return flags.get(dest, self.flag_defaults.get(dest, False))
+		skipping = (flag('script') or flag('skip_unreachable')) and not flag('ipmi')
+		ttl = os.environ.get('MSSH_COMPLETE_PING_TTL', '')
+		if _is_digits(ttl) and int(ttl) > 0:
+			expiry = int(ttl)
+		if expiry is None:
+			default = next((option.default for option in self.spec.options if option.dest == 'unavailable_host_expiry'), '')
+			expiry = int(default) if _is_digits(default) else 600
+		return skipping, expiry, lookup
+
+	def _unreachable(self, name, state, now, reach):
+		'''Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering ping.'''
+		unavailable, skipping, expiry, _ = reach
+		if name in unavailable:
+			dash, _ = _punctuation()
+			return '{}: {}unreachable in a recent mssh run'.format(name, 'will be skipped' + dash if skipping else '')
+		if (state is not None and state.fresh_ping(now) == 'silent' and state.answered_at
+				and now - state.answered_at <= expiry):
+			return '{}: no answer to ping (answered {} min ago)'.format(name, max(1, int((now - state.answered_at) // 60)))
+		return None
+
+	def _unknown_message(self, name, states, now):
+		dash, _ = _punctuation()
+		meant = self._did_you_mean(name, states, now)
+		return '{}: unknown host'.format(name) + (dash + 'did you mean {}?'.format(meant) if meant else '')
+
+	def _did_you_mean(self, name, states, now):
+		'''
+		The one known host name meant instead of name: the same once leading zeros are dropped
+		(gpu017 -> gpu17), else one edit away (names of at least 4 characters); None when there is
+		no such name or more than one.
+		'''
+		def possible(candidate):
+			state = states.get(candidate)
+			return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
+		stripped = _strip_zeros(name)
+		same = [candidate for candidate in self.hosts.names if candidate != name and _strip_zeros(candidate) == stripped and possible(candidate)]
+		if same:
+			return same[0] if len(same) == 1 else None
+		if len(name) < 4:
+			return None
+		close = [candidate for candidate in self.hosts.names
+			if abs(len(candidate) - len(name)) <= 1 and _one_edit(name, candidate) and possible(candidate)]
+		return close[0] if len(close) == 1 else None
+
+	def _range_diagnostic(self, name, members, verdicts, total, span, states, now, wanted):
+		'''The warning for a range or an alias with members mssh would reject (verdicts: theirs, in order), or None.'''
+		unknown = []
+		checked = 0
+		for member, verdict in zip(members, verdicts):
+			if verdict:
+				checked += 1
+				if verdict == 'invalid':
+					unknown.append(member)
+		if not unknown:
+			return None
+		dash, more = _punctuation()
+		if checked < total:
+			message = '{}: {} of {} checked, {} unknown so far'.format(name, checked, total, len(unknown))
+		else:
+			shown = ', '.join(unknown[:3] + ([more] if len(unknown) > 3 else []))
+			message = '{}: {} of {} hosts unknown ({})'.format(name, len(unknown), total, shown)
+			padded = _padded_range(name)
+			if padded is not None:
+				# every member is asked about, so the suggestion can appear once the prober answers
+				verdicts = [self._verdict(member, states, now, wanted) for member in _iter_range(padded)]
+				if all(verdict == 'valid' for verdict in verdicts):
+					message += dash + 'did you mean {}?'.format(padded)
+		return Diagnostic(span[0], span[1], 'range', message)
 
 	def suggest(self, request, deadline=None):
 		'''
@@ -2201,8 +3053,9 @@ def _clean(text):
 def format_response(response, nul=True):
 	'''
 	The response text: MSSHC1, a D line of directives, C lines (text\\tdescription\\tgroup, then
-	\\traw when bash escaping changed the text), an X line for delegation, then E, and a NUL unless
-	nul is False.
+	\\traw when bash escaping changed the text), a G line (grey text), W lines (warnings:
+	start\\tend\\tkind\\tmessage) and an R line (the reason line shown under the prompt), an X line
+	for delegation, then E, and a NUL unless nul is False.
 	'''
 	lines = [PROTOCOL]
 	if response.directives:
@@ -2213,6 +3066,11 @@ def format_response(response, nul=True):
 			lines.append('C {}\t{}\t{}{}'.format(candidate.text, _clean(candidate.description), candidate.group, raw))
 	if response.ghost is not None and safe_field(response.ghost.text) and '\t' not in response.ghost.text:
 		lines.append('G {}\t{}'.format(response.ghost.kind, response.ghost.text))
+	for item in response.diagnostics:
+		lines.append('W {}\t{}\t{}\t{}'.format(item.start, item.end, item.kind, _clean(item.message)[:MAX_MESSAGE]))
+	if response.diagnostics:
+		# the line shells show under the prompt, the same everywhere
+		lines.append('R ' + _clean(reason_line(response.diagnostics)))
 	if response.delegate is not None:
 		index, prefix, words = response.delegate
 		fields = [str(index), prefix] + list(words)
@@ -2241,9 +3099,15 @@ def engine_for(request, directory=Ellipsis, now=None):
 		knowledges.append(SnapshotKnowledge(index, now))
 		config = {row[0]: row[1:] for row in (index.row('config', number) for number in range(index.count('config'))) if row}
 		users = config.get('users', ())
+		flags = (_flag_values(config.get('flag_sets', ())), _flag_values(config.get('flag_defaults', ())))
+		no_effect = [(row[0], row[1], tuple(row[3:]), row[2]) for row in (index.row('no_effect', number) for number in range(index.count('no_effect'))) if len(row) >= 3]
 	else:
 		# degraded: no index, so options come from mssh's parser and history is not ranked
-		spec = spec_from_parser(_import_mssh().get_parser())
+		mssh = _import_mssh()
+		parser = mssh.get_parser()
+		spec = spec_from_parser(parser)
+		flags = flag_settings(parser)
+		no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]
 	if tail:
 		memory = MemoryKnowledge()
 		memory.add_history(tail, spec, now)
@@ -2254,6 +3118,9 @@ def engine_for(request, directory=Ellipsis, now=None):
 		knowledges.append(shell_history_knowledge(history, spec))
 	engine = Engine(spec, knowledges, HostTable(index), users)
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
+	engine.directory = directory
+	engine.flag_sets, engine.flag_defaults = flags
+	engine.no_effect = no_effect
 	return engine
 
 #%% ------------ Terminal ----------------
@@ -2558,8 +3425,10 @@ class Picker(object):
 	The Ctrl-R menu as state: a slot tab (candidates for the word at the cursor) and a history tab
 	(whole past invocations), a fuzzy filter and a selection. run() draws it below the prompt line.
 	'''
-	def __init__(self, slot_items, history_items, slot_title='', now=None, unicode=None):
+	def __init__(self, slot_items, history_items, slot_title='', now=None, unicode=None, warnings=()):
 		self.items = {'slot': list(slot_items), 'history': list(history_items)}
+		# up to three warnings about the line, shown under the title
+		self.warnings = [_printable(text) for text in list(warnings)[:3]]
 		self.titles = {'slot': slot_title or 'candidates', 'history': 'history'}
 		self.tab = 'slot' if self.items['slot'] else 'history'
 		self.query = ''
@@ -2632,6 +3501,9 @@ class Picker(object):
 		counter = ' {}/{} '.format(self.selected + 1 if matches else 0, len(matches))
 		fill = max(inner - text_width(title) - text_width(counter), 0)
 		lines = [fit(top_left + title + horizontal * fill + counter + top_right, width)]
+		for warning in self.warnings:
+			text = fit(' {} {}'.format('⚠' if self.unicode else '!', warning), inner)
+			lines.append(vertical + text + ' ' * (inner - text_width(text)) + vertical)
 		for number in range(self.offset, self.offset + rows):
 			if number >= len(matches):
 				lines.append(vertical + ' ' * (inner) + vertical)
@@ -2675,7 +3547,7 @@ class Picker(object):
 			str: 'choose', 'cancel', or 'unavailable' when the terminal is too small
 		'''
 		rows, width = term.size()
-		height = min(PICKER_ROWS, rows - 4)
+		height = min(PICKER_ROWS, rows - 4 - len(self.warnings))
 		if height < 1 or width < 20:
 			return 'unavailable'
 		up = 0
@@ -2695,7 +3567,7 @@ class Picker(object):
 			# while the menu is open the cursor shows where it is in the line
 			cursor = ('\x1b[{}A'.format(end_row - row) if end_row > row else '') + '\r' + ('\x1b[{}C'.format(column) if column else '')
 		# make room below the line (the screen may scroll), come back to the same column and save it
-		lines = height + 2
+		lines = height + 2 + len(self.warnings)
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		try:
 			draw = True
@@ -2710,6 +3582,23 @@ class Picker(object):
 				draw = not term.has_input()
 		finally:
 			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+
+def reason_line(diagnostics, unicode=None):
+	'''The one line shown under the prompt: the first warning, and how many more there are ('' for none).'''
+	if not diagnostics:
+		return ''
+	unicode = _unicode_terminal() if unicode is None else unicode
+	more = len(diagnostics) - 1
+	return '{} {}{}'.format('⚠' if unicode else '!', diagnostics[0].message, ' (+{} more)'.format(more) if more else '')
+
+def picker_warnings(engine, request):
+	'''Up to three warnings about the request's line, for the top of the picker.'''
+	try:
+		found, _ = engine.diagnose(Request(request.shell, request.before, request.after, ''))
+	except Exception as e:
+		_debug('diagnostics failed: {!r}'.format(e))
+		return []
+	return [item.message for item in found[:3]]
 
 def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
@@ -2759,12 +3648,11 @@ def picker_items(request, engine, history_lines, now=None):
 			continue
 		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
 		text = ' '.join([name] + parts)
-		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
-			continue
 		if text in seen:
+			# the same text passed the checks already: count it without parsing it again
 			seen[text][1] += 1
 			continue
-		if len(entries) >= HISTORY_LIMIT:
+		if len(entries) >= HISTORY_LIMIT or not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		overlap = len(features & set(entry.features())) if entry is not None else 0
@@ -2773,9 +3661,13 @@ def picker_items(request, engine, history_lines, now=None):
 		entries.append([overlap, ts, text])
 	shell_lines = request.history[::-1] if request.shell != 'fish' else request.history
 	for line in shell_lines:
+		if len(entries) >= HISTORY_LIMIT:
+			break
 		line = line.strip()
+		if line in seen:
+			continue
 		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and line not in seen and len(entries) < HISTORY_LIMIT and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
+		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
 			seen[line] = [len(entries), 1]
 			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
@@ -2908,17 +3800,23 @@ class LineEditor(object):
 	suggest(before) -> Ghost or None; complete(before) -> (candidate texts, word) where the texts
 	replace word at the end of before; pick(text, cursor, slot_only) -> (text, cursor) or None.
 	'''
-	def __init__(self, text, suggest=None, complete=None, pick=None):
+	def __init__(self, text, suggest=None, complete=None, pick=None, diagnose=None):
 		self.text = text
 		self.cursor = len(text)
 		self.prefix = len(text)
 		self.suggest = suggest
 		self.complete = complete
 		self.pick = pick
+		self.diagnose = diagnose
 		self.ghost = ''
 		self._ghost_for = None
 		# more typed keys are waiting (set by run): no suggestion is asked for until they are handled
 		self.busy = False
+		# warnings: spans of the text to underline, the line shown under it, when to ask again (monotonic)
+		self.marks = []
+		self.reason = ''
+		self._warned_for = None
+		self._asks = []
 
 	def refresh(self):
 		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
@@ -3041,7 +3939,50 @@ class LineEditor(object):
 		else:
 			return 'pass', raw
 		self.refresh()
+		self.refresh_warnings()
 		return None
+
+	def refresh_warnings(self, again=False):
+		'''
+		Ask for warnings about the line, unless more keys wait or the answer is for this line
+		already. While the prober still owes answers (pending), ask again WARNING_ASKS seconds
+		after the answer to a key; again: this is one of those asks (the schedule goes on).
+		'''
+		if self.diagnose is None or self.busy:
+			return
+		if not again and self._warned_for == (self.text, self.cursor):
+			return
+		try:
+			found, pending = self.diagnose(self.text, self.cursor)
+		except Exception as e:
+			_debug('warnings failed: {!r}'.format(e))
+			found, pending = [], False
+		self.marks = [(item.start, item.end) for item in found if 0 <= item.start < item.end <= len(self.text)]
+		self.reason = reason_line(found)
+		self._warned_for = (self.text, self.cursor)
+		if not pending:
+			self._asks = []
+		elif not again:
+			now = time.monotonic()
+			self._asks = [now + delay for delay in WARNING_ASKS]
+
+	def _wait(self):
+		'''Seconds until warnings are asked for again, or None (wait for a key).'''
+		return max(self._asks[0] - time.monotonic(), 0.0) if self._asks else None
+
+	def _marked_text(self):
+		'''The text with the warned spans underlined (in red unless NO_COLOR is set).'''
+		on = '\x1b[4m' if os.environ.get('NO_COLOR') else '\x1b[4;31m'
+		out = []
+		position = 0
+		for start, end in sorted(self.marks):
+			start = max(start, position)
+			if start >= end:
+				continue
+			out.append(self.text[position:start] + on + self.text[start:end] + '\x1b[0m')
+			position = end
+		out.append(self.text[position:])
+		return ''.join(out)
 
 	def _tab(self):
 		if self.complete is None:
@@ -3076,19 +4017,27 @@ class LineEditor(object):
 		return end_row + 1, cursor_row, cursor_column, end_column
 
 	def draw(self, term, prompt, style):
-		'''Draw the prompt's last line, the text and the grey suggestion; leave the cursor at the text's cursor.'''
+		'''
+		Draw the prompt's last line, the text (warned spans underlined), the grey suggestion and the
+		warning's reason on the row below; leave the cursor at the text's cursor.
+		'''
 		width = term.size()[1]
 		rows, cursor_row, cursor_column, end_column = self.layout(prompt, width)
 		ghost = (style + self.ghost + '\x1b[0m') if (style and self.ghost) else ''
+		reason = fit(_printable(self.reason), width - 1) if self.reason else ''
 		out = []
 		if getattr(self, '_row', 0):
 			out.append('\x1b[{}A'.format(self._row))
-		out.append('\r' + prompt + self.text + ghost + '\x1b[J')
+		out.append('\r' + prompt + self._marked_text() + ghost)
 		end_row = rows - 1
 		if end_column == width:
 			# the terminal waits to wrap until the next character: wrap now so moves are exact
-			out.append('\r\n')
+			out.append('\r\n' + reason)
 			end_row += 1
+		elif reason:
+			out.append('\x1b[K\r\n' + reason)
+			end_row += 1
+		out.append('\x1b[J')
 		if end_row > cursor_row:
 			out.append('\x1b[{}A'.format(end_row - cursor_row))
 		out.append('\r')
@@ -3112,9 +4061,17 @@ class LineEditor(object):
 		'''
 		self._row = 0
 		self.refresh()
+		self.refresh_warnings()
 		self.draw(term, prompt, style)
 		while True:
-			name, raw = term.read_key()
+			key = term.read_key(self._wait())
+			if key is None:
+				# the prober may have answered by now
+				self._asks.pop(0)
+				self.refresh_warnings(again=True)
+				self.draw(term, prompt, style)
+				continue
+			name, raw = key
 			self.busy = term.has_input()
 			outcome = self.handle(name, raw)
 			if outcome is not None:
@@ -3504,6 +4461,112 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		[[ " ${_ble_complete_auto_source[*]-} " == *' mssh '* ]] || _ble_complete_auto_source=(mssh ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"})
 	}
 	blehook/eval-after-load complete _mssh_complete_ble_source
+
+	_mssh_complete_warn_ranges=()
+	_mssh_complete_warn_key=
+	_mssh_complete_warn_delays=()
+
+	_mssh_complete_ble_warn_watch() {
+		# the finished words of the line ($1) changed: ask for warnings when ble.sh is idle
+		local before=${1::_ble_edit_ind} after=${1:_ble_edit_ind} key
+		# the line without the word at the cursor, which is still being typed
+		key=${before%"${before##*[[:space:]]}"}$'\1'${after#"${after%%[[:space:]]*}"}
+		[[ $key == "$_mssh_complete_warn_key" ]] && return 0
+		_mssh_complete_warn_key=$key
+		# while the prober works, ask again 0.3, 1 and 3 seconds after this answer
+		_mssh_complete_warn_delays=(300 700 2000)
+		ble/util/idle.cancel _mssh_complete_ble_warn_ask
+		ble/util/idle.push _mssh_complete_ble_warn_ask
+	}
+
+	_mssh_complete_ble_warn_ask() {
+		# idle task: ask the engine about the line, mark the words and show the reason line
+		local request=$_ble_base_run/$$.mssh-complete.warn.request answer=$_ble_base_run/$$.mssh-complete.warn.answer
+		local line reason= pending=0 status start
+		local -a ranges=() starts=()
+		if _mssh_complete_is_mssh "$_ble_edit_str"; then
+			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" > "$request" 2>/dev/null || return 0
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			status=$?
+			if ((status == 148)); then
+				# typing interrupted: ask again at the next redraw
+				_mssh_complete_warn_key=
+				return 0
+			fi
+			((status == 0)) || return 0
+			while IFS= read -r line; do
+				case $line in
+					'W '*)
+						_mssh_complete_split "${line:2}"
+						# one mark per start, in order
+						starts[_mssh_complete_fields[0]]=${_mssh_complete_fields[1]} ;;
+					'R '*) reason=${line:2} ;;
+					'D '*) [[ " ${line:2} " == *' pending '* ]] && pending=1 ;;
+				esac
+			done < "$answer"
+			for start in "${!starts[@]}"; do
+				ranges+=("$start" "${starts[start]}")
+			done
+		fi
+		_mssh_complete_warn_ranges=(${ranges[@]+"${ranges[@]}"})
+		ble/textarea#invalidate
+		_mssh_complete_ble_warn_info "$reason"
+		if ((pending && ${#_mssh_complete_warn_delays[@]})); then
+			ble/util/idle.push --sleep "${_mssh_complete_warn_delays[0]}" _mssh_complete_ble_warn_ask
+			_mssh_complete_warn_delays=("${_mssh_complete_warn_delays[@]:1}")
+		fi
+	}
+
+	_mssh_complete_ble_warn_info() {
+		# the reason line under the prompt, kept as ble.sh's default info and drawn now (as
+		# ble/edit/info/immediate-show does), the cursor left where it was
+		local ret pos
+		ble/edit/info/set-default text "$1"
+		[[ $_ble_edit_info_scene == default ]] && ble/edit/info/.rendering-enabled || return 0
+		ble/canvas/panel/save-position
+		pos=$ret
+		ble/edit/info#panel::render "$_ble_edit_info_panel"
+		ble/canvas/panel/load-position "$pos"
+		ble/util/buffer.flush
+	}
+
+	_mssh_complete_ble_warn_reset() {
+		# a new prompt: no warnings left from the last line
+		_mssh_complete_warn_ranges=()
+		_mssh_complete_warn_key=
+		ble/util/idle.cancel _mssh_complete_ble_warn_ask
+		ble/edit/info/set-default text ''
+	}
+
+	_mssh_complete_ble_warnings() {
+		# warnings for mssh lines: an mssh highlight layer marks the words, ble.sh's info line says why
+		declare -F ble/highlight/layer:{selection}/declare ble/util/idle.push ble/util/idle.cancel \
+			ble/edit/info/set-default ble/edit/info/.rendering-enabled ble/edit/info#panel::render \
+			ble/canvas/panel/save-position ble/canvas/panel/load-position ble/util/buffer.flush \
+			ble/array#insert-before ble/textarea#invalidate >/dev/null 2>&1 || return 0
+		if [[ -n ${NO_COLOR-} ]]; then
+			ble/color/defface mssh_warning underline
+		else
+			ble/color/defface mssh_warning underline,fg=red
+		fi
+		ble/highlight/layer:{selection}/declare mssh
+		function ble/highlight/layer:mssh/update {
+			_mssh_complete_ble_warn_watch "$1"
+			local -a sel=(${_mssh_complete_warn_ranges[@]+"${_mssh_complete_warn_ranges[@]}"}) gflags=()
+			local ret i
+			ble/color/face2g mssh_warning
+			for ((i = 0; i < ${#sel[@]} / 2; i++)); do
+				gflags[i]=$ret
+			done
+			ble/highlight/layer:{selection}/update mssh "$@"
+		}
+		function ble/highlight/layer:mssh/getg {
+			ble/highlight/layer:{selection}/getg mssh "$@"
+		}
+		[[ " ${_ble_highlight_layer_list[*]} " == *' mssh '* ]] || ble/array#insert-before _ble_highlight_layer_list region mssh
+		blehook PRECMD+=_mssh_complete_ble_warn_reset
+	}
+	_mssh_complete_ble_warnings
 elif [[ $- == *i* ]]; then
 	# readline counts READLINE_POINT in bytes before bash 5
 	_mssh_complete_bytes=0
@@ -3848,11 +4911,152 @@ _mssh_complete_ghost_setup() {
 	done
 }
 
+_mssh_complete_warn_unmark() {
+	# drop our marks (others' highlights stay)
+	local mark
+	for mark in "${_mssh_complete_warn_marks[@]}"; do
+		region_highlight=("${(@)region_highlight:#${(b)mark}}")
+	done
+	_mssh_complete_warn_marks=()
+}
+
+_mssh_complete_warn_clear() {
+	# drop our marks and the reason line (inside a widget)
+	_mssh_complete_warn_unmark
+	if [[ -n $_mssh_complete_warn_reason ]]; then
+		_mssh_complete_warn_reason=
+		zle -M ''
+	fi
+}
+
+_mssh_complete_warn_cancel() {
+	# forget the pending query for warnings
+	[[ -n $_mssh_complete_warn_fd ]] || return 0
+	zle -F $_mssh_complete_warn_fd 2>/dev/null
+	exec {_mssh_complete_warn_fd}<&- 2>/dev/null
+	_mssh_complete_warn_fd=
+}
+
+_mssh_complete_warn_ask() {
+	# ask for warnings about the line, after $1 hundredths of a second
+	_mssh_complete_warn_asked=$BUFFER$'\0'$CURSOR
+	exec {_mssh_complete_warn_fd}< <(
+		(( $1 > 0 )) && zselect -t $1
+		_mssh_complete_request 'diag=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine query 2>/dev/null)
+	# before zsh 5.8, a process substitution started while keys arrive (from the zle -F handler) can
+	# leave the shell out of the terminal's foreground: forcing a fork sets that right, as
+	# zsh-autosuggestions does (its issue 364)
+	(( _mssh_complete_warn_fork )) && command true
+	zle -F $_mssh_complete_warn_fd _mssh_complete_warn_ready
+}
+
+_mssh_complete_warn_redraw() {
+	# line-pre-redraw hook: ask for warnings when a finished word changed (zsh keeps the reason line
+	# shown by itself: drawing it again here would cover zsh's completion listings)
+	emulate -L zsh
+	setopt extended_glob
+	# the line without the word at the cursor, which is still being typed
+	local key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
+	[[ $key == "$_mssh_complete_warn_key" ]] && return 0
+	_mssh_complete_warn_key=$key
+	_mssh_complete_warn_cancel
+	if ! _mssh_complete_is_mssh "$BUFFER"; then
+		_mssh_complete_warn_clear
+		return 0
+	fi
+	# while the prober works, ask again 0.3, 1 and 3 seconds after this answer
+	_mssh_complete_warn_delays=(30 70 200)
+	_mssh_complete_warn_ask 0
+}
+
+_mssh_complete_warn_ready() {
+	# zle -F handler: the engine answered the query for warnings
+	emulate -L zsh
+	local fd=$1 resp= chunk line reason= pending=0
+	local -a marks fields
+	while sysread -i $fd chunk 2>/dev/null; do
+		resp+=$chunk
+	done
+	zle -F $fd
+	exec {fd}<&-
+	_mssh_complete_warn_fd=
+	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for line in "${(@f)resp}"; do
+		case $line in
+			('W '*)
+				fields=("${(@ps:\t:)${line#W }}")
+				marks+=("${fields[1]} ${fields[2]}") ;;
+			('R '*) reason=${line#R } ;;
+			('D '*) [[ " ${line#D } " == *' pending '* ]] && pending=1 ;;
+		esac
+	done
+	zle _mssh_complete_warn_answer -- "$pending" "$reason" "${marks[@]}"
+	return 0
+}
+
+_mssh_complete_warn_answer() {
+	# widget: show the warnings if the line is still the one asked about
+	emulate -L zsh
+	if [[ $BUFFER$'\0'$CURSOR != "$_mssh_complete_warn_asked" ]]; then
+		# keys since the question only changed the word being typed (else the redraw hook asked
+		# anew): ask about the line as it is now
+		_mssh_complete_warn_ask 0
+		return 0
+	fi
+	local pending=$1 reason=$2 mark style=underline,fg=red
+	shift 2
+	[[ -n ${NO_COLOR-} ]] && style=underline
+	_mssh_complete_warn_unmark
+	for mark in "$@"; do
+		_mssh_complete_warn_marks+=("$mark $style")
+	done
+	region_highlight+=("${_mssh_complete_warn_marks[@]}")
+	# one zle -M in a widget: after a second one zsh draws the line a row too high
+	if [[ -n $reason ]]; then
+		_mssh_complete_warn_reason=$reason
+		zle -M -- "$reason"
+	elif [[ -n $_mssh_complete_warn_reason ]]; then
+		_mssh_complete_warn_reason=
+		zle -M ''
+	fi
+	if (( pending && $#_mssh_complete_warn_delays )); then
+		_mssh_complete_warn_ask $_mssh_complete_warn_delays[1]
+		shift _mssh_complete_warn_delays
+	fi
+	zle -R
+}
+
+_mssh_complete_warn_finish() {
+	# line-finish hook: no warnings left on a line that was accepted
+	emulate -L zsh
+	_mssh_complete_warn_cancel
+	_mssh_complete_warn_clear
+	_mssh_complete_warn_key=
+}
+
+_mssh_complete_warn_setup() {
+	# warnings under the line (zsh 5.3 and later), with grey text from either source
+	emulate -L zsh
+	autoload -Uz is-at-least add-zle-hook-widget
+	is-at-least 5.3 || return 0
+	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
+	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason=
+	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
+	typeset -gi _mssh_complete_warn_fork=0
+	is-at-least 5.8 || _mssh_complete_warn_fork=1
+	zle -N _mssh_complete_warn_answer
+	zle -N _mssh_complete_warn_redraw
+	zle -N _mssh_complete_warn_finish
+	add-zle-hook-widget line-pre-redraw _mssh_complete_warn_redraw
+	add-zle-hook-widget line-finish _mssh_complete_warn_finish
+}
+
 _mssh_complete_setup() {
 	# precmd, once, at the first prompt (plugins loaded after the mssh block are there by then):
-	# Ctrl-R, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
+	# Ctrl-R, warnings, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
 	add-zsh-hook -d precmd _mssh_complete_setup
 	_mssh_complete_take_ctrl_r
+	_mssh_complete_warn_setup
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
 		_mssh_complete_zas_strategy
 	else
@@ -3932,8 +5136,8 @@ switch "$FISH_VERSION"
 end
 '''
 
-FISH_KEYS_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ fish keys: Ctrl-R picker for mssh (multiSSH3), protocol MSSHC1
-# Generated by `mssh --completion fish`. Loading it defines functions; Ctrl-R is taken at the first prompt.
+FISH_KEYS_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ fish keys: Ctrl-R picker and warnings for mssh (multiSSH3), protocol MSSHC1
+# Generated by `mssh --completion fish`. Loading it defines functions; Ctrl-R and space are taken at the first prompt.
 switch "$FISH_VERSION"
 	case '1.*' '2.*'
 		# needs fish 3.0 or later: take nothing
@@ -3995,6 +5199,69 @@ switch "$FISH_VERSION"
 					set -g __mssh_complete_previous_$mode $words
 					bind -M $mode \cr "__mssh_complete_ctrl_r $mode"
 				end
+			end
+			function __mssh_complete_echo
+				# print $argv's output under the command line, then redraw the prompt (fish's __fish_echo, which fish 3.3 lacks)
+				set -l line (commandline --line)
+				string >&2 repeat -N \n --count=(math (commandline | count) - $line + 1)
+				$argv >&2
+				string >&2 repeat -N \n --count=(math (count (fish_prompt)) - 1)
+				string >&2 repeat -N \n --count=(math $line - 1)
+				commandline -f repaint
+			end
+			function __mssh_complete_check
+				# after a space: the first warning about an mssh line, printed under it when it changes
+				set -l full (string join \n -- (commandline))
+				set -l reason
+				if __mssh_complete_is_mssh "$full"
+					set -l before (string join \n -- (commandline -c))
+					set -l after (string sub -s (math (string length -- "$before") + 1) -- "$full")
+					set -l keep 1000
+					set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
+					set -l timeout_cmd
+					if command -sq timeout
+						set -l limit 0.3
+						set -q MSSH_COMPLETE_TIMEOUT; and set limit $MSSH_COMPLETE_TIMEOUT
+						set timeout_cmd timeout $limit
+					end
+					set -l lines (begin
+						command printf '%s\0' MSSHC1 fish $FISH_VERSION "diag=1 nul=0 term=$TERM" "$before" "$after" ''
+						history -n $keep 2>/dev/null
+					end | $timeout_cmd @ENGINE@ query 2>/dev/null)
+					if test (count $lines) -ge 2; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E
+						for line in $lines
+							string match -q 'R *' -- $line; and set reason (string sub -s 3 -- $line)
+						end
+					end
+				end
+				test "$reason" = "$__mssh_complete_reason"; and return
+				set -g __mssh_complete_reason $reason
+				test -n "$reason"; and __mssh_complete_echo printf '%s\n' $reason
+			end
+			function __mssh_complete_take_space --on-event fish_prompt
+				# at the first prompt: space does what it did, then checks the line. Not on fish 3, which
+				# inserts nothing for self-insert in a binding that also runs a function
+				functions -e __mssh_complete_take_space
+				string match -qr '^3\.' -- $FISH_VERSION; and return
+				for mode in default insert
+					set -l line (bind -M $mode ' ' 2>/dev/null)
+					test (count $line) -ge 1; or continue
+					string match -q '*__mssh_complete_check*' -- "$line[-1]"; and continue
+					eval "set -g __mssh_complete_words -- $line[-1]"
+					set -l words $__mssh_complete_words[2..-1]
+					set -e __mssh_complete_words
+					while set -q words[1]; and string match -q -- '-*' $words[1]
+						contains -- $words[1] -M --mode -m --sets-mode; and set -e words[1]
+						set -e words[1]
+					end
+					set -e words[1]
+					set -q words[1]; or continue
+					bind -M $mode ' ' $words __mssh_complete_check
+				end
+			end
+			function __mssh_complete_new_line --on-event fish_prompt
+				# a new prompt: the next warning is printed even if it is the last line's
+				set -e __mssh_complete_reason
 			end
 		end
 end
@@ -4459,6 +5726,59 @@ def format_report(totals):
 				float(total['divergent']) / (total['shown'] or 1)))
 	return '\n'.join(lines)
 
+def diagnostics_replay(lines, spec, validity, hosts=None, now=None):
+	'''
+	Replay history lines through the warnings. validity(name) -> 'valid', 'invalid' or 'unsure'
+	stands in for the prober (asked once per host); there is no ping and no unavailable list.
+
+	Returns:
+		dict: lines (replayed), warned (kind -> lines with such a warning), unknown (host -> {'lines':
+			lines naming it, 'meant': the host suggested or None}), checked (verdict -> hosts)
+	'''
+	now = time.time() if now is None else now
+	engine = Engine(spec, [], hosts)
+	verdicts = {}
+
+	class Answers(object):
+		'''host -> HostState, as the prober would have found it: validity(name), could not ping.'''
+		def get(self, name, default=None):
+			if name not in verdicts:
+				verdicts[name] = validity(name)
+			return HostState(verdicts[name], now, 'none', now)
+
+	answers = Answers()
+	report = {'lines': 0, 'warned': {kind: 0 for kind in DIAGNOSTIC_KINDS}, 'unknown': {}, 'checked': {}}
+	for line in lines:
+		fields = line.rstrip('\r\n').split('\t')
+		if len(fields) != 5:
+			continue
+		text = ' '.join(['mssh'] + [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']) + ' '
+		found, _ = engine.diagnose(Request('bash', text, '', ''), probe=False, now=now, states=answers)
+		report['lines'] += 1
+		for kind in set(item.kind for item in found):
+			report['warned'][kind] += 1
+		for item in found:
+			if item.kind == 'unknown':
+				name = item.message.split(':', 1)[0]
+				entry = report['unknown'].setdefault(name, {'lines': 0, 'meant': engine._did_you_mean(name, answers, now)})
+				entry['lines'] += 1
+	for verdict in verdicts.values():
+		report['checked'][verdict] = report['checked'].get(verdict, 0) + 1
+	return report
+
+def format_diagnostics_report(report):
+	'''The diagnostics replay as text: what was checked, which lines would warn, the hosts mssh would reject.'''
+	checked = report['checked']
+	out = ['warnings over {} history lines (DNS, no ping)'.format(report['lines']),
+		'  hosts checked: {} (valid {}, unsure {}, invalid {})'.format(sum(checked.values()), checked.get('valid', 0), checked.get('unsure', 0), checked.get('invalid', 0)),
+		'  lines warned: ' + ', '.join('{} {}'.format(kind, report['warned'][kind]) for kind in DIAGNOSTIC_KINDS)]
+	if report['unknown']:
+		out.append('  hosts mssh would reject:')
+		for name, entry in sorted(report['unknown'].items(), key=lambda item: (-item[1]['lines'], item[0])):
+			meant = '  (did you mean {}?)'.format(entry['meant']) if entry['meant'] else ''
+			out.append('    {}  {} line{}{}'.format(name, entry['lines'], '' if entry['lines'] == 1 else 's', meant))
+	return '\n'.join(out) + '\n'
+
 def synthetic_history(seed=1, entries=1500, start=1700000000):
 	'''
 	A deterministic ~/.mssh_history with known structure: host groups each with their own commands,
@@ -4534,7 +5854,7 @@ def _cmd_pick():
 		slot, title, history, word = picker_items(request, engine, history_lines, now)
 		if not slot and not history:
 			return 2
-		picker = Picker(slot, history, title, now)
+		picker = Picker(slot, history, title, now, warnings=picker_warnings(engine, request))
 		prompt = _prompt_from_flags(request.flags)
 		line = before = None
 		if prompt is not None:
@@ -4640,14 +5960,17 @@ def _cmd_edit(args):
 		slot, title, items, word = picker_items(request, engine, cache['history'])
 		if not slot and (slot_only or not items):
 			return None
-		picker = Picker(slot, [] if slot_only else items, title)
+		picker = Picker(slot, [] if slot_only else items, title, warnings=picker_warnings(engine, request))
 		editor.erase(term)
 		outcome = picker.run(term, prompt + text, prompt + text[:cursor])
 		if outcome != 'choose':
 			return None
 		return apply_pick(request, picker, word, parse_context(request.before, request.after, engine.spec))
 
-	editor = LineEditor(options.text, suggest, complete, pick)
+	def diagnose(text, cursor):
+		return engine.diagnose(Request('bash', text[:cursor], text[cursor:], ''))
+
+	editor = LineEditor(options.text, suggest, complete, pick, diagnose)
 	try:
 		with term:
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
@@ -4679,6 +6002,24 @@ def _cmd_rebuild(args):
 			except OSError:
 				pass
 
+def _cmd_probe(args):
+	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	try:
+		directory = cache_dir()
+		if directory is None:
+			return 1
+		run_probe(directory, lock)
+		return 0
+	except Exception as e:
+		_debug('probe failed: {!r}'.format(e))
+		return 1
+	finally:
+		if lock:
+			try:
+				os.unlink(lock)
+			except OSError:
+				pass
+
 def _cmd_eval(args):
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete eval', description='Replay mssh history and report how much typing completion saves.')
@@ -4686,6 +6027,7 @@ def _cmd_eval(args):
 	parser.add_argument('--since', type=int, default=0, help='only replay entries from this unix time on')
 	parser.add_argument('--limit', type=int, default=300, help='replay at most this many of the newest entries')
 	parser.add_argument('--synthetic', action='store_true', help='replay a generated history instead')
+	parser.add_argument('--diagnostics', action='store_true', help='replay the warnings instead, looking hosts up in DNS (no ping): lists the hosts mssh would reject')
 	options = parser.parse_args(args)
 	mssh = _import_mssh()
 	spec = spec_from_parser(mssh.get_parser())
@@ -4693,8 +6035,18 @@ def _cmd_eval(args):
 		lines = synthetic_history()
 	else:
 		lines, _, _ = read_history(os.path.expanduser(options.history_file or mssh.DEFAULT_HISTORY_FILE))
+	if options.diagnostics:
+		lines = [line for line in lines if _entry_time(line) >= options.since][-options.limit:]
+		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
+		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
+		return 0
 	print(format_report(evaluate(lines, spec, options.since, options.limit)))
 	return 0
+
+def _entry_time(line):
+	'''The unix time an mssh history line starts with, 0 when it has none.'''
+	head = line.split('\t', 1)[0]
+	return int(head) if _is_digits(head) else 0
 
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv
@@ -4703,6 +6055,8 @@ def main(argv=None):
 		return _cmd_query()
 	if command == 'rebuild':
 		return _cmd_rebuild(argv[1:])
+	if command == 'probe':
+		return _cmd_probe(argv[1:])
 	if command == 'eval':
 		return _cmd_eval(argv[1:])
 	if command == 'pick':
@@ -4714,7 +6068,7 @@ def main(argv=None):
 	if command in ('-V', '--version'):
 		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
 		return 0
-	print('usage: mssh-complete query | pick | edit TEXT | rebuild | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
+	print('usage: mssh-complete query | pick | edit TEXT | rebuild | probe | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
 	return 2
 
 if __name__ == '__main__':

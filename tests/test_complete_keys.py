@@ -4,6 +4,7 @@ SP2 in real shells: grey suggestions, the Ctrl-R picker and the plain-bash mssh 
 Every shell gets a private HOME holding an mssh history where one invocation clearly dominates,
 so the engine's suggestion for "mssh gp" is the whole line u[01-16] "nvidia-smi".
 '''
+import os
 import re
 import subprocess
 import time
@@ -244,6 +245,18 @@ def test_editor_shows_and_accepts_the_suggestion(home):
 		session.close()
 
 
+def test_editor_marks_an_unknown_host_and_says_why(home):
+	env, home = home
+	# the prober found gpu017 does not exist
+	mc.write_host_states(os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3'), {'gpu017': mc.HostState('invalid', time.time())})
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+	finally:
+		session.close()
+
+
 def test_editor_enter_runs_what_was_typed(home):
 	env, home = home
 	session = editor_session(env, home)
@@ -354,6 +367,32 @@ def test_blesh_suggests_from_the_engine(home):
 		session.close()
 
 
+def test_blesh_marks_an_unknown_host_and_says_why(home):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = blesh_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
+		session.read_until(b'@@never@@', 1)
+		assert underlined(session, 'gpu017')
+	finally:
+		session.close()
+
+
+def test_blesh_warning_appears_when_the_prober_answers(home):
+	env, home = home
+	session = blesh_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu099 ')
+		time.sleep(0.2)
+		known(env, gpu099='invalid')
+		# no key pressed: the glue asks again while the prober works
+		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 15)
+	finally:
+		session.close()
+
+
 def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 	env, home = home
 	session = blesh_session(home, env, glue_file(home, 'bash'))
@@ -426,6 +465,132 @@ def test_zsh_hands_grey_text_to_zsh_autosuggestions_loaded_later(home):
 		session.close()
 
 
+def runtime(env):
+	return os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3')
+
+
+def known(env, **validities):
+	"""Host states as the prober would write them (no prober runs in these tests: make_home)."""
+	mc.write_host_states(runtime(env), {host: mc.HostState(validity, time.time()) for host, validity in validities.items()})
+
+
+def rendered(session):
+	"""The terminal after everything the session printed."""
+	from vt_grid import Grid
+	grid = Grid(24, 80)
+	grid.feed(session.output.decode('utf-8', 'replace'))
+	return grid
+
+
+def screen(session):
+	return rendered(session).lines()
+
+
+def underlined(session, text):
+	"""Whether text is on screen with every character underlined."""
+	grid = rendered(session)
+	for row, line in enumerate(grid.lines()):
+		column = line.find(text)
+		if column >= 0:
+			styles = grid.styles(row)[column:column + len(text)]
+			return all('4' in style.split(';') for style in styles)
+	return False
+
+
+@pytest.mark.parametrize('zas', [False, True], ids=['own', 'zsh-autosuggestions'])
+def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home, zas)
+	try:
+		session.send('mssh gpu017 ')
+		output = session.read_until('unknown host'.encode(), 10)
+		assert '⚠ gpu017: unknown host' in plain(output)
+		# the host is underlined
+		assert underlined(session, 'gpu017')
+	finally:
+		session.close()
+
+
+def test_zsh_warning_appears_when_the_prober_answers(home):
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu099 ')
+		time.sleep(0.2)
+		known(env, gpu099='invalid')
+		# no key pressed: the glue asks again while the prober works
+		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 10)
+	finally:
+		session.close()
+
+
+def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
+	env, home = home
+	known(env, gpu017='invalid', gpu17='valid')
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu017 ')
+		assert 'unknown host' in session.read_until('unknown host'.encode(), 10)
+		session.send('\x7f' * 7 + 'gpu17 ')
+		session.read_until(b'gpu17 ', 10)
+		time.sleep(1)
+		session.read_until(b'@@never@@', 0.5)
+		assert not [row for row in screen(session) if 'unknown host' in row]
+	finally:
+		session.close()
+
+
+def settled(session, quiet=1.0):
+	"""The non-empty rows of the screen once the session printed nothing more for a while."""
+	time.sleep(quiet)
+	session.read_until(b'@@never@@', 0.5)
+	return [row.rstrip() for row in screen(session) if row.strip()]
+
+
+@pytest.mark.parametrize('keys, below', [
+	# the next word finished, typed or completed: the line keeps its row, the reason stays under it
+	('uptime ', '⚠ gpu017: unknown host'),
+	('upt\t', '⚠ gpu017: unknown host'),
+	# TAB lists as on any line
+	('--ipmi_\t', '--ipmi_method'),
+], ids=['next-word', 'tab-completes', 'tab-lists'])
+def test_zsh_keys_on_a_warned_line(home, keys, below):
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu017 ')
+		session.read_until('unknown host'.encode(), 10)
+		time.sleep(0.5)
+		session.send(keys)
+		rows = settled(session)
+		assert rows[0].startswith('@@READY@@ mssh gpu017 ') and any(below in row for row in rows[1:]), rows[:4]
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('known_before, delay', [(False, 0.2), (True, 0.0), (True, 0.12)], ids=['answered-while-typing', 'known-typed-at-once', 'known-typed-quickly'])
+def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, delay):
+	# the answer comes back after the next key, which only changed the word being typed: zsh asks again
+	env, home = home
+	if known_before:
+		known(env, gpu099='invalid')
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gpu099 ')
+		if not known_before:
+			time.sleep(0.2)
+			known(env, gpu099='invalid')
+		for char in 'uptime':
+			session.send(char)
+			time.sleep(delay)
+		rows = settled(session, 3)
+		assert rows[0] == '@@READY@@ mssh gpu099 uptime' and any('gpu099: unknown host' in row for row in rows[1:]), rows[:4]
+	finally:
+		session.close()
+
+
 def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 	env, home = make_home(tmp_path, ["17900000{:02d}\t/x/multiSSH3.py\t-su -f='my file.txt'\tnode1\t/tmp".format(number) for number in range(6)])
 	build_index(env)
@@ -468,6 +633,36 @@ def test_zsh_picker_leaves_keys_typed_after_the_choice(home):
 
 
 # ---------------------------------------------------------------- fish
+
+def fish_major():
+	output = subprocess.run([require_shell('fish'), '--version'], stdout=subprocess.PIPE, universal_newlines=True).stdout
+	return int(re.search(r'(\d+)\.', output).group(1))
+
+
+def test_fish_says_why_a_host_is_unknown_once(home):
+	if fish_major() < 4:
+		pytest.skip('fish 3 keeps its space key (self-insert does nothing next to a function): warnings only in the picker')
+	env, home = home
+	known(env, gpu017='invalid')
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE))
+	try:
+		session.send('mssh gpu017 ')
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		# the space was typed, and the same warning is not printed again at the next one
+		assert printed(session, 'uptime ') == 'mssh gpu017 uptime '
+		assert plain(session.output.decode('utf-8', 'replace')).count('gpu017: unknown host') == 1
+	finally:
+		session.close()
+
+
+def test_fish_space_still_expands_abbreviations(home):
+	env, home = home
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre="abbr -a gg 'git grep'")
+	try:
+		assert printed(session, 'gg ') == 'git grep '
+	finally:
+		session.close()
+
 
 def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 	env, home = home

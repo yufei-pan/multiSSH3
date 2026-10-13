@@ -272,3 +272,56 @@ def test_expand_prompt_takes_only_octal_digits():
 ])
 def test_readline_keyseq(raw, keyseq):
 	assert mc.readline_keyseq(raw) == keyseq
+
+
+UNKNOWN = [mc.Diagnostic(5, 11, 'unknown', 'gpu017: unknown host')]
+
+
+@pytest.fixture
+def warning_terminal(monkeypatch):
+	monkeypatch.delenv('NO_COLOR', raising=False)
+	monkeypatch.setattr(mc, '_unicode_terminal', lambda: True)
+
+
+@pytest.mark.parametrize('no_color, style', [(False, '4;31'), (True, '4')])
+def test_a_warning_underlines_its_span_and_explains_below(warning_terminal, monkeypatch, no_color, style):
+	if no_color:
+		monkeypatch.setenv('NO_COLOR', '1')
+	edit = editor('mssh gpu017 ', diagnose=lambda text, cursor: (UNKNOWN, False))
+	term = FakeTerminal([])
+	edit.refresh_warnings()
+	edit.draw(term, '$ ', None)
+	assert term.grid.lines()[:2] == ['$ mssh gpu017', '⚠ gpu017: unknown host']
+	assert [column for column, cell in enumerate(term.grid.styles(0)) if cell] == list(range(7, 13))
+	assert term.grid.styles(0)[7] == style and term.grid.cursor == (0, 14)
+	edit.erase(term)
+	assert term.grid.lines()[:2] == ['', '']
+
+
+def test_while_the_prober_works_the_editor_asks_again(warning_terminal):
+	answers = [([], True), ([], True), (UNKNOWN, False)]
+	asked = []
+	seen = []
+
+	def diagnose(text, cursor):
+		asked.append(text)
+		return answers.pop(0) if answers else (UNKNOWN, False)
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append(self.grid.lines()[1])
+			return FakeTerminal.read_key(self, timeout)
+
+	term = Watching([None, None, '\r'])
+	assert editor('mssh gpu017 ', diagnose=diagnose).run(term, '$ ') == ('pass', b'\r')
+	# at 0.3 s and 1 s after the first answer (the fake terminal lets no time pass); the third answer is
+	# not pending, so the editor waits for keys
+	assert len(asked) == 3 and term.timeouts == [pytest.approx(0.3, abs=0.1), pytest.approx(1.0, abs=0.1)]
+	assert seen[-1] == '⚠ gpu017: unknown host'
+
+
+def test_no_warnings_are_asked_for_while_keys_wait(warning_terminal):
+	asked = []
+	edit = editor('mssh ', diagnose=lambda text, cursor: (asked.append((text, cursor)) or ([], False)))
+	assert edit.run(FakeTerminal(['abc', '\r']), '$ ') == ('pass', b'\r')
+	assert asked == [('mssh ', 5), ('mssh abc', 8)]

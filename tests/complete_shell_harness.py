@@ -1,11 +1,14 @@
 '''Drive real shells for the autocomplete tests: a pseudo-terminal session, or a direct call.'''
+import fcntl
 import os
 import pty
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 
@@ -25,11 +28,18 @@ def require_shell(name):
 	return path
 
 def make_home(tmp_path, history_lines=()):
-	'''A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).'''
+	'''
+	A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).
+
+	The prober's lock is taken, so no prober runs (no DNS, no ping): tests that want answers about
+	hosts write host-state.tsv themselves.
+	'''
 	home = tmp_path / 'home'
 	runtime = tmp_path / 'runtime'
 	home.mkdir()
 	runtime.mkdir(mode=0o700)
+	(runtime / 'multiSSH3').mkdir(mode=0o700)
+	(runtime / 'multiSSH3' / 'probe.lock').write_text('')
 	(home / '.mssh_history').write_text(''.join(line + '\n' for line in history_lines))
 	env = {
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
@@ -47,6 +57,8 @@ class Session(object):
 		self.print_key = print_key
 		self.pid, self.fd = pty.fork()
 		if self.pid == 0:
+			# a real terminal has a size (ble.sh sizes its panels from it)
+			fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
 			if cwd:
 				os.chdir(str(cwd))
 			os.execvpe(argv[0], argv, env)

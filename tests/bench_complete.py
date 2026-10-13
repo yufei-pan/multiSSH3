@@ -124,6 +124,17 @@ def main():
 				timings.append((time.monotonic() - started) * 1000)
 			timings.sort()
 			print('suggest {!r:30} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
+		# warnings: the query alone (the prober's lock is held, so no prober competes for the CPU)
+		(runtime / 'multiSSH3' / 'probe.lock').write_text('')
+		for line in ('mssh node00042 uptime ', 'mssh node[00001-00100] uptime ', 'mssh -u root node00042,nodeX uptime '):
+			request = 'MSSHC1\0bash\x005.2\0diag=1 nul=0\0{}\0\0\0'.format(line).encode()
+			timings = []
+			for _ in range(15):
+				started = time.monotonic()
+				subprocess.run(engine + ['query'], input=request, env=env, stdout=subprocess.DEVNULL, check=True)
+				timings.append((time.monotonic() - started) * 1000)
+			timings.sort()
+			print('warnings {!r:34} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
 		interactive(engine, env)
 	finally:
 		shutil.rmtree(str(tmp), ignore_errors=True)

@@ -220,3 +220,68 @@ def test_slot_items_inside_an_open_quote_in_every_shell(shell):
 	other = mc.picker_items(mc.Request(shell, before, '', None), engine(), HISTORY)
 	assert [item.text for item in bash[0]] == ['df -h /data']
 	assert [item.text for item in other[0]] == ['df -h /data'] and other[3] == bash[3]
+
+
+WARNINGS = ['gpu017: unknown host — did you mean gpu17?', 'node05: unreachable in a recent mssh run', '-nsu cannot be used with -su', 'one more']
+
+
+def test_render_lists_up_to_three_warnings_under_the_title():
+	picker = mc.Picker(items('gpu01', 'gpu02'), [], 'hosts', now=NOW, unicode=True, warnings=WARNINGS)
+	lines = picker.render(60, 2)
+	assert len(lines) == 1 + 3 + 2 + 1
+	assert lines[1].startswith('│ ⚠ gpu017: unknown host') and lines[3].startswith('│ ⚠ -nsu cannot') and 'one more' not in ''.join(lines)
+	assert 'gpu01' in lines[4] and all(mc.text_width(text) <= 60 for text in lines)
+	assert mc.Picker(items('gpu01'), [], 'hosts', unicode=False, warnings=WARNINGS[:1]).render(60, 1)[1].startswith('| ! gpu017')
+
+
+def test_run_makes_room_for_the_warnings():
+	grid = Grid(24, 80)
+	grid.feed('$ mssh gpu017 ')
+	seen = []
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append(grid.lines())
+			return FakeTerminal.read_key(self, timeout)
+
+	picker = mc.Picker(items('nvidia-smi'), [], 'commands', unicode=True, warnings=WARNINGS[:1])
+	assert picker.run(Watching(['\x1b'], grid=grid)) == 'cancel'
+	assert ' commands ' in seen[0][1] and 'gpu017: unknown host' in seen[0][2] and 'nvidia-smi' in seen[0][3]
+	assert grid.lines()[1:] == [''] * 23
+
+
+@pytest.mark.parametrize('unicode, expected', [(True, '⚠ a (+2 more)'), (False, '! a (+2 more)')])
+def test_reason_line_shows_the_first_warning_and_counts_the_rest(unicode, expected):
+	found = [mc.Diagnostic(0, 1, 'unknown', 'a'), mc.Diagnostic(2, 3, 'range', 'b'), mc.Diagnostic(4, 5, 'options', 'c')]
+	assert mc.reason_line(found, unicode) == expected
+	assert mc.reason_line(found[:1], unicode) == expected[:3]
+	assert mc.reason_line([], unicode) == ''
+
+
+def test_picker_warnings_come_from_the_line(tmp_path, monkeypatch):
+	monkeypatch.setattr(mc, 'boot_id', lambda: 'boot-a')
+	monkeypatch.setattr(mc, '_unicode_terminal', lambda: True)
+	monkeypatch.setattr(mc.time, 'time', lambda: NOW)
+	monkeypatch.setattr(mc, 'spawn_probe', lambda directory: True)
+	warned = engine()
+	warned.directory = str(tmp_path)
+	mc.write_host_states(str(tmp_path), {'gpu017': mc.HostState('invalid', NOW)})
+	assert mc.picker_warnings(warned, mc.Request('bash', 'mssh gpu017 ', '', '')) == ['gpu017: unknown host']
+
+
+def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
+	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed
+	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 10)
+	lex = mc.lex
+
+	def parses(count):
+		history = [line(NOW - number, '-su', 'node{}'.format(number), 'uptime') for number in range(count)]
+		shell = ['mssh -su host{} date'.format(number) for number in range(count)]
+		built = engine()
+		parsed = []
+		monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))
+		_, _, items, _ = mc.picker_items(request('mssh ', history=shell), built, history)
+		monkeypatch.setattr(mc, 'lex', lex)
+		assert len(items) == 10
+		return len(parsed)
+	assert parses(2000) == parses(20)
