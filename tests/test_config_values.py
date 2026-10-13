@@ -301,6 +301,9 @@ def test_internal_names_among_the_settings_cannot_be_set(tmp_path):
 		("DEFAULT_IPMI_DEFINITIONS = [get_default_ipmi_definition()]\n", "_BUILTIN_IPMI_DEFINITION = get_default_ipmi_definition()\n"),
 		("__DEBUG_MODE = False\n", "DEFAULT_NEW_SETTING = 5\n"),
 	]:
+		if added.partition(' = ')[0] + ' = ' in source:
+			# merged with the change that adds it: the real one is tested
+			continue
 		assert source.count(anchor) == 1
 		source = source.replace(anchor, anchor + added)
 	(tmp_path / "merged.py").write_text(source)
