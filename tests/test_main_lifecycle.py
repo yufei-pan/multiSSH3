@@ -378,3 +378,48 @@ def test_ctrl_c_during_the_first_command_skips_the_next(monkeypatch):
 		no_history=True, called=False, will_update_unreachable_hosts=False)
 
 	assert ran == ["first"]
+
+
+def _main_with_unreachable_cached(monkeypatch, tmp_path, unreachable, argv):
+	'''Run main(argv) with unreachable cached as recently unreachable; returns (exit code, hosts run on).'''
+	path = tmp_path / "unavailable.csv"
+	expiry = int(multiSSH3.time.monotonic() + 300)
+	path.write_text("#boot_id,boot-a\n" + "".join("{},{}\n".format(name, expiry) for name in unreachable))
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(path))
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
+	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
+	ran = []
+
+	def succeed(host, sem, timeout=60, passwds=None, **kwargs):
+		ran.append(host.name)
+		host.stdout.append("ok")
+		host.returncode = 0
+
+	monkeypatch.setattr(multiSSH3, "run_command", succeed)
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(argv + ["--no_watch", "--no_history", "-ef", str(tmp_path / "none.env")])
+	return exc_info.value.code, ran
+
+
+def test_main_fails_when_a_host_is_skipped_as_unreachable(monkeypatch, tmp_path, capsys):
+	code, ran = _main_with_unreachable_cached(monkeypatch, tmp_path, ["web1"], ["web1,app1", "systemctl restart x"])
+
+	err = capsys.readouterr().err
+	assert ran == ["app1"]
+	assert code == 1
+	assert "All hosts returned 0" not in err
+	assert "failed_hosts: web1" in err
+	assert "Skipped 1 host unreachable in a recent run, without trying it: web1" in err
+
+
+def test_script_mode_does_not_report_success_when_hosts_were_skipped(monkeypatch, tmp_path, capsys):
+	code, ran = _main_with_unreachable_cached(monkeypatch, tmp_path, ["web1", "app1"], ["--script", "web1,app1", "deploy --now"])
+
+	out = capsys.readouterr().out
+	assert ran == []
+	assert code == 2
+	assert "Success" not in out
+	assert "rc: 255" in out and "unreachable" in out

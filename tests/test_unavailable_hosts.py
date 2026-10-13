@@ -331,3 +331,107 @@ def test_run_without_updating_the_cache_creates_no_cache_directory(cache_dirs, m
 
 	assert list(runtime_dir.iterdir()) == []
 	assert list(temp_dir.iterdir()) == []
+
+
+def _cache_unreachable(monkeypatch, tmp_path, *names):
+	'''Use a cache file in tmp_path that lists names as unreachable for 300 more seconds.'''
+	path = tmp_path / "unavailable.csv"
+	expiry = int(multiSSH3.time.monotonic() + 300)
+	path.write_text("#boot_id,boot-a\n" + "".join("{},{}\n".format(name, expiry) for name in names))
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(path))
+	return path
+
+
+def _record_runs(monkeypatch):
+	'''Hosts resolve to themselves and every command succeeds; returns the names run_command ran on.'''
+	ran = []
+
+	def succeed(host, sem, timeout=60, passwds=None, **kwargs):
+		ran.append(host.name)
+		host.stdout.append("ok")
+		host.returncode = 0
+
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setattr(multiSSH3, "run_command", succeed)
+	return ran
+
+
+def test_library_call_returns_hosts_skipped_as_unreachable_as_failed(monkeypatch, tmp_path):
+	path = _cache_unreachable(monkeypatch, tmp_path, "mock-a")
+	ran = _record_runs(monkeypatch)
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-a,mock-b", commands=["true"], no_watch=True,
+		no_output=True, no_history=True, called=True)
+
+	by_name = {host.name: host for host in hosts}
+	assert ran == ["mock-b"]
+	assert sorted(by_name) == ["mock-a", "mock-b"]
+	skipped = by_name["mock-a"]
+	# ssh's own code for a host it could not reach: callers checking returncode see the failure
+	assert skipped.returncode == 255
+	assert skipped.skipped is True
+	assert skipped.command == "true"
+	assert "unreachable" in skipped.stderr[0]
+	assert by_name["mock-b"].returncode == 0 and by_name["mock-b"].skipped is False
+	# skipping a host does not make it count as reachable
+	assert "mock-a" in multiSSH3._read_unavailable_hosts_file(str(path))
+
+
+def test_hosts_skipped_in_every_command_of_a_run_are_returned_for_each(monkeypatch, tmp_path):
+	_cache_unreachable(monkeypatch, tmp_path, "mock-a")
+	ran = _record_runs(monkeypatch)
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-a,mock-b", commands=["first", "second"], no_watch=True,
+		no_output=True, no_history=True, called=True)
+
+	assert sorted((host.name, host.command, host.returncode) for host in hosts) == [
+		("mock-a", "first", 255), ("mock-a", "second", 255), ("mock-b", "first", 0), ("mock-b", "second", 0)]
+	assert ran == ["mock-b", "mock-b"]
+
+
+def test_interactive_run_returns_hosts_skipped_as_unreachable(monkeypatch, tmp_path):
+	_cache_unreachable(monkeypatch, tmp_path, "mock-a")
+	_record_runs(monkeypatch)
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-a,mock-b", commands=None, no_watch=True,
+		no_output=True, no_history=True, called=True)
+
+	assert sorted((host.name, host.returncode) for host in hosts) == [("mock-a", 255), ("mock-b", 0)]
+
+
+def test_host_skipped_as_unreachable_is_not_started_later(monkeypatch, tmp_path):
+	_cache_unreachable(monkeypatch, tmp_path, "mock-a")
+	ran = _record_runs(monkeypatch)
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-a,mock-b", commands=["true"], no_start=True, no_watch=True,
+		no_output=True, no_history=True, called=True)
+
+	for thread in multiSSH3.start_run_on_hosts(hosts, timeout=5):
+		thread.join(5)
+
+	assert ran == ["mock-b"]
+	assert sorted((host.name, host.returncode) for host in hosts) == [("mock-a", 255), ("mock-b", 0)]
+
+
+def test_skip_hosts_leaves_out_a_host_that_is_also_unreachable(monkeypatch, tmp_path):
+	_cache_unreachable(monkeypatch, tmp_path, "mock-a")
+	_record_runs(monkeypatch)
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-a,mock-b", commands=["true"], skip_hosts="mock-a",
+		no_watch=True, no_output=True, no_history=True, called=True)
+
+	assert [host.name for host in hosts] == ["mock-b"]
+
+
+def test_skipped_host_is_printed_with_the_failures(monkeypatch, tmp_path, capsys):
+	_cache_unreachable(monkeypatch, tmp_path, "mock-a")
+	_record_runs(monkeypatch)
+
+	multiSSH3.run_command_on_hosts(hosts="mock-a,mock-b", commands=["true"], no_watch=True, error_only=True,
+		greppable=True, no_output=False, no_history=True, called=False)
+
+	out = capsys.readouterr().out
+	assert "Success" not in out
+	assert "mock-a" in out and "rc: 255" in out and "unreachable" in out
+	assert "mock-b" not in out

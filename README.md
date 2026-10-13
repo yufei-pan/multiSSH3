@@ -610,6 +610,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Note: Timedout Hosts are considered unreachable.
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
+- A skipped host is not run and counts as a failed host: it shows return code 255 ( what ssh returns when it cannot connect ) with a line saying it was skipped, and the summary lists it after `failed_hosts:` as `Skipped N hosts unreachable in a recent run, without trying them: ...`. So mssh does not exit 0 or print `Success` when it skipped a host.
 - mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in `$XDG_RUNTIME_DIR/multiSSH3/`, or else in a private `multiSSH3-<uid>` folder in the system temp folder ( cleared at reboot ). If neither can be used, they are only kept for the current run.
 - To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
 
@@ -843,7 +844,11 @@ class Host:
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
+		self.skipped = False # True when mssh did not run the command: the host was unreachable in a recent run
 ```
+
+A host skipped because it was unreachable in a recent run ( see `-x, --skip_unreachable` ) is in the returned list without being run: its `skipped` is `True`, its `returncode` is 255 and its `stderr` says why. `start_run_on_hosts()` does not start it.
 
 ### Example:
 

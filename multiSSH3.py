@@ -726,6 +726,7 @@ class Host:
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
 		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
+		self.skipped = False # True when mssh did not run the command: the host was unreachable in a recent run
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -765,6 +766,7 @@ class Host:
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
 		newHost.interactive_stdin = self.interactive_stdin
+		newHost.skipped = self.skipped
 		return newHost
 
 #%% ------------ Exportable Help Functions ----------------
@@ -2754,9 +2756,10 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 		max_connections (int, optional): The maximum number of concurrent SSH sessions. Defaults to 4 * os.cpu_count().
 
 	Returns:
-		list: A list of threads that get started
+		list: A list of threads that get started. Hosts skipped as unreachable are not started.
 	'''
 	global __thread_start_delay
+	hosts = [host for host in hosts if not host.skipped]
 	if len(hosts) == 0:
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
@@ -4068,6 +4071,9 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
+	# hosts skipped as unreachable are not run, only reported with the others
+	skipped_hosts = [host for host in hosts if host.skipped]
+	hosts = [host for host in hosts if not host.skipped]
 	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
@@ -4133,6 +4139,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			__globalUnavailableHosts.update(canonical_unavailable)
 			if __DEBUG_MODE:
 				print(f'Unreachable hosts: {unavailableHosts}')
+		hosts = skipped_hosts + hosts
 		if pre_merge:
 			# merge copies, the caller's hosts must keep one entry per real host for failure counts
 			hosts = pre_merge_hosts([host.copy() for host in hosts])
@@ -4432,6 +4439,29 @@ def _normalize_max_connections(max_connections):
 		normalized = safe_limit
 	return normalized
 
+# what a host skipped as unreachable returns: ssh's code for a host it could not connect to
+_SKIPPED_HOST_RETURN_CODE = 255
+
+def _mark_skipped_unreachable(host, expiry):
+	'''
+	Mark host as not run because it was unreachable in a recent run, which counts as a failure.
+
+	Args:
+		host (Host): The host, not started
+		expiry (int): When the host stops being skipped, in time.monotonic() seconds
+
+	Returns:
+		Host: host, finished with _SKIPPED_HOST_RETURN_CODE and a stderr line saying why
+	'''
+	seconds_left = max(0, int(expiry - time.monotonic()))
+	message = ('Skipped: unreachable in a recent run, not tried again for another {} s '
+		'(-a, --no_skip_unreachable tries it now)'.format(seconds_left))
+	host.skipped = True
+	host.stderr.append(message)
+	host.output.append(message)
+	host.returncode = _SKIPPED_HOST_RETURN_CODE
+	return host
+
 
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
@@ -4465,7 +4495,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		gather_mode (bool): Gather files from hosts (pull mode). Default: False.
 		username (str or None): Username for SSH/IPMI. Default: DEFAULT_USERNAME.
 		extraargs (str or list or None): Extra args for SSH/SCP/rsync. Default: DEFAULT_EXTRA_ARGS.
-		skip_unreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
+		skip_unreachable (bool): Skip hosts marked as unreachable (they fail with 255). Default: DEFAULT_SKIP_UNREACHABLE.
 		no_env (bool): Do not load environment variables from shell. Default: DEFAULT_NO_ENV.
 		greppable (bool): Output in greppable table format. Default: DEFAULT_GREPPABLE_MODE.
 		will_update_unreachable_hosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
@@ -4486,7 +4516,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		no_output (bool): If True, do not print output after execution. Default: called.
 
 	Returns:
-		list: List of Host objects representing each host/command run.
+		list: List of Host objects representing each host/command run. A host skipped because it was
+			unreachable in a recent run is in the list too, not run: its skipped is True, its
+			returncode 255 and its stderr says why.
 	"""
 	global __globalUnavailableHosts
 	global __global_suppress_printout
@@ -4641,6 +4673,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			file = list(pathSet)
 		if __DEBUG_MODE:
 			eprint(f"Files: {file!r}")
+	def recently_unreachable(host):
+		'''Whether host is skipped (not run, a failure) because it was unreachable in a recent run.'''
+		return not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic()
 	if oneonone:
 		hosts = []
 		# skipped hosts get no command, unreachable hosts keep their command slot and are skipped below
@@ -4655,14 +4690,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint('-'*80)
 			eprint("Running in one on one mode")
 		for host, command in zip(orderedHosts, commands):
-			if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
-				eprint(f"Skipping unavailable host: {host}")
-				continue
 			if file_sync:
-				hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host]))
+				new_host = Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host])
 			else:
-				hosts.append(Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
-			if not __global_suppress_printout: 
+				new_host = Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
+			hosts.append(new_host)
+			if recently_unreachable(host):
+				eprint(f"Skipping unavailable host: {host}")
+				_mark_skipped_unreachable(new_host, unavailableHosts[host])
+			elif not __global_suppress_printout: 
 				eprint(f"Running command: {command!r} on host: {host!r}")
 		if not __global_suppress_printout:
 			eprint('-'*80)
@@ -4679,10 +4715,6 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			# run in interactive mode ssh mode
 			hosts = []
 			for host in targetHostDic:
-				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
-					if not __global_suppress_printout:
-						eprint(f"Skipping unavailable host: {host}")
-					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
 				if file_sync:
@@ -4691,7 +4723,12 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				elif file:
 					eprint("Error: files need to be specified with at least one path to sync")
 				else:
-					hosts.append(Host(host, '', files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host]))
+					new_host = Host(host, '', files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host])
+					hosts.append(new_host)
+					if recently_unreachable(host):
+						if not __global_suppress_printout:
+							eprint(f"Skipping unavailable host: {host}")
+						_mark_skipped_unreachable(new_host, unavailableHosts[host])
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -4711,16 +4748,17 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				break
 			hosts = []
 			for host in targetHostDic:
-				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
-					if not __global_suppress_printout:
-						eprint(f"Skipping unavailable host: {host}")
-					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
 				if file_sync:
-					hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
+					new_host = Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
 				else:
-					hosts.append(Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
+					new_host = Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
+				hosts.append(new_host)
+				if recently_unreachable(host):
+					if not __global_suppress_printout:
+						eprint(f"Skipping unavailable host: {host}")
+					_mark_skipped_unreachable(new_host, unavailableHosts[host])
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -5252,6 +5290,8 @@ def main(args = None):
 	# between runs, a long --repeat loop must not hold every run's output
 	failedHostNames = set()
 	succeededHosts = set()
+	# hosts not run because they were unreachable in a recent run, they are failed hosts too
+	skippedHostNames = set()
 	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
 	if not args.no_history:
 		record_command_history(vars(args))
@@ -5269,6 +5309,8 @@ def main(args = None):
 		for host in run_command_on_hosts(**runArgs,called=False):
 			if host.returncode and host.returncode != 0:
 				failedHostNames.add(host.name)
+				if host.skipped:
+					skippedHostNames.add(host.name)
 			else:
 				succeededHosts.add(host.name)
 	# each failing host counts once, however many runs or commands it failed
@@ -5280,6 +5322,11 @@ def main(args = None):
 		if not __global_suppress_printout: 
 			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
 			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts))}')
+			if skippedHostNames:
+				eprint('Skipped {} unreachable in a recent run, without trying {}: {}'.format(
+					'1 host' if len(skippedHostNames) == 1 else '{} hosts'.format(len(skippedHostNames)),
+					'it' if len(skippedHostNames) == 1 else 'them',
+					','.join(compact_hostnames_local(skippedHostNames))))
 	else:
 		if not __global_suppress_printout: 
 			eprint('Complete. All hosts returned 0.')
