@@ -1,3 +1,4 @@
+import argparse
 import random
 import shlex
 
@@ -52,13 +53,40 @@ def test_lookup(text, dest, value):
 	('mssh grp "a | gre', '', 'command', None, 'a | gre'),
 	('mssh grp ls -', '', 'command', None, '-'),
 	("mssh grp 'uptime' -", '', 'option', None, '-'),
-	('mssh -- -x', '', 'command', None, '-x'),
+	('mssh -- -x', '', 'hosts', None, '-x'),
+	('mssh h -- -x', '', 'command', None, '-x'),
 ])
 def test_slot(before, after, slot, dest, value):
 	context = mc.parse_context(before, after, SPEC)
 	assert context.slot == slot
 	assert (context.option.dest if context.option else None) == dest
 	assert context.value == value
+
+
+@pytest.mark.parametrize('before, slot, value', [
+	# "--" ends the options, not the hosts: argparse still reads the next word as the hosts
+	('mssh -- ', 'hosts', ''),
+	('mssh -- gp', 'hosts', 'gp'),
+	('mssh -u root -- ', 'hosts', ''),
+	('mssh -q -- gp', 'hosts', 'gp'),
+	# the README's mssh -fs -- allServers ./data/: "--" keeps -fs from taking the hosts
+	('mssh -fs -- all', 'hosts', 'all'),
+	('mssh -fs -- allServers ./da', 'command', './da'),
+	# and a dash after it starts no option
+	('mssh -- -', 'hosts', '-'),
+	('mssh -- gpu1 ', 'command', ''),
+	('mssh -- gpu1 -', 'command', '-'),
+	('mssh gpu1 -- -', 'command', '-'),
+])
+def test_slot_after_double_dash(before, slot, value):
+	context = mc.parse_context(before, '', SPEC)
+	assert (context.slot, context.value) == (slot, value)
+
+
+def test_a_command_after_double_dash_and_hosts_starts_at_its_first_word():
+	context = mc.parse_context('mssh -- gpu1 systemctl rest', '', SPEC)
+	assert context.hosts == 'gpu1'
+	assert (context.command_words, context.command_word_index) == (['systemctl', 'rest'], 1)
 
 
 def test_program_name_has_no_context():
@@ -137,6 +165,87 @@ def test_roles_agree_with_argparse():
 		commands = [token.text for token, (role, _) in zip(tokens, roles) if role == 'command']
 		assert hosts == ([parsed.hosts] if parsed.hosts != multiSSH3.DEFAULT_HOSTS or 'all' in words else []), words
 		assert commands == parsed.commands, words
+
+
+# what mssh's argparse makes of "--" (Python 3.12 and later): it ends the options, the next word
+# is still the hosts, and every later word is a positional, a dash word or another "--" included.
+# Python 3.6 (parse_known_args) agrees but for a second "--", which it drops.
+DOUBLE_DASH_LINES = [
+	('-- h c', 'h', ['c']),
+	('-- h c d', 'h', ['c', 'd']),
+	('h -- c', 'h', ['c']),
+	('h -- -x', 'h', ['-x']),
+	('-u x -- h c', 'h', ['c']),
+	('-k -- h c', 'h', ['c']),
+	('-fs -- allServers ./data/', 'allServers', ['./data/']),
+	('h -u y -- c', 'h', ['c']),
+	('h c -- -x', 'h', ['c', '-x']),
+	('h c -- -u y', 'h', ['c', '-u', 'y']),
+	('-- -weirdhost c', '-weirdhost', ['c']),
+	('-- h -u y', 'h', ['-u', 'y']),
+	('-- -u y', '-u', ['y']),
+	('-- h -- c', 'h', ['--', 'c']),
+	('-- -- c', '--', ['c']),
+	('-- h --config_file x', 'h', ['--config_file', 'x']),
+]
+
+
+def _roles_as_argparse_values(line):
+	tokens = mc.lex(line)
+	roles = mc.assign_roles(tokens, SPEC)
+	hosts = [token.text for token, (role, _) in zip(tokens, roles) if role == 'hosts']
+	commands = [token.text for token, (role, _) in zip(tokens, roles) if role == 'command']
+	return hosts, commands
+
+
+@pytest.mark.parametrize('line, hosts, commands', DOUBLE_DASH_LINES)
+def test_roles_after_double_dash(line, hosts, commands):
+	assert _roles_as_argparse_values(line) == ([hosts], commands)
+
+
+def _intermixed_reads_options_after_double_dash():
+	'''Python 3.7 to 3.11's parse_intermixed_args drops a "--" in front of the positionals and reads the options after it.'''
+	parser = argparse.ArgumentParser()
+	parser.add_argument('hosts', nargs='?')
+	parser.add_argument('-o', action='store_true')
+	return parser.parse_intermixed_args(['--', '-o']).o
+
+
+def _modern_intermixed_parser():
+	parser = multiSSH3.get_parser()
+	if not hasattr(parser, 'parse_intermixed_args'):
+		pytest.skip('Python 3.6 has no parse_intermixed_args; mssh falls back to parse_known_args there')
+	if _intermixed_reads_options_after_double_dash():
+		pytest.skip("this Python's parse_intermixed_args reads options after a leading --; Python 3.12 does not")
+	return parser
+
+
+@pytest.mark.parametrize('line, hosts, commands', DOUBLE_DASH_LINES)
+def test_double_dash_lines_are_what_mssh_parses(line, hosts, commands):
+	parsed = _modern_intermixed_parser().parse_intermixed_args(shlex.split(line))
+	assert (parsed.hosts, parsed.commands) == (hosts, commands)
+
+
+def test_roles_agree_with_argparse_around_double_dash():
+	parser = _modern_intermixed_parser()
+	rng = random.Random(11)
+	checked = 0
+	for words in _generated_lines(150, seed=13):
+		words.insert(rng.randint(0, len(words)), '--')
+		try:
+			parsed = parser.parse_intermixed_args(words)
+		except SystemExit:
+			continue
+		checked += 1
+		hosts, commands = _roles_as_argparse_values(' '.join(shlex.quote(word) for word in words))
+		assert hosts == ([parsed.hosts] if parsed.hosts != multiSSH3.DEFAULT_HOSTS or 'all' in words else []), words
+		assert commands == parsed.commands, words
+	assert checked > 100
+
+
+def test_shell_history_reads_hosts_after_double_dash():
+	features = mc.line_features(mc.lex('-u root -- gpu1 uptime'), SPEC)
+	assert 'h:gpu1' in features and 'c:uptime' in features and not any(feature.startswith('c:gpu1') for feature in features)
 
 
 

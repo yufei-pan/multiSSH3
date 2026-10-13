@@ -102,6 +102,13 @@ def test_unquoted_command_words():
 	assert response.delegate == (1, '', ['systemctl', 'rest'])
 
 
+def test_double_dash_leaves_the_hosts_first():
+	# argparse reads the word after "--" as the hosts, then the command
+	assert texts(query('mssh -- lo')) == ['login1']
+	assert texts(query('mssh -u root -- login1 up')) == ['uptime']
+	assert query('mssh -- login1 systemctl rest').delegate == (1, '', ['systemctl', 'rest'])
+
+
 def test_quoted_command_delegates_with_prefix():
 	assert query('mssh h "cat x | gre', word='cat x | gre').delegate == (0, 'cat x | ', ['gre'])
 

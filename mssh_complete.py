@@ -319,6 +319,10 @@ def assign_roles(words, spec, current=None):
 	words[current] is the word being completed: a dash starting it means an option name,
 	except after unquoted command words, where it belongs to the remote command.
 
+	The first "--" ends the options, as in argparse (Python 3.12+; 3.6's parse_known_args too):
+	every later word is the hosts, when no word was yet, or a command word, dashes and another
+	"--" included.
+
 	Returns:
 		list: (role, OptionSpec or None) per word
 	'''
@@ -338,14 +342,11 @@ def assign_roles(words, spec, current=None):
 			if not dashed:
 				roles.append((ROLE_VALUE, option))
 				continue
-		if after_separator:
-			roles.append((ROLE_COMMAND, None))
-			continue
-		if text == '--' and not is_current:
+		if text == '--' and not is_current and not after_separator:
 			roles.append((ROLE_SEPARATOR, None))
 			after_separator = True
 			continue
-		if dashed:
+		if dashed and not after_separator:
 			if is_current and command_seen and not commands_quoted:
 				roles.append((ROLE_COMMAND, None))
 				continue
