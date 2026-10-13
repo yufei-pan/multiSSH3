@@ -332,3 +332,22 @@ def test_etc_hosts_from_a_config_must_map_names_to_addresses(tmp_path, capsys):
 
 	assert multiSSH3.load_config_file(str(path)) == {}
 	assert "_etc_hosts" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("key", ["DEFAULT_PASSWORD", "DEFAULT_SKIP_HOSTS", "DEFAULT_ENV_FILE", "DEFAULT_IPMI_ARGS",
+	"DEFAULT_IPMI_USERNAME", "DEFAULT_IPMI_INTERFACE_IP_PREFIX", "DEFAULT_SSH_KEY_SEARCH_PATH", "DEFAULT_HISTORY_FILE",
+	"DEFAULT_HOST_FILE", "DEFAULT_IPMI_METHOD", "DEFAULT_ENCODING"])
+def test_null_for_a_string_setting_means_its_built_in_value(tmp_path, capsys, key):
+	# mssh ran with these before they were checked; null reads as "not set"
+	path = _write_config(tmp_path / "multiSSH3.config.json", {key: None})
+
+	assert multiSSH3.load_config_file(str(path)) == {key: multiSSH3._BUILTIN_SETTINGS[key]}
+	assert "Warning" not in capsys.readouterr().err
+
+
+def test_null_hosts_in_a_config_still_means_no_default_hosts(tmp_path, capsys):
+	# not the built-in "all": with null, a command typed without hosts ran on none
+	path = _write_config(tmp_path / "multiSSH3.config.json", {"DEFAULT_HOSTS": None})
+
+	assert multiSSH3.load_config_file(str(path)) == {"DEFAULT_HOSTS": None}
+	assert "Warning" not in capsys.readouterr().err

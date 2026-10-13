@@ -634,9 +634,13 @@ def _check_config_value(name, value):
 		return ','.join(value), None
 	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
 		return value, None
-	if value is None and (kind is type(None) or name == 'DEFAULT_MAX_CONNECTIONS'):
-		# --store_config_file writes null for the built-in max_connections
+	if value is None and (kind is type(None) or name in ('DEFAULT_MAX_CONNECTIONS', 'DEFAULT_HOSTS')):
+		# --store_config_file writes null for the built-in max_connections; null hosts runs a command
+		# typed without hosts on none (not on the built-in "all"), as it always did
 		return None, None
+	if value is None and kind is str:
+		# a string setting mssh ran with as null before values were checked: null reads as "not set"
+		return _BUILTIN_SETTINGS[name], None
 	if kind is bool:
 		if isinstance(value, bool):
 			return value, None
