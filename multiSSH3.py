@@ -3514,6 +3514,9 @@ def can_merge(line_bag1, line_bag2, threshold):
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
+	# indexes keeps the hosts in natural order: min() below takes the first of the hosts furthest
+	# behind, so lines only some hosts printed come in host order, not in the random order of a set
+	merging_hostnames = sorted(merging_hostnames, key=_natural_sort_key)
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
@@ -3551,7 +3554,10 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
 		defer = False
-		golden_hostname = min(working_index_keys, key=indexes.get)
+		if len(working_index_keys) == len(indexes):
+			golden_hostname = min(indexes, key=indexes.get)
+		else:
+			golden_hostname = min(filter(working_index_keys.__contains__, indexes), key=indexes.get)
 		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
 		buddy = currentLines[lineToAdd].copy()
@@ -3604,10 +3610,11 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 	output.append(color_line+'─'*(line_length)+color_reset)
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
-	for merging_hostnames in merge_groups:
+	# groups, then the hosts that merged with none, each in natural host order (node2 before node10)
+	for merging_hostnames in sorted(merge_groups, key=lambda group: min(map(_natural_sort_key, group))):
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append(color_line+'─'*(line_length)+color_reset)
-	for hostname in remaining_hostnames:
+	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
@@ -3721,7 +3728,8 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 	merge_groups = []
 	remaining_hostnames = set()
 	for lbl_i, line_bag_len in enumerate(sorted_hostnames_by_line_bag_len_keys):
-		for this_hostname in hostnames_by_line_bag_len.get(line_bag_len, set()).copy():
+		# in natural order, not a set's: which hosts form a group depends on the host it starts from
+		for this_hostname in sorted(hostnames_by_line_bag_len.get(line_bag_len, ()), key=_natural_sort_key):
 			# if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
 			# 	continue
 			try:
