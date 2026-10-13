@@ -502,6 +502,37 @@ def test_command_exiting_1_after_ssh_connect_words_does_not_mark_the_host(fake_h
 
 	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
 
+
+@pytest.mark.parametrize("returncode, files, stderr", [
+	(124, None, ["Resolved name: mock-a", "Running command: ssh -- mock-a sleep 9", "Timeout!"]),
+	(255, None, ["Resolved name: mock-a", "Running command: ssh -- mock-a true",
+		"ssh: connect to host mock-a port 22: No route to host"]),
+	# --debug keeps the failed rsync attempt's lines before scp's
+	(1, ["f.txt"], ["Resolved name: mock-a", "Running command: rsync -ahlX f.txt mock-a:/tmp/",
+		"ssh: connect to host mock-a port 22: No route to host", "rsync: connection unexpectedly closed",
+		"Rsync connection failed! Trying SCP connection...", "Resolved name: mock-a",
+		"Running command: scp -rp f.txt mock-a:/tmp/", "ssh: connect to host mock-a port 22: No route to host",
+		"lost connection"]),
+])
+def test_debug_lines_do_not_hide_an_unreachable_host(fake_host, monkeypatch, tmp_path, returncode, files, stderr):
+	# with --debug mssh writes its own lines to stderr before the command's
+	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
+	host = fake_host("mock-a", "/tmp/" if files else "true", files=files)
+	host.returncode = returncode
+	host.stderr = stderr
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+
+
+def test_debug_lines_do_not_count_as_the_command_printing(fake_host, monkeypatch, tmp_path):
+	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
+	host = fake_host("mock-a", "true")
+	host.returncode = 124
+	host.stderr = ["Resolved name: mock-a", "Running command: ssh -- mock-a make", "make: warning: jobserver unavailable",
+		"Timeout!"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
+
 def test_ssh_connect_error_splits_only_ssh_own_line():
 	# the same helper as patch/ssh-error-text's, so the two merge into one
 	assert multiSSH3._ssh_connect_error(" ssh: connect to host web1 port 22: No route to host\n") == (

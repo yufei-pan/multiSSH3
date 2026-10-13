@@ -4080,27 +4080,44 @@ _SSH_UNREACHABLE_REASONS = ('No route to host', 'Connection timed out')
 # older OpenSSH's message when a ProxyJump host cannot reach the target
 _SSH_JUMP_UNREACHABLE = re.compile(r'channel \d+: open failed: connect failed: (?:No route to host|Connection timed out)')
 
+def _last_run_stderr(host):
+	'''
+	The stderr lines the host's last command run printed.
+
+	With --debug, mssh writes its own lines to stderr too (Resolved name: ..., Running command: ...)
+	and keeps a failed attempt's lines before the retry's: the last "Running command: " line, written
+	just before the command starts, is where the last run's lines begin.
+	'''
+	if not __DEBUG_MODE:
+		return host.stderr
+	for index in range(len(host.stderr) - 1, -1, -1):
+		if host.stderr[index].startswith('Running command: '):
+			return host.stderr[index + 1:]
+	return host.stderr
+
 def _found_unreachable(host):
 	'''
 	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
 
 	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
 	cannot be reached (scp's legacy protocol exits with 1); a remote command printing the same
-	words (curl: ... No route to host) did reach its host. A command stopped by the timeout (-t) counts too if nothing at all came
-	back before it: a host that never answers looks like that, but so does a command that was
-	quiet from the start, which mssh cannot tell apart. Output means the host answered.
+	words (curl: ... No route to host) did reach its host. A command stopped by the timeout (-t)
+	counts too if nothing at all came back before it: a host that never answers looks like that,
+	but so does a command that was quiet from the start, which mssh cannot tell apart. Output
+	means the host answered.
 	'''
+	stderr = _last_run_stderr(host)
 	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits with 1, not 255
 	ssh_failed = host.returncode == 255 or (bool(host.files) and host.returncode == 1)
-	if ssh_failed and host.stderr:
-		first_line = host.stderr[0].strip()
+	if ssh_failed and stderr:
+		first_line = stderr[0].strip()
 		connect_error = _ssh_connect_error(first_line)
 		if (connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS) or _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
 			return True
-	if host.returncode != 124 or host.stdout or not host.stderr:
+	if host.returncode != 124 or host.stdout or not stderr:
 		return False
 	# a stderr line before the timeout's means the host answered, lines after it come from stopping the command
-	return host.stderr[0].strip().startswith('Timeout!')
+	return stderr[0].strip().startswith('Timeout!')
 
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
