@@ -5129,7 +5129,8 @@ _mssh_complete_setup() {
 }
 
 _mssh_complete_zas_strategy() {
-	# zsh-autosuggestions asks mssh first
+	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
+	emulate -L zsh
 	(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 

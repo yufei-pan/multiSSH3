@@ -5,6 +5,7 @@ zsh parses what it sources in the options of the moment: sh_glob, ignore_braces 
 earlier changed what the glue meant (a parse error, an `exec {fd}<` that ran a command named {fd},
 a compdef never called). Loading the glue must leave the operator's options and aliases as they were.
 '''
+import os
 import re
 import subprocess
 import time
@@ -146,3 +147,22 @@ def test_zsh_works_whatever_options_the_operator_set(tmp_path, option):
 	finally:
 		session.close()
 
+
+ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
+
+
+def test_zsh_keeps_the_operators_suggestion_strategies_under_ksh_arrays(tmp_path):
+	# the glue puts mssh first among zsh-autosuggestions' strategies at the first prompt, in the
+	# operator's options: ksh_arrays kept only the first of theirs
+	if not os.path.isfile(ZAS):
+		if 'zas' in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
+			pytest.fail('zsh-autosuggestions is required here but not at ' + ZAS)
+		pytest.skip('zsh-autosuggestions is not installed at ' + ZAS)
+	zsh = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	glue = home / 'glue.zsh'
+	glue.write_text(mc.render_glue('zsh', ENGINE))
+	(home / '.zshrc').write_text('source {}\nZSH_AUTOSUGGEST_STRATEGY=(history completion)\nsetopt ksh_arrays\nsource {}\n'.format(ZAS, glue))
+	result = subprocess.run([zsh, '-i'], input=b'print -r -- "@@STRATEGY[${ZSH_AUTOSUGGEST_STRATEGY[@]}]@@"\nexit\n',
+		env=dict(env, ZDOTDIR=str(home)), cwd=str(home), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	assert '@@STRATEGY[mssh history completion]@@' in result.stdout.decode('utf-8', 'replace')
