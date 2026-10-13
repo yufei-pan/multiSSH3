@@ -422,6 +422,13 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 
 Here details the options for multiSSH3 6.02 @ 2025-11-10
 
+Options can go before, between or after the hosts and the command words. `--` ends the options: the word after it is the hosts, unless they came before it, and every later word is a command word, even one that starts with `-`:
+```bash
+mssh web1 -- ls -la              # runs "ls -la" on web1 (without "--", -la is an unknown option)
+mssh -q -- web1 grep -r TODO /srv
+```
+> This is how Python 3.12.8+ reads `--`, and mssh reads it the same way on every Python. Up to mssh 6.31, older Pythons (before 3.12.8, and 3.13.0) read the options after a `--` again when it came before the hosts: `mssh -- web1 -u root` set the username there.
+
 ### `-u, --username USERNAME` | _`DEFAULT_USERNAME`_
 - You can specify the username for all hosts using this option and / or specifying username@hostname per host in the host list.
 
