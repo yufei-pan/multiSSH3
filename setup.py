@@ -5,7 +5,7 @@ setup(
     name='multiSSH3',
     version=version,
     description='Run commands on multiple hosts via SSH',
-    long_description=open('README.md').read(),
+    long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Yufei Pan',
     author_email='pan@zopyr.us',

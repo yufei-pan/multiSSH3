@@ -43,3 +43,15 @@ def test_sdist_ships_everything_the_test_suite_needs(egg_info):
 	shipped = sdist_files(egg_info)
 	assert sorted(wanted - shipped) == []
 	assert [path for path in shipped if "__pycache__" in path or path.endswith(".pyc")] == []
+
+
+def test_setup_runs_in_an_ascii_locale(tmp_path):
+	# pip on Python 3.6 with LANG=C: open() without an encoding reads ASCII, and README.md is not ASCII (→, ⚠, —).
+	# Python 3.7+ switches to UTF-8 by itself in the C locale; PYTHONUTF8=0 and PYTHONCOERCECLOCALE=0 stop that.
+	env = dict(os.environ, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+	probe = subprocess.run([sys.executable, "-c", "import locale; print(locale.getpreferredencoding(False))"],
+		env=env, stdout=subprocess.PIPE, universal_newlines=True, timeout=60)
+	if probe.stdout.strip().lower().replace("-", "") == "utf8":
+		pytest.skip("the C locale reads UTF-8 here")
+	result = run_egg_info(tmp_path, env)
+	assert result.returncode == 0, result.stderr
