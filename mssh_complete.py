@@ -659,14 +659,25 @@ INDEX_NAME = 'complete-index.v1.nsv'
 class IndexCorrupt(Exception):
 	'''The index file is not a complete index this version can read.'''
 
+def _is_control(char):
+	'''
+	Whether char is a control character: C0, DEL, C1, or a byte 0x80-0x9f that was not UTF-8
+	(surrogateescape reads it as U+DC80-U+DC9F and writes the byte back: a C1 control, such as CSI,
+	on a terminal that takes 8-bit controls). Other bytes that are not UTF-8 are no control.
+	'''
+	code = ord(char)
+	return code < 32 or 127 <= code < 160 or 0xdc80 <= code < 0xdca0
+
 def _has_control(text):
-	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
+	'''Whether text holds a control character (_is_control): such text never goes on a command line or the screen.'''
 	# nearly all text is printable, which one scan in C settles (the picker checks every history line)
-	return not text.isprintable() and any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+	return not text.isprintable() and any(_is_control(char) for char in text)
 
 def _printable(text):
-	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
-	return ''.join('?' if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in text)
+	'''text with each control character (_is_control) shown as ?: safe to draw.'''
+	if text.isprintable():
+		return text
+	return ''.join('?' if _is_control(char) else char for char in text)
 
 def safe_field(text):
 	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
