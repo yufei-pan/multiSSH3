@@ -1,3 +1,7 @@
+import argparse
+
+import pytest
+
 import multiSSH3
 
 
@@ -39,6 +43,105 @@ def test_process_args_basic():
 	assert args.commands == ["echo", "hi"]
 	assert args.no_watch is True
 	assert args.no_history is True
+
+
+# What Python 3.12.8+ / 3.13.1+ argparse makes of each line (CPython gh-81691, gh-125355), on every Python:
+# the first "--" ends the options; the next word is the hosts unless they came before it, and every later
+# word is a command word, dash words and a later "--" included. hosts None: the default hosts.
+DOUBLE_DASH_LINES = [
+	('-- h c', 'h', ['c'], {}),
+	('-- h c d', 'h', ['c', 'd'], {}),
+	('h -- c', 'h', ['c'], {}),
+	('h -- c d', 'h', ['c', 'd'], {}),
+	('h -- -x', 'h', ['-x'], {}),
+	('h c -- -x', 'h', ['c', '-x'], {}),
+	('h c -- -u y', 'h', ['c', '-u', 'y'], {}),
+	('h c d -- e -f', 'h', ['c', 'd', 'e', '-f'], {}),
+	# a dash word right after it is the hosts, and options after it are command words
+	('-- -weirdhost c', '-weirdhost', ['c'], {}),
+	('-- -u y', '-u', ['y'], {}),
+	('-- h -u y', 'h', ['-u', 'y'], {}),
+	('-- h -q', 'h', ['-q'], {}),
+	('-- h c -q', 'h', ['c', '-q'], {}),
+	('-- h c -u y', 'h', ['c', '-u', 'y'], {}),
+	('-- h -zz', 'h', ['-zz'], {}),
+	('-u x -- h c', 'h', ['c'], {'username': 'x'}),
+	('-u=x -- h c', 'h', ['c'], {'username': 'x'}),
+	('-u x -- h -q', 'h', ['-q'], {'username': 'x'}),
+	('-q -- h c', 'h', ['c'], {'no_watch': True}),
+	('-q -- h -u y', 'h', ['-u', 'y'], {'no_watch': True}),
+	('-u y -- -h', '-h', [], {'username': 'y'}),
+	('-11 -- h c d', 'h', ['c', 'd'], {'oneonone': True}),
+	# only the first "--" is dropped
+	('-- h -- c', 'h', ['--', 'c'], {}),
+	('-- -- c', '--', ['c'], {}),
+	('-- -- --', '--', ['--'], {}),
+	('h -- -- c', 'h', ['--', 'c'], {}),
+	('-- h -- -- c', 'h', ['--', '--', 'c'], {}),
+	('-- h c -- d', 'h', ['c', '--', 'd'], {}),
+	('h -- c -- d', 'h', ['c', '--', 'd'], {}),
+	('-- h c --', 'h', ['c', '--'], {}),
+	('h c -- --', 'h', ['c', '--'], {}),
+	# nothing before it or after it
+	('--', None, [], {}),
+	('-- h', 'h', [], {}),
+	('h --', 'h', [], {}),
+	('h c --', 'h', ['c'], {}),
+	('-u y --', None, [], {'username': 'y'}),
+	# options between the hosts, the command words and it
+	('h -u y -- c', 'h', ['c'], {'username': 'y'}),
+	('h -q -- c', 'h', ['c'], {'no_watch': True}),
+	('h c -q -- d', 'h', ['c', 'd'], {'no_watch': True}),
+	('-u y h -- -c x', 'h', ['-c', 'x'], {'username': 'y'}),
+	# an option whose value is optional stops at it
+	('-k -- h c', 'h', ['c'], {'identity_file': multiSSH3.DEFAULT_SSH_KEY_SEARCH_PATH}),
+	('-fs -- allServers ./data/', 'allServers', ['./data/'], {'file_sync': True}),
+	('h -- --config_file x', 'h', ['--config_file', 'x'], {}),
+	# no "--"
+	('-q h c', 'h', ['c'], {'no_watch': True}),
+	('h c', 'h', ['c'], {}),
+]
+
+
+@pytest.mark.parametrize('line, hosts, commands, options', DOUBLE_DASH_LINES)
+def test_double_dash_reads_as_python_3_12_8_does(line, hosts, commands, options, capsys):
+	baseline = vars(multiSSH3.process_args([]))
+	args = multiSSH3.process_args(line.split())
+	expected = dict(baseline, hosts=baseline['hosts'] if hosts is None else hosts, commands=commands, **options)
+	assert vars(args) == expected
+	assert capsys.readouterr().err == ''
+
+
+def test_option_without_its_value_before_double_dash(capsys):
+	with pytest.raises(SystemExit) as caught:
+		multiSSH3.process_args(['-u', '--', 'h', 'c'])
+	assert caught.value.code == 2
+	assert 'argument -u/--username: expected one argument' in capsys.readouterr().err
+
+
+def test_unknown_option_before_double_dash(capsys):
+	if hasattr(argparse.ArgumentParser, 'parse_intermixed_args'):
+		with pytest.raises(SystemExit) as caught:
+			multiSSH3.process_args(['-zz', '--', 'h', 'c'])
+		assert caught.value.code == 2
+		assert 'unrecognized arguments: -zz' in capsys.readouterr().err
+	else:
+		# Python 3.6 has no intermixed parsing: what it cannot place before the "--" becomes command words,
+		# in front of the words after it
+		args = multiSSH3.process_args(['-zz', '--', 'h', 'c'])
+		assert (args.hosts, args.commands) == ('h', ['-zz', 'c'])
+		assert "Unknown arguments, treating all as commands: ['-zz']" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('line, commands, username', [
+	('h c -q d -- e', ['c', 'd', 'e'], None),
+	('-u x h -q c -- d -u z', ['c', 'd', '-u', 'z'], 'x'),
+])
+def test_words_after_double_dash_follow_the_intermixed_ones(line, commands, username):
+	# Python 3.6 has no intermixed parsing: it takes "d" (or "c") after the option as a leftover, with a
+	# warning; the words after the "--" still come after it
+	args = multiSSH3.process_args(line.split())
+	assert (args.hosts, args.commands, args.no_watch, args.username) == ('h', commands, True, username)
 
 
 def test_process_commands_joins_one_word_default(monkeypatch):
