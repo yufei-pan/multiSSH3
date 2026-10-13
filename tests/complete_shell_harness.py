@@ -52,6 +52,23 @@ def build_index(env):
 	'''Build the index the engine will use for env, so a test does not wait for the first build.'''
 	subprocess.run(ENGINE + ['rebuild'], env=env, stdout=subprocess.DEVNULL, check=True, timeout=60)
 
+def without_command(env, name, directory):
+	'''
+	env with a PATH that finds every command env's PATH finds except name (macOS has no coreutils
+	timeout, for one): a new directory of links to them.
+	'''
+	directory.mkdir()
+	for folder in env['PATH'].split(os.pathsep):
+		if not os.path.isdir(folder):
+			continue
+		for entry in os.listdir(folder):
+			path = os.path.join(folder, entry)
+			link = directory / entry
+			if entry == name or os.path.lexists(str(link)) or not (os.path.isfile(path) and os.access(path, os.X_OK)):
+				continue
+			os.symlink(path, str(link))
+	return dict(env, PATH=str(directory))
+
 class Session(object):
 	'''An interactive shell on a pseudo-terminal. print_key makes the shell print its command line.'''
 	def __init__(self, argv, env, cwd=None, print_key='\x18\x10'):
@@ -200,12 +217,14 @@ def zsh_session(home, env, glue, pre='', extra='', compinit=ZSH_COMPINIT):
 	session.read_until(b'@@READY@@')
 	return session
 
-def fish_complete(env, glue, line):
-	'''Completions fish offers for line (complete -C), as (text, description) pairs.'''
+def fish_complete(env, glue, line, cwd=None):
+	'''Completions fish offers for line (complete -C) in cwd, as (text, description) pairs. fish must print nothing else.'''
 	fish = require_shell('fish')
 	# fakecmd: a command with its own completion, for delegation tests
 	script = 'complete -c fakecmd -f -a "alpha beta"; source {}; complete -C{}'.format(glue, _fish_quote(line))
-	output = subprocess.run([fish, '--no-config', '-c', script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	output = subprocess.run([fish, '--no-config', '-c', script], env=env, cwd=None if cwd is None else str(cwd),
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stderr == b'', 'fish printed: ' + output.stderr.decode('utf-8', 'replace')
 	pairs = []
 	for row in output.stdout.decode('utf-8', 'replace').splitlines():
 		text, _, description = row.partition('\t')
