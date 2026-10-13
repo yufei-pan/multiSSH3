@@ -32,6 +32,11 @@ def sdist_files(egg_info):
 	return set((egg_info[0] / "SOURCES.txt").read_text(encoding="utf-8").splitlines())
 
 
+def metadata_lines(egg_info):
+	"""PKG-INFO's header lines: the README that follows them could hold any line."""
+	return (egg_info[0] / "PKG-INFO").read_text(encoding="utf-8").split("\n\n", 1)[0].splitlines()
+
+
 def test_sdist_ships_everything_the_test_suite_needs(egg_info):
 	# conftest.py, the harnesses, tests/data and pytest.ini too: without them pytest in an unpacked sdist fails to collect
 	wanted = {"setup.py", "README.md", "multiSSH3.py", "mssh_complete.py", "pytest.ini"}
@@ -55,3 +60,16 @@ def test_setup_runs_in_an_ascii_locale(tmp_path):
 		pytest.skip("the C locale reads UTF-8 here")
 	result = run_egg_info(tmp_path, env)
 	assert result.returncode == 0, result.stderr
+
+
+def test_setup_declares_the_license_without_warnings(egg_info):
+	# setuptools 77+ (PEP 639) wants an SPDX License-Expression and warns about license classifiers; older ones (the
+	# newest for Python 3.8 and earlier) know only the free-text License and the classifier, and warn about unknown options
+	warnings = [line for line in egg_info[1].stderr.splitlines() if "Warning" in line and "icense" in line]
+	assert warnings == []
+	metadata = metadata_lines(egg_info)
+	if "License-Expression: GPL-3.0-or-later" in metadata:
+		assert [line for line in metadata if line.startswith(("License:", "Classifier: License ::"))] == []
+	else:
+		assert "License: GPL-3.0-or-later" in metadata
+		assert "Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)" in metadata
