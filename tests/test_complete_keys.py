@@ -444,6 +444,7 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 # ---------------------------------------------------------------- zsh
 
 ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
+ZSH_SH = '/opt/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh'
 
 
 def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, extra=''):
@@ -710,6 +711,64 @@ def test_zsh_ctrl_c_drops_a_line_while_its_grey_text_is_asked_for(home):
 		time.sleep(0.5)
 		session.send('\x03')
 		assert printed(session, '') == ''
+	finally:
+		session.close()
+
+
+def zsh_syntax_highlighting():
+	"""The line loading zsh-syntax-highlighting; skip without it, unless MSSH_REQUIRE_SHELLS lists it."""
+	if not os.path.isfile(ZSH_SH):
+		if 'zsh-syntax-highlighting' in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
+			pytest.fail('zsh-syntax-highlighting is required here but not at ' + ZSH_SH)
+		pytest.skip('zsh-syntax-highlighting is not installed at ' + ZSH_SH)
+	# last in the rc file, as its instructions say
+	return 'source ' + ZSH_SH
+
+
+def greyed(session, text):
+	"""Whether text is on screen with every character in the grey text's colour (256 colours)."""
+	grid = rendered(session)
+	for row, line in enumerate(grid.lines()):
+		column = line.find(text)
+		if column >= 0:
+			return all('38;5;244' in style for style in grid.styles(row)[column:column + len(text)])
+	return False
+
+
+@pytest.mark.parametrize('line, move, keys', [
+	('mssh gpu017 ', '', 'upt'),
+	# a word before the host edited: the mark moves with the host
+	('mssh -u root gpu017 ', LEFT * 8, 's'),
+], ids=['next-word', 'word-before-edited'])
+def test_zsh_marks_stay_with_zsh_syntax_highlighting(home, line, move, keys):
+	# before zsh 5.9 (and before its 0.8) zsh-syntax-highlighting empties region_highlight after every key
+	env, home = home
+	known(env, gpu017='invalid')
+	session = zsh_with(env, home, extra=zsh_syntax_highlighting())
+	try:
+		session.send(line)
+		session.read_until('unknown host'.encode(), 10)
+		session.send(move)
+		time.sleep(1)
+		session.send(keys)
+		time.sleep(0.5)
+		session.read_until(b'@@never@@', 0.2)
+		assert underlined(session, 'gpu017'), screen(session)[:2]
+	finally:
+		session.close()
+
+
+def test_zsh_grey_text_stays_grey_with_zsh_syntax_highlighting(home):
+	env, home = home
+	session = zsh_with(env, home, extra=zsh_syntax_highlighting())
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		# Ctrl-L: a key that leaves the line as it is
+		session.send('\x0c')
+		time.sleep(0.5)
+		session.read_until(b'@@never@@', 0.2)
+		assert greyed(session, 'nvidia-smi')
 	finally:
 		session.close()
 

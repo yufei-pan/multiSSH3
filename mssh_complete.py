@@ -4882,7 +4882,12 @@ _mssh_complete_ghost_redraw() {
 		fi
 	fi
 	if [[ $BUFFER == "$last" ]]; then
-		(( CURSOR == $#BUFFER )) || _mssh_complete_ghost_clear
+		if (( CURSOR != $#BUFFER )); then
+			_mssh_complete_ghost_clear
+		elif [[ -n $_mssh_complete_shown && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_drawn}} ]]; then
+			# zsh-syntax-highlighting emptied region_highlight after the key (see _mssh_complete_warn_redraw)
+			region_highlight+=("$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style")
+		fi
 		return 0
 	fi
 	_mssh_complete_last=$BUFFER
@@ -4976,6 +4981,23 @@ _mssh_complete_warn_unmark() {
 	# plugin's highlight in just that style goes too)
 	[[ -n $_mssh_complete_warn_drawn ]] && region_highlight=("${(@)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}}")
 	_mssh_complete_warn_drawn=
+	_mssh_complete_warn_marks=()
+}
+
+_mssh_complete_warn_mark() {
+	# draw the last answer's marks: only the word at the cursor changed since, so the marks after it
+	# move with the end of the line
+	local span
+	local -i start end
+	for span in "${_mssh_complete_warn_marks[@]}"; do
+		start=${span% *} end=${span#* }
+		if (( start >= _mssh_complete_warn_cursor )); then
+			(( start += $#BUFFER - _mssh_complete_warn_length, end += $#BUFFER - _mssh_complete_warn_length ))
+		fi
+		region_highlight+=("$start $end $_mssh_complete_warn_style")
+	done
+	# the style as zsh reports it (fg=red,underline), to find the marks again
+	(( $#_mssh_complete_warn_marks )) && _mssh_complete_warn_drawn=${region_highlight[-1]#<-> <-> }
 }
 
 _mssh_complete_warn_clear() {
@@ -5012,9 +5034,16 @@ _mssh_complete_warn_redraw() {
 	setopt extended_glob
 	# the line without the word at the cursor, which is still being typed
 	local key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
-	[[ $key == "$_mssh_complete_warn_key" ]] && return 0
+	if [[ $key == "$_mssh_complete_warn_key" ]]; then
+		# zsh-syntax-highlighting empties region_highlight after each key before zsh 5.9 (and before its
+		# 0.8, on any zsh): mark again
+		[[ -n $_mssh_complete_warn_drawn && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}} ]] && _mssh_complete_warn_mark
+		return 0
+	fi
 	_mssh_complete_warn_key=$key
 	_mssh_complete_warn_cancel
+	# the marks shown stay until the answer, but no longer redrawn: they were placed for other words
+	_mssh_complete_warn_marks=()
 	if ! _mssh_complete_is_mssh "$BUFFER"; then
 		_mssh_complete_warn_clear
 		return 0
@@ -5058,16 +5087,15 @@ _mssh_complete_warn_answer() {
 		_mssh_complete_warn_ask 0
 		return 0
 	fi
-	local pending=$1 reason=$2 mark style=underline,fg=red
+	local pending=$1 reason=$2 style=underline,fg=red
 	shift 2
 	[[ -n ${NO_COLOR-} ]] && style=underline
 	(( _mssh_complete_memo )) && style+=' memo=mssh-warn'
 	_mssh_complete_warn_unmark
-	for mark in "$@"; do
-		region_highlight+=("$mark $style")
-	done
-	# the style as zsh reports it (fg=red,underline), to find the marks again
-	(( $# )) && _mssh_complete_warn_drawn=${region_highlight[-1]#<-> <-> }
+	_mssh_complete_warn_marks=("$@")
+	_mssh_complete_warn_style=$style
+	_mssh_complete_warn_length=$#BUFFER _mssh_complete_warn_cursor=$CURSOR
+	_mssh_complete_warn_mark
 	# one zle -M in a widget: after a second one zsh draws the line a row too high
 	if [[ -n $reason ]]; then
 		_mssh_complete_warn_reason=$reason
@@ -5098,7 +5126,9 @@ _mssh_complete_warn_setup() {
 	is-at-least 5.3 || return 0
 	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
 	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason= _mssh_complete_warn_drawn=
-	typeset -ga _mssh_complete_warn_delays
+	typeset -g _mssh_complete_warn_style=
+	typeset -gi _mssh_complete_warn_length=0 _mssh_complete_warn_cursor=0
+	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
 	zle -N _mssh_complete_warn_answer
 	zle -N _mssh_complete_warn_redraw
 	zle -N _mssh_complete_warn_finish
