@@ -340,6 +340,59 @@ def test_bash_ctrl_r_keeps_the_last_argument(home):
 		session.close()
 
 
+# commands holding !, which bash expands inside double quotes when it reads the line (history expansion):
+# one recorded by mssh 6.27 and later (single quotes), one recorded by 6.26 and older (double quotes)
+BANG_HISTORY = ['17900002{:02d}\t/x/multiSSH3.py\t-su -u=ops\tweb1\t\'zzcmd !important /etc/x\''.format(number) for number in range(6)]
+BANG_HISTORY += ['1790000300\t/x/multiSSH3.py\t-su\tweb2\t"yyold !legacy done!"']
+
+
+@pytest.fixture
+def bang_home(tmp_path):
+	env, home = make_home(tmp_path, BANG_HISTORY)
+	build_index(env)
+	return env, home
+
+
+def ran(session, keys, wait=1.0):
+	'''Send keys, then Enter: what the fake mssh ran, or what bash said instead.'''
+	session.send(keys)
+	time.sleep(wait)
+	session.send('\r')
+	output = plain(session.read_until(b'@@RAN', 10) + session.read_until(b'@@READY@@', 5))
+	found = re.search(r'@@RAN\[.*?\]@@|bash: .*', output)
+	return found.group(0).strip() if found else output
+
+
+def test_bash_never_inserts_a_bang_bash_would_expand(bang_home):
+	env, home = bang_home
+	session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		# TAB inside double quotes offers no command holding !, inside single quotes it does
+		assert printed(session, 'mssh -u=ops web1 "zz\t', 1.0) == 'mssh -u=ops web1 "zz'
+		time.sleep(0.3)
+		session.send('\x15')
+		assert ran(session, "mssh -u=ops web1 'zz\t") == '@@RAN[-u=ops web1 zzcmd !important /etc/x]@@'
+		# the Ctrl-R history tab takes the ! of a line recorded in double quotes out of them
+		session.send('mssh web2 ')
+		time.sleep(0.3)
+		session.send('\x12')
+		session.read_until(b'type to filter', 10)
+		assert ran(session, '\tlegacy\r') == '@@RAN[-su web2 yyold !legacy done!]@@'
+	finally:
+		session.close()
+
+
+def test_editor_suggests_a_command_holding_a_bang_in_single_quotes(bang_home):
+	env, home = bang_home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh -u o')
+		read_until_shown(session, 'zzcmd')
+		assert ran(session, RIGHT, 0.5) == '@@RAN[-u ops web1 zzcmd !important /etc/x]@@'
+	finally:
+		session.close()
+
+
 def test_bash_vi_mode_ctrl_r(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'), pre=VI_PRINT_KEY)
@@ -411,6 +464,23 @@ def test_editor_space_keeps_the_last_argument(home):
 		time.sleep(0.5)
 		session.send('echo "[$_]"\r')
 		assert '[lastarg]' in session.read_until(b'[lastarg]', 10)
+	finally:
+		session.close()
+
+
+def test_editor_space_keeps_magic_space_when_the_glue_loads_again(home):
+	env, home = home
+	# magic-space from the inputrc: `source ~/.bashrc` loads the glue again but does not read the inputrc again
+	(home / '.inputrc').write_text('Space: magic-space\n')
+	session = editor_session(env, home)
+	try:
+		for _ in range(2):
+			session.send('. {}\r'.format(home / 'glue.bash'))
+			session.read_until(b'@@READY@@', 10)
+		session.send('echo hi\r')
+		session.read_until(b'@@READY@@', 10)
+		# space after !! expands it, as magic-space does
+		assert printed(session, 'echo !! ') == 'echo echo hi '
 	finally:
 		session.close()
 

@@ -195,6 +195,19 @@ def test_bash_drops_candidates_an_ansi_c_quote_would_change():
 	assert texts(query("mssh h $'pri", word='pri', knowledges=[knowledge], flags={'insert': '1'})) == ['printf ok']
 
 
+def test_no_candidate_puts_a_bang_inside_double_quotes_where_the_shell_would_expand_it():
+	# bash and zsh expand ! inside double quotes when they read the line (history expansion); in bash a
+	# backslash there stays in the word
+	knowledge = memory([line(NOW, '-su', 'h', "'echo hi!'"), line(NOW, '-su', 'h', '"echo y"')])
+	assert texts(query('mssh h "ech', word='ech', knowledges=[knowledge])) == ['echo y']
+	assert texts(query("mssh h 'ech", word='ech', knowledges=[knowledge])) == ['echo hi!', 'echo y']
+	# zsh's own TAB quotes it there itself; what the picker inserts nobody quotes
+	assert texts(query('mssh h "ech', word='"ech', shell='zsh', knowledges=[knowledge])) == ['echo hi!', 'echo y']
+	assert texts(query('mssh h "ech', word='"ech', shell='zsh', knowledges=[knowledge], flags={'insert': '1'})) == ['echo y']
+	# fish has no history expansion
+	assert texts(query('mssh h "ech', word='"ech', shell='fish', knowledges=[knowledge], flags={'insert': '1'})) == ['echo hi!', 'echo y']
+
+
 def test_word_that_does_not_end_the_parsed_text_gets_nothing():
 	assert texts(query('mssh login1 up', word='zz')) == []
 
