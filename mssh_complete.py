@@ -2597,7 +2597,7 @@ class Engine(object):
 		always skips (process_args); --ipmi never does (mssh reaches the host's BMC). Ping expiry:
 		$MSSH_COMPLETE_PING_TTL, else mssh's unreachable host expiry (-uhe on the line, else its
 		default). Lookup files: --env_file(s), --host_file, --config_file. User: the last -u on the
-		line, else the mssh config's default, stripped as run_command_on_hosts strips it.
+		line, else the mssh config's default (_line_user).
 		'''
 		flags = {}
 		expiry = None
@@ -2627,9 +2627,16 @@ class Engine(object):
 		if expiry is None:
 			default = next((option.default for option in self.spec.options if option.dest == 'unavailable_host_expiry'), '')
 			expiry = int(default) if _is_digits(default) else 600
-		if user is None:
-			user = next((option.default for option in self.spec.options if option.dest == 'username'), '')
-		return skipping, expiry, lookup, user.strip()
+		return skipping, expiry, lookup, self._line_user(user)
+
+	def _line_user(self, given):
+		'''
+		The user -u gives the hosts of a line: given (the last -u value on the line, None without
+		one), else the mssh config's default; stripped as run_command_on_hosts strips it.
+		'''
+		if given is None:
+			given = next((option.default for option in self.spec.options if option.dest == 'username'), '')
+		return given.strip()
 
 	def _unreachable(self, name, run_name, state, now, reach):
 		'''
@@ -3033,16 +3040,21 @@ class Engine(object):
 		names = set(self.hosts.names_with_prefix(host_prefix))
 		names.update(name for name in scores if name.startswith(host_prefix) and '[' not in name)
 		names -= aliases
+		# mssh's list is keyed by the name a host runs as: the user typed with it, else -u's (-X hosts get it too)
 		unavailable = self.hosts.unavailable
+		line_user = self._line_user(next((value for option, value in reversed(context.options or ())
+			if option.dest == 'username' and value is not None), None))
+		def unreachable(name):
+			return _run_name(name, user, line_user) in unavailable
 		def host_score(name):
 			score = scores.get(name, 0.0) + PRIOR
 			if name in boost:
 				score += 1.0
-			if name in unavailable:
+			if unreachable(name):
 				score *= UNAVAILABLE_PENALTY
 			return score
 		def single(name):
-			return Candidate(lead + name, 'unreachable recently' if name in unavailable else '', 'hosts', host_score(name))
+			return Candidate(lead + name, 'unreachable recently' if unreachable(name) else '', 'hosts', host_score(name))
 		# ranges typed before, e.g. node[1-3]: their members are not listed beside them, unless typed
 		# on their own before or named by the hosts argument (-X)
 		in_ranges = set()

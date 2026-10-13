@@ -160,6 +160,52 @@ def test_aliases_and_unavailable_hosts(tmp_path):
 	assert candidates[-1].text == 'ab' and candidates[-1].description == 'unreachable recently'
 
 
+# mssh records a failure under the name it ran the host as, and so looks it up: user@host when a user
+# applies (typed with the host, else -u, else the mssh config's), the bare name otherwise
+
+def unreachable_labels(before, table, spec=SPEC):
+	'''{candidate: description} for the host candidates of a line, without history.'''
+	engine = mc.Engine(spec, [], table)
+	response = engine.query(mc.Request('bash', before, '', before.split(' ')[-1]))
+	return {candidate.text: candidate.description for candidate in response.candidates}
+
+
+def test_unreachable_recently_is_for_the_user_typed_with_the_host(tmp_path):
+	table = _host_table(tmp_path, ['node04', 'node05'], unavailable=['root@node05', 'node04'])
+	assert unreachable_labels('mssh root@node0', table) == {'root@node04': '', 'root@node05': 'unreachable recently'}
+	assert unreachable_labels('mssh admin@node0', table) == {'admin@node04': '', 'admin@node05': ''}
+	assert unreachable_labels('mssh db1,node0', table) == {'db1,node04': 'unreachable recently', 'db1,node05': ''}
+
+
+@pytest.mark.parametrize('options', ['-u root ', '-uroot ', '--username=root ', '-u admin -u root '])
+def test_unreachable_recently_is_for_the_user_u_gives(tmp_path, options):
+	table = _host_table(tmp_path, ['node04', 'node05'], unavailable=['root@node05', 'node04'])
+	assert unreachable_labels('mssh {}node0'.format(options), table) == {'node04': '', 'node05': 'unreachable recently'}
+	# a user typed with the host comes first
+	assert unreachable_labels('mssh {}admin@node0'.format(options), table) == {'admin@node04': '', 'admin@node05': ''}
+
+
+def test_unreachable_recently_is_for_the_user_of_the_mssh_config(tmp_path, monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_USERNAME', 'root')
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	table = _host_table(tmp_path, ['node04', 'node05'], unavailable=['root@node05', 'node04'])
+	assert unreachable_labels('mssh node0', table, spec) == {'node04': '', 'node05': 'unreachable recently'}
+	assert unreachable_labels('mssh -u admin node0', table, spec) == {'node04': '', 'node05': ''}
+
+
+def test_skip_hosts_are_labeled_for_the_user_of_the_line(tmp_path):
+	# mssh gives the -X hosts the same user
+	table = _host_table(tmp_path, ['node04', 'node05'], unavailable=['root@node05', 'node04'])
+	assert unreachable_labels('mssh -u root node[04-05] -X node0', table) == {'node04': '', 'node05': 'unreachable recently'}
+
+
+def test_hosts_unreachable_recently_for_the_user_of_the_line_rank_last(tmp_path):
+	table = _host_table(tmp_path, ['node04', 'node05'], unavailable=['root@node04'])
+	assert texts(query('mssh root@node0', knowledges=[], hosts=table)) == ['root@node05', 'root@node04']
+	assert texts(query('mssh -u root node0', knowledges=[], hosts=table)) == ['node05', 'node04']
+	assert texts(query('mssh node0', knowledges=[], hosts=table)) == ['node04', 'node05']
+
+
 def test_skip_hosts_prefers_members_of_the_hosts_argument(tmp_path):
 	table = _host_table(tmp_path, ['n1', 'n2', 'n3', 'm1'])
 	assert texts(query('mssh n[2-3] -X ', knowledges=[], hosts=table))[:2] == ['n2', 'n3']
