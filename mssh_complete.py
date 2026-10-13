@@ -3676,6 +3676,9 @@ def _run_options(options, engine):
 	pairs.extend((dest, 'on' if on else 'off') for dest, on in flags.items() if on != engine.flag_defaults.get(dest, False))
 	return tuple(sorted(pairs))
 
+# options with which mssh records a run in no history (-I, --script) or in another file (-hf)
+_RECORDED_ELSEWHERE = frozenset(('no_history', 'script', 'history_file'))
+
 def _loose_dests(pairs):
 	'''The dests of a typed run's options (_run_options) whose record may differ from them.'''
 	dests = set()
@@ -3713,7 +3716,8 @@ def _history_items(request, engine, history_lines, name, features):
 	A run is in mssh's history and, as typed, in the shell's: the shell's lines add the rows and
 	the uses mssh's history does not hold (runs with -I, and those it no longer holds).
 	HISTORY_LIMIT bounds the rows (lines of mssh's history past it are not read); every line the
-	shell sent is.
+	shell sent is. With some of mssh's history unread, a shell line matching none of the rows counts
+	only when mssh records it nowhere there (-I, --script, -hf): the index counts the others.
 
 	Returns:
 		tuple: (PickItem list, MemoryKnowledge of the runs only the shell's history holds)
@@ -3721,6 +3725,7 @@ def _history_items(request, engine, history_lines, name, features):
 	entries = []   # [features shared with the line, unix time, text, uses]
 	numbers = {}   # text -> its number in entries
 	parsed = []    # (number in entries, hosts, commands, line) of mssh's history
+	unread = False # some of mssh's history is past the rows
 	for line in reversed(history_lines):
 		fields = line.rstrip('\r\n').split('\t')
 		if len(fields) != 5:
@@ -3731,7 +3736,10 @@ def _history_items(request, engine, history_lines, name, features):
 			# the same text passed the checks already: count it without parsing it again
 			entries[numbers[text]][3] += 1
 			continue
-		if len(entries) >= HISTORY_LIMIT or not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
+		if len(entries) >= HISTORY_LIMIT:
+			unread = True
+			continue
+		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		numbers[text] = len(entries)
@@ -3774,6 +3782,9 @@ def _history_items(request, engine, history_lines, name, features):
 		if found:
 			pool = pools.setdefault(tuple(found), [0, key])
 			pool[0] += count
+			continue
+		if unread and not any(dest in _RECORDED_ELSEWHERE and value != 'off' for dest, value in key[2]):
+			# its record may be past the rows: the index counts it already
 			continue
 		run_features = make_features(*parts)
 		if len(entries) < HISTORY_LIMIT:

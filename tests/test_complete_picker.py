@@ -246,6 +246,15 @@ def test_runs_only_the_shell_holds_count_with_the_history_tab_full(monkeypatch):
 	assert rows == [('mssh -su node1 df', 1), ('mssh -su node2 uptime', 1)]
 
 
+def test_runs_past_the_history_tab_are_not_counted_twice(monkeypatch):
+	# mssh's history past HISTORY_LIMIT is not read, but its index counts the runs there: only a line
+	# mssh never records here (-I, --script, another history file) is a run of its own
+	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 2)
+	history = runs(1, '-su', 'node1', 'uptime') + runs(1, '-su', 'node2', 'uptime') + runs(1, '-su', 'node3', 'df')
+	shell = ['mssh node1 uptime', 'mssh --script node1 w', 'mssh -hf /tmp/h node1 w', 'mssh node3 df']
+	assert offered(history, shell)[0] == [('node1', 3), ('node3', 1), ('node2', 1)]
+
+
 def test_spellings_of_one_run_are_one_row():
 	# the program's name and path, option spellings, their order and quoting
 	shell = ['mssh3 -u root -t 5 storage1 "df -h /data"', "multissh storage1 --timeout=5 --username root 'df -h /data'",
