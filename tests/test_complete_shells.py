@@ -142,6 +142,17 @@ def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
 		session.close()
 
 
+@pytest.mark.parametrize('option', ['ignore_braces', 'ignore_close_braces'])
+def test_zsh_glue_loads_with_brace_options(tmp_path, option):
+	# with either option a } closes a group only in command position: the glue must parse all the same
+	zsh = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	script = 'autoload -Uz compinit && compinit -u -D; setopt {}; source {}; print -r -- "$+functions[_mssh] $_comps[mssh]"'
+	result = subprocess.run([zsh, '-f', '-c', script.format(option, glue_file(home, 'zsh'))], env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert (result.stdout.decode().split(), result.stderr.decode()) == (['1', '_mssh'], '')
+
+
 def test_zsh_gives_up_on_a_slow_engine(setup):
 	env, home = setup
 	slow = home / 'slow-engine'
