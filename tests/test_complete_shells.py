@@ -585,6 +585,28 @@ def test_an_rc_file_mssh_may_not_change_gets_the_lines_to_change_by_hand(tmp_pat
 	assert messages[-len(advice) - 1:] == [failed] + advice
 
 
+def test_hard_linked_rc_files_stay_linked(tmp_path):
+	# replacing a hard-linked ~/.bashrc split it from the dotfiles copy, which kept the old text
+	env, home = make_home(tmp_path)
+	(home / 'dotfiles').mkdir()
+	dotfile = home / 'dotfiles' / 'bashrc'
+	dotfile.write_text('alias ll="ls -l"\n')
+	rc = home / '.bashrc'
+	os.link(str(dotfile), str(rc))
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	assert mc.RC_BEGIN in dotfile.read_text() and rc.stat().st_ino == dotfile.stat().st_ino
+	before = rc.read_text()
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
+	split = 'did not change {}: it has 2 hard links, which replacing it would split'.format(rc)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)
+	assert code == 1 and messages[-6:] == [split, 'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:',
+		mc.RC_BEGIN, 'export MSSH_COMPLETE_EDITOR=1', load, mc.RC_END]
+	code, messages = mc.uninstall('bash', home=str(home), environ=env)
+	assert code == 1 and messages[-2:] == [split, 'to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
+	assert rc.read_text() == before and rc.stat().st_ino == dotfile.stat().st_ino
+
+
 @pytest.mark.parametrize('obstacle', ['bind mount', 'directory not writable'])
 def test_rc_files_that_cannot_be_replaced_still_get_a_new_block(tmp_path, monkeypatch, obstacle):
 	# a bind-mounted ~/.bashrc (docker -v, devcontainers, Kubernetes subPath) cannot be renamed over

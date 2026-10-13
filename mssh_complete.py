@@ -5510,6 +5510,14 @@ def _write_rc(rc, text, by_hand, append=False):
 		if append:
 			_append_file(rc, text)
 		else:
+			try:
+				links = os.stat(rc).st_nlink
+			except FileNotFoundError:
+				links = 0
+			if links > 1:
+				# the other name (a dotfiles copy) would keep the old text; writing in place risks the
+				# file when the disk is full: the operator edits it (editors write hard-linked files in place)
+				raise InstallError('did not change {}: it has {} hard links, which replacing it would split'.format(rc, links), *by_hand)
 			_replace_file(rc, text)
 	except OSError as error:
 		lines = ['could not change {}: {}; it is as it was'.format(rc, _reason(error, rc))]
