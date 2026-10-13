@@ -2426,7 +2426,12 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				host.output.append('Running command in shell mode, ignoring the hosts...')
 				if __DEBUG_MODE:
 					host.stderr.append('Running command in shell mode, ignoring the hosts...')
-				formatedCMD = [_binPaths['sh'],'-c',host.command]
+				shellCommand = host.command
+				if passwds and 'sshpass' in _binPaths:
+					# for the password prompts of the command (ssh-copy-id). Not in host.command: mssh shows that,
+					# and replaces the magic strings in it
+					shellCommand = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(str(passwds))} {shellCommand}"
+				formatedCMD = [_binPaths['sh'],'-c',shellCommand]
 			else:
 				host.output.append('shell not found on the local machine! Using ssh localhost instead...')
 				if __DEBUG_MODE:
@@ -4626,7 +4631,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					command = f"{command}-i {shlex.quote(os.path.expanduser(identity_file))} "
 				command = f"{command}{shlex.quote(host)}"
 				if password and 'sshpass' in _binPaths:
-					command = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(password)} {command}"
+					# _build_command puts sshpass in front: the password stays out of the command mssh shows
 					hosts.append(Host(host, command,identity_file=identity_file,shell=True,ip = targetHostDic[host]))
 				else:
 					eprint(f"> {command}")
