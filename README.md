@@ -368,7 +368,7 @@ Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[0
 
 Completion never removes what you typed, prints nothing, and falls back to the shell's normal completion when anything is slow or missing.
 
-It learns from an index of your history and hosts, kept in mssh's private cache directory (`$XDG_RUNTIME_DIR/multiSSH3` or `/tmp/multiSSH3-<uid>`) and rebuilt in the background when its sources change. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
+It learns from an index of your history and hosts, kept in mssh's private cache directory (`$XDG_RUNTIME_DIR/multiSSH3` or `/tmp/multiSSH3-<uid>`) and rebuilt in the background when its sources change. `mssh --completion install` builds it right away. A reboot clears it: the first TAB after one starts the build and, until the index is ready (about a second for a long history), offers options and what your shell history holds. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
 
 ### Grey suggestions
 
