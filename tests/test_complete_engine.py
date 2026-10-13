@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -485,3 +486,70 @@ def test_file_names_inserted_as_they_are_get_escaped():
 	assert texts(query('mssh -f my', knowledges=knowledges, flags={'insert': '1'})) == ['my\\ file.txt']
 	# bash's own TAB quotes file names itself
 	assert texts(query('mssh -f my', knowledges=knowledges)) == ['my file.txt']
+
+
+def recorded(ts, hosts, *commands):
+	'''A history line as mssh records the run of these commands (each as typed in one word).'''
+	return '{}\t{}'.format(ts, multiSSH3.getStrCommand(hosts=hosts, commands=list(commands), shortend=True, tabSeperated=True, typed_hosts=True))
+
+
+def mssh_runs(line_text, monkeypatch):
+	'''The remote commands mssh runs for an mssh line, answering its "one command or several" question with the default.'''
+	monkeypatch.setattr(multiSSH3, 'input_with_timeout_and_countdown', lambda *args, **kwargs: None)
+	handler = signal.getsignal(signal.SIGINT)
+	try:
+		return multiSSH3.process_commands(multiSSH3.process_args([token.text for token in mc.lex(line_text)[1:]])).commands
+	finally:
+		signal.signal(signal.SIGINT, handler)
+
+
+def test_command_words_never_complete_to_a_word_mssh_would_run_alone(monkeypatch):
+	# mssh joins the command words into one command only when none of them holds whitespace:
+	# `grep connection\ refused /var/log/syslog` runs grep, `connection refused` and /var/log/syslog
+	knowledges = [memory([recorded(NOW - number, 'web1', 'grep "connection refused" /var/log/syslog') for number in range(3)]
+		+ [recorded(NOW - 10, 'web1', 'grep root /etc/passwd'), recorded(NOW - 20, 'web1', '"/opt/my tool/run" now')])]
+	for shell in ('bash', 'zsh', 'fish'):
+		assert texts(query('mssh web1 grep ', shell=shell, knowledges=knowledges)) == ['root'], shell
+		assert all(len(text.split()) == 1 for text in texts(query('mssh web1 ', shell=shell, knowledges=knowledges))), shell
+	for before in ('mssh web1 ', 'mssh web1 grep '):
+		for text in texts(query(before, knowledges=knowledges)):
+			assert len(mssh_runs(before + text, monkeypatch)) == 1, before + text
+
+
+def test_next_command_words_keep_the_quotes_history_ran_them_with(monkeypatch):
+	# mssh joins the command words as typed: the quotes of 'ssh*' must reach the remote shell, or it
+	# runs `systemctl status ssh*` with * matched against its working directory
+	knowledges = [memory([recorded(NOW - number, 'web1', "systemctl status 'ssh*'") for number in range(3)])]
+	before = 'mssh web1 systemctl status '
+	assert texts(query(before, knowledges=knowledges)) == ["\\'ssh\\*\\'"]
+	assert mssh_runs(before + "\\'ssh\\*\\'", monkeypatch) == ["systemctl status 'ssh*'"]
+	# zsh and fish quote the word themselves
+	for shell in ('zsh', 'fish'):
+		assert texts(query(before, shell=shell, knowledges=knowledges)) == ["'ssh*'"], shell
+	assert texts(query(before + "\\'ss", word="\\'ss", shell='zsh', knowledges=knowledges)) == ["'ssh*'"]
+
+
+def test_command_words_after_a_quoted_word_follow_history(monkeypatch):
+	knowledges = [memory([recorded(NOW - number, 'web1', "grep '^root:' /etc/passwd") for number in range(3)]
+		+ [recorded(NOW - 10 - number, 'web1', '"$HOME/bin/report" daily') for number in range(3)])]
+	assert texts(query("mssh web1 grep \\'\\^root:\\' ", knowledges=knowledges)) == ['/etc/passwd']
+	# the program itself was quoted
+	assert '\\"\\$HOME/bin/report\\"' in texts(query('mssh web1 ', knowledges=knowledges))
+	before = 'mssh web1 \\"\\$HOME/bin/report\\" '
+	assert texts(query(before, knowledges=knowledges)) == ['daily']
+	assert mssh_runs(before + 'daily', monkeypatch) == ['"$HOME/bin/report" daily']
+
+
+def test_ansi_c_quoted_command_words_are_offered_as_typed(monkeypatch):
+	# $'a\tb' holds a tab once dequoted: as typed it is one plain word
+	knowledges = [memory([recorded(NOW - number, 'web1', "echo $'a\\tb'") for number in range(3)])]
+	assert texts(query('mssh web1 echo ', knowledges=knowledges)) == ["\\$\\'a\\\\tb\\'"]
+	assert mssh_runs("mssh web1 echo \\$\\'a\\\\tb\\'", monkeypatch) == ["echo $'a\\tb'"]
+
+
+def test_blesh_gets_candidates_unescaped():
+	# ble.sh quotes what it inserts itself, as zsh and fish do: escaped text would be escaped twice
+	knowledges = [memory([recorded(NOW - number, 'web1', "systemctl status 'ssh*'", 'echo $HOME') for number in range(3)])]
+	assert texts(query('mssh web1 systemctl status ', knowledges=knowledges, flags={'ble': '1'})) == ["'ssh*'"]
+	assert texts(query('mssh web1 echo ', knowledges=knowledges, flags={'ble': '1'})) == ['$HOME']
+	assert texts(query('mssh web1 echo ', knowledges=knowledges)) == ['\\$HOME']

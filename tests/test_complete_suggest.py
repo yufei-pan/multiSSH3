@@ -1,4 +1,6 @@
 '''Grey suggestions: how much of the line the engine dares to predict, and that it only ever extends what was typed.'''
+import signal
+
 import pytest
 
 import multiSSH3
@@ -138,3 +140,37 @@ def test_ghost_requests_answer_with_one_g_record():
 	engine = mc.Engine(SPEC, [memory])
 	response = engine.query(mc.Request('bash', 'mssh gp', '', 'gp', flags={'ghost': '1'}))
 	assert mc.format_response(response, nul=False) == 'MSSHC1\nG line\tu[01-16] "nvidia-smi"\nE\n'.encode()
+
+
+def mssh_runs(line_text, monkeypatch):
+	'''The remote commands mssh runs for an mssh line, answering its "one command or several" question with the default.'''
+	monkeypatch.setattr(multiSSH3, 'input_with_timeout_and_countdown', lambda *args, **kwargs: None)
+	handler = signal.getsignal(signal.SIGINT)
+	try:
+		return multiSSH3.process_commands(multiSSH3.process_args([token.text for token in mc.lex(line_text)[1:]])).commands
+	finally:
+		signal.signal(signal.SIGINT, handler)
+
+
+def test_no_suggestion_mssh_would_run_as_several_commands(monkeypatch):
+	# mssh joins the command words into one command only when none of them holds whitespace:
+	# `echo hello\ world` runs echo, then `hello world`
+	history = [line(NOW - number, '-su', 'web1', '\'echo "hello world"\'') for number in range(5)]
+	history += [line(NOW - 100 - number, '-su', 'web2', "'echo hello world'") for number in range(5)]
+	shown = 0
+	for before in ('mssh web1 ec', 'mssh web1 echo ', 'mssh web1 echo hel', 'mssh web2 ec'):
+		ghost = suggest(before, history=history)
+		if ghost is not None:
+			shown += 1
+			assert len(mssh_runs(before + ghost.text, monkeypatch)) == 1, before + ghost.text
+	assert shown
+
+
+def test_commands_with_quoted_words_are_suggested_as_typed(monkeypatch):
+	# as mssh records `mssh web1 "systemctl status 'ssh*'"`
+	history = [line(NOW - number, '-su', 'web1', multiSSH3._shell_quote("systemctl status 'ssh*'")) for number in range(5)]
+	ghost = suggest('mssh web1 sys', history=history)
+	assert (ghost.kind, ghost.text) == ('line', "temctl status \\'ssh\\*\\'")
+	assert mssh_runs('mssh web1 sys' + ghost.text, monkeypatch) == ["systemctl status 'ssh*'"]
+	assert suggest('mssh web1 systemctl status ', history=history).text == "\\'ssh\\*\\'"
+	assert suggest('mssh web1 sys', shell='zsh', history=history).text == "temctl status \\'ssh\\*\\'"

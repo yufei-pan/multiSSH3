@@ -434,12 +434,19 @@ def split_hosts(text):
 		text = text.replace(separator, ' ')
 	return text.split()
 
+def words_as_typed(command):
+	'''
+	The words of a remote command with their quotes and escapes: each as it is typed among the
+	unquoted command words of an mssh line, which mssh joins as they are into the remote command.
+	'''
+	return [token.raw for token in lex(command)]
+
 def command_features(command):
-	'''Features of one remote command: the command, its program and program plus first argument.'''
+	'''Features of one remote command: the command, its program and program plus first argument (words as typed).'''
 	command = command.strip()
 	if not command:
 		return []
-	words = [token.text for token in lex(command)]
+	words = words_as_typed(command)
 	features = ['c:' + command]
 	if words:
 		features.append('p:' + words[0])
@@ -3128,6 +3135,13 @@ def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
+def _joinable(word):
+	'''
+	Whether a command word keeps unquoted command words one command. mssh joins its command words
+	into one command only when none of them holds whitespace; else it runs each as its own command.
+	'''
+	return len(word.split()) == 1
+
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
 	def __init__(self, spec, knowledges=(), hosts=None, users=()):
@@ -3584,18 +3598,21 @@ class Engine(object):
 		'''
 		Suggestion for a command typed as unquoted words: the rest of the most likely past command
 		whose words start with the typed ones, each word escaped so the remote command is the same.
+		Never a word holding whitespace: mssh would run each command word as its own command.
 		'''
 		typed = context.command_words
 		commands = {}
+		features = {}
 		for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed), context.features, deadline).items():
-			words = [token.text for token in lex(feature[2:])]
+			words = words_as_typed(feature[2:])
 			if len(words) >= len(typed) and words[:len(typed) - 1] == typed[:-1] and words[len(typed) - 1].startswith(typed[-1]):
 				key = tuple(words)
 				commands[key] = commands.get(key, 0.0) + score
+				features.setdefault(key, []).append(feature)
 		top, share = _top_share(commands)
 		if top is None:
 			return None
-		uses = self._uses('c:' + ' '.join(top))
+		uses = sum(self._uses(feature) for feature in features[top])
 		share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
 		next_words = {}
 		for words, score in commands.items():
@@ -3604,10 +3621,10 @@ class Engine(object):
 		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
 		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
 		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
-		if more and share >= T_LINE:
+		if more and share >= T_LINE and all(_joinable(extra) for extra in top[len(typed) - 1:]):
 			return Ghost('line', rest + more, share)
 		word_rest = _shell_escape(shell, word[len(typed[-1]):], True)
-		if word_rest and word_share >= T_WORD:
+		if word_rest and word_share >= T_WORD and _joinable(word):
 			return Ghost('word', word_rest, word_share)
 		return None
 
@@ -3706,8 +3723,9 @@ class Engine(object):
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
 		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
+		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do.
 		'''
-		literal = request.shell == 'bash' or request.flags.get('insert') == '1'
+		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		word = _shell_word(request)
@@ -3918,14 +3936,16 @@ class Engine(object):
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
+			# a word holding whitespace would make mssh run each command word as its own command
 			if not typed:
 				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline).items():
-					out.append(Candidate(feature[2:], '', 'history', score))
+					if _joinable(feature[2:]):
+						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
 				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline).items():
-					words = [token.text for token in lex(feature[2:])]
-					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial):
+					words = words_as_typed(feature[2:])
+					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
 		if context.mode == 'plain' and context.command_words is not None:
@@ -5219,7 +5239,8 @@ _mssh_complete() {
 		_mssh_complete_icase=0
 		[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_icase=1
 	fi
-	[[ -n ${BLE_VERSION-} ]] && ble=1
+	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
+	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
 	flags="nosort=0 icase=$_mssh_complete_icase ble=$ble term=${TERM-}"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		flags="nosort=1 ${flags#nosort=0 }"
