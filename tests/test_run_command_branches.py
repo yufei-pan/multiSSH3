@@ -287,6 +287,21 @@ def test_scp_retry_skipped_for_an_empty_trailing_slash_directory(fake_host, monk
 	assert any("scp" in line and str(empty) + "/" in line for line in host.stderr)
 
 
+def test_scp_retry_skipped_when_the_entries_overflow_the_command_line(fake_host, monkeypatch, tmp_path):
+	# 60000 files made scp fail to start (E2BIG) with a traceback; the budget is made small here
+	monkeypatch.setattr(multiSSH3, "_SCP_ARGV_BUDGET", 4096, raising=False)
+	src = tmp_path / "src"
+	src.mkdir()
+	for index in range(50):
+		(src / ("file_%02d_" % index + "x" * 100)).write_text("")
+	host, calls = _copy_with_results(fake_host, monkeypatch,
+		[FakeProc(stderr=RSYNC_MISSING_BASH, returncode=12)], [str(src) + "/"])
+
+	assert [argv[0] for argv in calls] == ["rsync"]
+	assert host.returncode == 12
+	assert any("50 entries" in line and str(src) + "/" in line for line in host.stderr)
+
+
 def test_gather_scp_retry_skipped_for_a_trailing_slash_source_into_an_existing_destination(fake_host, monkeypatch, tmp_path):
 	# the remote directory cannot be listed here, scp would copy it whole into the local destination
 	host, calls = _copy_with_results(fake_host, monkeypatch,

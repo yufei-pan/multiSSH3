@@ -2341,6 +2341,10 @@ def _scp_sources_like_rsync(files, destination):
 		destination = destination.rstrip('/') + '/.'
 	return sources, destination
 
+# bytes the entries of a dir/ may take on scp's command line: half of Linux's usual 2 MiB argument
+# limit (macOS has 1 MiB), the environment and the rest of the command line need their share
+_SCP_ARGV_BUDGET = 1 << 20
+
 def _scp_cannot_copy_like_rsync(host):
 	'''Return why scp cannot copy host.files as rsync would have, or None when it can.'''
 	if host.gatherMode:
@@ -2356,6 +2360,10 @@ def _scp_cannot_copy_like_rsync(host):
 		return f'cannot list the directory to copy: {e}'
 	if not sources:
 		return f'{" ".join(host.files)} is empty, it has nothing to copy.'
+	# each argument also takes a pointer and its terminating NUL
+	if sum(len(os.fsencode(path)) + 9 for path in sources) > _SCP_ARGV_BUDGET:
+		directories = ' '.join(path for path in host.files if path.endswith(('/', os.sep)))
+		return f'it would have to list the {len(sources)} entries of {directories} on its command line, more than a command line holds.'
 	return None
 
 _CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
