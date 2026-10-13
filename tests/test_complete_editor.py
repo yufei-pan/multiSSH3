@@ -225,6 +225,33 @@ def test_an_accept_key_in_a_burst_still_takes_the_suggestion():
 	assert edit.text == 'mssh gpu[01-16] "nvidia-smi"'
 
 
+@pytest.mark.parametrize('burst, outcome', [
+	# Esc is readline's: the editor hands it on, as a legacy terminal sends it
+	('\x1b', ('pass', b'\x1b')),
+	('\x1b\x1b', ('pass', b'\x1b\x1b')),
+	('\x1b[27u', ('pass', b'\x1b')),
+	('\x1b[27;1u', ('pass', b'\x1b')),
+	('\x1b[27;1;27~', ('pass', b'\x1b')),
+	# the kitty keyboard protocol's Enter and Ctrl-C, and xterm's modifyOtherKeys Ctrl-C
+	('\x1b[13u', ('pass', b'\r')),
+	('\x1b[99;5u', ('abandon', b'')),
+	('\x1b[27;5;99~', ('abandon', b'')),
+	# a key with no legacy bytes is handed on as it came
+	('\x1b[13;5u', ('pass', b'\x1b[13;5u')),
+])
+def test_keys_however_the_terminal_sends_them_reach_readline_as_it_reads_them(burst, outcome):
+	assert editor('mssh x').run(FakeTerminal([burst]), '$ ', None) == outcome
+
+
+def test_editing_keys_sent_as_csi_u_edit():
+	# Alt-F takes a word of the suggestion, Ctrl-A goes home, Ctrl-E to the end and then takes the
+	# rest, Backspace deletes
+	edit = editor()
+	typed = ['gp', '\x1b[102;3u', '\x1b[97;5u', '\x1b[101;5u', '\x1b[101;5u', '\x1b[127u', '\x1b[13u']
+	assert edit.run(FakeTerminal(typed), '$ ', None) == ('pass', b'\r')
+	assert edit.text == 'mssh gpu[01-16] "nvidia-smi'
+
+
 def test_draw_shows_grey_text_and_puts_the_cursor_after_the_typed_text():
 	grid = Grid(5, 80)
 	edit = editor()

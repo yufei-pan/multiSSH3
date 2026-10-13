@@ -106,6 +106,22 @@ def test_bash_ctrl_r_cancel_keeps_the_line(home):
 		session.close()
 
 
+@pytest.mark.parametrize('esc', ['\x1b\x1b', '\x1b[27u', '\x1b[27;1;27~'])
+def test_bash_ctrl_r_cancel_takes_esc_however_the_terminal_sends_it(home, esc):
+	# two at once (a double press over ssh or mosh, Alt+Esc), the kitty keyboard protocol's CSI u
+	# (tmux passes it on as the terminal sent it), xterm's modifyOtherKeys
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu[01-16] nv')
+		time.sleep(0.3)
+		session.send('\x12')
+		session.read_until(b'commands for', 10)
+		assert printed(session, esc) == 'mssh gpu[01-16] nv'
+	finally:
+		session.close()
+
+
 def test_bash_ctrl_r_on_other_lines_is_still_reverse_search(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))
@@ -307,6 +323,33 @@ def test_editor_replays_keys_it_does_not_handle(home):
 	try:
 		# up: readline's previous-history
 		assert printed(session, 'mssh x' + UP) == 'echo bb'
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('esc', ['\x1b', '\x1b[27u', '\x1b[27;1;27~'])
+def test_editor_hands_esc_to_readline_however_the_terminal_sends_it(home, esc):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh xy')
+		time.sleep(0.5)
+		session.send(esc)
+		time.sleep(0.3)
+		# readline has the line and the Esc: B after it is readline's backward-word
+		assert printed(session, 'bZ') == 'mssh Zxy'
+	finally:
+		session.close()
+
+
+def test_editor_enter_sent_as_csi_u_runs_the_line(home):
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.send('\x1b[13u')
+		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@', 10)
 	finally:
 		session.close()
 

@@ -4071,6 +4071,71 @@ _KEY_SEQUENCES = {
 	'\x1b[1;3C': 'alt-right', '\x1b[1;3D': 'alt-left', '\x1b\x1b[C': 'alt-right', '\x1b\x1b[D': 'alt-left',
 }
 _KEY_NAMES = {'\r': 'enter', '\n': 'enter', '\t': 'tab', '\x7f': 'backspace', '\x08': 'backspace', '\x00': 'ctrl-space'}
+# keys the kitty keyboard protocol numbers by the byte legacy terminals send for them, and its modifier bits
+_CSI_U_KEYS = {27: '\x1b', 13: '\r', 9: '\t', 127: '\x7f'}
+_SHIFT, _ALT, _CTRL, _CAPS_LOCK, _NUM_LOCK = 1, 2, 4, 64, 128
+
+def _legacy_key(params, final):
+	'''
+	The bytes a terminal sends without the kitty keyboard protocol for a key it sent as CSI params
+	final: the protocol's CSI code[:shifted[:base]][;modifiers[:event][;text]] u, or xterm's
+	modifyOtherKeys CSI 27;modifiers;code ~. Terminals send these when a program (or a multiplexer
+	in between) asked for them and did not turn them off.
+
+	Returns:
+		str, or None for any other sequence, a key with no legacy bytes (Ctrl+Enter, Super+A, a
+		Shift+key whose character is not given) or a key release
+	'''
+	fields = params.split(';')
+	if final == '~' and len(fields) == 3 and fields[0] == '27':
+		fields = [fields[2], fields[1]]
+	elif final != 'u' or len(fields) > 3:
+		return None
+	try:
+		codes = [int(code) if code else 0 for code in fields[0].split(':')]
+		modifier = (fields[1] if len(fields) > 1 else '').split(':')
+		bits = int(modifier[0] or 1) - 1
+		release = len(modifier) > 1 and modifier[1] == '3'
+		text = ''.join(chr(int(code)) for code in fields[2].split(':')) if len(fields) > 2 else ''
+		char = chr(codes[0])
+		shifted = chr(codes[1]) if len(codes) > 1 and codes[1] else ''
+	except (ValueError, OverflowError):
+		return None
+	# Num Lock changes none of these keys; Caps Lock only the case of a letter
+	bits &= ~_NUM_LOCK
+	if release or bits < 0 or bits & ~(_SHIFT | _ALT | _CTRL | _CAPS_LOCK):
+		return None
+	if codes[0] in _CSI_U_KEYS:
+		if bits & _CTRL:
+			return None
+		key = '\x1b[Z' if codes[0] == 9 and bits & _SHIFT else _CSI_U_KEYS[codes[0]]
+	elif bits & _CTRL:
+		# the control character, as legacy terminals send Ctrl with a letter, space or @[\]^_?
+		if char in (' ', '@'):
+			key = '\x00'
+		elif char == '?':
+			key = '\x7f'
+		elif 'a' <= char <= 'z' or '@' <= char <= '_':
+			key = chr(ord(char.upper()) - 64)
+		else:
+			return None
+	else:
+		if text:
+			key = text
+		elif bits & _SHIFT and shifted:
+			key = shifted
+		elif char.isalpha() and char.islower():
+			key = char.upper() if bool(bits & _SHIFT) != bool(bits & _CAPS_LOCK) else char
+		elif bits & _SHIFT and final == 'u' and not char.isupper():
+			# the kitty protocol sends the key Shift was pressed with (xterm the character it made, as
+			# in ~ and with upper case letters): what Shift makes of it depends on the keyboard layout
+			return None
+		else:
+			key = char
+		# the protocol's own codes (keypad, media and modifier keys) are private-use characters
+		if not key.isprintable():
+			return None
+	return '\x1b' + key if bits & _ALT else key
 
 def decode_keys(data):
 	'''
@@ -4078,7 +4143,9 @@ def decode_keys(data):
 
 	Returns:
 		list: (name, raw bytes) pairs. name is a key name ('up', 'enter', 'ctrl-r', 'alt-f', 'esc', 'unknown')
-			or, for text, the character itself.
+			or, for text, the character itself. A key sent the kitty keyboard protocol's way or by
+			modifyOtherKeys has the bytes legacy terminals send for it as raw bytes: what readline
+			understands when the editor hands it the key.
 	'''
 	text = data.decode('utf-8', 'replace')
 	keys = []
@@ -4098,8 +4165,15 @@ def decode_keys(data):
 					end = index + 2
 					while end < len(text) and not '@' <= text[end] <= '~':
 						end += 1
-					keys.append(('unknown', text[index:end + 1].encode()))
+					sequence = text[index:end + 1]
+					legacy = _legacy_key(sequence[2:-1], sequence[-1]) if sequence[1] == '[' and end < len(text) else None
+					found = decode_keys(legacy.encode('utf-8')) if legacy is not None else []
+					keys.append(found[0] if len(found) == 1 else ('unknown', sequence.encode()))
 					index = end + 1
+				elif text[index + 1:index + 2] == '\x1b' and text[index + 2:index + 3] not in ('[', 'O'):
+					# Esc twice (two presses that arrived together) or Alt+Esc: Esc either way
+					keys.append(('esc', b'\x1b\x1b'))
+					index += 2
 				elif index + 1 < len(text):
 					# Alt + key arrives as Esc then the key
 					keys.append(('alt-' + text[index + 1], text[index:index + 2].encode('utf-8')))
@@ -4252,7 +4326,11 @@ class Terminal(object):
 		else:
 			data += self._utf8_rest(data)
 		keys = decode_keys(data)
-		return keys[0] if len(keys) == 1 else ('unknown', data)
+		if len(keys) == 1:
+			return keys[0]
+		# Esc again, or Esc and then a key, all at once: what was read cannot go back to the terminal,
+		# so it comes with the Esc (the picker closes, the editor hands all of it to readline)
+		return ('esc' if keys and keys[0][0] == 'esc' else 'unknown', data)
 
 	def _utf8_rest(self, lead):
 		'''The continuation bytes of a UTF-8 character that starts with lead.'''
@@ -4272,7 +4350,7 @@ class Terminal(object):
 		if second is None:
 			return b''
 		if second == b'\x1b':
-			# Esc Esc [ C: Alt + an arrow on some terminals
+			# Esc Esc [ C: Alt + an arrow on some terminals; Esc Esc alone: Esc pressed twice, or Alt+Esc
 			return second + self._escape()
 		if second == b'O':
 			return second + (self._byte(0.03) or b'')
