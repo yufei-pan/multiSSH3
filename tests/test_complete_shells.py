@@ -300,6 +300,35 @@ def test_install_without_a_home_directory_changes_nothing(tmp_path, monkeypatch,
 	assert [os.listdir(str(tmp_path / name)) for name in ('expanded', 'environ', 'cwd')] == [[], [], []]
 
 
+def _latin1_locale():
+	'''A Latin-1 (ISO 8859-1 or -15) locale this machine has, or None.'''
+	try:
+		names = subprocess.run(['locale', '-a'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode('ascii', 'replace').split()
+	except OSError:
+		return None
+	return next((name for name in names if 'iso88591' in name.lower().replace('-', '').replace('_', '')), None)
+
+
+def test_install_under_a_latin1_locale_writes_paths_as_they_are_on_disk(tmp_path):
+	# Python decodes a non-ASCII HOME as Latin-1 there: written as UTF-8, the glue path in the rc
+	# block was re-encoded (c3 83 c2 a9 for c3 a9 on disk), and [ -r ... ] skipped loading it
+	bash = require_shell('bash')
+	locale = _latin1_locale()
+	if locale is None:
+		pytest.skip('no Latin-1 locale here')
+	env, _ = make_home(tmp_path)
+	home = os.fsencode(str(tmp_path)) + b'/h\xc3\xa9'
+	os.mkdir(home)
+	env = dict(env, HOME=home, LC_ALL=locale)
+	script = 'import mssh_complete as mc; mc.completion_command(["install", "bash"])'
+	subprocess.run([sys.executable, '-c', script], env=env, cwd=str(REPO), stdout=subprocess.DEVNULL, check=True, timeout=60)
+	with open(home + b'/.bashrc', 'rb') as f:
+		assert home + b'/.local/share/multiSSH3/completion.bash' in f.read()
+	result = subprocess.run([bash, '-i', '-c', 'type -t _mssh_complete || :'], env=env, cwd=home,
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+	assert result.stdout.decode().strip() == 'function'
+
+
 LOGIN_LINE = '[ -f ~/.bashrc ] && . ~/.bashrc'
 
 @pytest.mark.parametrize('files, reads', [

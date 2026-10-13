@@ -5479,6 +5479,17 @@ def _write_glue(path, text, messages):
 	messages.append('wrote ' + path)
 	return True
 
+def _as_written(path):
+	'''
+	path as text for a file written as UTF-8 (surrogateescape), so that the file holds the bytes the
+	path has on disk: under a Latin-1 locale Python decodes them as Latin-1.
+	'''
+	return os.fsencode(path).decode('utf-8', 'surrogateescape')
+
+def _as_shown(text):
+	'''Text written by _as_written, as printed: in the locale's encoding, the bytes on disk again.'''
+	return os.fsdecode(text.encode('utf-8', 'surrogateescape'))
+
 def _read_rc(rc):
 	'''
 	The text of the rc file, or None when there is none.
@@ -5575,7 +5586,8 @@ def _editor_on(rc):
 
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
-	add_by_hand = ['to load it anyway, add these lines to it yourself:', RC_BEGIN] + body.split('\n') + [RC_END]
+	shown = _as_shown(body).split('\n')
+	add_by_hand = ['to load it anyway, add these lines to it yourself:', RC_BEGIN] + shown + [RC_END]
 	try:
 		text = _read_rc(rc)
 	except NotRegularFile as error:
@@ -5587,7 +5599,7 @@ def _add_rc_block(rc, body, messages):
 			messages.append('{} already loads it'.format(_shown(rc)))
 			return
 		by_hand = ['to load it anyway, replace lines {} to {} of it (the mssh block) with these yourself:'.format(
-			text.count('\n', 0, start) + 1, text.count('\n', 0, body_end) + 1), begin] + body.split('\n') + [RC_END]
+			text.count('\n', 0, start) + 1, text.count('\n', 0, body_end) + 1), begin] + shown + [RC_END]
 		_write_rc(rc, text[:body_start] + body + '\n' + text[body_end:], by_hand)
 		messages.append('updated the mssh block in ' + _shown(rc))
 		return
@@ -5785,6 +5797,8 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 		major = _fish_major()
 		if major is not None and major < 3:
 			return 1, ['fish {} is too old for mssh autocomplete: it needs fish 3.0 or later'.format(major)]
+	# paths go into files written as UTF-8 as the bytes they have on disk
+	command = [_as_written(word) for word in (engine_command() if command is None else command)]
 	text = render_glue(shell, command)
 	paths = _paths(shell, home, environ)
 	if paths.get('note'):
@@ -5794,7 +5808,7 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 		if paths.get('keys') and written:
 			_write_glue(paths['keys'], render_glue('fish-keys', command), messages)
 		if paths.get('rc') and written:
-			quoted = shlex.quote(written[0])
+			quoted = shlex.quote(_as_written(written[0]))
 			# always ends with status 0: a missing or broken file must not even change $? in a new shell
 			line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
 			body = line.format(quoted)
