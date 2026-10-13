@@ -194,6 +194,30 @@ def test_storing_through_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path
 	assert json.loads(real.read_text())["DEFAULT_PASSWORD"] == "secret"
 
 
+@pytest.mark.parametrize("stale_backup", [False, True], ids=["no_backup_yet", "backup_link_left_by_6_31"])
+def test_backing_up_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path, umask_002, stale_backup):
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text('{"DEFAULT_PASSWORD": "old"}')
+	real.chmod(0o600)
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	backup = tmp_path / ".multiSSH3.config.json.bak"
+	if stale_backup:
+		# up to 6.31 the backup was the renamed link: a new backup must replace it, not write through it
+		backup.symlink_to(real)
+
+	assert _store_with_backup(monkeypatch, link) == (0o600, 0o600)
+
+	# the dotfiles copy is updated through the link, the old config is copied next to the link
+	assert link.is_symlink()
+	assert json.loads(real.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert not backup.is_symlink()
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert [p.name for p in dotfiles.iterdir()] == ["multiSSH3.config.json"]
+
+
 @pytest.mark.parametrize("mode,written", [(0o666, False), (0o600, True)], ids=["too_open", "already_private"])
 def test_someone_elses_writable_config_is_written_in_place_only_when_private(monkeypatch, tmp_path, capsys, mode, written):
 	shared = tmp_path / "team.json"

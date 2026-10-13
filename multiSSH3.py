@@ -4998,6 +4998,33 @@ def _is_system_config_path(path):
 		if os.path.isabs(entry)
 	)
 
+def _own_symlink(path):
+	'''Whether path is a symlink of our own (or root's), one write_default_config writes through.'''
+	if not os.path.islink(path):
+		return False
+	return not hasattr(os, 'getuid') or os.lstat(path).st_uid in (os.getuid(), 0)
+
+def _copy_to_backup(path, backup, mode):
+	'''Copy the file path leads to into a new file at backup (mode), replacing what is there, a symlink included.'''
+	with open(path, 'rb') as f:
+		content = f.read()
+	# a temporary file renamed over the backup: opening the backup itself would follow a link left there
+	temporary = '{}.{}.tmp'.format(backup, uuid4().hex)
+	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+	try:
+		with os.fdopen(fd, 'wb') as f:
+			if hasattr(os, 'fchmod'):
+				# O_CREAT's mode is reduced by the umask, set it exactly
+				os.fchmod(f.fileno(), mode)
+			f.write(content)
+		os.replace(temporary, backup)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
 	default_config = generate_default_config(args)
@@ -5010,7 +5037,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	if not force and os.path.exists(CONFIG_FILE):
 		eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
 		eprint("o:  Overwrite the file")
-		eprint(f"b:  Rename the current config file at {CONFIG_FILE!r}.bak forcefully and write the new config file (default)")
+		eprint(f"b:  Back up the current config file to {CONFIG_FILE + '.bak'!r} and write the new config file (default)")
 		eprint("n:  Do nothing")
 		inStr = input_with_timeout_and_countdown(10)
 		if (not inStr) or inStr.lower().strip().startswith('b'):
@@ -5025,7 +5052,11 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	except OSError:
 		previous_mode = None
 	try:
-		if backup and os.path.exists(CONFIG_FILE):
+		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
+			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
+			# link aside would leave the file it points to as it was, copy that file instead
+			_copy_to_backup(CONFIG_FILE, CONFIG_FILE+'.bak', 0o600 if previous_mode is None else previous_mode & 0o600)
+		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only
 			if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
@@ -5044,7 +5075,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
 		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
 		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
-		if os.path.islink(CONFIG_FILE) and hasattr(os, 'getuid') and os.lstat(CONFIG_FILE).st_uid not in (os.getuid(), 0):
+		if os.path.islink(CONFIG_FILE) and not _own_symlink(CONFIG_FILE):
 			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
 		target = os.path.realpath(CONFIG_FILE)
 		try:
