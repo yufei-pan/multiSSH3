@@ -29,14 +29,39 @@ def test_spec_rows_round_trip():
 	('-u', 'username', None),
 	('--username', 'username', None),
 	('-u=root', 'username', 'root'),
-	('--no_w', 'no_watch', None),
-	('--usern=x', 'username', 'x'),
+	('-uroot', 'username', 'root'),
+	('--username=root', 'username', 'root'),
+	# mssh takes option names in full only, so abbreviations are not options here either
+	('--no_w', None, None),
+	('--usern=x', None, None),
+	('--user', None, None),
 	('--no', None, None),
+	('-c', None, None),
 	('-zz', None, None),
 ])
 def test_lookup(text, dest, value):
 	option, attached = SPEC.lookup(text)
 	assert (option.dest if option else None, attached) == (dest, value)
+
+
+def _argparse_dests(word):
+	'''The dests mssh's parser sets for a word followed by a value; None when the word is not an mssh option.'''
+	parser = multiSSH3.get_parser()
+	defaults = vars(parser.parse_known_args([])[0])
+	parsed, unknown = parser.parse_known_args([word, '1'])
+	if word in unknown:
+		return None
+	return {dest for dest, value in vars(parsed).items() if value != defaults[dest]} - {'hosts', 'commands'}
+
+
+@pytest.mark.parametrize('word', [
+	'-u', '--username', '-u=root', '-uroot', '--username=root', '-ci', '-j', '--json', '-ea=--x', '-pS3c=t', '-t30',
+	# abbreviations of option names, and words that are no mssh option
+	'-c', '-1', '-d', '-n', '--user', '--user=root', '--no_w', '--force', '--conf', '-la', '--all', '-zz',
+])
+def test_option_words_agree_with_argparse(word):
+	option, _ = SPEC.lookup(word)
+	assert ({option.dest} if option else None) == _argparse_dests(word)
 
 
 @pytest.mark.parametrize('before, after, slot, dest, value', [
