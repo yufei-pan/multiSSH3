@@ -434,6 +434,7 @@ Here details the options for multiSSH3 6.02 @ 2025-11-10
 - This option implies `--use_key`.
 - If this option is not specified but `--use_key` is specified, it will search for identity files in `DEFAULT_IDENTITY_FILE`.
 - If no value is specified, it will search `DEFAULT_SSH_KEY_SEARCH_PATH`.
+- ssh then logs in with that key only (`-o IdentitiesOnly=yes`), not first with every key in your ssh-agent: with six or more there, sshd ends the login ( `Too many authentication failures` ) before the key is tried. A key held by the agent is still used when the file given is it or its `.pub`. A key file that does not exist is passed to ssh as before, which then uses the agent's keys.
 
 ### `-uk, --use_key` | _`DEFAULT_USE_KEY`_
 - Attempt to use public key authentication to connect to the hosts.

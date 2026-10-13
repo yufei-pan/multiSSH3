@@ -2300,6 +2300,10 @@ def _build_command(host, passwds, ipmi_definitions_list):
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+		if host.identity_file and os.path.exists(os.path.expanduser(host.identity_file)):
+			# log in with this key only: ssh offers every ssh-agent key before it, and sshd ends the login
+			# after MaxAuthTries (6) failures. A key file that is not there leaves ssh the agent's keys
+			sshLocalExtraArgs += ['-o','IdentitiesOnly=yes']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
 		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(sshLocalExtraArgs)]
