@@ -723,3 +723,109 @@ def test_fish_keys_taken_run_only_what_they_ran_before(home, pre):
 		assert errors == []
 	finally:
 		session.close()
+
+
+# ---------------------------------------------------------------- the picker's warnings, in every shell
+
+# an unknown host, two exclusive options, a password given twice
+WARNED = 'mssh -su -nsu -p hunter2 -p swordfish gpu017 '
+PASSWORDS = ('hunter2', 'swordfish')
+PICKER_WARNINGS = [
+	'⚠ gpu017: unknown host',
+	'⚠ -nsu cannot be used with -su (mssh stops with an error)',
+	'⚠ -p given twice: mssh uses the last one',
+]
+REASON = '⚠ gpu017: unknown host (+2 more)'
+
+
+def screen_when(session, check, timeout=10.0):
+	"""The screen's non-empty rows as soon as check(rows) holds (or at the timeout)."""
+	end = time.monotonic() + timeout
+	while True:
+		rows = [row.rstrip() for row in screen(session) if row.strip()]
+		if check(rows) or time.monotonic() >= end:
+			return rows
+		session.read_until(b'@@never@@', 0.1)
+
+
+def quiet(session, gap=0.3, timeout=5.0):
+	"""Read until the shell has printed nothing for gap seconds."""
+	end = time.monotonic() + timeout
+	while time.monotonic() < end:
+		size = len(session.output)
+		session.read_until(b'@@never@@', gap)
+		if len(session.output) == size:
+			return
+
+
+def from_the_line(rows):
+	"""The rows from the command line down (the picker opens below it; rows above may scroll away)."""
+	starts = [number for number, row in enumerate(rows) if row.startswith('@@READY@@ ')]
+	return rows[starts[-1]:] if starts else rows
+
+
+def picker_shell(shell, env, home):
+	"""A session of shell where Ctrl-R opens the picker, and whether it shows a reason line while typing."""
+	if shell == 'bash':
+		# readline cannot draw warnings while typing: the picker is where plain bash shows them
+		return bash_session(home, env, glue_file(home, 'bash')), False
+	if shell == 'editor':
+		return editor_session(env, home), True
+	if shell == 'blesh':
+		return blesh_session(home, env, glue_file(home, 'bash')), True
+	if shell.startswith('zsh'):
+		return zsh_with(env, home, zas=shell == 'zsh-autosuggestions'), True
+	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE))
+	# fish 3 keeps its space key: warnings only in the picker
+	return session, fish_major() >= 4
+
+
+def check_warned_picker(session):
+	"""Open the picker on WARNED (typed already) and check the warnings at its top."""
+	session.send('\x12')
+	session.read_until(b'type to filter', 10)
+	grid = rendered(session)
+	lines = grid.lines()
+	top = [row for row, line in enumerate(lines) if line.startswith('┌ commands for gpu017 ')]
+	bottom = [row for row, line in enumerate(lines) if line.startswith('└ type to filter')]
+	assert len(top) == 1 and len(bottom) == 1, lines
+	top, bottom = top[0], bottom[0]
+	# the warnings come first under the title, in plain text, then the candidates
+	for number, text in enumerate(PICKER_WARNINGS):
+		row = top + 1 + number
+		assert lines[row].startswith('│ ' + text + ' ') and lines[row].endswith('│'), lines[row]
+		assert set(grid.styles(row)) == {''}, (lines[row], grid.styles(row))
+	assert lines[top + 4].startswith('│> nvidia-smi '), lines[top + 4]
+	# nothing in the menu underlined (the line's marks do not leak into it), no password in it
+	menu = range(top, bottom + 1)
+	assert not [lines[row] for row in menu if any('4' in style.split(';') for style in grid.styles(row))]
+	assert not [lines[row] for row in menu if any(secret in lines[row] for secret in PASSWORDS)]
+
+
+@pytest.mark.parametrize('shell', ['bash', 'editor', 'blesh', 'fish'])
+def test_picker_shows_the_warnings_about_the_line_at_its_top(home, shell):
+	env, home = home
+	known(env, gpu017='invalid')
+	session, reason = picker_shell(shell, env, home)
+	try:
+		session.send(WARNED)
+		shown = REASON if reason else '@@READY@@ ' + WARNED.rstrip()
+		assert shown in screen_when(session, lambda rows: shown in rows)
+		quiet(session)
+		before = from_the_line([row.rstrip() for row in screen(session) if row.strip()])
+		check_warned_picker(session)
+		# Esc: the menu is gone, the line and what was under it are back as they were
+		session.send('\x1b')
+		after = screen_when(session, lambda rows: from_the_line(rows) == before)
+		assert from_the_line(after) == before
+		assert not [row for row in after if row[:1] in ('┌', '│', '└')]
+		# again, then Enter: the line with the chosen command, and what was under it
+		check_warned_picker(session)
+		session.send('\r')
+		expected = ['@@READY@@ ' + WARNED + 'nvidia-smi'] + before[1:]
+		after = screen_when(session, lambda rows: from_the_line(rows) == expected)
+		assert from_the_line(after) == expected
+		assert not [row for row in after if row[:1] in ('┌', '│', '└')]
+		assert words(printed(session, '')) == words(WARNED + 'nvidia-smi')
+	finally:
+		session.close()
