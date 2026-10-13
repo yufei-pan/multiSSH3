@@ -483,6 +483,25 @@ def test_remote_errors_mentioning_routes_or_timeouts_do_not_mark_the_host_unreac
 
 
 
+
+def test_file_copy_that_could_not_connect_marks_the_host_unreachable(fake_host, monkeypatch, tmp_path):
+	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits 1 when ssh cannot
+	# connect; mssh falls back to scp after rsync failed, so scp's result is the host's
+	host = fake_host("mock-a", "/tmp/", files=["f.txt"])
+	host.returncode = 1
+	host.stderr = ["ssh: connect to host mock-a port 22: No route to host", "lost connection"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host) == {"mock-a"}
+
+
+def test_command_exiting_1_after_ssh_connect_words_does_not_mark_the_host(fake_host, monkeypatch, tmp_path):
+	# only a file copy's scp exits 1 for a connect failure, a command's ssh exits 255
+	host = fake_host("mock-a", "true")
+	host.returncode = 1
+	host.stderr = ["ssh: connect to host mock-a port 22: No route to host"]
+
+	assert _unreachable_after_run(monkeypatch, tmp_path, host, cached=["mock-a"]) == set()
+
 def test_ssh_connect_error_splits_only_ssh_own_line():
 	# the same helper as patch/ssh-error-text's, so the two merge into one
 	assert multiSSH3._ssh_connect_error(" ssh: connect to host web1 port 22: No route to host\n") == (

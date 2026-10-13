@@ -4085,12 +4085,14 @@ def _found_unreachable(host):
 	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
 
 	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
-	cannot be reached; a remote command printing the same words (curl: ... No route to host)
-	did reach its host. A command stopped by the timeout (-t) counts too if nothing at all came
+	cannot be reached (scp's legacy protocol exits with 1); a remote command printing the same
+	words (curl: ... No route to host) did reach its host. A command stopped by the timeout (-t) counts too if nothing at all came
 	back before it: a host that never answers looks like that, but so does a command that was
 	quiet from the start, which mssh cannot tell apart. Output means the host answered.
 	'''
-	if host.returncode == 255 and host.stderr:
+	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits with 1, not 255
+	ssh_failed = host.returncode == 255 or (bool(host.files) and host.returncode == 1)
+	if ssh_failed and host.stderr:
 		first_line = host.stderr[0].strip()
 		connect_error = _ssh_connect_error(first_line)
 		if (connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS) or _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
