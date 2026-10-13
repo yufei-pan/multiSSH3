@@ -288,6 +288,8 @@ Not indexed. Each request carries the shell's in-memory tail (default 1000 entri
 - Deadline: the engine is opened on a file descriptor (`exec {fd}< <(engine query)`) and read with a timeout (`zselect -t` + `sysread`, or `read -t -u $fd`), then the descriptor is closed. `read -t` on a redirected process substitution (`read -t 0.2 x < <(…)`) ignores the timeout in zsh — verified on 5.0.2 and 5.9, where it waited for the producer — so it must not be used.
 - Candidates are added with `compadd -V <group> -d <descriptions>` in rank order, grouped as aliases, host groups, hosts, history, options, values.
 - Delegation: quoted commands use `compset -q`; then words are shifted to the remote command and `_normal` runs.
+- No answer (a module missing, an engine that fails, is too slow or answers in another protocol) and an answer that offers nothing fall back to `_default`, what zsh runs for a command it has no completion for (file names), as bash's `-o default` does; `nodefault` (a password) leaves nothing. Once it has asked the engine, `_mssh` returns 0 whatever it offered, so a `matcher-list` or a later completer (`_approximate`) does not ask again on the same TAB, which can take up to the deadline each time.
+- `_mssh` runs its own code under `emulate -L zsh`, but `compadd`, `_files`, `_normal` and what they call run in the options the completion system gave `_mssh` (the completion system's own and the operator's, such as `glob_dots`): under zsh's defaults `_arguments` misreads its specs, and a glob in `_files` that matches nothing aborts the completion.
 
 ### fish
 

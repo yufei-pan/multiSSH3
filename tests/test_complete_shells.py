@@ -96,6 +96,76 @@ def test_zsh_completes_in_a_real_shell(setup):
 		session.close()
 
 
+@pytest.mark.parametrize('engine', ['sleep 5', 'exit 1', r"printf 'MSSHC9\nE\n\0'"], ids=['slow', 'failing', 'other-protocol'])
+def test_zsh_falls_back_to_file_names_without_an_answer(setup, engine):
+	# no answer: what zsh offers for a command it has no completion for (file names), as bash does
+	env, home = setup
+	stand_in = home / 'engine'
+	stand_in.write_text('#!/bin/sh\n{}\n'.format(engine))
+	stand_in.chmod(0o755)
+	(home / 'zzfile_unique').write_text('')
+	session = zsh_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3'), glue_file(home, 'zsh', [str(stand_in)]))
+	try:
+		started = time.monotonic()
+		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		assert time.monotonic() - started < 3
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
+	# an answer with nothing in it: bash's -o default offers file names, and zsh does the same,
+	# except for a password (nodefault)
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	start = bash_session if shell == 'bash' else zsh_session
+	session = start(home, env, glue_file(home, shell))
+	try:
+		# hosts, then a remote command, that nothing matches
+		assert session.line_after('mssh zzf') == 'mssh zzfile_unique '
+		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		# a remote command's own completion that offers nothing
+		assert session.line_after('mssh h fakecmd zz') == 'mssh h fakecmd zzfile_unique '
+		assert session.line_after('mssh -p zz') == 'mssh -p zz'
+		assert session.line_after('mssh h --password=zz') == 'mssh h --password=zz'
+	finally:
+		session.close()
+
+
+# a command whose completion is built on _arguments, as most of zsh's are
+ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
+
+
+def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
+	# the remote command's completion runs as zsh runs it: with the completion system's options
+	# (_arguments misreads its specs without them) and with the operator's own (glob_dots)
+	env, home = setup
+	(home / 'dots').mkdir()
+	(home / 'dots' / '.zzhidden').write_text('')
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKEOPTS + '\nsetopt glob_dots')
+	try:
+		assert session.line_after('fakeopts --appa') == 'fakeopts --apparent-size '
+		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
+		assert session.line_after('ls dots/') == 'ls dots/.zzhidden '
+		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('option', ['ignore_braces', 'ignore_close_braces'])
+def test_zsh_glue_loads_with_brace_options(tmp_path, option):
+	# with either option a } closes a group only in command position: the glue must parse all the same
+	zsh = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	script = 'autoload -Uz compinit && compinit -u -D; setopt {}; source {}; print -r -- "$+functions[_mssh] $_comps[mssh]"'
+	result = subprocess.run([zsh, '-f', '-c', script.format(option, glue_file(home, 'zsh'))], env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert (result.stdout.decode().split(), result.stderr.decode()) == (['1', '_mssh'], '')
+
+
 def test_zsh_gives_up_on_a_slow_engine(setup):
 	env, home = setup
 	slow = home / 'slow-engine'
