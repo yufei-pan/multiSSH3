@@ -44,6 +44,7 @@ New in SP3:
 | What counts as unknown | mssh's own rule: not an IP, alias or hosts-file entry, DNS says the name does not exist, and `ssh -G` shows no ssh config that singles it out (HostName rewrite, ProxyJump, ProxyCommand; catch-all `Host *` blocks excluded, as mssh does) |
 | Reachability | mssh's `unavailable_hosts.csv` (hosts that failed in the operator's runs) and ICMP ping; ping silence counts only for a host that answered ping within the ping expiry. No port-22 or other TCP checks (fail2ban in `ddos` / `aggressive` mode counts a bare connect as a failure, and every user on a login node shares its address) |
 | Architecture | Detached prober plus a cache (approach A): queries never wait on the network; a short-lived `mssh-complete probe`, started like the index rebuild and guarded by a lock, fills the cache |
+| Prober limits | Adaptive, no fixed counts: parallelism follows mssh's own `max_connections` rule (the mssh config's `DEFAULT_MAX_CONNECTIONS`, default 4 × CPUs, clamped by the open-file limit), halved while the load average is at or above the CPU count and on running out of descriptors or processes; every host on the line is checked, up to the range-member limit; a run lasts while there is work (at most 2 minutes) at low CPU priority |
 | Ping expiry | Same as mssh's unreachable-host expiry (`DEFAULT_UNAVAILABLE_HOST_EXPIRY`, 600 s unless the mssh config changes it); `MSSH_COMPLETE_PING_TTL` (seconds) overrides |
 | Runtime storage | One chain for all runtime state of mssh and mssh-complete: `$XDG_RUNTIME_DIR/multiSSH3` → `/run/user/<uid>/multiSSH3` → `/dev/shm/multiSSH3-<uid>` → `<tempdir>/multiSSH3-<uid>`; nothing SP3 writes survives a reboot |
 | Words checked | Only finished words: the word under or just before the cursor is checked once the cursor leaves it |
@@ -115,10 +116,10 @@ Two or more equally good candidates: no suggestion.
 
 ### Range surprises
 
-A hosts part with range syntax (`node[1-16]`, IPv4 ranges) or naming an alias is expanded (index members for aliases; `expand_ranges` for ranges, up to `RANGE_MEMBERS_LIMIT`). Members valid at once are cleared; the others are looked up in the cache, and those without an entry are queued (up to 64 hosts per line, shared with plain names, in order).
+A hosts part with range syntax (`node[1-16]`, IPv4 ranges) or naming an alias is expanded (index members for aliases; `expand_ranges` for ranges, up to `RANGE_MEMBERS_LIMIT`). Members valid at once are cleared; the others are looked up in the cache, and those without a fresh entry are queued.
 
 - Warn when at least one member is `invalid`: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …)`.
-- When not every member could be checked: `node[1-1000]: 64 checked, 64 unknown` (the counts say what was checked).
+- While members are still being checked, the counts say so: `node[1-1000]: 312 of 1000 checked, 12 unknown so far`.
 - **Did you mean** for numeric ranges with unpadded bounds: the zero-padded variant (width of the upper bound, `node[01-16]`) when all its members are valid at once or cached `valid`.
 
 ### Unreachable host
@@ -166,8 +167,11 @@ Writes are atomic (temporary file and `os.replace`) and made under `probe.lock`;
 `mssh-complete probe` (spawned like `spawn_rebuild`: detached, new session, `cwd='/'`, no inherited descriptors):
 
 1. Takes the lock or exits.
-2. Repeats until the queue is empty or about 10 seconds have passed: takes up to 64 queued hosts, newest first, skipping hosts whose entries are fresh; checks validity (`host_validity`, at most 16 at a time, 2 s each, a timeout is `unsure`) and pings hosts that are not `invalid` (`ping -c2 -i0.2 -W1 -q`, `-6` for IPv6 addresses, at most 16 at a time); merges the results into `host-state.tsv`.
-3. Releases the lock and exits.
+2. Lowers its CPU priority (`nice 10`).
+3. Repeats until the queue is empty or 2 minutes have passed: takes the queued hosts, newest first, skipping hosts whose entries are fresh; checks validity (`host_validity`, 2 s each, a timeout is `unsure`) and pings hosts that are not `invalid` (`ping -c2 -i0.2 -W1 -q`, `-6` for IPv6 addresses); merges results into `host-state.tsv` as batches finish, so queries see them early.
+4. Releases the lock and exits; the next query starts a new run if hosts are still queued.
+
+How many checks run at once follows mssh's own rule for parallel ssh sessions: `multiSSH3._normalize_max_connections(DEFAULT_MAX_CONNECTIONS)`, the mssh config's value (default 4 × CPUs) clamped by the open-file limit. It is halved (never below 4) while the 1-minute load average is at or above the CPU count, and halved again whenever starting a check fails for lack of descriptors or processes (`EMFILE`, `ENFILE`, `EAGAIN`); those hosts go back into the queue.
 
 If `ping` is missing or reports no permission, ping is skipped for that run. The prober imports `multiSSH3` (it is not on the keystroke path). It never connects to a host: only `getaddrinfo`, `ssh -G` and `ping`.
 
@@ -208,6 +212,7 @@ To verify first while planning: `zle -M` set from a line-pre-redraw hook stays v
 - The prober cannot start, the lock is held, DNS fails or is slow, `ping` is missing: those hosts stay without a definite answer and produce no warning. Nothing becomes `invalid` because of an error.
 - Corrupt, foreign or other-boot state files: ignored and rewritten.
 - A range larger than `RANGE_MEMBERS_LIMIT` is checked up to the limit; the message gives the counts.
+- The prober cannot start a check (out of descriptors or processes): it halves its parallelism and requeues the hosts; a run that hits its 2-minute cap leaves the rest queued for the next.
 - Old glue never sends `diag=1`; an old engine ignores it.
 
 ## Performance
@@ -218,7 +223,7 @@ To verify first while planning: `zle -M` set from a line-pre-redraw hook stays v
 
 - **Unit (`tests/test_complete_diagnose.py`):** each check with in-memory history and a seeded `host-state.tsv`; finished-word rule; did-you-mean (padding, one edit, ambiguous stays silent); range counts and the padded suggestion; the `-su` wording; options (exclusive group, given twice, each `OPTION_NO_EFFECT` entry); ordering and `(+N more)`; the `W` / `pending` protocol.
 - **mssh side:** `host_validity` with a fake resolver telling "does not exist" from "no answer", reusing the `ssh -G` catch-all fixtures; every step of the runtime chain; `test_cache_dir_matches_multissh3` extended to every step; each `OPTION_NO_EFFECT` entry against `main()`'s processing.
-- **Prober:** queue, lock, caps (64 hosts, 16 at a time), missing `ping`, boot id, freshness, the ping expiry and `MSSH_COMPLETE_PING_TTL`; a test that fails if the prober opens any socket connection or runs `ssh` with anything but `-G`.
+- **Prober:** queue, lock, parallelism (mssh's rule, halved under load and on `EMFILE` / `EAGAIN` with the hosts requeued), the 2-minute cap, missing `ping`, boot id, freshness, the ping expiry and `MSSH_COMPLETE_PING_TTL`; a test that fails if the prober opens any socket connection or runs `ssh` with anything but `-G`.
 - **Real shells (Docker matrix):** marks and reason lines in zsh (both modes), ble.sh, the bash line editor and fish; the picker's warning lines; the delayed update. `ping` is a fake script on `PATH` and host state is seeded, so the matrix never touches a network.
 - **Measurement:** `mssh-complete eval --diagnostics` replays history with real DNS (no ping) and lists every host it would call unknown, so false alarms on real history can be checked by eye (hosts in history were typed for real, but failed typos are in it too); on synthetic history with a fake resolver, clean lines give no warning and injected typos and padding mistakes are caught (a test bounds both).
 
