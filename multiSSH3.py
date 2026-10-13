@@ -161,6 +161,16 @@ _etc_hosts_lock = threading.Lock()
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
 
+def _setting_type(value):
+	'''(type, item type) of a built-in setting, the item type when it is a list whose items share one.'''
+	item_types = {type(item) for item in value} if isinstance(value, list) else set()
+	return type(value), (item_types.pop() if len(item_types) == 1 else None)
+
+# the settings above (what config files can change) with the type of their built-in values,
+# to check the values config files give them against
+_SETTING_TYPES = {name: _setting_type(value) for name, value in list(globals().items())
+	if not (name.startswith('__') and name.endswith('__')) and not callable(value) and not isinstance(value, type(os))}
+
 #%% ------------ Pre Helper Functions ----------------
 def cache_decorator(user_function):
 	def _make_hashable(item):
@@ -632,6 +642,165 @@ def _open_trusted_file(path, explicit_flag, errors=None):
 	eprint('Warning: Ignoring {!r} because {}; {}'.format(path, reason, fix))
 	return None
 
+def _json_kind(value):
+	'''What value is, in JSON terms, for messages about config files.'''
+	if value is None:
+		return 'null'
+	if isinstance(value, bool):
+		return 'true' if value else 'false'
+	if isinstance(value, (int, float)):
+		return 'a number'
+	if isinstance(value, str):
+		return 'a string'
+	if isinstance(value, list):
+		return 'a list'
+	return 'an object'
+
+def _encoding_problem(name):
+	'''Why output cannot be decoded with the encoding called name (unknown, or not a text encoding), or None.'''
+	try:
+		# the reader decodes with backslashreplace: idna, for one, refuses that handler
+		b'\xff\n'.decode(name, 'backslashreplace')
+		'\xe9\n'.encode(name, 'backslashreplace')
+	except (LookupError, ValueError) as e:
+		# UnicodeError is a ValueError
+		return 'cannot decode output with {!r}: {}'.format(name, e)
+	return None
+
+def _text_encoding(name):
+	'''argparse type of -e: refuse an encoding the reader threads would die on, before any host runs.'''
+	problem = _encoding_problem(name)
+	if problem:
+		raise argparse.ArgumentTypeError(problem)
+	return name
+
+def _regex_problem(pattern):
+	'''Why pattern is not a regular expression, or None.'''
+	try:
+		re.compile(pattern)
+	except re.error as e:
+		return '{!r} is not a valid regular expression: {}'.format(pattern, e)
+	return None
+
+def _config_number(value):
+	'''value as an int or a float when it is a number or a string holding one, else None.'''
+	if isinstance(value, str):
+		try:
+			return int(value.strip())
+		except ValueError:
+			try:
+				value = float(value.strip())
+			except ValueError:
+				return None
+	if isinstance(value, bool):
+		return None
+	if isinstance(value, int):
+		return value
+	if isinstance(value, float) and math.isfinite(value):
+		return value
+	return None
+
+def _config_value_text(value):
+	'''value for a warning: strings and numbers as they are, anything else by its JSON kind.'''
+	if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+		return repr(value)
+	return _json_kind(value)
+
+_TRUE_WORDS = ('true', 'yes', 'on', '1')
+_FALSE_WORDS = ('false', 'no', 'off', '0')
+# keys naming the program mssh runs, e.g. _sshPath (see check_path)
+_PROGRAM_PATH_KEY = re.compile(r'_.+Path$')
+
+def _check_config_value(name, value):
+	'''
+	Check the value a config file gives setting name against the type of its built-in value.
+
+	Values whose meaning is clear are converted: "false" for a true / false setting, "50" for a
+	number, 1234 for a string, a list of host names for a host string.
+
+	Returns:
+		tuple: (value, None) when it can be used, else (None, why not)
+	'''
+	if name not in _SETTING_TYPES:
+		# a program path such as _sshPath: null or empty for the one on PATH
+		if value is None or isinstance(value, str):
+			return value, None
+		return None, 'expected the path to the program, got {}'.format(_config_value_text(value))
+	kind, item_kind = _SETTING_TYPES[name]
+	list_of_strings = isinstance(value, list) and all(isinstance(item, str) for item in value)
+	if name in ('DEFAULT_HOSTS', 'DEFAULT_SKIP_HOSTS') and list_of_strings:
+		return ','.join(value), None
+	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
+		return value, None
+	if value is None and (kind is type(None) or name == 'DEFAULT_MAX_CONNECTIONS'):
+		# --store_config_file writes null for the built-in max_connections
+		return None, None
+	if kind is bool:
+		if isinstance(value, bool):
+			return value, None
+		word = str(value).strip().lower() if isinstance(value, (str, int)) else None
+		if word in _TRUE_WORDS or word in _FALSE_WORDS:
+			return word in _TRUE_WORDS, None
+		expected = 'true or false'
+	elif kind in (int, float):
+		number = _config_number(value)
+		if number is not None and kind is float:
+			return float(number), None
+		if number is not None:
+			# whole numbers as int, as the command line gives them; a fraction of a second still works
+			return (int(number) if number == int(number) else number), None
+		expected = 'a number or null' if name == 'DEFAULT_MAX_CONNECTIONS' else 'a number'
+	elif kind in (str, type(None)):
+		if isinstance(value, (int, float)) and not isinstance(value, bool):
+			value = str(value)
+		if not isinstance(value, str):
+			expected = 'a string' if kind is str else 'a string or null'
+		elif name == 'DEFAULT_ENCODING':
+			problem = _encoding_problem(value)
+			return (None, problem) if problem else (value, None)
+		elif name == '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+			problem = _regex_problem(value)
+			return (None, problem) if problem else (value, None)
+		else:
+			return value, None
+	elif kind is list:
+		if not isinstance(value, list):
+			expected = {str: 'a list of strings', dict: 'a list of objects'}.get(item_kind, 'a list')
+		elif item_kind and not all(isinstance(item, item_kind) for item in value):
+			odd = next(item for item in value if not isinstance(item, item_kind))
+			return None, 'expected {}, got a list holding {}'.format(
+				{str: 'a list of strings', dict: 'a list of objects'}.get(item_kind, 'a list'), _json_kind(odd))
+		elif name == 'ERROR_MESSAGES_TO_IGNORE':
+			problem = _regex_problem('|'.join(value))
+			return (None, problem) if problem else (value, None)
+		else:
+			return value, None
+	elif kind is dict:
+		if isinstance(value, dict):
+			return value, None
+		expected = 'an object'
+	else:
+		return None, 'not a setting a config file can change'
+	return None, 'expected {}, got {}'.format(expected, _config_value_text(value))
+
+def _check_config(config, config_file):
+	'''
+	The settings of config_file that can be used.
+
+	A value of the wrong type is left out with a warning naming the file and the key, so the
+	setting keeps its built-in (or less specific config file's) value. Keys that are not settings
+	are kept as they are: --store_config_file writes them back.
+	'''
+	checked = {}
+	for name, value in config.items():
+		if name in _SETTING_TYPES or _PROGRAM_PATH_KEY.match(name):
+			value, problem = _check_config_value(name, value)
+			if problem:
+				eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
+				continue
+		checked[name] = value
+	return checked
+
 def load_config_file(config_file, check_trust=True):
 	global __working_config_file
 	'''
@@ -643,7 +812,7 @@ def load_config_file(config_file, check_trust=True):
 			files the user named explicitly.
 
 	Returns:
-		dict: The config
+		dict: The config, without values of the wrong type (see _check_config)
 	'''
 	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
@@ -653,11 +822,15 @@ def load_config_file(config_file, check_trust=True):
 			return {}
 		with f:
 			config = json.load(f)
-		__working_config_file = config_file
 	except Exception as e:
 		eprint(f"Error: Cannot load config file {config_file!r}: {e}")
 		return {}
-	return config
+	if not isinstance(config, dict):
+		# null or a list would break every run (and -V) at import, the rest of the chain still applies
+		eprint(f"Error: Cannot load config file {config_file!r}: it holds {_json_kind(config)}, not an object of settings")
+		return {}
+	__working_config_file = config_file
+	return _check_config(apply_config_key_compat(config), config_file)
 
 
 # The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.18,
@@ -690,23 +863,39 @@ def apply_config_key_compat(configs):
 		del configs['ERROR_MESSAGES_TO_IGNORE']
 	return configs
 
+def _apply_config(configs):
+	'''
+	Set the settings configs holds (checked by load_config_file), then what is derived from them.
+
+	Runs for the config file chain at import and again for --config_file, so both apply the same
+	way. Other keys do not become globals, so a config file cannot replace mssh's own state;
+	check_path reads the program paths (_sshPath ...) from __configs_from_file.
+	'''
+	global __ERROR_MESSAGES_TO_IGNORE_REGEX
+	global DEFAULT_ENV_FILES
+	for name, value in configs.items():
+		# the config holds the pattern, the global its compiled form
+		if name in _SETTING_TYPES and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+			globals()[name] = value
+	pattern = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX')
+	if pattern:
+		if configs.get('__ERROR_MESSAGES_TO_IGNORE_REGEX'):
+			eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(pattern)
+	else:
+		# an empty pattern matches every line: no messages to ignore must hide nothing
+		patterns = [message for message in ERROR_MESSAGES_TO_IGNORE if message]
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile('|'.join(patterns) if patterns else '(?!)')
+	if DEFAULT_ENV_FILE and DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
+		DEFAULT_ENV_FILES = DEFAULT_ENV_FILES + [DEFAULT_ENV_FILE]
+
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
 # where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
 __working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
-apply_config_key_compat(__configs_from_file)
-globals().update(__configs_from_file)
-# form the regex from the list
-if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
-	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
-else:
-	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
-if DEFAULT_ENV_FILE:
-	if DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
-		DEFAULT_ENV_FILES.append(DEFAULT_ENV_FILE)
+_apply_config(__configs_from_file)
 
 #%% Load mssh Functional Global Variables
 __global_suppress_printout = False
@@ -802,7 +991,12 @@ def check_path(program_name):
 		return True
 	return False
 
-[check_path(program) for program in _binCalled]
+def _find_programs():
+	'''Look up every program mssh runs, again after --config_file (it can set their paths).'''
+	for program in _binCalled:
+		check_path(program)
+
+_find_programs()
 
 #%% Mapping of ANSI 4-bit colors to curses colors
 if __curses_available:
@@ -5744,6 +5938,33 @@ def _is_system_config_path(path):
 		if os.path.isabs(entry)
 	)
 
+def _own_symlink(path):
+	'''Whether path is a symlink of our own (or root's), one write_default_config writes through.'''
+	if not os.path.islink(path):
+		return False
+	return not hasattr(os, 'getuid') or os.lstat(path).st_uid in (os.getuid(), 0)
+
+def _copy_to_backup(path, backup, mode):
+	'''Copy the file path leads to into a new file at backup (mode), replacing what is there, a symlink included.'''
+	with open(path, 'rb') as f:
+		content = f.read()
+	# a temporary file renamed over the backup: opening the backup itself would follow a link left there
+	temporary = '{}.{}.tmp'.format(backup, uuid4().hex)
+	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+	try:
+		with os.fdopen(fd, 'wb') as f:
+			if hasattr(os, 'fchmod'):
+				# O_CREAT's mode is reduced by the umask, set it exactly
+				os.fchmod(f.fileno(), mode)
+			f.write(content)
+		os.replace(temporary, backup)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
 	default_config = generate_default_config(args)
@@ -5756,7 +5977,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	if not force and os.path.exists(CONFIG_FILE):
 		eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
 		eprint("o:  Overwrite the file")
-		eprint(f"b:  Rename the current config file at {CONFIG_FILE!r}.bak forcefully and write the new config file (default)")
+		eprint(f"b:  Back up the current config file to {CONFIG_FILE + '.bak'!r} and write the new config file (default)")
 		eprint("n:  Do nothing")
 		inStr = input_with_timeout_and_countdown(10)
 		if (not inStr) or inStr.lower().strip().startswith('b'):
@@ -5771,7 +5992,11 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	except OSError:
 		previous_mode = None
 	try:
-		if backup and os.path.exists(CONFIG_FILE):
+		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
+			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
+			# link aside would leave the file it points to as it was, copy that file instead
+			_copy_to_backup(CONFIG_FILE, CONFIG_FILE+'.bak', 0o600 if previous_mode is None else previous_mode & 0o600)
+		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only
 			if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
@@ -5790,7 +6015,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
 		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
 		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
-		if os.path.islink(CONFIG_FILE) and hasattr(os, 'getuid') and os.lstat(CONFIG_FILE).st_uid not in (os.getuid(), 0):
+		if os.path.islink(CONFIG_FILE) and not _own_symlink(CONFIG_FILE):
 			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
 		target = os.path.realpath(CONFIG_FILE)
 		try:
@@ -5975,7 +6200,7 @@ def get_parser():
 	parser.add_argument('-I','-nh','--no_history', action='store_true', help=_plain_help(f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}'), default=DEFAULT_NO_HISTORY)
 	parser.add_argument('-hf','--history_file', type=str, help=_plain_help(f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})'), default=DEFAULT_HISTORY_FILE)
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
-	parser.add_argument('-e','--encoding', type=str, help=_plain_help(f'The encoding to use for the output. (default: {DEFAULT_ENCODING})'), default=DEFAULT_ENCODING)
+	parser.add_argument('-e','--encoding', type=_text_encoding, help=_plain_help(f'The encoding to use for the output. (default: {DEFAULT_ENCODING})'), default=DEFAULT_ENCODING)
 	parser.add_argument('-dt','--diff_display_threshold', type=float, help=_plain_help(f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})'), default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
 	parser.add_argument('--force_truecolor', action='store_true', help=_plain_help(f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})'), default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
@@ -6034,11 +6259,14 @@ def process_args(args = None):
 	try:
 		cfpa, args = cfp.parse_known_args(args)
 		if cfpa.config_file:
-			if os.path.exists(cfpa.config_file):
-				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
-				apply_config_key_compat(configs)
-				globals().update(configs)
+			# expanded here: the shell leaves a ~ after --config_file= as it is
+			config_file = os.path.expanduser(cfpa.config_file)
+			if os.path.exists(config_file):
+				configs = load_config_file(config_file, check_trust=False)
 				__configs_from_file.update(configs)
+				_apply_config(configs)
+				# the program paths were looked up at import, before this file was read
+				_find_programs()
 			else:
 				eprint("Warning: Config file {!r} not found, ignoring it.".format(cfpa.config_file))
 	except Exception:
@@ -6107,7 +6335,8 @@ def process_config_file(args):
 			if args.store_config_file is ...:
 				configFileToWriteTo = __working_config_file
 			else:
-				configFileToWriteTo = args.store_config_file
+				# the shell leaves a ~ after --store_config_file= as it is
+				configFileToWriteTo = os.path.expanduser(args.store_config_file)
 		else:
 			configFileToWriteTo = None
 		written = write_default_config(args,configFileToWriteTo,force=args.generate_config_file)

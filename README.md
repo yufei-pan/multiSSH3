@@ -151,6 +151,10 @@ Defaults are read from the following chain map stored as json files, top ones ov
 > Config and env files found on these default paths are only loaded when they are owned by you or root and nobody else can write to them (group write is fine when the group is your own private group). Others are skipped with a warning that shows the `chmod` fix. Files you name with `--config_file`, `--env_file` or `--env_files` are always loaded.
 >
 > `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above are written `0644` so every user can read them. An existing file's permissions are only ever tightened, and a file whose permissions cannot be restricted is left untouched (the config is printed instead).
+>
+> A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link.
+>
+> Each value is checked against the type of the setting's default. Values whose meaning is clear are converted (`"true"` / `"false"`, `"yes"` / `"no"` for true / false settings, numbers written as strings, a list of host names for `DEFAULT_HOSTS`); anything else, such as `"DEFAULT_TIMEOUT": "fifty"` or an encoding Python does not know, is ignored with a warning naming the file and the key, and the setting keeps its value from the rest of the chain. A file that is not a JSON object is skipped the same way. `--config_file` applies a file exactly as the chain does, `_sshPath`, `DEFAULT_ENV_FILE` and `ERROR_MESSAGES_TO_IGNORE` included.
 
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
@@ -708,6 +712,7 @@ mssh -f ./data/ allServers /tmp/data/
 - The encoding to use for decoding the output from the hosts.
 - Default is `utf-8`.
 - Characters the local terminal's encoding cannot show (for example under `LANG=C` with Python 3.6) are printed as escapes like `\u2713`.
+- An encoding Python cannot decode text with (unknown, or a codec such as `rot13`) is refused before any host runs.
 
 ### `-dt, --diff_display_threshold DIFF_DISPLAY_THRESHOLD` | _`DEFAULT_DIFF_DISPLAY_THRESHOLD`_
 - The threshold of different lines to total lines ratio to trigger N-body diff display mode.
@@ -1101,7 +1106,7 @@ __DEBUG_MODE = False
 
 > `ERROR_MESSAGES_TO_IGNORE` lists regexes for ssh's own notices, which mssh leaves out of each host's stderr (also in `--json` and `--greppable` output). Each regex is searched anywhere in every stderr line, so anchor yours with `^` and `$` to match whole lines (in the JSON config file, write a regex backslash as `\\`). The defaults are anchored to the lines OpenSSH prints, so a remote program's error that uses the same words, such as curl's `Recv failure: Connection reset by peer`, is kept. Connection resets are not hidden: `kex_exchange_identification: read: Connection reset by peer` is how sshd's `MaxStartups` turns away connections opened at once. Config files that `--store_config_file` or `--generate_config_file` wrote before 6.20 hold a copy of the old, unanchored defaults; mssh ignores such an unchanged copy and uses the current defaults.
 
-> `__ERROR_MESSAGES_TO_IGNORE_REGEX` is the compiled regex pattern for error messages to ignore. If custom defined, mssh will ignore `ERROR_MESSAGES_TO_IGNORE` and use supplied regex pattern instead.
+> `__ERROR_MESSAGES_TO_IGNORE_REGEX` is the compiled regex pattern for error messages to ignore. If custom defined, mssh will ignore `ERROR_MESSAGES_TO_IGNORE` and use supplied regex pattern instead. In a config file, give the pattern as a string. An empty `ERROR_MESSAGES_TO_IGNORE` hides no stderr line.
 
 > When ssh cannot connect to a host (it exits with 255 after `ssh: connect to host HOST port PORT: REASON`), the default output shows the line as `SSH not reachable!`, `SSH connection timed out!` or `Cannot find host!` followed by the port and ssh's reason, e.g. `SSH connection timed out! (port 22: Connection timed out)`. Without the host name, unreachable hosts merge into one block. `--json` and `--greppable` output keep ssh's line, and a remote program's error that ends the same way is shown as printed.
 
