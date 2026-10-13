@@ -1090,12 +1090,16 @@ def _owned_and_not_writable_by_others(path):
 		return False
 	return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
+# as in multiSSH3 (tests point them elsewhere)
+_RUN_USER_ROOT = '/run/user'
+_SHM_DIR = '/dev/shm'
+
 def cache_dir(create=True):
 	'''
-	mssh's private cache directory, where unavailable_hosts.csv lives, or None.
+	mssh's private runtime directory, where unavailable_hosts.csv and the index live, or None.
 
-	$XDG_RUNTIME_DIR/multiSSH3 when the runtime dir is ours, else <tempdir>/multiSSH3-<uid>,
-	exactly as multiSSH3._unavailable_hosts_file_path picks it.
+	Exactly as multiSSH3.runtime_dir picks it: $XDG_RUNTIME_DIR/multiSSH3 when that runtime dir
+	is ours, /run/user/<uid>/multiSSH3, /dev/shm/multiSSH3-<uid>, then <tempdir>/multiSSH3-<uid>.
 	'''
 	import tempfile
 	if hasattr(os, 'getuid'):
@@ -1107,6 +1111,12 @@ def cache_dir(create=True):
 	runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
 	if runtime_dir and _owned_and_not_writable_by_others(runtime_dir):
 		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
+	if hasattr(os, 'getuid'):
+		run_user = os.path.join(_RUN_USER_ROOT, str(user_id))
+		if _owned_and_not_writable_by_others(run_user):
+			candidates.append(os.path.join(run_user, 'multiSSH3'))
+		if os.path.isdir(_SHM_DIR):
+			candidates.append(os.path.join(_SHM_DIR, 'multiSSH3-{}'.format(user_id)))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for directory in candidates:
 		if _private_dir(directory, create):

@@ -135,6 +135,18 @@ def _clear_expand_caches():
 
 
 @pytest.fixture(autouse=True)
+def no_system_runtime_dirs():
+	"""Keep tests out of the real /run/user/<uid> and /dev/shm: the runtime chain sees neither."""
+	import mssh_complete
+	# a patcher of its own: a test's monkeypatch must still be undone before restore_module_globals runs
+	with pytest.MonkeyPatch.context() as patch:
+		for module in (multiSSH3, mssh_complete):
+			patch.setattr(module, "_RUN_USER_ROOT", "/dev/null/no-run-user", raising=False)
+			patch.setattr(module, "_SHM_DIR", "/dev/null/no-shm", raising=False)
+		yield
+
+
+@pytest.fixture(autouse=True)
 def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,

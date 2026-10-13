@@ -3865,28 +3865,52 @@ def _owned_and_not_writable_by_others(path):
 		return False
 	return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
-def _unavailable_hosts_file_path(create=True):
+# where logind makes per-user runtime directories, and the tmpfs every Linux mounts (tests point them elsewhere)
+_RUN_USER_ROOT = '/run/user'
+_SHM_DIR = '/dev/shm'
+
+def runtime_dir(create=True):
 	'''
-	Where unavailable hosts are cached between runs, or None to run without the cache.
+	mssh's private directory for state that must not outlive a reboot, or None to run without it.
 
-	create: set up the private cache directory (for writing). Without it only an existing one
-	is used, so reading the cache changes nothing on disk.
+	create: set up the directory (for writing). Without it only an existing one is used, so
+	reading changes nothing on disk.
 
-	The per-user runtime dir ($XDG_RUNTIME_DIR) is private and cleared at reboot. Without
-	it (cron, su, non systemd), a private directory in the temp dir is used. The home
-	directory is avoided so mssh keeps working when it is full or read-only.
+	The first of these that is a directory only we control (_private_dir):
+	1. $XDG_RUNTIME_DIR/multiSSH3, when $XDG_RUNTIME_DIR is ours and only we can write to it
+	2. /run/user/<uid>/multiSSH3, the same place when su, sudo -u or cron leave $XDG_RUNTIME_DIR unset
+	3. /dev/shm/multiSSH3-<uid>: tmpfs, so local and cleared at reboot, and there without a login session
+	4. <tempdir>/multiSSH3-<uid>: may survive a reboot, so state with a time in it carries the boot id
+	The home directory is avoided so mssh keeps working when it is full or read-only.
+	mssh_complete.cache_dir picks the same directory.
 	'''
 	user_id = os.getuid() if hasattr(os, 'getuid') else getpass.getuser()
 	candidates = []
-	runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
+	xdg_runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
 	# with another user's environment (sudo -E, su) the runtime dir is theirs, they could swap our subdirectory
-	if runtime_dir and _owned_and_not_writable_by_others(runtime_dir):
-		candidates.append(os.path.join(runtime_dir, 'multiSSH3'))
+	if xdg_runtime_dir and _owned_and_not_writable_by_others(xdg_runtime_dir):
+		candidates.append(os.path.join(xdg_runtime_dir, 'multiSSH3'))
+	if hasattr(os, 'getuid'):
+		run_user = os.path.join(_RUN_USER_ROOT, str(user_id))
+		if _owned_and_not_writable_by_others(run_user):
+			candidates.append(os.path.join(run_user, 'multiSSH3'))
+		if os.path.isdir(_SHM_DIR):
+			candidates.append(os.path.join(_SHM_DIR, 'multiSSH3-{}'.format(user_id)))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
-	for cache_dir in candidates:
-		if _private_dir(cache_dir, create):
-			return os.path.join(cache_dir, 'unavailable_hosts.csv')
+	for directory in candidates:
+		if _private_dir(directory, create):
+			return directory
 	return None
+
+def _unavailable_hosts_file_path(create=True):
+	'''
+	Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.
+
+	create: set up the runtime directory (for writing). Without it only an existing one is used,
+	so reading the cache changes nothing on disk.
+	'''
+	directory = runtime_dir(create)
+	return os.path.join(directory, 'unavailable_hosts.csv') if directory else None
 
 
 def _get_boot_id():
