@@ -143,7 +143,8 @@ def test_a_host_file_with_addresses_says_nothing(no_dns, tmp_path, monkeypatch, 
 	hosts = tmp_path / 'hosts'
 	hosts.write_text('# lab\n10.0.0.5 node5\n')
 	runs, err = run_main(['--host_file', str(hosts), '-C', '--no_history', 'node5', 'uptime'], monkeypatch, capsys)
-	assert '--host_file' not in err and 'Error' not in err
+	# the > mssh echo lists --host_file (history-replay): no warning about the file is what counts
+	assert 'Warning: --host_file' not in err and 'Error' not in err
 	assert runs and runs[0]['hosts'] == 'node5'
 
 
