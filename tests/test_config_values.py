@@ -82,12 +82,12 @@ def _process_args_with_config(monkeypatch, tmp_path, config, *argv):
 	return multiSSH3.process_args(["--config_file", str(path)] + list(argv or ["127.0.0.1", "true"]))
 
 
-def _fake_ssh(tmp_path):
-	'''An ssh that prints its arguments and a line on stderr, for running mssh without a host.'''
-	path = tmp_path / "fakessh"
+def _fake_ssh(tmp_path, name="FAKESSH"):
+	'''An ssh that prints name and its arguments, and a line on stderr, for running mssh without a host.'''
+	path = tmp_path / name.lower()
 	path.write_text("#!/bin/sh\n"
 		"if [ \"$1\" = -G ]; then echo \"hostname $3\"; exit 0; fi\n"
-		"echo \"FAKESSH $*\"\n"
+		"echo \"" + name + " $*\"\n"
 		"echo \"FAKEERR on stderr\" >&2\n")
 	path.chmod(0o755)
 	return str(path)
@@ -186,3 +186,73 @@ def test_unusable_encoding_is_refused_before_any_host_runs(capsys, encoding):
 
 	assert exc_info.value.code == 2
 	assert encoding in capsys.readouterr().err
+
+
+def _ignored_errors():
+	return getattr(multiSSH3, "__ERROR_MESSAGES_TO_IGNORE_REGEX")
+
+
+def test_config_file_option_sets_the_program_paths(monkeypatch, tmp_path):
+	_process_args_with_config(monkeypatch, tmp_path, {"_sshPath": "/opt/fake/ssh", "_rsyncPath": "/opt/fake/rsync"})
+
+	assert multiSSH3._binPaths["ssh"] == "/opt/fake/ssh"
+	assert multiSSH3._binPaths["rsync"] == "/opt/fake/rsync"
+
+
+def test_config_file_option_adds_its_env_file(monkeypatch, tmp_path):
+	env_file = tmp_path / "lab.env"
+	env_file.write_text("MSSH_CONFIG_ALIAS=127.0.0.9\n")
+	env_file.chmod(0o600)
+
+	args = _process_args_with_config(monkeypatch, tmp_path, {"DEFAULT_ENV_FILE": str(env_file)})
+	multiSSH3.set_global_with_args(args)
+
+	assert str(env_file) in multiSSH3._env_files
+	assert multiSSH3.readEnvFromFile().get("MSSH_CONFIG_ALIAS") == "127.0.0.9"
+
+
+def test_config_file_option_sets_the_error_messages_to_ignore(monkeypatch, tmp_path):
+	_process_args_with_config(monkeypatch, tmp_path, {"ERROR_MESSAGES_TO_IGNORE": ["FAKEERR"]})
+
+	assert _ignored_errors().search("FAKEERR on stderr")
+	assert not _ignored_errors().search("Connection to node1 closed.")
+
+
+def test_config_file_option_regex_is_compiled(monkeypatch, tmp_path):
+	_process_args_with_config(monkeypatch, tmp_path, {"__ERROR_MESSAGES_TO_IGNORE_REGEX": "FAKE.*"})
+
+	assert _ignored_errors().search("FAKEERR on stderr")
+	assert not _ignored_errors().search("Permission denied")
+
+
+@pytest.mark.parametrize("messages", [[], [""]], ids=["empty_list", "empty_pattern"])
+def test_no_error_messages_to_ignore_hides_no_line(monkeypatch, tmp_path, messages):
+	# an empty pattern matches every line: all of stderr would be dropped
+	_process_args_with_config(monkeypatch, tmp_path, {"ERROR_MESSAGES_TO_IGNORE": messages})
+
+	assert not _ignored_errors().search("Permission denied")
+
+
+def test_config_file_cannot_replace_internal_state(monkeypatch, tmp_path):
+	args = _process_args_with_config(monkeypatch, tmp_path, {"_binPaths": "x", "eprint": 1, "__running_procs": None})
+
+	assert args.hosts == "127.0.0.1"
+	assert isinstance(multiSSH3._binPaths, dict)
+	assert callable(multiSSH3.eprint)
+
+
+@pytest.mark.parametrize("ignore", [{"ERROR_MESSAGES_TO_IGNORE": ["FAKEERR"]}, {"__ERROR_MESSAGES_TO_IGNORE_REGEX": "FAKEERR"}],
+	ids=["messages", "regex"])
+def test_config_file_option_applies_like_the_chain(tmp_path, ignore):
+	# the chain's fake ssh runs if --config_file's _sshPath is not applied: never a real one
+	_write_config(tmp_path / ".multiSSH3.config.json", {"_sshPath": _fake_ssh(tmp_path, "CHAINSSH")})
+	extra = _write_config(tmp_path / "extra.json", dict(ignore, _sshPath=_fake_ssh(tmp_path, "CONFIGSSH")))
+	hosts_file = tmp_path / "hosts"
+	hosts_file.write_text("")
+
+	result = _run_mssh(tmp_path, "--config_file", str(extra), "-ef", "/dev/null", "--host_file", str(hosts_file),
+		"-I", "-q", "127.0.0.1", "echo hi")
+
+	assert result.returncode == 0, result.stdout + result.stderr
+	assert "CONFIGSSH" in result.stdout
+	assert "FAKEERR" not in result.stdout

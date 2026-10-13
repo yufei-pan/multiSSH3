@@ -735,22 +735,39 @@ def apply_config_key_compat(configs):
 		configs['DEFAULT_IPMI_ARGS'] = configs['DEAFULT_IPMI_ARGS']
 	return configs
 
+def _apply_config(configs):
+	'''
+	Set the settings configs holds (checked by load_config_file), then what is derived from them.
+
+	Runs for the config file chain at import and again for --config_file, so both apply the same
+	way. Other keys do not become globals, so a config file cannot replace mssh's own state;
+	check_path reads the program paths (_sshPath ...) from __configs_from_file.
+	'''
+	global __ERROR_MESSAGES_TO_IGNORE_REGEX
+	global DEFAULT_ENV_FILES
+	for name, value in configs.items():
+		# the config holds the pattern, the global its compiled form
+		if name in _SETTING_TYPES and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+			globals()[name] = value
+	pattern = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX')
+	if pattern:
+		if configs.get('__ERROR_MESSAGES_TO_IGNORE_REGEX'):
+			eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(pattern)
+	else:
+		# an empty pattern matches every line: no messages to ignore must hide nothing
+		patterns = [message for message in ERROR_MESSAGES_TO_IGNORE if message]
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile('|'.join(patterns) if patterns else '(?!)')
+	if DEFAULT_ENV_FILE and DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
+		DEFAULT_ENV_FILES = DEFAULT_ENV_FILES + [DEFAULT_ENV_FILE]
+
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
 # where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
 __working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
 for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
 	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
-globals().update(__configs_from_file)
-# form the regex from the list
-if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
-	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
-else:
-	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
-if DEFAULT_ENV_FILE:
-	if DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
-		DEFAULT_ENV_FILES.append(DEFAULT_ENV_FILE)
+_apply_config(__configs_from_file)
 
 #%% Load mssh Functional Global Variables
 __global_suppress_printout = False
@@ -844,7 +861,12 @@ def check_path(program_name):
 		return True
 	return False
 
-[check_path(program) for program in _binCalled]
+def _find_programs():
+	'''Look up every program mssh runs, again after --config_file (it can set their paths).'''
+	for program in _binCalled:
+		check_path(program)
+
+_find_programs()
 
 #%% Mapping of ANSI 4-bit colors to curses colors
 if __curses_available:
@@ -5188,8 +5210,10 @@ def process_args(args = None):
 		if cfpa.config_file:
 			if os.path.exists(cfpa.config_file):
 				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
-				globals().update(configs)
 				__configs_from_file.update(configs)
+				_apply_config(configs)
+				# the program paths were looked up at import, before this file was read
+				_find_programs()
 			else:
 				eprint("Warning: Config file {!r} not found, ignoring it.".format(cfpa.config_file))
 	except Exception:
