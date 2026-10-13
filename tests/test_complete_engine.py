@@ -208,6 +208,39 @@ def test_no_candidate_puts_a_bang_inside_double_quotes_where_the_shell_would_exp
 	assert texts(query('mssh h "ech', word='"ech', shell='fish', knowledges=[knowledge], flags={'insert': '1'})) == ['echo hi!', 'echo y']
 
 
+def _bash_expands_history_in(line):
+	"""Whether interactive bash would change line by history expansion (! events), with an event to find."""
+	import shutil
+	bash = shutil.which('bash')
+	if bash is None:
+		pytest.skip('needs bash')
+	script = 'set -o history -o histexpand; history -s bfoo; history -p -- "$1"'
+	result = subprocess.run([bash, '--norc', '--noprofile', '-c', script, 'bash', line], stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE, env=dict(os.environ, HISTFILE=os.devnull), universal_newlines=True, timeout=30)
+	return result.returncode != 0 or result.stdout.rstrip('\n') != line
+
+
+def test_a_history_command_word_holding_a_bang_reaches_bash_and_zsh_escaped():
+	# quoted-history-args offers history command words with their quotes ("a!b"); bash-glue-minors: no ! the
+	# shell would expand. Every way such a word reaches a bash or zsh line escapes the !, inside or outside quotes
+	assert _bash_expands_history_in('mssh h grep "a!b" f')  # the oracle sees the danger
+	knowledge = memory([line(NOW - number, '-su', 'h', '\'grep "a!b" f\'') for number in range(6)])
+	engine = mc.Engine(SPEC, [knowledge])
+	inserted = []
+	for shell in ('bash', 'zsh'):
+		# TAB in bash, and what the picker inserts in both (zsh's own TAB quotes candidates itself)
+		for flags in ([None, {'insert': '1'}] if shell == 'bash' else [{'insert': '1'}]):
+			inserted += ['mssh h grep ' + text for text in texts(engine.query(mc.Request(shell, 'mssh h grep ', '', '', flags=flags)))]
+		# grey text
+		for before in ('mssh h gre', 'mssh h grep '):
+			ghost = engine.suggest(mc.Request(shell, before, '', ''))
+			if ghost is not None:
+				inserted.append(before + ghost.text)
+	# the bash line editor's TAB
+	inserted += ['mssh h grep ' + text for text in mc.editor_completions(engine, 'mssh h grep ')[0]]
+	assert any('!' in text for text in inserted)
+	assert [text for text in inserted if _bash_expands_history_in(text)] == []
+
 def test_word_that_does_not_end_the_parsed_text_gets_nothing():
 	assert texts(query('mssh login1 up', word='zz')) == []
 
