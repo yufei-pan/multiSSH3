@@ -101,10 +101,12 @@ def ssh_localhost_works():
 
 
 def run_cli(args, timeout=30, check=False):
+	# capture_output and text arrived in Python 3.7
 	return subprocess.run(
 		[sys.executable, str(MULTISSH3_PY), *args],
-		capture_output=True,
-		text=True,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE,
+		universal_newlines=True,
 		timeout=timeout,
 		check=check,
 	)
