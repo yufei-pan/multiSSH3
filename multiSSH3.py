@@ -7696,6 +7696,10 @@ def _shown_option_word(word, readings):
 		return word[:1 + len(readings)]
 	return word
 
+def _looks_like_option(word):
+	'''Whether argparse takes word for an option, not a positional or a value: a word holding a space never is.'''
+	return word.startswith('-') and word != '-' and ' ' not in word
+
 def _options_after_the_command_note(argv, parser=None):
 	'''
 	A note for the words of argv mssh reads as its own options after the first word of the remote
@@ -7715,14 +7719,14 @@ def _options_after_the_command_note(argv, parser=None):
 		if word == '--':
 			words = words[:index - 1]
 			break
-		if not word.startswith('-') or word == '-' or ' ' in word:
+		if not _looks_like_option(word):
 			positionals.append(index - 1)
 			continue
 		read = _option_word_actions(word, actions)
 		if read is None:
 			continue
 		readings, takes_next = read
-		if takes_next and index < len(words) and not words[index].startswith('-'):
+		if takes_next and index < len(words) and not _looks_like_option(words[index]):
 			# its value
 			index += 1
 		if len(positionals) >= 2:

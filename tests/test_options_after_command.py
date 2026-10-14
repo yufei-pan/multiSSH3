@@ -28,6 +28,13 @@ def test_an_mssh_option_after_the_command_is_noted(argv, expected):
 	assert note(argv) == expected
 
 
+def test_a_value_starting_with_a_dash_is_the_option_s(argv=['-ea', '-o ConnectTimeout=5', 'web1', 'uptime', '-q']):
+	# argparse takes a word holding a space as a value even when it starts with '-'
+	assert note(argv) == ("Note: mssh read -q after the command 'uptime' as its own option (--no_watch). "
+		"To pass it to the command, quote the command: mssh web1 'uptime -q'")
+	assert note(['-ea', '-o ConnectTimeout=5', 'web1', 'uptime']) is None
+
+
 @pytest.mark.parametrize('argv', [
 	['all', 'df -h'],                       # quoted: one command word
 	['-u', 'root', 'all', 'uptime'],        # mssh's options before the hosts
