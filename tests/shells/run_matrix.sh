@@ -3,7 +3,8 @@
 # and bash 5.1 and 5.3 alone (readline key bindings change between bash versions: see their Dockerfiles).
 # The images run at once (the tests mostly wait on shells, not the CPU); each one's output is shown when all are done.
 # Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [centos7] [bash5.1] [bash5.3]   (default: all six)
-# MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py)
+# MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py). The whole suite, e.g. on
+# Python 3.6: MSSH_MATRIX_TESTS=tests tests/shells/run_matrix.sh legacy centos7
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
