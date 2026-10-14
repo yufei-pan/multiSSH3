@@ -2971,9 +2971,6 @@ def __handle_writing_stream(stream,stop_event,host):
 			stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 			stream.flush()
 			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
-			if isinstance(__keyPressesIn[sentInputPos], _HiddenInput):
-				# typed at a password prompt: sent as typed, not shown in the window or kept in the output
-				line = '> ' + _hidden_input_shown(__keyPressesIn[sentInputPos])
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
@@ -5458,11 +5455,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					# This means the user have done scrolling and is committing to modify the current line.
 					if lineToDisplay  < -1:
 						# We overwrite the last line (current working line) with the line to display, removing the newline at the end
-						__keyPressesIn[-1] = type(__keyPressesIn[lineToDisplay])(__keyPressesIn[lineToDisplay][:-1])
+						__keyPressesIn[-1] = __keyPressesIn[lineToDisplay][:-1]
 						lineToDisplay = -1
-					if not isinstance(__keyPressesIn[-1], _HiddenInput) and any(host.returncode is None and _asks_for_password(host) for host in hosts):
-						# a host asks for a password: this line is sent as typed, but not shown or kept
-						__keyPressesIn[-1] = _HiddenInput(__keyPressesIn[-1])
 					curserPosition = max(0, min(curserPosition, len(__keyPressesIn[lineToDisplay])))
 					if key == 10 or key == curses.KEY_ENTER: # 10 is the key code for newline, KEY_ENTER the keypad's Enter
 						__keyPressesIn[-1].append('\n')
@@ -5503,11 +5497,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# it counts the shown text before the cursor: a byte outside the encoding shows as 4 characters (\xe9)
 				displayCurserPosition = min(len(_typed_line_for_display(__keyPressesIn[lineToDisplay][:curserPosition])),len(encodedLine) -1)
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
-				if isinstance(__keyPressesIn[lineToDisplay], _HiddenInput):
-					# a password: a * for each character typed, never the characters
-					stars = '*' * len(''.join(__keyPressesIn[lineToDisplay]).strip('\n')) + ' '
-					starCursor = min(curserPosition, len(stars) - 1)
-					stats = f'Send CMD: {stars[:starCursor]}\x1b[7m{stars[starCursor]}\x1b[0m{stars[starCursor + 1:]}'
 			if stats != old_stat or refresh_all:
 				old_stat = stats
 				# calculate the real curser position in stats as we centered the stats
@@ -5957,38 +5946,6 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 				remaining_hostnames.add(this_hostname)
 	return merge_groups, remaining_hostnames
 
-class _HiddenInput(list):
-	'''A line typed in the curses display while a host asked for a password: sent as typed, never shown or kept.'''
-
-# the words of a prompt for a secret ("Password:", "Enter passphrase for key '...': ", "Password for
-# 'https://...':"), a few translations. "[sudo]" starts sudo's prompt in any language
-_PASSWORD_PROMPT_WORDS = ('password', 'passphrase', 'pass phrase', 'passwort', 'mot de passe', 'contraseña', 'senha', 'пароль', '密码', 'パスワード')
-# prompts are short: only this many characters at the end of a line are looked at. The line comes from the
-# host, it may be megabytes long
-_PASSWORD_PROMPT_TAIL = 200
-# what is shown and kept instead of a hidden line: not its length either
-_HIDDEN_INPUT_SHOWN = '******** (hidden at a password prompt)'
-
-def _is_password_prompt(line):
-	'''Whether line ends like a prompt for a secret: a colon, after one of _PASSWORD_PROMPT_WORDS or "[sudo]".'''
-	tail = line[-_PASSWORD_PROMPT_TAIL:].rstrip()
-	if not tail.endswith((':', '：')):
-		return False
-	tail = tail.lower()
-	return tail.lstrip().startswith('[sudo]') or any(word in tail for word in _PASSWORD_PROMPT_WORDS)
-
-def _asks_for_password(host):
-	'''Whether host's last line, finished or not, asks for a password.'''
-	# the end of the partial lines only: a character takes at most 4 bytes
-	lines = [buffer.getvalue()[-4 * _PASSWORD_PROMPT_TAIL:].decode(_encoding, errors='replace') for buffer in (host.stdout_buffer, host.stderr_buffer)]
-	if host.output:
-		lines.append(host.output[-1])
-	return any(_is_password_prompt(line) for line in lines)
-
-def _hidden_input_shown(chars):
-	'''What a hidden typed line's "> ..." line shows: neither its characters nor their number.'''
-	return _HIDDEN_INPUT_SHOWN + ('↵' if chars and chars[-1] == '\n' else '')
-
 def generate_output(hosts, usejson = False, greppable = False,quiet = False,encoding = _encoding,keyPressesIn = None, errors_only = None):
 	'''
 	Format Host results for display / return.
@@ -6052,8 +6009,7 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		rtnStr += '\n'.join(tableLines) + '\n'
 		rtnStr += '*'*80+'\n'
 		if keyPressesIn[-1]:
-			# a line typed at a password prompt shows as _HIDDEN_INPUT_SHOWN
-			CMDsOut = [_HIDDEN_INPUT_SHOWN if isinstance(cmd, _HiddenInput) else ''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
+			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
 			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 			#rtnStr += '\n'
 	else:
@@ -6072,8 +6028,7 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		merge_groups ,remaining_hostnames = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
 		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
 		if keyPressesIn[-1]:
-			# a line typed at a password prompt shows as _HIDDEN_INPUT_SHOWN
-			CMDsOut = [_HIDDEN_INPUT_SHOWN if isinstance(cmd, _HiddenInput) else ''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
+			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
 			outputs.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
 			cmdOut = []
 			for line in CMDsOut:
