@@ -985,6 +985,50 @@ def test_sigterm_starts_none_of_the_waiting_hosts(tmp_path):
 
 
 @_needs_proc
+def test_first_interrupt_starts_none_of_the_waiting_hosts(tmp_path):
+	# the first Ctrl C stops the running commands; hosts still waiting for a connection slot must not
+	# start (each would be one more login attempt on its host)
+	import signal
+	import subprocess
+	import sys
+	from pathlib import Path
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	started = tmp_path / "started"
+	script = tmp_path / "mssh_logging_starts.py"
+	script.write_text(
+		"import subprocess, sys\n"
+		"sys.path.insert(0, {root!r})\n"
+		"import multiSSH3\n"
+		"popen = subprocess.Popen\n"
+		"def logged(argv, **kwargs):\n"
+		"    if '--' in argv:\n"
+		"        with open({started!r}, 'a') as log:\n"
+		"            log.write(argv[argv.index('--') + 1] + '\\n')\n"
+		"    return popen(argv, **kwargs)\n"
+		"multiSSH3.subprocess.Popen = logged\n"
+		"multiSSH3.main(sys.argv[1:])\n".format(root=str(Path(multiSSH3.__file__).resolve().parent), started=str(started)))
+	proc = subprocess.Popen([sys.executable, str(script)] + _hermetic_args(tmp_path) + ["-m", "2",
+		"127.0.0.[1-8]", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 2)
+		proc.send_signal(signal.SIGINT)
+		output, _ = proc.communicate(timeout=15)
+		assert sorted(started.read_text().split()) == ["127.0.0.1", "127.0.0.2"]
+		# the hosts that never started say so, in one block (same output, merged)
+		block = output.decode().split("■ 127.0.0.[3-8]")[1].split("───")[0]
+		assert "Not started: Ctrl C" in block and "RETURN CODE: 130" in block
+		assert proc.returncode == 8  # every host failed: stopped, or never started
+		assert _wait_until_gone(children) == []
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
 def test_sighup_stays_ignored_under_nohup(tmp_path):
 	# `nohup mssh ...` must keep running when the terminal goes away
 	import signal

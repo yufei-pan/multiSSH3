@@ -249,7 +249,7 @@ def test_a_worker_survives_a_host_that_exits_its_thread(fake_host, monkeypatch):
 
 
 def test_ctrl_c_stops_the_running_and_the_waiting_hosts(fake_host):
-	# the first Ctrl-C stops every command: the running ones and the ones still waiting for a thread
+	# the first Ctrl-C stops every command: the running ones, and the ones still waiting for a thread do not start
 	if "sh" not in multiSSH3._binPaths:
 		pytest.skip("needs sh")
 	hosts = [fake_host("localhost", "exec sleep 5", shell=True) for _ in range(6)]
@@ -262,4 +262,7 @@ def test_ctrl_c_stops_the_running_and_the_waiting_hosts(fake_host):
 
 	assert time.monotonic() - started < 4
 	assert all(host.returncode is not None for host in hosts)
-	assert all("Ctrl C detected, Emergency Stop!" in host.stderr for host in hosts)
+	stopped = [host for host in hosts if "Ctrl C detected, Emergency Stop!" in host.stderr]
+	not_started = [host for host in hosts if host.stderr == ["Not started: Ctrl C"]]
+	assert (len(stopped), len(not_started)) == (2, 4)
+	assert all(host.returncode == 130 for host in not_started)

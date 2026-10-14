@@ -908,7 +908,7 @@ The count stops at 255, as an exit status only has 8 bits. `-Z, --return_zero` m
 
 Before anything runs, mssh can also stop with: 2 for a bad option, 66 when the `-f, --file` sources are not found, 255 when `-11, --oneonone` gets a different number of commands and hosts, and 1 for Ctrl-C.
 
-The return code shown for each host is the command's own, or: 255 when ssh could not connect ( or the host was skipped as unreachable ), 124 when `-t, --timeout` stopped it, and -1 for an error in mssh itself.
+The return code shown for each host is the command's own, or: 255 when ssh could not connect ( or the host was skipped as unreachable ), 124 when `-t, --timeout` stopped it, 130 when Ctrl-C stopped it ( the first Ctrl-C also keeps hosts still waiting for a connection slot from starting: they say `Not started: Ctrl C` ), and -1 for an error in mssh itself.
 
 ## Usage
 

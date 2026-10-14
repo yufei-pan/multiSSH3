@@ -39,9 +39,16 @@ class EndedProc(RunningProc):
 		self.stderr = io.BytesIO(stderr)
 
 
-def _run(fake_host, monkeypatch, proc, timeout=0, passwds=None, **host_kwargs):
+def _run(fake_host, monkeypatch, proc, timeout=0, passwds=None, ctrl_c=False, **host_kwargs):
 	monkeypatch.setattr(multiSSH3, "_binPaths", {"ssh": "/usr/bin/ssh", "sshpass": "/usr/bin/sshpass", "rsync": "/usr/bin/rsync", "scp": "/usr/bin/scp"})
-	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda *args, **kwargs: proc)
+	monkeypatch.setattr(multiSSH3, "_emo", False)
+
+	def start(*args, **kwargs):
+		# with ctrl_c, Ctrl C comes once the command runs (one pressed before would keep it from starting)
+		if ctrl_c:
+			multiSSH3._emo = True
+		return proc
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", start)
 	host = fake_host("mock-a", **host_kwargs)
 	# the command starts at 0 and is silent from then on
 	ticks = iter([0.0, 2.0])
@@ -74,10 +81,9 @@ def test_a_copy_that_timed_out_may_be_incomplete(fake_host, monkeypatch):
 
 
 def test_ctrl_c_while_the_command_runs(fake_host, monkeypatch):
-	monkeypatch.setattr(multiSSH3, "_emo", True)
 	proc = RunningProc()
 
-	host = _run(fake_host, monkeypatch, proc, command="sleep 100")
+	host = _run(fake_host, monkeypatch, proc, command="sleep 100", ctrl_c=True)
 
 	assert proc.signals == [multiSSH3.signal.SIGINT]
 	assert host.returncode == 130
@@ -87,9 +93,8 @@ def test_ctrl_c_while_the_command_runs(fake_host, monkeypatch):
 def test_ctrl_c_that_reached_ssh_first(fake_host, monkeypatch):
 	# the terminal's Ctrl C reaches ssh as well as mssh: ssh ends before mssh stops it, saying only
 	# "Killed by signal 2." (hidden)
-	monkeypatch.setattr(multiSSH3, "_emo", True)
 
-	host = _run(fake_host, monkeypatch, EndedProc(255, b"Killed by signal 2.\n"), command="sleep 100")
+	host = _run(fake_host, monkeypatch, EndedProc(255, b"Killed by signal 2.\n"), command="sleep 100", ctrl_c=True)
 
 	assert host.returncode == 130
 	assert host.stderr == ["Ctrl C detected, Emergency Stop!", "ssh was stopped: the command may still run on the host."]
@@ -97,9 +102,8 @@ def test_ctrl_c_that_reached_ssh_first(fake_host, monkeypatch):
 
 def test_ctrl_c_with_sshpass_is_not_a_success(fake_host, monkeypatch):
 	# sshpass exits 0 when Ctrl C stops it
-	monkeypatch.setattr(multiSSH3, "_emo", True)
 
-	host = _run(fake_host, monkeypatch, EndedProc(0), passwds="pw", command="sleep 100")
+	host = _run(fake_host, monkeypatch, EndedProc(0), passwds="pw", command="sleep 100", ctrl_c=True)
 
 	assert host.returncode == 130
 	assert host.stderr[-1] == "ssh was stopped: the command may still run on the host."

@@ -4141,6 +4141,13 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				host.output.append('Not started: mssh is exiting')
 				host.returncode = -1
 				return True, retry_limit, attempt_line_starts
+			if _emo:
+				# the first Ctrl C stops the running commands; a host still waiting for its turn does not
+				# start either: it would only be one more login attempt on that host
+				host.output.append('Not started: Ctrl C')
+				host.stderr.append('Not started: Ctrl C')
+				host.returncode = 130
+				return True, retry_limit, attempt_line_starts
 			try:
 				shown = 'Running command: ' + _shown_command(formatedCMD, passwords)
 				host.output.append(shown)
