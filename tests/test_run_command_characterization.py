@@ -176,8 +176,6 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setenv("HOME", "/home/tester")
 	monkeypatch.setattr(multiSSH3, "_emo", False)
 	monkeypatch.setattr(multiSSH3.getpass, "getuser", lambda: "tester")
-	# rsync's arguments depend on who runs mssh (see _rsync_owner_options): record them as root's
-	monkeypatch.setattr(multiSSH3.os, "geteuid", lambda: 0, raising=False)
 	sleeps = []
 	monkeypatch.setattr(multiSSH3.time, "sleep", sleeps.append)
 	results = list(scenario["results"])

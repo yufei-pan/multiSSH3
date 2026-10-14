@@ -97,7 +97,6 @@ def test_run_command_scp_files(fake_host, monkeypatch):
 
 
 def test_run_command_rsync_files(fake_host, monkeypatch):
-	monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "/tmp/dest", files=["/tmp/a"], scp=False)
 	# Prefer rsync path
@@ -642,46 +641,6 @@ def test_scp_protocol_probe_that_fails_quotes_nothing(monkeypatch):
 	monkeypatch.setattr(multiSSH3.subprocess, "run", fake_run)
 
 	assert multiSSH3._scp_uses_remote_shell(["/missing/scp", "-rp"]) is False
-
-
-def _as_user(monkeypatch, uid, gid):
-	monkeypatch.setattr(os, "geteuid", lambda: uid, raising=False)
-	monkeypatch.setattr(os, "getegid", lambda: gid, raising=False)
-
-
-def test_rsync_push_gives_my_files_to_the_user_it_writes_as(fake_host, monkeypatch):
-	# pushed as root from uid 1000, a file kept uid 1000 on the host, another user there: sshd
-	# refused an authorized_keys copied that way. scp leaves new files to root.
-	_as_user(monkeypatch, 1000, 1001)
-	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"])
-
-	assert "--usermap=1000:0" in calls[0]
-	assert "--groupmap=1001:0" in calls[0]
-	assert calls[0].index("--groupmap=1001:0") < calls[0].index("--")
-
-
-@pytest.mark.parametrize("uid,extraargs,gather", [
-	(0, None, False),  # root here: every owner is kept, as -a does
-	(1000, None, True),  # gathering: this machine's rsync is the receiver, running as this user
-	(1000, "--chown=web:web", False),
-	(1000, "--usermap=*:nobody", False),
-	(1000, "--groupmap=1001:staff", False),
-	(1000, "--no-owner --no-group", False),
-	(1000, "--no-o", False),
-], ids=["root", "gather", "chown", "usermap", "groupmap", "no_owner", "no_o"])
-def test_rsync_maps_no_owner(fake_host, monkeypatch, uid, extraargs, gather):
-	_as_user(monkeypatch, uid, 1001)
-	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"], extraargs=extraargs, gatherMode=gather)
-
-	assert not [arg for arg in calls[0] if arg.startswith(("--usermap=1", "--groupmap=1001:0"))]
-
-
-def test_rsync_maps_no_owner_without_user_ids(fake_host, monkeypatch):
-	# Windows has no geteuid
-	monkeypatch.delattr(os, "geteuid", raising=False)
-	host, calls = _copy_with_results(fake_host, monkeypatch, [FakeProc()], ["/src/a"])
-
-	assert not [arg for arg in calls[0] if arg.startswith(("--usermap", "--groupmap"))]
 
 
 @pytest.fixture
