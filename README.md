@@ -926,8 +926,19 @@ mssh gpu[01-16] 'tail -n 50 /var/log/slurmd.log' -q   # -q is mssh's own: no cur
 
 Left unquoted, a word starting with `-` is read by mssh:
 
-- A word that names an mssh option is that option: `mssh web1 df -h` prints mssh's help, `mssh web1 journalctl -u slurmd` connects as user `slurmd` (`-u, --username`), `mssh web1 tail -f /var/log/x` copies this machine's `/var/log/x` to the hosts, as `tail` (`-f, --file`), and `mssh web1 ps -aux` reads `-a -u x`. This is also what lets mssh's options follow the command (`mssh web1 uptime -q`); the autocomplete marks such a word before you press Enter (see [Warnings before Enter](#warnings-before-enter)), and mssh itself says so on stderr before it runs (`Note: mssh read -h after the command 'df' as its own option (--help: mssh prints its help and runs nothing). To pass it to the command, quote the command: mssh all 'df -h'`), so a remote command's option is never taken silently. Quote the command to pass it on.
+- A word that names an mssh option is that option: `mssh web1 df -h` prints mssh's help, `mssh web1 journalctl -u slurmd` connects as user `slurmd` (`-u, --username`), `mssh web1 tail -f /var/log/x` copies this machine's `/var/log/x` to the hosts, as `tail` (`-f, --file`), and `mssh web1 ps -aux` reads `-a -u x`. This is also what lets mssh's options follow the command (`mssh web1 uptime -q`).
 - Any other word stops mssh with an error (`mssh web1 ls -la`: `unrecognized arguments: -la`) that says to quote the command. On Python 3.6, mssh warns and adds such words to the commands instead.
+
+So that a remote command's option is never taken silently:
+
+- The autocomplete marks such a word before you press Enter, also the word you are still typing at the end of the line (see [Warnings before Enter](#warnings-before-enter)). It sees your quotes, so options after a quoted command are not marked.
+- mssh itself prints a note on stderr before it runs:
+
+  ```
+  Note: mssh read -h after the command 'df' as its own option (--help: mssh prints its help and runs nothing). If it was meant for df, quote the command: mssh all 'df -h'
+  ```
+
+  By then the shell has removed the quotes, so mssh cannot tell `mssh web1 'uptime' -q` from `mssh web1 uptime -q`. It says nothing where the line shows the option was meant for mssh: after a command word holding a space or a shell character (`|&;<>()$`, quotes, backslash), which only quotes could give it, as in `mssh gpu[01-16] 'tail -n 50 /var/log/slurmd.log' -q`; and for flags that only change how mssh shows the output (`-q`, `-j`, `-g`, `-Q`, `-R`, `-w`, `-B`, `-Z`, `-I`, `--debug`, `--force_truecolor`) after the command's last word. Options that take a value (`-t 30`), `-h`, `-V` and flags that change what runs (`-a`, `-ci`, `-M`, `-G`, ...) are noted. To give mssh options without a note, put them before the hosts: `mssh -q -t 30 web1 uptime`.
 
 Option names count in full only: `--user` is not `--username` and `-c` is not `-ci`, so `mssh web1 bash -c 'echo hi'` stops with an error instead of running `ssh-copy-id`. Short options can still be written together (`-qj` is `-q -j`, `-SCRIPT` is `-S -C -R -I -P -T`) and take their value attached (`-uroot`, `-t30`).
 
@@ -1032,7 +1043,7 @@ options:
   --config_file [CONFIG_FILE]
                         Load additional config file to apply, Warning: will over write CLI options. Use without a path will use multiSSH3.config.json
   --store_config_file [STORE_CONFIG_FILE]
-                        Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: /tmp/claude-0/-mnt-klein-work-cas-multiSSH3/eb2a9d3a-b680-44ee-b0cf-b93c6a269058/scratchpad/overnight/scratch-integration/hhome/.multiSSH3.config.json
+                        Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: /home/user/.multiSSH3.config.json
   --debug               Print debug information
   -ci, --copy_id        Copy the ssh id to the hosts
   -I, -nh, --no_history

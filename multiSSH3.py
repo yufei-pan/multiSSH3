@@ -7700,18 +7700,31 @@ def _looks_like_option(word):
 	'''Whether argparse takes word for an option, not a positional or a value: a word holding a space never is.'''
 	return word.startswith('-') and word != '-' and ' ' not in word
 
+# characters the shell takes for itself: a word holding one (or a space) reached mssh from quotes
+_SHELL_CHARACTERS = frozenset(' \t\n|&;<>()$`\'"\\')
+# flags that only change how mssh shows its output: at the end of a line, most likely mssh's own
+# (mssh web1 uptime -q), and taking one wrongly costs only the look of the output
+_DISPLAY_FLAGS = frozenset(('no_watch', 'json', 'greppable', 'no_output', 'error_only', 'success_hosts',
+	'single_window', 'return_zero', 'no_history', 'debug', 'force_truecolor'))
+
 def _options_after_the_command_note(argv, parser=None):
 	'''
 	A note for the words of argv mssh reads as its own options after the first word of the remote
 	command, or None. mssh reads its options anywhere on the line, so a remote command typed
 	unquoted loses them: `mssh all df -h` prints mssh's help, `mssh all uname -a` runs uname without
 	-a. Words after "--" are the command's. A password given there is never repeated.
+
+	The shell has removed the quotes, so `mssh web1 'uptime' -q` reads as `mssh web1 uptime -q`.
+	Nothing is noted where the line shows the option was meant for mssh: after a command word the
+	shell could not have given unquoted (one holding a space or a shell character), and for display
+	flags (_DISPLAY_FLAGS) at the end of the line. The note says what to type in case it was not.
 	'''
 	parser = parser or get_parser()
 	actions = parser._option_string_actions
 	words = list(argv)
 	positionals = []
 	found = []
+	quoted = False
 	index = 0
 	while index < len(words):
 		word = words[index]
@@ -7721,6 +7734,9 @@ def _options_after_the_command_note(argv, parser=None):
 			break
 		if not _looks_like_option(word):
 			positionals.append(index - 1)
+			if len(positionals) >= 2 and _SHELL_CHARACTERS.intersection(word):
+				# a quoted command: the options after it are mssh's, as meant
+				quoted = True
 			continue
 		read = _option_word_actions(word, actions)
 		if read is None:
@@ -7729,8 +7745,12 @@ def _options_after_the_command_note(argv, parser=None):
 		if takes_next and index < len(words) and not _looks_like_option(words[index]):
 			# its value
 			index += 1
-		if len(positionals) >= 2:
-			found.append((word, readings))
+		if len(positionals) >= 2 and not quoted:
+			found.append((index, word, readings, takes_next or readings[-1].nargs != 0))
+	# a display flag is noted only among the command's words, not after the last of them
+	last = positionals[-1] if positionals else -1
+	found = [(word, readings) for at, word, readings, takes_value in found
+		if takes_value or at <= last or not all(action.dest in _DISPLAY_FLAGS for action in readings)]
 	if not found:
 		return None
 	start = positionals[1]
@@ -7746,8 +7766,9 @@ def _options_after_the_command_note(argv, parser=None):
 			if long_name not in names:
 				names.append(long_name)
 	several = len(found) > 1
-	text = "Note: mssh read {} after the command {} as its own option{} ({}). To pass {} to the command, quote the command".format(
-		', '.join(_shown_option_word(word, readings) for word, readings in found), "'{}'".format(command), 's' if several else '', ', '.join(names), 'them' if several else 'it')
+	text = "Note: mssh read {} after the command '{}' as its own option{} ({}). If {} meant for {}, quote the command".format(
+		', '.join(_shown_option_word(word, readings) for word, readings in found), command, 's' if several else '',
+		', '.join(names), 'they were' if several else 'it was', command)
 	if any(action.dest in ('password', 'ipmi_password') for _, readings in found for action in readings):
 		return text + '.'
 	return '{}: mssh {} {}'.format(text, shlex.quote(words[positionals[0]]), shlex.quote(' '.join(words[start:])))
