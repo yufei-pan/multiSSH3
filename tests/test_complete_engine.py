@@ -445,7 +445,9 @@ def test_query_command_end_to_end(tmp_path):
 	runtime = tmp_path / 'runtime'
 	runtime.mkdir(mode=0o700)
 	(tmp_path / '.mssh_history').write_text(''.join(entry + '\n' for entry in HISTORY))
-	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(runtime))
+	# no index yet: the query waits for the first build only until just before its deadline (then answers
+	# without history), so give it time to wait on a slow machine; that race has tests of its own
+	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(runtime), MSSH_COMPLETE_SOFT_DEADLINE='5')
 	request = b'MSSHC1\0bash\x005.2\0nosort=1\0mssh gpu[01-16] "\0\0\0'
 	result = subprocess.run(ENGINE + ['query'], input=request, env=env, stdout=subprocess.PIPE, timeout=60)
 	assert result.returncode == 0
