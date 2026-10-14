@@ -981,7 +981,7 @@ def test_an_rc_file_whose_owner_cannot_be_kept_is_not_replaced(tmp_path, monkeyp
 	assert code == 1 and messages[-6:-4] == ['could not change {}: replacing it would change its owner; it is as it was'.format(rc),
 		'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:']
 	assert rc.read_text() == before and (rc.stat().st_uid, rc.stat().st_gid) == (4321, 4322)
-	assert sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history']
+	assert sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history', '.multiSSH3.config.json']
 
 
 def test_a_created_rc_file_gets_the_usual_permissions(tmp_path):
@@ -1088,7 +1088,7 @@ def test_rc_files_that_cannot_be_replaced_still_get_a_new_block(tmp_path, monkey
 	assert code == 1 and messages[-2:] == ['could not change {}: {}; it is as it was'.format(rc, reason),
 		'to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
 	# never a temporary file: not in the messages, not left behind
-	assert rc.read_text() == before and sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history']
+	assert rc.read_text() == before and sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history', '.multiSSH3.config.json']
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason='root may write any file')
