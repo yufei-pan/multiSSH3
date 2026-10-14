@@ -934,7 +934,7 @@ Option names count in full only: `--user` is not `--username` and `-c` is not `-
 
 Putting the command after `--` is no substitute for quotes: every word after the hosts is a command of its own, so `mssh web1 -- bash -c 'echo hi'` runs `bash`, `-c` and `echo hi` one after another (when each word is a single word, as in `mssh web1 -- ls -la`, mssh asks whether to join them).
 
-Below is a sample help message output from multiSSH3 6.31 @ 2026-10-13 (no config file, 120 columns; the lines after the options list the programs found on that machine)
+Below is a sample help message output from multiSSH3 6.31 with the overnight patches @ 2026-10-14 (no config file, 120 columns; the lines after the options list the programs found on that machine)
 
 ```bash
 $ mssh -h
@@ -989,6 +989,12 @@ options:
                         The username to use to connect to the hosts via ipmi. (default: admin)
   -ip, --ipmi_password IPMI_PASSWORD
                         The password to use to connect to the hosts via ipmi. (default: set, not shown)
+  -ia, --ipmi_args IPMI_ARGS
+                        The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: )
+  -im, --ipmi_method IPMI_METHOD
+                        The method to use to connect to the hosts via ipmi. (default: ipmitool)
+  -irlt, --ipmi_retry_lockout_time IPMI_RETRY_LOCKOUT_TIME
+                        The time in seconds to retry the lockout of the hosts via ipmi. (default: -1)
   -S, -q, -nw, --no_watch
                         Quiet mode, no curses watch, only print the output. (default: False)
   -ww, --window_width WINDOW_WIDTH
@@ -1027,7 +1033,7 @@ options:
   --config_file [CONFIG_FILE]
                         Load additional config file to apply, Warning: will over write CLI options. Use without a path will use multiSSH3.config.json
   --store_config_file [STORE_CONFIG_FILE]
-                        Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: /home/user/.multiSSH3.config.json
+                        Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: /tmp/claude-0/-mnt-klein-work-cas-multiSSH3/eb2a9d3a-b680-44ee-b0cf-b93c6a269058/scratchpad/overnight/scratch-integration/hhome/.multiSSH3.config.json
   --debug               Print debug information
   -ci, --copy_id        Copy the ssh id to the hosts
   -I, -nh, --no_history
@@ -1043,7 +1049,7 @@ options:
   --add_control_master_config
                         Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.
   --host_file HOST_FILE
-                        File containing list of hosts to run the command on, one host per line. Default:/etc/hosts
+                        The hosts file mssh looks host names up in before DNS, in the format of /etc/hosts (an IP address, then names, per line). Not a list of hosts to run on. Default: /etc/hosts
   --completion ARG [ARG ...]
                         Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL] [editor]" / "uninstall [SHELL]" it for the current user ("editor": the plain-bash mssh line editor)
   -V, --version         show program's version number and exit
@@ -1071,6 +1077,8 @@ Hosts Env files searched:
  '~/.zshrc',
  '~/host.env',
  '~/hosts.env']
+
+mssh reads words starting with '-' as its own options, also after the hosts. To pass options to the remote command, quote the whole command: mssh web1 'ls -la'
 ```
 Note: The default values can be modified / updated in the [Config file](#configuration).
 
