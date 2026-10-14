@@ -7662,6 +7662,92 @@ def _parse_command_line(parser, argv = None):
 	namespace.commands = commands
 	return namespace
 
+def _option_word_actions(word, actions):
+	'''
+	The actions of mssh's parser a word starting with '-' names, as _MsshArgumentParser reads it, and
+	whether the last of them takes the next word as its value; None for a word that names none (argparse
+	then stops with an error). Full names only: '-u', '--username', '-u=root', '-uroot', '-qj'.
+	'''
+	name, equals, _ = word.partition('=')
+	if name in actions:
+		action = actions[name]
+		return [action], action.nargs != 0 and not equals
+	if word.startswith('--'):
+		return None
+	readings = []
+	rest = word[1:]
+	while rest:
+		action = actions.get('-' + rest[0])
+		if action is None:
+			return None
+		readings.append(action)
+		if action.nargs != 0:
+			# the rest of the word is its value
+			return readings, len(rest) == 1
+		rest = rest[1:]
+	return readings, False
+
+def _shown_option_word(word, readings):
+	'''The word as a note shows it: without a value attached to it ('-uroot' as '-u', '--password=x' as '--password').'''
+	if word.partition('=')[0] in {name for action in readings for name in action.option_strings}:
+		return word.partition('=')[0]
+	if readings and readings[-1].nargs != 0:
+		# short options written together, the last one with its value attached: one letter each
+		return word[:1 + len(readings)]
+	return word
+
+def _options_after_the_command_note(argv, parser=None):
+	'''
+	A note for the words of argv mssh reads as its own options after the first word of the remote
+	command, or None. mssh reads its options anywhere on the line, so a remote command typed
+	unquoted loses them: `mssh all df -h` prints mssh's help, `mssh all uname -a` runs uname without
+	-a. Words after "--" are the command's. A password given there is never repeated.
+	'''
+	parser = parser or get_parser()
+	actions = parser._option_string_actions
+	words = list(argv)
+	positionals = []
+	found = []
+	index = 0
+	while index < len(words):
+		word = words[index]
+		index += 1
+		if word == '--':
+			words = words[:index - 1]
+			break
+		if not word.startswith('-') or word == '-' or ' ' in word:
+			positionals.append(index - 1)
+			continue
+		read = _option_word_actions(word, actions)
+		if read is None:
+			continue
+		readings, takes_next = read
+		if takes_next and index < len(words) and not words[index].startswith('-'):
+			# its value
+			index += 1
+		if len(positionals) >= 2:
+			found.append((word, readings))
+	if not found:
+		return None
+	start = positionals[1]
+	command = words[start]
+	names = []
+	for _, readings in found:
+		for action in readings:
+			long_name = max(action.option_strings, key=len)
+			if action.dest == 'help':
+				long_name += ': mssh prints its help and runs nothing'
+			elif action.dest == 'version':
+				long_name += ': mssh prints its version and runs nothing'
+			if long_name not in names:
+				names.append(long_name)
+	several = len(found) > 1
+	text = "Note: mssh read {} after the command {} as its own option{} ({}). To pass {} to the command, quote the command".format(
+		', '.join(_shown_option_word(word, readings) for word, readings in found), "'{}'".format(command), 's' if several else '', ', '.join(names), 'them' if several else 'it')
+	if any(action.dest in ('password', 'ipmi_password') for _, readings in found for action in readings):
+		return text + '.'
+	return '{}: mssh {} {}'.format(text, shlex.quote(words[positionals[0]]), shlex.quote(' '.join(words[start:])))
+
 # the IPMI options: argparse dest -> IPMI definition key
 _IPMI_OPTIONS = (
 	('ipmi_interface_ip_prefix', 'interface_ip_prefix'),
@@ -8117,6 +8203,15 @@ def main(args = None):
 	global __mainReturnCode
 	global __failedHosts
 	_escape_unencodable_output()
+	try:
+		# before the parse: -h there prints mssh's help and exits
+		note = _options_after_the_command_note(sys.argv[1:] if args is None else args)
+	except Exception as e:
+		note = None
+		if __DEBUG_MODE:
+			eprint(f"Warning: cannot check the options after the command: {e!r}")
+	if note:
+		eprint(note)
 	args = _exit_if_output_closed(process_args, args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))

@@ -1098,10 +1098,24 @@ def test_words_mssh_does_not_read_as_options_are_left_alone(engine, line):
 
 
 def test_the_option_being_typed_is_left_alone(engine):
-	assert warnings(engine, 'mssh web1 journalctl -u', probe=False)[0] == []
+	# the cursor inside it: the word is still being changed
 	assert warnings(engine, 'mssh web1 journalctl -u slurmd', cursor=len('mssh web1 journalctl -'), probe=False)[0] == []
+	# a word on its way to an option, or one that names none (mssh stops with an error on those)
+	assert warnings(engine, 'mssh web1 journalctl --user', probe=False)[0] == []
+	assert warnings(engine, 'mssh web1 ls -la', probe=False)[0] == []
 	# its value being typed: the option is finished
 	assert [marked for marked, _, _ in warnings(engine, 'mssh web1 journalctl -u slu', probe=False)[0]] == ['-u']
+
+
+@pytest.mark.parametrize('line, message', [
+	# Enter would run these as they stand: the last word is an mssh option, marked as soon as it is one
+	('mssh all df -h', "-h is mssh's --help here — quote the command: 'df -h'"),
+	('mssh all uname -a', "-a is mssh's --no_skip_unreachable here — quote the command: 'uname -a'"),
+	('mssh web1 journalctl -u', "-u is mssh's --username here — quote the command: 'journalctl -u'"),
+	('mssh all free --help', "--help is an mssh option here — quote the command: 'free --help'"),
+])
+def test_an_mssh_option_ending_the_line_is_marked(engine, line, message):
+	assert warnings(engine, line, probe=False)[0] == [(line.rsplit(' ', 1)[1], 'command', message)]
 
 
 @pytest.mark.parametrize('line, marked, message', [

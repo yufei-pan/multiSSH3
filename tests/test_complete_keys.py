@@ -534,6 +534,19 @@ def test_editor_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
 		session.close()
 
 
+def test_editor_marks_an_mssh_option_ending_the_line_before_enter(home):
+	# the remote command's option is its last word: Enter would run the line as it stands
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh node01 df -h')
+		reason = "⚠ -h is mssh's --help here — quote the command: 'df -h'"
+		assert reason in plain(session.read_until(b"df -h'", 10))
+		assert underlined(session, '-h')
+	finally:
+		session.close()
+
+
 def test_editor_enter_runs_what_was_typed(home):
 	env, home = home
 	session = editor_session(env, home)
