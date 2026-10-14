@@ -41,7 +41,7 @@ def test_config_in_current_directory_is_not_loaded(tmp_path, mode):
 	code = ("import sys; sys.path.insert(0, {!r}); import multiSSH3; "
 		"print(multiSSH3._binPaths.get('ssh')); print('MSSH_TRUST_ALIAS' in multiSSH3.readEnvFromFile())").format(str(PACKAGE_ROOT))
 
-	result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
+	result = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, cwd=tmp_path, timeout=60)
 
 	ssh_path, alias_loaded = result.stdout.split()
 	assert ssh_path != "/bin/echo"

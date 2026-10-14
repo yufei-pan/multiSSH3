@@ -1,5 +1,8 @@
+import errno
 import os
 import subprocess
+import sys
+import threading
 import time
 
 import pytest
@@ -59,10 +62,104 @@ def test_build_index_collects_every_source(home):
 	assert index.header['history_offset'] == str(os.path.getsize(str(home / '.mssh_history')))
 
 
+def test_the_index_holds_the_hosts_file_names_mssh_resolves(home, tmp_path, monkeypatch):
+	# the names marked as from the hosts file are valid without DNS: exactly the ones mssh finds there
+	hosts = tmp_path / 'hosts'
+	hosts.write_bytes(b'10.0.0.5 node5 # old rack, ask Jos\xe9\nnode1 node2\nfd00::5 node5 node5-v6\n10.0.0.300 node3\n')
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_HOST_FILE', str(hosts))
+	monkeypatch.setattr(multiSSH3, '_etc_hosts', {})
+	multiSSH3.getIP.cache_clear()
+	index, _ = build()
+	table = mc.HostTable(index)
+	from_hosts_file = {name for name in table.names if table.sources(name) & mc.SRC_HOSTS_FILE}
+	candidates = ('node1', 'node2', 'node3', 'node5', 'node5-v6', 'old', 'rack', '#')
+	assert from_hosts_file == {name for name in candidates if multiSSH3.getIP(name, local=True)} == {'node5', 'node5-v6'}
+	multiSSH3.getIP.cache_clear()
+
+
+def test_alias_members_keep_their_users(home):
+	# mssh runs postgres@db1 for dbs, and records its failures under that name
+	with open(str(home / 'hosts.env'), 'a') as f:
+		f.write('dbs=postgres@db1,db2\n')
+	hosts = mc.HostTable(build()[0])
+	dbs = hosts.alias_index('dbs')
+	assert sorted(zip(hosts.alias_members(dbs), hosts.alias_member_users(dbs))) == [('db1', 'postgres'), ('db2', '')]
+	assert hosts.alias_member_users(hosts.alias_index('racks')) == ['', '', '']
+
+
+def test_ssh_config_lines_are_split_as_ssh_splits_them(tmp_path):
+	# what ssh -G (OpenSSH 10.0) makes of each line: a keyword in any case, ended by blanks (tabs
+	# too) or one "=", arguments in "..." or '...', a # that starts an argument starts a comment
+	(tmp_path / 'tabbed.conf').write_text('\tUser\tcarol\n')
+	config = tmp_path / 'config'
+	config.write_text(
+		'Host\tgpu-tab\n'
+		'  HostName 10.0.0.1\n'
+		'Host=gpu-eq\n'
+		'HOST \t= gpu-e "gpu-dq" \'gpu-sq\'\n'
+		'\tUser\tbob\n'
+		'Host gpu-d # gpu-comment\n'
+		'Host gpu-j#k\n'
+		'Host "gpu-open\n'
+		'user=al=ice\n'
+		'Include\ttabbed.conf\n')
+	names, users = set(), set()
+	mc.read_ssh_config(str(config), str(tmp_path), names, users, [])
+	assert names == {'gpu-tab', 'gpu-eq', 'gpu-e', 'gpu-dq', 'gpu-sq', 'gpu-d', 'gpu-j#k'}
+	assert users == {'bob', 'al=ice', 'carol'}
+
+
+def test_names_mssh_cannot_take_as_one_host_are_not_collected(home):
+	'''mssh splits a hosts word on , ; | / & and whitespace, so a name holding one (machine/.host from
+	systemd's ssh config) is never one host; ssh config patterns are no hosts at all.'''
+	(home / '.ssh' / 'config').write_text('Host .host machine/.host\nHost unix/* vsock/* !neg web?\n'
+		'Host semi;colon pipe|name amp&name\nHost good-name good.dot\n')
+	(home / '.ssh' / 'known_hosts').write_text('vsock/3,known1 ssh-ed25519 AAAA\n')
+	index, directory = build()
+	names = set(mc.HostTable(index).names)
+	assert {'.host', 'good-name', 'good.dot', 'known1'} <= names
+	assert [name for name in names if set(name) & set(',;|/& \t\r\n')] == []
+	assert not names & {'unix/*', 'vsock/*', '!neg', 'neg', 'web?'}
+	response = mc.answer(mc.Request('bash', 'mssh machine/', '', ''), directory=directory, now=NOW)
+	assert [candidate.text for candidate in response.candidates] == []
+
+
+def test_ssh_config_lines_in_the_index_are_split_as_ssh_splits_them(home):
+	'''A trailing comment holds no host and no user, quotes make one pattern of two words, a tab or
+	"=" may follow the keyword, and ssh rejects a line with an open quote.'''
+	(home / '.ssh' / 'config').write_text('Host zzweb1 # the zzserver\n  User ops # deploy user\nHost\tzztabbed\n'
+		'Host=zzequals\nHost "zztwo zzwords" zzquoted\nHost "zzopen\nHost zz#hash\n')
+	index, _ = build()
+	names = set(mc.HostTable(index).names)
+	assert {'zzweb1', 'zztabbed', 'zzequals', 'zzquoted', 'zz#hash'} <= names
+	assert not names & {'#', 'the', 'zzserver', 'zztwo', 'zzwords', '"zztwo', 'zzwords"', 'zzopen', '"zzopen'}
+	assert index.row('config', 0) == ['users', 'ops']
+
+
+def test_aliases_with_loops_open_ranges_or_no_hosts_are_indexed_as_mssh_expands_them(home):
+	(home / 'hosts.env').write_text("racks='rack[1-3]'\nweb=\"web1,app\"\napp=\"app1,web\"\nbroken='node[1-],rack1'\nempty=''\n")
+	index, _ = build()
+	hosts = mc.HostTable(index)
+	members = {name: hosts.alias_members(number) for number, name in enumerate(hosts.alias_names)}
+	# web inside its own expansion is the host web; an open range is one (invalid) host name; empty has no hosts
+	assert members == {'app': ['app', 'app1', 'web1'], 'broken': ['node[1-]', 'rack1'],
+		'racks': ['rack1', 'rack2', 'rack3'], 'web': ['app1', 'web', 'web1']}
+
+
 def test_index_never_holds_passwords(home):
 	index, directory = build()
 	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
 		assert b'topsecret' not in f.read()
+
+
+def test_index_never_holds_configured_passwords(home, monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_PASSWORD', "Hunter2 pa%ss it's")
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_IPMI_PASSWORD', 'Bmc 100% s3cret')
+	index, directory = build()
+	with open(os.path.join(directory, mc.INDEX_NAME), 'rb') as f:
+		data = f.read()
+	assert b'Hunter2' not in data and b's3cret' not in data
+	assert mc.ParserSpec.from_rows([index.row('spec', number) for number in range(index.count('spec'))]).lookup('-p')[0]
 
 
 def test_snapshot_and_memory_knowledge_agree(home):
@@ -125,6 +222,78 @@ def test_lock_blocks_a_second_rebuild_until_stale(tmp_path):
 	assert mc.take_lock(lock, now=time.time() + mc.LOCK_STALE + 1)
 
 
+def test_a_rebuild_leaves_a_lock_taken_over_from_it(home, monkeypatch):
+	# a rebuild that ran past LOCK_STALE has lost its lock to the next one: it must not remove that one
+	directory = mc.cache_dir()
+	lock = os.path.join(directory, mc.LOCK_NAME)
+	assert mc.take_lock(lock)
+	successor = []
+
+	def overtaken_build(directory):
+		stale = time.time() - mc.LOCK_STALE - 1
+		os.utime(lock, (stale, stale))
+		assert mc.take_lock(lock)
+		with open(lock) as f:
+			successor.append(f.read())
+		return os.path.join(directory, mc.INDEX_NAME)
+	monkeypatch.setattr(mc, 'build_index', overtaken_build)
+	assert mc.main(['rebuild', '--lock', lock]) == 0
+	with open(lock) as f:
+		assert f.read() == successor[0]
+
+
+def failing_build(directory, now=None, mssh=None):
+	# as when the runtime directory is full, or a file size limit is lower than the index
+	raise OSError(errno.EFBIG, 'File too large')
+
+
+def test_a_failed_rebuild_is_tried_again_once_its_lock_is_stale(home, monkeypatch):
+	# a failure that repeats would otherwise cost a full rebuild on every query
+	directory = mc.cache_dir()
+	lock = os.path.join(directory, mc.LOCK_NAME)
+	monkeypatch.setattr(mc, 'build_index', failing_build)
+	assert mc.take_lock(lock)
+	assert mc.main(['rebuild', '--lock', lock]) == 1
+	started = []
+	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
+	assert mc.spawn_rebuild(directory) is False
+	stale = time.time() - mc.LOCK_STALE - 1
+	os.utime(lock, (stale, stale))
+	assert mc.spawn_rebuild(directory) is True
+	assert len(started) == 1
+
+
+def test_queries_do_not_wait_for_a_rebuild_that_failed(home, monkeypatch):
+	directory = mc.cache_dir()
+	lock = os.path.join(directory, mc.LOCK_NAME)
+	monkeypatch.setattr(mc, 'build_index', failing_build)
+	assert mc.take_lock(lock)
+	mc.main(['rebuild', '--lock', lock])
+	started = []
+	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
+	began = time.monotonic()
+	assert mc.load_for_query(directory, time.time()) == (None, [])
+	assert time.monotonic() - began < 0.5
+	assert started == []
+
+
+def test_the_first_query_stops_waiting_when_the_build_fails(home, monkeypatch):
+	directory = mc.cache_dir()
+	monkeypatch.setattr(mc, 'build_index', failing_build)
+	runs = []
+
+	def popen(argv, **kwargs):
+		# the detached rebuild, failing a moment after it starts
+		run = threading.Timer(0.1, mc.main, args=(argv[-3:],))
+		run.start()
+		runs.append(run)
+	monkeypatch.setattr(subprocess, 'Popen', popen)
+	began = time.monotonic()
+	assert mc.load_for_query(directory, time.time()) == (None, [])
+	assert time.monotonic() - began < 1
+	runs[0].join()
+
+
 def test_first_query_builds_the_index(home):
 	directory = mc.cache_dir()
 	index, tail = mc.load_for_query(directory, time.time())
@@ -153,6 +322,49 @@ def test_concurrent_first_query_waits_for_the_running_build(home, monkeypatch):
 	monkeypatch.setattr(mc, 'FIRST_BUILD_BUDGET', 0.2)
 	assert mc.load_for_query(directory, time.time()) == (None, [])
 	assert started == []
+
+
+def test_a_query_answers_before_its_deadline_while_the_first_build_runs(home, monkeypatch):
+	# the shell gives up at its deadline: a first build that takes longer must not cost the answer
+	directory = mc.cache_dir()
+	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
+	# a wide reserve, so a loaded machine cannot make the answer late
+	monkeypatch.setattr(mc, 'FIRST_BUILD_RESERVE', 0.4)
+	started = time.monotonic()
+	response = mc.answer(mc.Request('bash', 'mssh --no_wa', '', '--no_wa'), started + 0.6, directory=directory)
+	assert time.monotonic() - started < 0.6
+	# without the index: options from mssh's parser
+	assert [candidate.text for candidate in response.candidates] == ['--no_watch']
+
+
+def test_a_query_still_waits_for_a_first_build_that_ends_in_time(home, monkeypatch):
+	directory = mc.cache_dir()
+	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
+	# the running build: done shortly after the query starts
+	other = os.path.join(str(home), 'other')
+	os.mkdir(other)
+	built = mc.build_index(other, mssh=multiSSH3)
+	finish = threading.Timer(0.02, os.replace, (built, os.path.join(directory, mc.INDEX_NAME)))
+	finish.start()
+	try:
+		response = mc.answer(mc.Request('bash', 'mssh jum', '', 'jum'), time.monotonic() + 2.0, directory=directory)
+	finally:
+		finish.join()
+	assert [candidate.text for candidate in response.candidates] == ['jump1', 'jump2']
+
+
+def test_the_query_command_answers_in_time_while_the_first_build_runs(home):
+	directory = mc.cache_dir()
+	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	request = '\0'.join([mc.PROTOCOL, 'bash', '5.2', '', 'mssh --no_wa', '', '--no_wa']) + '\0'
+	started = time.monotonic()
+	result = subprocess.run([sys.executable, '-I', mc.__file__, 'query'], input=request.encode(), stdout=subprocess.PIPE, timeout=30)
+	took = time.monotonic() - started
+	assert 'C --no_watch\t' in result.stdout.decode()
+	# the shells wait 0.3 s by default; the answer used to come after the 2 s first-build budget
+	assert took < 1.0
 
 
 

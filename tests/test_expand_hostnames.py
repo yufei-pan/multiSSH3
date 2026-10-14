@@ -395,3 +395,148 @@ def test_lookups_still_run_when_no_thread_can_be_started(monkeypatch):
 	multiSSH3._run_in_threads(done.append, ["a", "b", "c"])
 
 	assert sorted(done) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("token", [
+	"node[1-3]", "node[3-1]", "root@node[3-1]", "10.0.0.1-3", "10.0.0.20-10", "plainname",
+	"MSSH_TEST_EMPTY", "MSSH_TEST_NESTED_EMPTY", "MSSH_TEST_GROUP", "$MSSH_TEST_EMPTY", "MSSH_TEST_EMPTY[1-2]",
+])
+def test_names_a_host_agrees_with_local_expansion(monkeypatch, tmp_path, token):
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname if hostname[:1].isdigit() else None)
+	monkeypatch.setattr(multiSSH3, "_env_files", [str(tmp_path / "none.env")])
+	monkeypatch.setenv("MSSH_TEST_EMPTY", "")
+	monkeypatch.setenv("MSSH_TEST_EMPTY1", "")
+	monkeypatch.setenv("MSSH_TEST_EMPTY2", "node[2-1]")
+	monkeypatch.setenv("MSSH_TEST_NESTED_EMPTY", "MSSH_TEST_EMPTY, node[9-8]")
+	monkeypatch.setenv("MSSH_TEST_GROUP", "MSSH_TEST_EMPTY,10.0.0.1")
+	multiSSH3._refresh_expansion_caches()
+
+	assert multiSSH3._names_a_host(token) == bool(multiSSH3.expand_hostnames_local(token)[0])
+
+
+@pytest.fixture
+def env_aliases(monkeypatch, tmp_path, hermetic_resolution):
+	'''
+	setup(text, dns): text as mssh's only env file, and a DNS that knows only the names in dns
+	(no ssh config). Returns the address each name in dns resolves to.
+	'''
+	def setup(text, dns=()):
+		env_file = tmp_path / "hosts.env"
+		env_file.write_text(text)
+		monkeypatch.setattr(multiSSH3, "_env_files", [str(env_file)])
+		monkeypatch.setattr(multiSSH3, "_explicit_env_files", {str(env_file)})
+		known = {name: "10.0.0.{}".format(number) for number, name in enumerate(dns, 1)}
+		monkeypatch.setattr(multiSSH3, "_resolve_dns", known.get)
+		monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+		multiSSH3._refresh_expansion_caches()
+		return known
+	return setup
+
+
+def test_an_alias_loop_is_reported_once_instead_of_recursing_forever(env_aliases, capsys):
+	env_aliases('web="web1,app"\napp="app1,web"\n', dns=["web1", "app1"])
+	before = multiSSH3.__mainReturnCode
+
+	assert sorted(multiSSH3.expand_hostnames(["web"])) == ["app1", "web1"]
+	multiSSH3.expand_hostnames(["web", "web1"])  # cached or not, said once
+
+	err = capsys.readouterr().err
+	assert err.count("alias loop") == 1
+	assert "Error: alias loop through 'web' (web -> app -> web): 'web' is not a valid hostname or IP address!" in err
+	assert multiSSH3.__mainReturnCode == before + 1
+	# not among the failed hosts: listing those expands them again, which would list the alias's members
+	assert "web" not in multiSSH3.__failedHosts
+
+
+def test_environment_variables_naming_each_other_are_a_loop(env_aliases, monkeypatch, capsys):
+	monkeypatch.setattr(multiSSH3, "_no_env", False)
+	monkeypatch.setenv("grpA", "grpB")
+	monkeypatch.setenv("grpB", "grpA")
+	env_aliases("")
+
+	assert multiSSH3.expand_hostnames(["grpA"]) == {}
+	assert "alias loop through 'grpA' (grpA -> grpB -> grpA)" in capsys.readouterr().err
+
+
+def test_an_alias_inside_itself_is_the_host_of_that_name(env_aliases, capsys):
+	# as bash does with an alias inside its own expansion: web the alias adds web-b to web the host
+	known = env_aliases('web="web,web-b"\n', dns=["web", "web-b"])
+
+	assert multiSSH3.expand_hostnames(["web"]) == {"web": known["web"], "web-b": known["web-b"]}
+	assert capsys.readouterr().err == ""
+
+
+def test_alias_values_are_split_like_the_hosts_argument(env_aliases, monkeypatch, capsys):
+	monkeypatch.setattr(multiSSH3, "_no_env", False)
+	monkeypatch.setenv("MSSH_TEST_SPACED", "127.0.0.7 127.0.0.8")
+	env_aliases('grp="127.0.0.5 127.0.0.6"\n')
+
+	assert sorted(multiSSH3.expand_hostnames(["grp", "MSSH_TEST_SPACED"])) == ["127.0.0.5", "127.0.0.6", "127.0.0.7", "127.0.0.8"]
+	assert capsys.readouterr().err == ""
+
+
+def test_an_empty_alias_expands_to_no_hosts(env_aliases, capsys):
+	env_aliases("us_central=\"\"\neu=''\n")
+	before = multiSSH3.__mainReturnCode
+
+	assert multiSSH3.expand_hostnames(["us_central", "eu"]) == {}
+	assert capsys.readouterr().err == ""
+	assert multiSSH3.__mainReturnCode == before
+
+
+# the example env file of README.md, "Example Env Hostname File"
+README_ENV_FILE = '''us_east='100.100.0.1-3,us_east_prod_[1-5]'
+us_central=""
+us_west="100.101.0.1-2,us_west_prod_[a-c]_[1-3]"
+us="$us_east,$us_central,$us_west"
+asia="100.90.0-1.1-9"
+eu=''
+rhel8="$asia,$us_east"
+all="$us,$asia,$eu"
+'''
+
+
+def test_the_readme_example_env_file_expands_without_errors(env_aliases, capsys):
+	prod = ["us_east_prod_{}".format(n) for n in range(1, 6)] + ["us_west_prod_{}_{}".format(c, n) for c in "abc" for n in range(1, 4)]
+	env_aliases(README_ENV_FILE, dns=prod)
+
+	us = multiSSH3.expand_hostnames(["us"])
+	everything = multiSSH3.expand_hostnames(["all"])
+
+	assert capsys.readouterr().err == ""
+	assert sorted(us) == sorted(["100.100.0.1", "100.100.0.2", "100.100.0.3", "100.101.0.1", "100.101.0.2"] + prod)
+	assert len(everything) == len(us) + 18  # asia: 100.90.0-1.1-9
+
+
+@pytest.mark.parametrize("name", ["node[1-]", "node[-3]", "rack[a-]", "rack[x-]", "rack[-x]", "node[ 1 - ]", "node[1-3,5-]", "node[1-2]-[a-]"])
+def test_a_range_with_an_end_missing_is_an_invalid_host_name(hermetic_resolution, monkeypatch, capsys, name):
+	# every name without brackets exists: none of the range's would-be members may be used
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None if "[" in hostname else "10.0.0.1")
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	before = multiSSH3.__mainReturnCode
+
+	assert multiSSH3.__expand_hostname(name, validate=False) == {name}
+	assert multiSSH3.expand_hostnames([name]) == {}
+	assert "Error: {!r} is not a valid hostname or IP address!".format(name) in capsys.readouterr().err
+	assert multiSSH3.__mainReturnCode == before + 1
+
+
+def test_mssh_runs_nothing_and_shows_no_traceback_for_an_alias_loop(monkeypatch, tmp_path, hermetic_resolution, capsys):
+	env_file = tmp_path / "loop.env"
+	env_file.write_text('web="web1,app"\napp="app1,web"\n')
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	ran = []
+	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: ran.extend(host.name for host in kwargs["hosts"]))
+
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(["-q", "--no_history", "-ef", str(env_file), "web,node[1-]", "true"])
+
+	err = capsys.readouterr().err
+	assert ran == [] and exc_info.value.code != 0
+	assert "alias loop through 'web'" in err and "'node[1-]' is not a valid hostname" in err
+
+
+def test_a_range_an_earlier_expansion_leaves_open_is_kept_as_it_is(no_hostname_validation):
+	# the second [ only becomes a group once the first is expanded: a[1-] is a name, not int('', 16)
+	assert multiSSH3.__expand_hostname("a[x,[]1-]", validate=False) == {"ax1-]", "a[1-]"}

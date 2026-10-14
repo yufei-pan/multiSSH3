@@ -1,4 +1,6 @@
+import io
 import os
+import shlex
 
 import pytest
 
@@ -267,7 +269,9 @@ def test_oneonone_unreachable_host_keeps_its_command_slot(monkeypatch, tmp_path)
 
 	hosts = _oneonone(monkeypatch, tmp_path, "mock-a,mock-b", ["ca", "cb"], skip_unreachable=True)
 
-	assert [(h.name, h.command) for h in hosts] == [("mock-b", "cb")]
+	# the unreachable host is returned with its command, not run and failed
+	assert [(h.name, h.command, h.skipped, h.returncode) for h in hosts] == [
+		("mock-a", "ca", True, 255), ("mock-b", "cb", False, None)]
 
 
 def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_path):
@@ -275,23 +279,24 @@ def test_copy_id_does_not_repeat_username_and_quotes_arguments(monkeypatch, tmp_
 	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
 	monkeypatch.delitem(multiSSH3._binPaths, "sshpass", raising=False)
+	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", False)
 	commands = []
-	monkeypatch.setattr(multiSSH3.os, "system", commands.append)
+	monkeypatch.setattr(multiSSH3.os, "system", lambda command: commands.append(command) or 0)
 
-	with pytest.raises(multiSSH3.MultiSSHError):
-		multiSSH3.run_command_on_hosts(
-			hosts="mock-a",
-			copy_id=True,
-			username="bob",
-			identity_file="~/my key",
-			no_watch=True,
-			quiet=True,
-			no_history=True,
-			called=True,
-			will_update_unreachable_hosts=False,
-		)
+	multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		copy_id=True,
+		username="bob",
+		identity_file="~/my key",
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+	)
 
-	assert commands == ["ssh-copy-id -i '{}' bob@mock-a".format(os.path.expanduser("~/my key"))]
+	assert commands == ["ssh-copy-id -i '{}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a".format(
+		os.path.expanduser("~/my key"))]
 
 
 def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
@@ -299,23 +304,62 @@ def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh-copy-id", "ssh-copy-id")
 	monkeypatch.setitem(multiSSH3._binPaths, "sshpass", "sshpass")
+	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", False)
 	started = []
 	monkeypatch.setattr(multiSSH3, "processRunOnHosts", lambda **kwargs: started.extend(kwargs["hosts"]))
 
-	with pytest.raises(multiSSH3.MultiSSHError):
-		multiSSH3.run_command_on_hosts(
-			hosts="mock-a",
-			copy_id=True,
-			username="bob",
-			password="p@ss word;",
-			no_watch=True,
-			quiet=True,
-			no_history=True,
-			called=True,
-			will_update_unreachable_hosts=False,
-		)
+	multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		copy_id=True,
+		username="bob",
+		password="p@ss word;",
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+	)
 
-	assert [h.command for h in started] == ["sshpass -p 'p@ss word;' ssh-copy-id bob@mock-a"]
+	# the password stays out of the command mssh shows, the run is as before: sshpass in front, quoted
+	assert [h.command for h in started] == ["ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
+	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
+	attempt = multiSSH3._build_command(started[0], "p@ss word;", ...)
+	assert attempt.argv == ["/bin/sh", "-c", "sshpass -p 'p@ss word;' ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
+
+
+class _FakeProc:
+	def __init__(self, argv, **kwargs):
+		self.stdout, self.stderr, self.stdin, self.returncode = io.BytesIO(b"ok\n"), io.BytesIO(b""), None, 0
+
+	def poll(self):
+		return self.returncode
+
+	def communicate(self, timeout=None):
+		return b"", b""
+
+
+@pytest.mark.parametrize("json", [False, True])
+def test_copy_id_never_shows_the_password(monkeypatch, tmp_path, capsys, json):
+	secret = "Hunter2 it's #HOST# 100%"
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "_binPaths", {"sh": "/bin/sh", "ssh": "/bin/ssh", "sshpass": "/bin/sshpass", "ssh-copy-id": "/bin/ssh-copy-id"})
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", secret)  # from the config: never echoed
+	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
+	monkeypatch.setattr(multiSSH3, "__global_suppress_printout", False)
+	argvs = []
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: argvs.append(argv) or _FakeProc(argv))
+
+	# as on the command line: the output of every host, its command included
+	multiSSH3.run_command_on_hosts(hosts="mock-a", copy_id=True, password=secret, json=json, no_watch=True,
+		no_history=True, called=False, will_update_unreachable_hosts=False)
+
+	out = capsys.readouterr()
+	assert "Hunter2" not in out.out + out.err
+	assert "/bin/ssh-copy-id -o StrictHostKeyChecking=no" in out.out
+	# run with the password as it is: no magic string replaced in it
+	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -p {} /bin/ssh-copy-id -o StrictHostKeyChecking=no "
+		"-o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 mock-a".format(shlex.quote(secret))]]
 
 
 def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
@@ -336,3 +380,103 @@ def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):
 	assert ei.value.code == 66
 	assert first in str(ei.value)
 	assert second in str(ei.value)
+
+
+def _copied_files(monkeypatch, files, **kwargs):
+	'''The source files each host is given for -f files (no copy is run).'''
+	_mock_run(monkeypatch)
+	hosts = multiSSH3.run_command_on_hosts(
+		hosts="mock-a",
+		commands="/dest/",
+		file=files,
+		no_start=True,
+		no_watch=True,
+		quiet=True,
+		no_history=True,
+		called=True,
+		will_update_unreachable_hosts=False,
+		**kwargs
+	)
+	return hosts[0].files
+
+
+def test_existing_path_with_glob_characters_is_copied_as_written(monkeypatch, tmp_path):
+	# the shell already expanded the user's globs; glob would read [1] as a character class
+	(tmp_path / "report1.txt").write_text("other file")
+	literal = tmp_path / "report[1].txt"
+	literal.write_text("wanted")
+
+	assert _copied_files(monkeypatch, [str(literal)]) == [str(literal)]
+
+
+def test_existing_path_whose_brackets_match_nothing_is_found(monkeypatch, tmp_path):
+	literal = tmp_path / "data[2024].csv"
+	literal.write_text("wanted")
+
+	assert _copied_files(monkeypatch, [str(literal)]) == [str(literal)]
+
+
+def test_existing_path_with_glob_characters_is_synced_as_written(monkeypatch, tmp_path):
+	(tmp_path / "report1.txt").write_text("other file")
+	literal = tmp_path / "report[1].txt"
+	literal.write_text("wanted")
+
+	assert _copied_files(monkeypatch, [str(literal)], file_sync=True) == [str(literal)]
+
+
+def test_pattern_that_is_no_path_is_still_expanded(monkeypatch, tmp_path):
+	# a quoted glob reaches mssh unexpanded
+	(tmp_path / "a.log").write_text("a")
+	(tmp_path / "b.log").write_text("b")
+
+	assert sorted(_copied_files(monkeypatch, [str(tmp_path / "*.log")])) == [str(tmp_path / "a.log"), str(tmp_path / "b.log")]
+
+
+def _copy_warnings(monkeypatch, tmp_path, capsys, files, commands="/dest/", **kwargs):
+	'''What mssh prints before a copy of files to mock-a (no copy is run).'''
+	_mock_run(monkeypatch)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
+	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
+	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=commands, file=files, no_start=True, no_watch=True,
+		no_history=True, called=False, will_update_unreachable_hosts=False, **kwargs)
+	return capsys.readouterr().err
+
+
+@pytest.fixture
+def links(tmp_path):
+	(tmp_path / "app-2").mkdir()
+	(tmp_path / "current").symlink_to("app-2")
+	(tmp_path / "app.conf.real").write_text("conf")
+	(tmp_path / "app.conf").symlink_to("app.conf.real")
+	(tmp_path / "dir").mkdir()
+	return tmp_path
+
+
+@pytest.mark.parametrize("names,warned", [
+	(["current"], ["current -> app-2"]),
+	(["app.conf", "dir"], ["app.conf -> app.conf.real"]),
+	(["app.conf"], []),  # copied as the file it points to
+	(["dir"], []),
+], ids=["link_to_directory", "link_with_directory", "link_to_file", "directory"])
+def test_copy_warns_of_links_rsync_copies_as_links(monkeypatch, tmp_path, capsys, links, names, warned):
+	err = _copy_warnings(monkeypatch, tmp_path, capsys, [str(links / name) for name in names])
+
+	lines = [line for line in err.splitlines() if "symbolic link" in line]
+	assert len(lines) == len(warned)
+	for line, link in zip(lines, warned):
+		assert line.startswith("Warning: " + str(links / link.split(" ")[0]) + " ")
+		assert link.split(" -> ")[1] in line
+
+
+def test_sync_warns_of_a_link_to_a_directory(monkeypatch, tmp_path, capsys, links):
+	err = _copy_warnings(monkeypatch, tmp_path, capsys, [str(links / "current")], commands=None, file_sync=True)
+
+	assert "Warning: " + str(links / "current") + " " in err
+
+
+@pytest.mark.parametrize("kwargs", [dict(scp=True), dict(gather_mode=True), dict(quiet=True)], ids=["scp", "gather", "quiet"])
+def test_no_link_warning_where_rsync_does_not_copy_local_links(monkeypatch, tmp_path, capsys, links, kwargs):
+	err = _copy_warnings(monkeypatch, tmp_path, capsys, [str(links / "current")], **kwargs)
+
+	assert "symbolic link" not in err

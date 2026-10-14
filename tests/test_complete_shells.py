@@ -1,13 +1,17 @@
+import errno
+import json
 import os
 import re
+import stat
 import subprocess
+import sys
 import time
 
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, bash_session, build_index, fish_complete, make_home,
-	require_shell, zsh_session)
+from complete_shell_harness import (ENGINE, REPO, bash_session, build_index, fish_complete, fish_session, make_home,
+	require_shell, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -40,6 +44,19 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion):
 		assert session.line_after('mssh h "echo #HO') == 'mssh h "echo #HOST'
 		assert session.line_after('mssh h fakecmd al') == 'mssh h fakecmd alpha '
 		assert session.line_after('mssh h "date; fakecmd al') == 'mssh h "date; fakecmd alpha" '
+	finally:
+		session.close()
+
+
+def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
+	# in $'...' a backslash starts an escape: zzfmt "%s\n" x must not be offered there as it is
+	# (zzfmt: a name no local command starts with, as the first word is also completed as a command)
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\tnode1\t\'zzfmt "%s\\n" x\'', '1790000100\t/x/multiSSH3.py\t-su\tnode1\t"zzfmt ok"'])
+	build_index(env)
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after("mssh node1 'zzf") == "mssh node1 'zzfmt "
+		assert session.line_after("mssh node1 $'zzf") == "mssh node1 $'zzfmt ok' "
 	finally:
 		session.close()
 
@@ -83,6 +100,76 @@ def test_zsh_completes_in_a_real_shell(setup):
 		session.close()
 
 
+@pytest.mark.parametrize('engine', ['sleep 5', 'exit 1', r"printf 'MSSHC9\nE\n\0'"], ids=['slow', 'failing', 'other-protocol'])
+def test_zsh_falls_back_to_file_names_without_an_answer(setup, engine):
+	# no answer: what zsh offers for a command it has no completion for (file names), as bash does
+	env, home = setup
+	stand_in = home / 'engine'
+	stand_in.write_text('#!/bin/sh\n{}\n'.format(engine))
+	stand_in.chmod(0o755)
+	(home / 'zzfile_unique').write_text('')
+	session = zsh_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3'), glue_file(home, 'zsh', [str(stand_in)]))
+	try:
+		started = time.monotonic()
+		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		assert time.monotonic() - started < 3
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
+	# an answer with nothing in it: bash's -o default offers file names, and zsh does the same,
+	# except for a password (nodefault)
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	start = bash_session if shell == 'bash' else zsh_session
+	session = start(home, env, glue_file(home, shell))
+	try:
+		# hosts, then a remote command, that nothing matches
+		assert session.line_after('mssh zzf') == 'mssh zzfile_unique '
+		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		# a remote command's own completion that offers nothing
+		assert session.line_after('mssh h fakecmd zz') == 'mssh h fakecmd zzfile_unique '
+		assert session.line_after('mssh -p zz') == 'mssh -p zz'
+		assert session.line_after('mssh h --password=zz') == 'mssh h --password=zz'
+	finally:
+		session.close()
+
+
+# a command whose completion is built on _arguments, as most of zsh's are
+ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
+
+
+def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
+	# the remote command's completion runs as zsh runs it: with the completion system's options
+	# (_arguments misreads its specs without them) and with the operator's own (glob_dots)
+	env, home = setup
+	(home / 'dots').mkdir()
+	(home / 'dots' / '.zzhidden').write_text('')
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKEOPTS + '\nsetopt glob_dots')
+	try:
+		assert session.line_after('fakeopts --appa') == 'fakeopts --apparent-size '
+		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
+		assert session.line_after('ls dots/') == 'ls dots/.zzhidden '
+		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('option', ['ignore_braces', 'ignore_close_braces'])
+def test_zsh_glue_loads_with_brace_options(tmp_path, option):
+	# with either option a } closes a group only in command position: the glue must parse all the same
+	zsh = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	script = 'autoload -Uz compinit && compinit -u -D; setopt {}; source {}; print -r -- "$+functions[_mssh] $_comps[mssh]"'
+	result = subprocess.run([zsh, '-f', '-c', script.format(option, glue_file(home, 'zsh'))], env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert (result.stdout.decode().split(), result.stderr.decode()) == (['1', '_mssh'], '')
+
+
 def test_zsh_gives_up_on_a_slow_engine(setup):
 	env, home = setup
 	slow = home / 'slow-engine'
@@ -97,14 +184,160 @@ def test_zsh_gives_up_on_a_slow_engine(setup):
 		session.close()
 
 
-def test_fish_completes(setup):
+@pytest.fixture
+def first_build(tmp_path):
+	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
+	env, home = make_home(tmp_path, HISTORY)
+	assert mc.take_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
+	# more than the engine needs, less than the 2 s it used to wait for the first build
+	return dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+
+
+def test_bash_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
+def test_zsh_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	session = zsh_session(home, env, glue_file(home, 'zsh'))
+	try:
+		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
+def test_fish_first_tab_answers_while_the_first_build_runs(first_build):
+	env, home = first_build
+	assert [text for text, _ in fish_complete(env, glue_file(home, 'fish'), 'mssh --no_wa')] == ['--no_watch']
+
+
+# compinit as rc files run it, with its dump file
+COMPINIT = 'autoload -Uz compinit && compinit -u'
+# compinit as zinit turbo and zsh-defer run it: after the first prompt
+LATE_COMPINIT = '''_mssh_test_late() { add-zsh-hook -d precmd _mssh_test_late; autoload -Uz compinit && compinit -u }
+autoload -Uz add-zsh-hook; add-zsh-hook precmd _mssh_test_late'''
+
+
+@pytest.mark.parametrize('before, after, prompts', [
+	('', COMPINIT, 1),
+	('', LATE_COMPINIT, 2),
+	(COMPINIT, COMPINIT, 1),
+], ids=['later-in-the-rc-file', 'after-the-first-prompt', 'again-from-its-dump'])
+def test_zsh_completes_whenever_compinit_runs(setup, before, after, prompts):
+	# compdef only exists once compinit ran, and a compinit that loads its dump forgets what was registered before it
 	env, home = setup
+	session = zsh_session(home, env, glue_file(home, 'zsh'), compinit=before, extra=after)
+	try:
+		for _ in range(prompts - 1):
+			session.send('true\r')
+			session.read_until(b'@@READY@@')
+		assert session.line_after('mssh gp') == 'mssh gpu\\[01-16\\] '
+	finally:
+		session.close()
+
+
+def test_zsh_keeps_a_completion_set_for_mssh_by_hand(setup):
+	env, home = setup
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra='compdef _fakecmd mssh')
+	try:
+		session.send('true\r')
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh al') == 'mssh alpha '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
+def test_fish_completes(setup, tmp_path, timeout):
+	# with coreutils' timeout(1) and without it (macOS): the glue keeps its time limit either way
+	require_shell('fish')
+	env, home = setup
+	if timeout == 'no timeout':
+		env = without_command(env, 'timeout', tmp_path / 'bin')
 	glue = glue_file(home, 'fish')
 	assert fish_complete(env, glue, 'mssh gp') == [('gpu[01-16]', 'used before')]
 	assert fish_complete(env, glue, 'mssh gpu[01-16] "nvid')[0] == ('nvidia-smi', '')
 	assert fish_complete(env, glue, 'mssh -u r') == [('root', 'used before')]
 	assert fish_complete(env, glue, 'mssh h fakecmd al') == [('alpha', '')]
 	assert fish_complete(env, glue, 'mssh h "date; fakecmd al') == [('date; fakecmd alpha', '')]
+
+
+# engines that give no answer: the glue must fall back to file names, on time and quietly
+NO_ANSWER = {
+	'slow': '#!/bin/sh\nsleep 5\n',
+	'failing': '#!/bin/sh\nexit 1\n',
+	'missing': None,
+	'without its interpreter': '#!/nonexistent/python3\n',
+}
+
+
+def no_answer_engine(home, kind):
+	path = home / 'engine'
+	if NO_ANSWER[kind] is not None:
+		path.write_text(NO_ANSWER[kind])
+		path.chmod(0o755)
+	return [str(path)]
+
+
+@pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
+@pytest.mark.parametrize('engine', sorted(NO_ANSWER))
+def test_fish_falls_back_to_file_names_without_an_answer(setup, tmp_path, engine, timeout):
+	# as bash does (-o default): fish's own file names, within the time limit, and nothing printed
+	require_shell('fish')
+	env, home = setup
+	env = dict(env, MSSH_COMPLETE_TIMEOUT='0.3')
+	if timeout == 'no timeout':
+		env = without_command(env, 'timeout', tmp_path / 'bin')
+	(home / 'zzfile_unique').write_text('')
+	glue = glue_file(home, 'fish', no_answer_engine(home, engine))
+	started = time.monotonic()
+	assert fish_complete(env, glue, 'mssh h zzf', cwd=home) == [('zzfile_unique', '')]
+	assert time.monotonic() - started < 3
+
+
+# what fish prints when a command fails to start or a background job ends
+FISH_MESSAGES = ('job', 'signal', 'error', 'unknown command', 'expanded command', 'fish:')
+
+
+@pytest.mark.parametrize('engine', ['answering', 'slow'])
+def test_fish_without_timeout_shows_nothing_but_the_completion(setup, tmp_path, engine):
+	# without timeout(1) the glue keeps the time limit with a timer of its own: on screen, only the
+	# completion, whether the engine answers or is stopped (TAB, and on fish 4 the check at each space)
+	require_shell('fish')
+	env, home = setup
+	env = without_command(env, 'timeout', tmp_path / 'bin')
+	(home / 'zzfile_unique').write_text('')
+	# more shell history than a pipe holds: the slow engine never reads it, and fish must not wait to write it
+	history = home / '.local' / 'share' / 'fish'
+	history.mkdir(parents=True)
+	(history / 'fish_history').write_text(''.join('- cmd: echo {} {}\n  when: {}\n'.format(number, 'x' * 300, 1790000000 + number) for number in range(1000)))
+	if engine == 'answering':
+		command, typed, expected = ENGINE, 'mssh gp', 'mssh gpu\\[01-16\\] '
+	else:
+		command, typed, expected = no_answer_engine(home, 'slow'), 'mssh h zzf', 'mssh h zzfile_unique '
+		env['MSSH_COMPLETE_TIMEOUT'] = '0.3'
+	# fish completes only commands that exist
+	pre = 'function mssh; end\nsource {}'.format(glue_file(home, 'fish', command))
+	session = fish_session(home, env, mc.render_glue('fish-keys', command), pre=pre)
+	try:
+		start = len(session.output)
+		started = time.monotonic()
+		assert session.line_after(typed) == expected
+		if engine == 'slow':
+			assert time.monotonic() - started < 3
+		# fish reports ended background jobs before its next prompt
+		session.send('\r')
+		session.read_until(b'@@READY@@')
+		session.read_until(b'@@never@@', 1.0)
+		shown = session.output[start:].decode('utf-8', 'replace').lower()
+		assert [message for message in FISH_MESSAGES if message in shown] == []
+	finally:
+		session.close()
 
 
 def _interactive_output(shell, env, home):
@@ -140,6 +373,21 @@ def test_new_shells_stay_silent(tmp_path, shell, damage):
 	assert _interactive_output(path, env, home) == baseline
 
 
+@pytest.mark.parametrize('compinit', ['none', 'after the block'])
+def test_new_zsh_stays_silent_whenever_compinit_runs(tmp_path, compinit):
+	path = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	rc = home / '.zshrc'
+	tail = COMPINIT + '\n' if compinit == 'after the block' else ''
+	rc.write_text('setopt nobeep\n' + tail)
+	baseline = _interactive_output(path, env, home)
+	rc.write_text('setopt nobeep\n')
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	with rc.open('a') as f:
+		f.write(tail)
+	assert _interactive_output(path, env, home) == baseline
+
+
 def test_new_bash_with_the_editor_stays_silent(tmp_path):
 	path = require_shell('bash')
 	env, home = make_home(tmp_path)
@@ -158,7 +406,8 @@ def test_install_turns_the_editor_on_and_keeps_it_on(tmp_path):
 	code, messages = mc.install('bash', home=str(home), environ=env)
 	text = rc.read_text()
 	assert 'export MSSH_COMPLETE_EDITOR=1\n' in text and text.count('# >>> mssh completion >>>') == 1
-	assert messages[-2:] == ['kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)', '{} already loads it'.format(rc)]
+	# after the glue file it wrote, before the note about login shells
+	assert messages[1:3] == ['kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)', '{} already loads it'.format(rc)]
 	mc.uninstall('bash', home=str(home), environ=env)
 	mc.install('bash', home=str(home), environ=env)
 	assert 'MSSH_COMPLETE_EDITOR' not in rc.read_text()
@@ -185,8 +434,44 @@ def test_install_finds_its_block_however_the_file_was_edited(tmp_path, change):
 	assert 'mssh completion' not in rc.read_text() and 'alias ll="ls -l"' in rc.read_text()
 
 
+@pytest.fixture
+def install_env(tmp_path, monkeypatch):
+	'''HOME and XDG_RUNTIME_DIR of a test home in os.environ, and install() writing nothing.'''
+	env, home = make_home(tmp_path, HISTORY)
+	monkeypatch.setenv('HOME', env['HOME'])
+	monkeypatch.setenv('XDG_RUNTIME_DIR', env['XDG_RUNTIME_DIR'])
+	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (0, ['wrote the glue']))
+	return home
+
+
+def test_install_builds_the_index_right_away(install_env, capsys):
+	# the first TAB in a new shell then answers from the index instead of starting its build
+	assert mc.completion_command(['install', 'bash']) == 0
+	path = os.path.join(mc.cache_dir(), mc.INDEX_NAME)
+	assert capsys.readouterr().out.splitlines() == ['wrote the glue', 'built the completion index ' + path]
+	assert 'storage1' in mc.HostTable(mc.NsvIndex.load(path)).names
+
+
+def test_install_says_when_it_cannot_build_the_index(install_env, monkeypatch, capsys):
+	def fail(directory):
+		raise OSError(28, 'No space left on device')
+	monkeypatch.setattr(mc, 'build_index', fail)
+	assert mc.completion_command(['install', 'bash']) == 0
+	assert capsys.readouterr().out.splitlines()[-1] == 'could not build the completion index now ([Errno 28] No space left on device): the first TAB tries again'
+	monkeypatch.setattr(mc, 'cache_dir', lambda create=True: None)
+	assert mc.completion_command(['install', 'bash']) == 0
+	assert capsys.readouterr().out.splitlines()[-1] == 'no private runtime directory for the completion index: TAB offers options and shell history only'
+
+
+def test_uninstall_builds_nothing(install_env, monkeypatch):
+	monkeypatch.setattr(mc, 'uninstall', lambda shell: (0, []))
+	monkeypatch.setattr(mc, 'build_index', lambda directory: pytest.fail('built an index'))
+	assert mc.completion_command(['uninstall', 'bash']) == 0
+
+
 def test_completion_command_takes_the_editor_word(monkeypatch):
 	calls = []
+	monkeypatch.setattr(mc, 'prepare_index', lambda: 'built the completion index')
 	monkeypatch.setattr(mc, 'install', lambda shell, editor=False: (calls.append((shell, editor)), (0, []))[1])
 	assert mc.completion_command(['install', 'bash', 'editor']) == 0
 	assert mc.completion_command(['install', 'bash', '--editor']) == 0
@@ -205,7 +490,7 @@ def test_uninstall_restores_rc_files(tmp_path, shell):
 	mc.uninstall(shell, home=str(home), environ=env)
 	assert {name: (home / name).read_bytes() for name in ('.bashrc', '.zshrc')} == before
 	left = [os.path.join(root, name) for root, _, names in os.walk(str(home)) for name in names]
-	assert sorted(left) == sorted([str(home / '.bashrc'), str(home / '.zshrc'), str(home / '.mssh_history')])
+	assert sorted(left) == sorted([str(home / '.bashrc'), str(home / '.zshrc'), str(home / '.mssh_history'), str(home / '.multiSSH3.config.json')])
 
 
 def test_uninstall_deletes_an_rc_file_it_created(tmp_path):
@@ -214,6 +499,29 @@ def test_uninstall_deletes_an_rc_file_it_created(tmp_path):
 	assert (home / '.zshrc').exists()
 	mc.uninstall('zsh', home=str(home), environ=env)
 	assert not (home / '.zshrc').exists()
+
+
+@pytest.mark.parametrize('zshrc, noted', [
+	(None, True),
+	('setopt nobeep\n', True),
+	('# autoload -Uz compinit && compinit\n', True),
+	('autoload -Uz compinit\ncompinit -i\n', False),
+	('source $ZSH/oh-my-zsh.sh\n', False),
+	('zinit light zsh-users/zsh-completions\nzicompinit; zicdreplay\n', False),
+], ids=['no-zshrc', 'no-compinit', 'commented-out', 'compinit', 'oh-my-zsh', 'zinit'])
+def test_zsh_install_says_when_the_rc_file_does_not_start_completion(tmp_path, zshrc, noted):
+	# TAB needs zsh's completion system, which zsh starts only when told to
+	env, home = make_home(tmp_path)
+	rc = home / '.zshrc'
+	if zshrc is not None:
+		rc.write_text(zshrc)
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	notes = [message for message in messages if 'compinit' in message]
+	note = "TAB needs zsh's completion system, which {0} does not seem to start: if TAB does not complete mssh in a new zsh, add this line to {0}: autoload -Uz compinit && compinit".format(rc)
+	assert notes == ([note] if noted else []), messages
+	# installing again says it again
+	assert [message for message in mc.install('zsh', home=str(home), environ=env, command=ENGINE)[1] if 'compinit' in message] == notes
 
 
 def test_install_never_overwrites_foreign_files(tmp_path):
@@ -237,6 +545,563 @@ def test_bash_always_loads_from_bashrc(tmp_path, monkeypatch):
 	assert glue.read_text().startswith('# MSSH_COMPLETE_GLUE')
 	assert mc.RC_BEGIN_CREATED in (home / '.bashrc').read_text()
 	assert not (home / '.local' / 'share' / 'bash-completion').exists()
+
+
+# With HOME empty, expanduser('~') is '/', and install wrote /.bashrc. These tests never let it get there:
+# expanduser, the user database, os.environ's HOME and the working directory all point into tmp_path,
+# and the '/' cases go only to the function that names the home directory, which writes nothing.
+def _no_real_home(tmp_path, monkeypatch, user_home):
+	import pwd
+	for name in ('expanded', 'environ', 'cwd'):
+		(tmp_path / name).mkdir()
+	monkeypatch.setattr(os.path, 'expanduser', lambda path: str(tmp_path / 'expanded') + path[1:] if path.startswith('~') else path)
+	monkeypatch.setenv('HOME', str(tmp_path / 'environ'))
+	monkeypatch.chdir(str(tmp_path / 'cwd'))
+	def getpwuid(uid):
+		if user_home is None:
+			raise KeyError(uid)
+		return pwd.struct_passwd(('u', 'x', uid, 0, '', user_home, '/bin/sh'))
+	monkeypatch.setattr(pwd, 'getpwuid', getpwuid)
+
+
+@pytest.mark.parametrize('environ_home, user_home, expected', [
+	('/', '/', None),
+	('//', '/', None),
+	('', '/', None),
+	('', None, None),
+	('', 'USER', 'USER'),
+	('ENV', '/', 'ENV'),
+])
+def test_the_home_directory_is_never_slash(tmp_path, monkeypatch, environ_home, user_home, expected):
+	names = {'USER': str(tmp_path / 'user'), 'ENV': str(tmp_path / 'env')}
+	_no_real_home(tmp_path, monkeypatch, names.get(user_home, user_home))
+	environ = {'HOME': names.get(environ_home, environ_home)}
+	if expected is None:
+		with pytest.raises(mc.InstallError):
+			mc._home_directory(None, environ)
+	else:
+		assert mc._home_directory(None, environ) == names[expected]
+
+
+def test_install_with_an_empty_home_uses_the_user_database(tmp_path, monkeypatch):
+	_no_real_home(tmp_path, monkeypatch, str(tmp_path / 'user'))
+	(tmp_path / 'user').mkdir()
+	environ = {'HOME': '', 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'XDG_RUNTIME_DIR': str(tmp_path)}
+	assert mc.install('bash', environ=environ, command=ENGINE)[0] == 0
+	assert mc.RC_BEGIN_CREATED in (tmp_path / 'user' / '.bashrc').read_text()
+	assert [os.listdir(str(tmp_path / name)) for name in ('expanded', 'environ', 'cwd')] == [[], [], []]
+	assert mc.uninstall('bash', environ=environ)[0] == 0
+	assert os.listdir(str(tmp_path / 'user')) == ['.local']
+
+
+@pytest.mark.parametrize('action', ['install', 'uninstall'])
+def test_install_without_a_home_directory_changes_nothing(tmp_path, monkeypatch, action):
+	_no_real_home(tmp_path, monkeypatch, None)
+	environ = {'HOME': '', 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'XDG_RUNTIME_DIR': str(tmp_path)}
+	code, messages = mc.install('bash', environ=environ, command=ENGINE) if action == 'install' else mc.uninstall('bash', environ=environ)
+	assert (code, messages) == (1, ['did not change anything: HOME is empty and the user database names no home directory; set HOME and run this again'])
+	assert [os.listdir(str(tmp_path / name)) for name in ('expanded', 'environ', 'cwd')] == [[], [], []]
+
+
+def _latin1_locale():
+	'''A Latin-1 (ISO 8859-1 or -15) locale this machine has, or None.'''
+	try:
+		names = subprocess.run(['locale', '-a'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode('ascii', 'replace').split()
+	except OSError:
+		return None
+	return next((name for name in names if 'iso88591' in name.lower().replace('-', '').replace('_', '')), None)
+
+
+def test_install_under_a_latin1_locale_writes_paths_as_they_are_on_disk(tmp_path):
+	# Python decodes a non-ASCII HOME as Latin-1 there: written as UTF-8, the glue path in the rc
+	# block was re-encoded (c3 83 c2 a9 for c3 a9 on disk), and [ -r ... ] skipped loading it
+	bash = require_shell('bash')
+	locale = _latin1_locale()
+	if locale is None:
+		pytest.skip('no Latin-1 locale here')
+	env, _ = make_home(tmp_path)
+	home = os.fsencode(str(tmp_path)) + b'/h\xc3\xa9'
+	os.mkdir(home)
+	env = dict(env, HOME=home, LC_ALL=locale)
+	script = 'import mssh_complete as mc; mc.completion_command(["install", "bash"])'
+	subprocess.run([sys.executable, '-c', script], env=env, cwd=str(REPO), stdout=subprocess.DEVNULL, check=True, timeout=60)
+	with open(home + b'/.bashrc', 'rb') as f:
+		assert home + b'/.local/share/multiSSH3/completion.bash' in f.read()
+	result = subprocess.run([bash, '-i', '-c', 'type -t _mssh_complete || :'], env=env, cwd=home,
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+	assert result.stdout.decode().strip() == 'function'
+
+
+LOGIN_LINE = '[ -f ~/.bashrc ] && . ~/.bashrc'
+
+@pytest.mark.parametrize('files, reads', [
+	({}, None),
+	({'.profile': 'PATH=$HOME/bin:$PATH\n'}, '.profile'),
+	({'.profile': 'if [ -n "$BASH_VERSION" ]; then . "$HOME/.bashrc"; fi\n'}, ''),
+	({'.bash_login': LOGIN_LINE + '\n'}, ''),
+	# bash reads the first of the three that exists
+	({'.bash_profile': 'export EDITOR=vi\n', '.profile': LOGIN_LINE + '\n'}, '.bash_profile'),
+	# a login file that sources another one which loads ~/.bashrc (one level deep)
+	({'.bash_profile': '. ~/.profile\n', '.profile': LOGIN_LINE + '\n'}, ''),
+	({'.bash_profile': '[ -f "$HOME/.profile" ] && source "$HOME/.profile"\n', '.profile': 'if [ -n "$BASH_VERSION" ]; then . "$HOME/.bashrc"; fi\n'}, ''),
+	({'.bash_profile': '# . ~/.profile\n', '.profile': LOGIN_LINE + '\n'}, '.bash_profile'),
+	({'.bash_profile': '. ~/.profile\n', '.profile': 'PATH=$HOME/bin:$PATH\n'}, '.bash_profile'),
+])
+def test_bash_install_says_when_login_shells_do_not_load_bashrc(tmp_path, files, reads):
+	# login shells (ssh logins, macOS terminals) read ~/.bash_profile, ~/.bash_login or ~/.profile,
+	# not ~/.bashrc: most of those load ~/.bashrc, and where none does the glue never loads there
+	env, home = make_home(tmp_path)
+	for name, text in files.items():
+		(home / name).write_text(text)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	if reads is None:
+		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile,'
+			' and there is none to load {0}/.bashrc; for autocomplete there too, create {0}/.bash_profile holding: {1}').format(home, LOGIN_LINE)
+	elif reads:
+		assert messages[-1] == ('note: bash login shells (ssh logins, macOS terminals) read {}, which does not seem to load {};'
+			' for autocomplete there too, add this line to it: {}').format(home / reads, home / '.bashrc', LOGIN_LINE)
+	else:
+		assert messages[-1] == 'added a block loading it to {}'.format(home / '.bashrc')
+
+
+def test_the_line_the_login_note_suggests_loads_the_glue(tmp_path):
+	path = require_shell('bash')
+	env, home = make_home(tmp_path)
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[1][-1].endswith(LOGIN_LINE)
+	def loaded():
+		result = subprocess.run([path, '-l', '-i', '-c', 'type -t _mssh_complete || :'], env=env, cwd=str(home),
+			stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+		return result.stdout.decode().strip() == 'function'
+	assert not loaded()
+	(home / '.bash_profile').write_text(LOGIN_LINE + '\n')
+	assert loaded()
+
+
+# one install or uninstall in a child process, which may not write a file past a size limit (as a full
+# disk or a quota would stop it part way); prints what the call returned, or what it raised
+LIMITED_CALL = r'''
+import json, resource, sys
+import mssh_complete as mc
+limit, call, arguments = int(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3])
+if limit >= 0:
+	resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+try:
+	print(json.dumps(getattr(mc, call)(**arguments)))
+except Exception as error:
+	print(json.dumps(['raised', repr(error)]))
+'''
+
+def _with_a_file_size_limit(limit, call, **arguments):
+	result = subprocess.run([sys.executable, '-c', LIMITED_CALL, str(limit), call, json.dumps(arguments)],
+		cwd=str(REPO), stdout=subprocess.PIPE, timeout=60)
+	return json.loads(result.stdout.decode())
+
+def _in_a_child(call, **arguments):
+	'''What the call returns in a child process, or ['hung', []] when it did not end within 10 s.'''
+	try:
+		result = subprocess.run([sys.executable, '-c', LIMITED_CALL, '-1', call, json.dumps(arguments)],
+			cwd=str(REPO), stdout=subprocess.PIPE, timeout=10)
+	except subprocess.TimeoutExpired:
+		return ['hung', []]
+	return json.loads(result.stdout.decode())
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'device'])
+def test_an_rc_file_that_is_not_a_regular_file_is_left_alone(tmp_path, kind):
+	# ~/.bashrc linked to /dev/null turns it off: install as root replaced /dev/null with a file
+	# holding the block (the node here is the test's own, in tmp_path), and reading a FIFO waited forever
+	env, home = make_home(tmp_path)
+	node = tmp_path / 'node'
+	if kind == 'fifo':
+		os.mkfifo(str(node))
+	elif os.geteuid() == 0:
+		os.mknod(str(node), 0o666 | stat.S_IFCHR, os.makedev(1, 3))
+	else:
+		pytest.skip('only root may make a device node')
+	rc = home / '.bashrc'
+	os.symlink(str(node), str(rc))
+	code, messages = _in_a_child('install', shell='bash', home=str(home), environ=env, command=ENGINE)
+	is_node = stat.S_ISFIFO if kind == 'fifo' else stat.S_ISCHR
+	assert is_node(os.stat(str(node)).st_mode)
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	assert (code, messages[1:]) == (1, ['did not change {} (a link to {}): not a regular file'.format(rc, node),
+		'to load it anyway, add these lines to it yourself:', mc.RC_BEGIN, '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue), mc.RC_END])
+	# nothing of mssh's can be in it
+	assert _in_a_child('uninstall', shell='bash', home=str(home), environ=env) == [0, ['removed {}'.format(glue)]]
+	assert is_node(os.stat(str(node)).st_mode)
+
+
+@pytest.mark.parametrize('change', ['add', 'update', 'remove'])
+def test_a_failed_rc_write_leaves_the_rc_file_as_it_was(tmp_path, change):
+	# install after an upgrade rewrote ~/.bashrc in place: what did not fit on the disk was lost
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text(''.join('alias x{0}="echo {0}"  # user line {0}\n'.format(number) for number in range(6000)))
+	if change != 'add':
+		assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	before = rc.read_bytes()
+	# what is beside the rc file, but the glue's directory (adding writes it first)
+	names = set(os.listdir(str(home))) - {'.local'}
+	arguments = dict(shell='bash', home=str(home), environ=env)
+	if change == 'remove':
+		code, messages = _with_a_file_size_limit(len(before) // 2, 'uninstall', **arguments)
+	else:
+		# adding: the old text fits under the limit, the block does not
+		limit = len(before) + 20 if change == 'add' else len(before) // 2
+		code, messages = _with_a_file_size_limit(limit, 'install', command=ENGINE, editor=change == 'update', **arguments)
+	assert rc.read_bytes() == before
+	assert code == 1
+	assert messages[-1].startswith('could not change {}: '.format(rc)) and messages[-1].endswith('; it is as it was')
+	# and no temporary file is left behind
+	assert set(os.listdir(str(home))) - {'.local'} == names
+
+
+BLOCK_LINE = '[ -r /x/completion.bash ] && . /x/completion.bash 2>/dev/null || :\n'
+USER_LINES = 'export PATH=$HOME/bin:$PATH\nalias ll="ls -l"\n'
+BEGIN, CREATED, END = mc.RC_BEGIN + '\n', mc.RC_BEGIN_CREATED + '\n', mc.RC_END + '\n'
+BROKEN_MARKERS = {
+	'end deleted': ('export A=1\n\n' + BEGIN + BLOCK_LINE + USER_LINES, '(begin at line 3, no end)'),
+	'begin deleted': ('export A=1\n\n' + BLOCK_LINE + END + USER_LINES, '(end at line 4, no begin)'),
+	'end before begin': (END + USER_LINES + BEGIN + BLOCK_LINE, '(end at line 1, begin at line 4)'),
+	'begin twice': (BEGIN + BLOCK_LINE + USER_LINES + BEGIN + BLOCK_LINE + END, '(begin at line 1, begin at line 5, end at line 7)'),
+	'block twice': (CREATED + BLOCK_LINE + END + USER_LINES + BEGIN + BLOCK_LINE + END,
+		'(begin at line 1, end at line 3, begin at line 6, end at line 8)'),
+}
+
+@pytest.mark.parametrize('damage', sorted(BROKEN_MARKERS))
+@pytest.mark.parametrize('action', ['install', 'uninstall'])
+def test_rc_files_with_broken_markers_are_left_alone(tmp_path, action, damage):
+	# with its end line deleted, install appended a second block, and the next install replaced
+	# everything from the first begin line to the new end line: the user's lines in between too
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	text, markers = BROKEN_MARKERS[damage]
+	rc.write_text(text)
+	for _ in range(2):
+		if action == 'install':
+			code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+		else:
+			code, messages = mc.uninstall('bash', home=str(home), environ=env)
+		assert rc.read_text() == text
+		assert code == 1
+		assert messages[-2:] == [
+			'did not change {}: its mssh completion markers {} are not one block, so mssh cannot tell its lines from yours'.format(rc, markers),
+			'fix them by hand (leave one block or none), then run this again']
+
+
+def test_marker_lines_are_found_however_they_were_edited(tmp_path):
+	# a marker with spaces around it, or as the last line without a line end, still counts:
+	# a block it opens or closes is not mistaken for no block at all
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	text = USER_LINES + '  ' + mc.RC_BEGIN + ' \n' + BLOCK_LINE + USER_LINES + mc.RC_BEGIN
+	rc.write_text(text)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+	assert code == 1 and '(begin at line 3, begin at line 7, no end)' in messages[-2]
+	assert rc.read_text() == text
+
+
+@pytest.mark.parametrize('zdotdir', ['set', 'empty'])
+def test_zsh_installs_where_zsh_reads_its_rc_file(tmp_path, zdotdir):
+	# zsh reads $ZDOTDIR/.zshrc when ZDOTDIR is set: install wrote ~/.zshrc, which zsh never read
+	env, home = make_home(tmp_path)
+	directory = home / '.config' / 'zsh' if zdotdir == 'set' else home
+	directory.mkdir(parents=True, exist_ok=True)
+	rc = directory / '.zshrc'
+	rc.write_text('setopt nobeep\n')
+	env = dict(env, ZDOTDIR=str(directory) if zdotdir == 'set' else '')
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	# other notes may follow it
+	assert 'added a block loading it to {}'.format(rc) in messages
+	assert mc.RC_BEGIN in rc.read_text()
+	assert sorted(name for name in os.listdir(str(home)) if name.startswith('.zsh')) == (['.zshrc'] if zdotdir == 'empty' else [])
+	mc.uninstall('zsh', home=str(home), environ=env)
+	assert rc.read_text() == 'setopt nobeep\n'
+
+
+# a stand-in zsh: the answer goes to the file named by its last argument (`print ... >| "$1"`),
+# and to stdout as an `mssh-zdotdir:` line (how the first version asked)
+FAKE_ZSH = '''#!/bin/sh
+for last; do :; done
+answer() {{
+	echo "mssh-zdotdir:$1"
+	case $last in /*) printf '%s\n' "$1" > "$last" ;; esac
+}}
+{}
+'''
+
+@pytest.mark.parametrize('answer', ['zdotdir', 'chatty zshenv', 'holds stdout', 'none', 'fails'])
+def test_zsh_install_asks_zsh_for_zdotdir(tmp_path, answer):
+	# ZDOTDIR set in ~/.zshenv without export is not in mssh's environment: zsh itself knows it
+	env, home = make_home(tmp_path)
+	zdotdir = home / '.config' / 'zsh'
+	zdotdir.mkdir(parents=True)
+	(home / 'bin').mkdir()
+	fake = home / 'bin' / 'zsh'
+	fake.write_text(FAKE_ZSH.format({
+		'zdotdir': 'answer {}'.format(zdotdir),
+		'chatty zshenv': 'echo "mssh-zdotdir:/wrong"; echo hello from zshenv; answer {}'.format(zdotdir),
+		# a zshenv that starts a background job without redirecting it: reading zsh's output waited for the job
+		'holds stdout': '(sleep 8) & answer {}'.format(zdotdir),
+		'none': 'answer ""',
+		'fails': 'exit 1'}[answer]))
+	fake.chmod(0o755)
+	env = dict(env, PATH=str(home / 'bin') + os.pathsep + env['PATH'])
+	started = time.monotonic()
+	code, messages = mc.install('zsh', home=str(home), environ=env, command=ENGINE)
+	assert code == 0 and time.monotonic() - started < 4
+	rc = home / '.zshrc' if answer in ('none', 'fails') else zdotdir / '.zshrc'
+	assert mc.RC_BEGIN_CREATED in rc.read_text()
+	# when zsh does not answer, the operator is told which file was used
+	note = 'note: zsh did not say whether ZDOTDIR is set (it exited with status 1): using {}'.format(rc)
+	assert [message for message in messages if message.startswith('note: zsh')] == ([note] if answer == 'fails' else [])
+	assert mc.uninstall('zsh', home=str(home), environ=env)[0] == 0
+	assert not rc.exists()
+
+
+def test_zsh_install_says_when_there_is_no_zsh_to_ask(tmp_path):
+	env, home = make_home(tmp_path)
+	(home / 'bin').mkdir()
+	code, messages = mc.install('zsh', home=str(home), environ=dict(env, PATH=str(home / 'bin')), command=ENGINE)
+	assert code == 0 and 'note: zsh did not say whether ZDOTDIR is set (zsh is not on PATH): using {}'.format(home / '.zshrc') in messages
+
+
+@pytest.mark.parametrize('job', ['', '(sleep 8) &\n'])
+def test_a_new_zsh_loads_the_glue_from_an_unexported_zdotdir(tmp_path, job):
+	path = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	zdotdir = home / '.config' / 'zsh'
+	zdotdir.mkdir(parents=True)
+	# a background job started by ~/.zshenv keeps zsh's stdout open after zsh is done
+	(home / '.zshenv').write_text('ZDOTDIR=$HOME/.config/zsh\n' + job)
+	(zdotdir / '.zshrc').write_text('autoload -Uz compinit && compinit -u -D\n')
+	assert 'ZDOTDIR' not in env
+	started = time.monotonic()
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	assert time.monotonic() - started < 4
+	assert not (home / '.zshrc').exists()
+	result = subprocess.run([path, '-i', '-c', 'print -r -- "loaded=${+functions[_mssh]}"'], env=env, cwd=str(home),
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	assert 'loaded=1' in result.stdout.decode('utf-8', 'replace')
+
+
+def test_a_new_zsh_loads_the_glue_from_zdotdir(tmp_path):
+	path = require_shell('zsh')
+	env, home = make_home(tmp_path)
+	zdotdir = home / '.config' / 'zsh'
+	zdotdir.mkdir(parents=True)
+	(zdotdir / '.zshrc').write_text('autoload -Uz compinit && compinit -u -D\n')
+	env = dict(env, ZDOTDIR=str(zdotdir))
+	assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	result = subprocess.run([path, '-i', '-c', 'print -r -- "loaded=${+functions[_mssh]}"'], env=env, cwd=str(home),
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	assert 'loaded=1' in result.stdout.decode('utf-8', 'replace')
+
+
+def test_fish_installs_into_its_config_directory(tmp_path):
+	# fish's configuration directory is $XDG_CONFIG_HOME/fish when that is set
+	env, home = make_home(tmp_path)
+	config = home / 'xdg'
+	env = dict(env, XDG_CONFIG_HOME=str(config))
+	code, messages = mc.install('fish', home=str(home), environ=env, command=ENGINE)
+	assert code == 0
+	wrote = sorted(message.split(' ', 1)[1] for message in messages if message.startswith('wrote '))
+	assert wrote == sorted([str(config / 'fish' / 'conf.d' / 'mssh-complete.fish')]
+		+ [str(config / 'fish' / 'completions' / (name + '.fish')) for name in mc.MSSH_NAMES])
+	assert not (home / '.config').exists()
+	mc.uninstall('fish', home=str(home), environ=env)
+	assert [name for _, _, names in os.walk(str(config)) for name in names] == []
+
+
+def test_a_new_fish_loads_the_glue_from_xdg_config_home(setup):
+	fish = require_shell('fish')
+	env, home = setup
+	# fish loads a command's completions only when the command exists
+	(home / 'bin').mkdir()
+	(home / 'bin' / 'mssh').write_text('#!/bin/sh\n')
+	(home / 'bin' / 'mssh').chmod(0o755)
+	env = dict(env, XDG_CONFIG_HOME=str(home / 'xdg'), PATH=str(home / 'bin') + os.pathsep + env['PATH'])
+	assert mc.install('fish', home=str(home), environ=env, command=ENGINE)[0] == 0
+	script = 'complete -C"mssh --no_wa"; functions -q __mssh_complete_ctrl_r; and echo keys loaded'
+	result = subprocess.run([fish, '-c', script], env=env, cwd=str(home),
+		stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+	output = result.stdout.decode('utf-8', 'replace')
+	assert '--no_watch' in output and 'keys loaded' in output
+
+
+def test_rc_files_that_are_links_stay_links(tmp_path):
+	# dotfile managers link ~/.bashrc into a repository: the file in the repository is the one changed
+	env, home = make_home(tmp_path)
+	(home / 'dotfiles').mkdir()
+	target = home / 'dotfiles' / 'bashrc'
+	target.write_text('alias ll="ls -l"\n')
+	target.chmod(0o640)
+	rc = home / '.bashrc'
+	os.symlink(os.path.join('dotfiles', 'bashrc'), str(rc))
+	shown = '{} (a link to {})'.format(rc, target)
+	assert 'added a block loading it to ' + shown in mc.install('bash', home=str(home), environ=env, command=ENGINE)[1]
+	assert 'updated the mssh block in ' + shown in mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)[1]
+	assert rc.is_symlink() and 'export MSSH_COMPLETE_EDITOR=1\n' in target.read_text()
+	assert stat.S_IMODE(target.stat().st_mode) == 0o640
+	assert mc.uninstall('bash', home=str(home), environ=env) == (0, [
+		'removed ' + str(home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'), 'removed the mssh block from ' + shown])
+	assert rc.is_symlink() and target.read_text() == 'alias ll="ls -l"\n'
+	assert os.listdir(str(home / 'dotfiles')) == ['bashrc']
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='only root may give a file to another user')
+def test_rc_files_keep_their_owner(tmp_path):
+	# root installing with HOME set to a user's home (sudo -E): the file must stay the user's
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	os.chown(str(rc), 4321, 4322)
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	assert (rc.stat().st_uid, rc.stat().st_gid) == (4321, 4322) and mc.RC_BEGIN in rc.read_text()
+	assert mc.uninstall('bash', home=str(home), environ=env)[0] == 0
+	assert (rc.stat().st_uid, rc.stat().st_gid) == (4321, 4322) and rc.read_text() == 'alias ll="ls -l"\n'
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='only root may give a file to another user')
+def test_an_rc_file_whose_owner_cannot_be_kept_is_not_replaced(tmp_path, monkeypatch):
+	# a group-writable ~/.bashrc of another user: replacing it made it the installing user's
+	# (fchown fails without root, here made to fail)
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	os.chown(str(rc), 4321, 4322)
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	before = rc.read_text()
+	def not_permitted(*args):
+		raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+	monkeypatch.setattr(os, 'fchown', not_permitted)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)
+	assert code == 1 and messages[-6:-4] == ['could not change {}: replacing it would change its owner; it is as it was'.format(rc),
+		'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:']
+	assert rc.read_text() == before and (rc.stat().st_uid, rc.stat().st_gid) == (4321, 4322)
+	assert sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history', '.multiSSH3.config.json']
+
+
+def test_a_created_rc_file_gets_the_usual_permissions(tmp_path):
+	env, home = make_home(tmp_path)
+	mask = os.umask(0o027)
+	try:
+		assert mc.install('zsh', home=str(home), environ=env, command=ENGINE)[0] == 0
+	finally:
+		os.umask(mask)
+	assert stat.S_IMODE((home / '.zshrc').stat().st_mode) == 0o640
+
+
+@pytest.mark.parametrize('change', ['create', 'add', 'update', 'remove'])
+def test_an_rc_file_mssh_may_not_change_gets_the_lines_to_change_by_hand(tmp_path, monkeypatch, change):
+	# home-manager links ~/.bashrc into the read-only Nix store, and managed dotfiles may be read-only:
+	# install ended in a traceback there; the operator needs the lines to put in by hand instead
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	if change != 'create':
+		rc.write_text('alias ll="ls -l"\n')
+	if change in ('update', 'remove'):
+		assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	for name in ('_replace_file', '_append_file'):
+		def read_only(path, text, write=getattr(mc, name)):
+			if path == str(rc):
+				raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+			write(path, text)
+		monkeypatch.setattr(mc, name, read_only)
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
+	failed = 'could not change {}: {}; it is as it was'.format(rc, os.strerror(errno.EROFS))
+	if change == 'remove':
+		code, messages = mc.uninstall('bash', home=str(home), environ=env)
+		advice = ['to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
+	else:
+		code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=change == 'update')
+		if change == 'update':
+			advice = ['to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:',
+				mc.RC_BEGIN, 'export MSSH_COMPLETE_EDITOR=1', load, mc.RC_END]
+		else:
+			advice = ['to load it anyway, add these lines to it yourself:', mc.RC_BEGIN, load, mc.RC_END]
+	assert code == 1
+	assert messages[-len(advice) - 1:] == [failed] + advice
+
+
+def test_hard_linked_rc_files_stay_linked(tmp_path):
+	# replacing a hard-linked ~/.bashrc split it from the dotfiles copy, which kept the old text
+	env, home = make_home(tmp_path)
+	(home / 'dotfiles').mkdir()
+	dotfile = home / 'dotfiles' / 'bashrc'
+	dotfile.write_text('alias ll="ls -l"\n')
+	rc = home / '.bashrc'
+	os.link(str(dotfile), str(rc))
+	assert mc.install('bash', home=str(home), environ=env, command=ENGINE)[0] == 0
+	assert mc.RC_BEGIN in dotfile.read_text() and rc.stat().st_ino == dotfile.stat().st_ino
+	before = rc.read_text()
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
+	split = 'did not change {}: it has 2 hard links, which replacing it would split'.format(rc)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)
+	assert code == 1 and messages[-6:] == [split, 'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:',
+		mc.RC_BEGIN, 'export MSSH_COMPLETE_EDITOR=1', load, mc.RC_END]
+	code, messages = mc.uninstall('bash', home=str(home), environ=env)
+	assert code == 1 and messages[-2:] == [split, 'to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
+	assert rc.read_text() == before and rc.stat().st_ino == dotfile.stat().st_ino
+
+
+@pytest.mark.parametrize('obstacle', ['bind mount', 'directory not writable'])
+def test_rc_files_that_cannot_be_replaced_still_get_a_new_block(tmp_path, monkeypatch, obstacle):
+	# a bind-mounted ~/.bashrc (docker -v, devcontainers, Kubernetes subPath) cannot be renamed over
+	# (EBUSY), and a home directory the user may not write takes no temporary file: the first install
+	# appends in place as it always did; editing an existing block says what to change by hand
+	import tempfile
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	if obstacle == 'bind mount':
+		replace = os.replace
+		def busy(source, target):
+			if target == str(rc):
+				raise OSError(errno.EBUSY, os.strerror(errno.EBUSY), source, target)
+			replace(source, target)
+		monkeypatch.setattr(os, 'replace', busy)
+		reason = 'cannot replace it ({})'.format(os.strerror(errno.EBUSY))
+	else:
+		mkstemp = tempfile.mkstemp
+		def denied(*args, **kwargs):
+			if kwargs.get('dir') == str(home):
+				raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), os.path.join(str(home), '.bashrc.x.mssh-tmp'))
+			return mkstemp(*args, **kwargs)
+		monkeypatch.setattr(tempfile, 'mkstemp', denied)
+		reason = 'cannot make a file beside it ({})'.format(os.strerror(errno.EACCES))
+	glue = home / '.local' / 'share' / 'multiSSH3' / 'completion.bash'
+	load = '[ -r {0} ] && . {0} 2>/dev/null || :'.format(glue)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+	assert code == 0 and 'added a block loading it to {}'.format(rc) in messages
+	assert rc.read_text() == 'alias ll="ls -l"\n\n{}\n{}\n{}\n'.format(mc.RC_BEGIN, load, mc.RC_END)
+	before = rc.read_text()
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE, editor=True)
+	assert code == 1 and messages[-6:] == ['could not change {}: {}; it is as it was'.format(rc, reason),
+		'to load it anyway, replace lines 3 to 5 of it (the mssh block) with these yourself:',
+		mc.RC_BEGIN, 'export MSSH_COMPLETE_EDITOR=1', load, mc.RC_END]
+	code, messages = mc.uninstall('bash', home=str(home), environ=env)
+	assert code == 1 and messages[-2:] == ['could not change {}: {}; it is as it was'.format(rc, reason),
+		'to remove it anyway, delete lines 3 to 5 of it (the mssh block) yourself']
+	# never a temporary file: not in the messages, not left behind
+	assert rc.read_text() == before and sorted(os.listdir(str(home))) == ['.bashrc', '.local', '.mssh_history', '.multiSSH3.config.json']
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='root may write any file')
+def test_install_leaves_a_read_only_rc_file_alone(tmp_path):
+	# replacing the file would work (the directory is writable), but the user made it read-only
+	env, home = make_home(tmp_path)
+	rc = home / '.bashrc'
+	rc.write_text('alias ll="ls -l"\n')
+	rc.chmod(0o444)
+	code, messages = mc.install('bash', home=str(home), environ=env, command=ENGINE)
+	failed = 'could not change {}: Permission denied; it is as it was'.format(rc)
+	assert code == 1 and messages[messages.index(failed) + 1] == 'to load it anyway, add these lines to it yourself:'
+	assert rc.read_text() == 'alias ll="ls -l"\n'
 
 
 def test_bash_delegation_keeps_text_before_word_breaks(setup):
@@ -291,5 +1156,55 @@ def test_bash_set_e_survives_a_missing_engine(setup):
 	session = bash_session(home, env, glue_file(home, 'bash', ['/nonexistent/engine']), bash_completion=False, extra='set -e')
 	try:
 		assert session.line_after('mssh h zzq') == 'mssh h zzq'
+	finally:
+		session.close()
+
+
+# as mssh records `mssh web1 "nosuchcmd status 'ssh*'"` and the same with fakefile
+QUOTED_WORD_HISTORY = ['1790000000\t/x/multiSSH3.py\t-su\tweb1\t\'{} status \'"\'"\'ssh*\'"\'"\'\''.format(name) for name in ('nosuchcmd', 'fakefile')]
+
+
+def words(line):
+	'''The words a line means, whatever quoting the shell chose.'''
+	return None if line is None else [token.text for token in mc.lex(line)]
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
+def test_command_words_are_inserted_with_their_quotes(tmp_path, shell):
+	# mssh passes the quotes of 'ssh*' on to the remote shell only when the local word holds them
+	env, home = make_home(tmp_path, QUOTED_WORD_HISTORY)
+	build_index(env)
+	# an empty working directory: the shells add its files to the words of a remote command
+	empty = tmp_path / 'empty'
+	empty.mkdir()
+	cd = "cd '{}'".format(empty)
+	typed = ['mssh web1 nosuchcmd status ']
+	if shell == 'bash':
+		session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=cd)
+		# a delegated completion turns on file name quoting: bash quotes the word itself
+		typed.append('mssh web1 fakefile status ')
+	elif shell == 'zsh':
+		session = zsh_session(home, env, glue_file(home, 'zsh'), extra=cd)
+		typed.append("mssh web1 nosuchcmd status \\'ss")
+	else:
+		session = fish_session(home, env, '', pre="source '{}'; {}".format(glue_file(home, 'fish'), cd))
+		typed.append("mssh web1 nosuchcmd status \\'ss")
+	try:
+		for line in typed:
+			assert words(session.line_after(line)) == words(line)[:4] + ["'ssh*'"], line
+	finally:
+		session.close()
+
+
+def test_bash_with_blesh_loaded_but_not_attached_gets_escaped_words(tmp_path):
+	# readline completes, not ble.sh: the words must come escaped as for plain bash
+	env, home = make_home(tmp_path, QUOTED_WORD_HISTORY)
+	build_index(env)
+	empty = tmp_path / 'empty'
+	empty.mkdir()
+	extra = "BLE_VERSION=0.4.0; BLE_ATTACHED=; cd '{}'".format(empty)
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
+	try:
+		assert words(session.line_after('mssh web1 nosuchcmd status ')) == ['mssh', 'web1', 'nosuchcmd', 'status', "'ssh*'"]
 	finally:
 		session.close()

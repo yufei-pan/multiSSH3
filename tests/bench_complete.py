@@ -27,6 +27,37 @@ def synthetic(home, hosts=10000, invocations=20000):
 	(home / '.ssh' / 'config').write_text(''.join('Host node{:05d}\n'.format(number) for number in range(hosts)))
 
 
+def host_states(directory, hosts=10000, rows=40000):
+	'''
+	host-state.tsv as the prober leaves it at most: rows hosts that answered ping over the last day
+	(the hosts of the cluster and more), cut down as the prober writes it. Returns how many rows it holds.
+	'''
+	sys.path.insert(0, str(REPO))
+	import mssh_complete
+	now = time.time()
+	states = {}
+	for number in range(rows):
+		at = now - number * mssh_complete.ANSWER_KEEP / rows
+		name = 'node{:05d}'.format(number) if number < hosts else 'other{:05d}'.format(number)
+		states[name] = mssh_complete.HostState('valid', at, 'answer', at, at)
+	states = mssh_complete.prune_host_states(states, now, mssh_complete.ANSWER_KEEP)
+	mssh_complete.write_host_states(str(directory), states)
+	return len(states)
+
+
+def warnings(engine, env, label):
+	'''Warning queries alone (the prober's lock is held, so no prober competes for the CPU).'''
+	for line in ('mssh node00042 uptime ', 'mssh node[00001-00100] uptime ', 'mssh -u root node00042,nodeX uptime '):
+		request = 'MSSHC1\0bash\x005.2\0diag=1 nul=0\0{}\0\0\0'.format(line).encode()
+		timings = []
+		for _ in range(15):
+			started = time.monotonic()
+			subprocess.run(engine + ['query'], input=request, env=env, stdout=subprocess.DEVNULL, check=True)
+			timings.append((time.monotonic() - started) * 1000)
+		timings.sort()
+		print('warnings{} {!r:34} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(label, line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
+
+
 def on_terminal(command, data, env):
 	'''
 	Start command with data on stdin and a pseudo-terminal as its controlling terminal.
@@ -124,17 +155,11 @@ def main():
 				timings.append((time.monotonic() - started) * 1000)
 			timings.sort()
 			print('suggest {!r:30} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
-		# warnings: the query alone (the prober's lock is held, so no prober competes for the CPU)
 		(runtime / 'multiSSH3' / 'probe.lock').write_text('')
-		for line in ('mssh node00042 uptime ', 'mssh node[00001-00100] uptime ', 'mssh -u root node00042,nodeX uptime '):
-			request = 'MSSHC1\0bash\x005.2\0diag=1 nul=0\0{}\0\0\0'.format(line).encode()
-			timings = []
-			for _ in range(15):
-				started = time.monotonic()
-				subprocess.run(engine + ['query'], input=request, env=env, stdout=subprocess.DEVNULL, check=True)
-				timings.append((time.monotonic() - started) * 1000)
-			timings.sort()
-			print('warnings {!r:34} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
+		warnings(engine, env, '')
+		rows = host_states(runtime / 'multiSSH3')
+		warnings(engine, env, ' ({} host states)'.format(rows))
+		os.unlink(str(runtime / 'multiSSH3' / 'host-state.tsv'))
 		interactive(engine, env)
 	finally:
 		shutil.rmtree(str(tmp), ignore_errors=True)

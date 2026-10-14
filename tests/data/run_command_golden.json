@@ -66,7 +66,7 @@
   "command": "ipmitool power status",
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P admin  power status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -108,7 +108,7 @@
   "command": "ipmitool power status",
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P admin  power status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -144,7 +144,7 @@
   "command": "power status",
   "name": "node1",
   "output": [
-   "Running command: /bin/ipmitool -H node1 -U admin -P admin -I lanplus  -L ADMINISTRATOR power status",
+   "Running command: /bin/ipmitool -H node1 -U admin -P *** -I lanplus  -L ADMINISTRATOR power status",
    "ok",
    "Command finished with return code 0"
   ],
@@ -170,7 +170,7 @@
   "command": "power status",
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H 10.99.0.7 -U admin -P admin  power status",
+   "Running command: /bin/sh -c ipmitool -H 10.99.0.7 -U admin -P ***  power status",
    "ok",
    "Command finished with return code 0"
   ],
@@ -204,8 +204,8 @@
   "output": [
    "Ipmitool not found on the local machine! Trying ipmitool on the remote machine...",
    "Warning:-u SSH_USERNAME bob is provided in the host name! Using the username from the ipmi definition if provided: bob",
-   "Warning: -p SSH_PASSWORD pw is provided! Using the password from the ipmi definition if provided: pw",
-   "Running command: /bin/sshpass -p pw /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bob@node1 ipmitool power on",
+   "Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.",
+   "Running command: /bin/sshpass -p *** /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bob@node1 ipmitool power on",
    "ok",
    "Command finished with return code 0"
   ],
@@ -239,7 +239,7 @@
   "command": "ipmitool power status",
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P admin  power status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "no route to host",
    "Command finished with return code 1",
@@ -271,7 +271,7 @@
   "command": "chassis status",
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P 'p w' -I lanplus chassis status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P *** -I lanplus chassis status",
    "System Power : on",
    "Command finished with return code 0"
   ],
@@ -433,7 +433,7 @@
   "command": "Systems",
   "name": "node1",
   "output": [
-   "Running command: /bin/redfishtool -S Always -a -r node1 -u admin -p admin -T 30 Systems",
+   "Running command: /bin/redfishtool -S Always -a -r node1 -u admin -p *** -T 30 Systems",
    "ok",
    "Command finished with return code 0"
   ],
@@ -459,7 +459,7 @@
   "command": "Systems",
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c redfishtool -S Always -a -r node1 -u admin -p admin  Systems",
+   "Running command: /bin/sh -c redfishtool -S Always -a -r node1 -u admin -p ***  Systems",
    "ok",
    "Command finished with return code 0"
   ],
@@ -491,17 +491,48 @@
   ],
   "stdout": []
  },
+ "rsync_error_keeps_rsync_result": {
+  "address": "node1",
+  "argvs": [
+   [
+    "/bin/rsync",
+    "-ahlX",
+    "--partial-dir=.rsync-partial",
+    "--info=name",
+    "--rsh",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
+    "--",
+    "/src/a",
+    "node1:/dest/"
+   ]
+  ],
+  "command": "/dest/",
+  "name": "node1",
+  "output": [
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
+   "file has vanished: \"/src/a/x\"",
+   "Command finished with return code 24"
+  ],
+  "resolvedName": "node1",
+  "returncode": 24,
+  "scp": false,
+  "shell": false,
+  "sleeps": [],
+  "stderr": [
+   "file has vanished: \"/src/a/x\""
+  ],
+  "stdout": []
+ },
  "rsync_failure_falls_back_to_scp": {
   "address": "node1",
   "argvs": [
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -519,10 +550,11 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
-   "rsync: connection unexpectedly closed",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
+   "bash: line 1: rsync: command not found",
+   "rsync: connection unexpectedly closed (0 bytes received so far) [sender]",
    "Command finished with return code 12",
-   "Rsync connection failed! Trying SCP connection...",
+   "Rsync is not available on the host! Trying SCP connection...",
    "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
    "ok",
    "Command finished with return code 0"
@@ -543,11 +575,10 @@
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -565,10 +596,11 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
-   "rsync: connection unexpectedly closed",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
+   "bash: line 1: rsync: command not found",
+   "rsync: connection unexpectedly closed (0 bytes received so far) [sender]",
    "Command finished with return code 12",
-   "Rsync connection failed! Trying SCP connection...",
+   "Rsync is not available on the host! Trying SCP connection...",
    "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
    "ok",
    "Command finished with return code 0"
@@ -580,9 +612,10 @@
   "sleeps": [],
   "stderr": [
    "Resolved name: node1",
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
-   "rsync: connection unexpectedly closed",
-   "Rsync connection failed! Trying SCP connection...",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
+   "bash: line 1: rsync: command not found",
+   "rsync: connection unexpectedly closed (0 bytes received so far) [sender]",
+   "Rsync is not available on the host! Trying SCP connection...",
    "Resolved name: node1",
    "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/"
   ],
@@ -596,11 +629,10 @@
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "node1:/remote/a",
     "/local/"
@@ -609,7 +641,7 @@
   "command": "/local/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1:/remote/a /local/",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- node1:/remote/a /local/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -660,11 +692,10 @@
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--delete",
     "--",
     "/src/a",
@@ -675,7 +706,7 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null --delete -- /src/a /src/b node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' --delete -- /src/a /src/b node1:/dest/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -708,7 +739,7 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/sshpass -p pw /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/sshpass -p *** /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -728,11 +759,10 @@
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -742,7 +772,7 @@
   "name": "node1",
   "output": [
    "scp not found on the local machine! Trying to use rsync...",
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -836,8 +866,8 @@
   "name": "alice@node1",
   "output": [
    "Warning:-u SSH_USERNAME alice is provided in the host name! Using the username from the ipmi definition if provided: bmcuser",
-   "Warning: -p SSH_PASSWORD pw is provided! Using the password from the ipmi definition if provided: bmcpw",
-   "Running command: /bin/sshpass -p bmcpw /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bmcuser@node1 ipmitool power status",
+   "Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.",
+   "Running command: /bin/sshpass -p *** /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bmcuser@node1 ipmitool power status",
    "ok",
    "Command finished with return code 0"
   ],
@@ -859,7 +889,7 @@
     "-o StrictHostKeyChecking=no",
     "-o UserKnownHostsFile=/dev/null",
     "-i",
-    "~/.ssh/id_x",
+    "/home/tester/.ssh/id_x",
     "-p",
     "2222",
     "--",
@@ -870,7 +900,7 @@
   "command": "echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
   "name": "alice@node1",
   "output": [
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_x -p 2222 -- alice@node1 echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
+   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/tester/.ssh/id_x -p 2222 -- alice@node1 echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
    "ok",
    "Command finished with return code 0"
   ],
@@ -902,7 +932,7 @@
   "command": "uptime",
   "name": "node1",
   "output": [
-   "Running command: /bin/sshpass -p pw /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
+   "Running command: /bin/sshpass -p *** /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
    "ok",
    "Command finished with return code 0"
   ],
@@ -1118,11 +1148,10 @@
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -1130,11 +1159,10 @@
    [
     "/bin/rsync",
     "-ahlX",
-    "--partial",
-    "--inplace",
+    "--partial-dir=.rsync-partial",
     "--info=name",
     "--rsh",
-    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "/bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'",
     "--",
     "/src/a",
     "node1:/dest/"
@@ -1152,11 +1180,11 @@
   "command": "/dest/",
   "name": "node1",
   "output": [
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
    "Warning: Too many open files. retrying...",
-   "Running command: /bin/rsync -ahlX --partial --inplace --info=name --rsh ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
-   "rsync failed",
-   "Command finished with return code 5",
+   "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
+   "ssh: connect to host node1 port 22: Connection refused",
+   "Command finished with return code 255",
    "Rsync connection failed! Trying SCP connection...",
    "Running command: /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
    "Error: Retry limit reached after too many open files!"
@@ -1193,30 +1221,17 @@
     "--",
     "nodeA1",
     "ipmitool power status"
-   ],
-   [
-    "/bin/ssh",
-    "-o StrictHostKeyChecking=no",
-    "-o UserKnownHostsFile=/dev/null",
-    "--",
-    "nodeA1",
-    "ipmitool power status"
    ]
   ],
   "command": "ipmitool power status",
   "name": "nodeA1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P p1  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
    "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P p2  power status",
-   "Error: Unable to establish IPMI v2 / RMCP+ session",
-   "unauthorized name",
-   "Command finished with return code 1",
-   "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -1258,30 +1273,17 @@
     "--",
     "nodeA1",
     "ipmitool power status"
-   ],
-   [
-    "/bin/ssh",
-    "-o StrictHostKeyChecking=no",
-    "-o UserKnownHostsFile=/dev/null",
-    "--",
-    "nodeA1",
-    "ipmitool power status"
    ]
   ],
   "command": "ipmitool power status",
   "name": "nodeA1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P p1  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
    "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P p2  power status",
-   "Error: Unable to establish IPMI v2 / RMCP+ session",
-   "unauthorized name",
-   "Command finished with return code 1",
-   "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -1300,17 +1302,12 @@
   "sleeps": [],
   "stderr": [
    "Resolved name: nodeA1",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P p1  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "IPMI connection failed! Trying next ipmi definition...",
    "Resolved name: nodeA1",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P p2  power status",
-   "Error: Unable to establish IPMI v2 / RMCP+ session",
-   "unauthorized name",
-   "IPMI connection failed! Trying next ipmi definition...",
-   "Resolved name: nodeA1",
-   "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- nodeA1 ipmitool power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "IPMI connection failed! Trying next ipmi definition...",

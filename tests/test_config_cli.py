@@ -39,6 +39,61 @@ def test_parser_hosts_and_command():
 	assert args.commands == ["echo", "ok"]
 
 
+# a config can hold anything: passwords with spaces, quotes and %, ssh's ControlPath with %r@%h:%p
+SECRET_CONFIG = {
+	"DEFAULT_PASSWORD": "Hunter2 pa%ss it's %(prog)s",
+	"DEFAULT_IPMI_PASSWORD": "Bmc 100% s3cret",
+	"DEFAULT_EXTRA_ARGS": "-o ControlPath=~/.ssh/cm-%r@%h:%p",
+}
+
+
+def test_help_never_shows_a_configured_password(tmp_path):
+	cfg = tmp_path / "multiSSH3.config.json"
+	cfg.write_text(json.dumps(SECRET_CONFIG))
+
+	r = run_cli(["--config_file", str(cfg), "-h"])
+
+	assert r.returncode == 0, r.stderr
+	assert "Hunter2" not in r.stdout + r.stderr and "s3cret" not in r.stdout + r.stderr
+	assert "via ssh, (default: set, not shown)" in r.stdout
+	assert "via ipmi. (default: set, not shown)" in r.stdout
+	# the other defaults are still shown, % and all
+	assert "(default: -o ControlPath=~/.ssh/cm-%r@%h:%p)" in r.stdout
+
+
+def test_help_says_when_no_password_is_set(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", "")
+	assert "via ssh, (default: none)" in multiSSH3.get_parser().format_help()
+
+
+def test_a_percent_in_a_config_default_does_not_stop_mssh(tmp_path):
+	# Python 3.14+ rejects a help string argparse cannot %-format when the option is added: every run failed
+	cfg = tmp_path / "multiSSH3.config.json"
+	cfg.write_text(json.dumps(SECRET_CONFIG))
+
+	r = run_cli(["--config_file", str(cfg), "--version"])
+
+	assert r.returncode == 0, r.stderr
+
+
+def test_help_shows_every_default_as_it_is(monkeypatch):
+	# any config value can hold a %: shown once, never formatted (%(prog)s, %s), never doubled
+	value = " 100% %s %(prog)s"
+	for name in dir(multiSSH3):
+		if name.startswith("DEFAULT_") and isinstance(getattr(multiSSH3, name), (str, int, float, type(None))):
+			monkeypatch.setattr(multiSSH3, name, name + value)
+	monkeypatch.setattr(multiSSH3, "FORCE_TRUECOLOR", "FORCE_TRUECOLOR" + value)
+	monkeypatch.setattr(multiSSH3, "__working_config_file", "__working_config_file" + value)
+
+	text = multiSSH3.get_parser().format_help()
+
+	for name in ("DEFAULT_HOSTS", "DEFAULT_USERNAME", "DEFAULT_EXTRA_ARGS", "DEFAULT_IPMI_ARGS", "DEFAULT_SKIP_HOSTS",
+			"DEFAULT_HISTORY_FILE", "DEFAULT_ENCODING", "DEFAULT_HOST_FILE", "FORCE_TRUECOLOR", "__working_config_file"):
+		assert name + value in text, name
+	assert "%%" not in text
+	assert "DEFAULT_PASSWORD" not in text and "DEFAULT_IPMI_PASSWORD" not in text
+
+
 def test_malformed_config_returns_empty(tmp_path, capsys):
 	cfg = tmp_path / "bad.json"
 	cfg.write_text("{not-json")
@@ -192,6 +247,30 @@ def test_storing_through_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path
 
 	assert link.is_symlink()
 	assert json.loads(real.read_text())["DEFAULT_PASSWORD"] == "secret"
+
+
+@pytest.mark.parametrize("stale_backup", [False, True], ids=["no_backup_yet", "backup_link_left_by_6_31"])
+def test_backing_up_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path, umask_002, stale_backup):
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text('{"DEFAULT_PASSWORD": "old"}')
+	real.chmod(0o600)
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	backup = tmp_path / ".multiSSH3.config.json.bak"
+	if stale_backup:
+		# up to 6.31 the backup was the renamed link: a new backup must replace it, not write through it
+		backup.symlink_to(real)
+
+	assert _store_with_backup(monkeypatch, link) == (0o600, 0o600)
+
+	# the dotfiles copy is updated through the link, the old config is copied next to the link
+	assert link.is_symlink()
+	assert json.loads(real.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert not backup.is_symlink()
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert [p.name for p in dotfiles.iterdir()] == ["multiSSH3.config.json"]
 
 
 @pytest.mark.parametrize("mode,written", [(0o666, False), (0o600, True)], ids=["too_open", "already_private"])

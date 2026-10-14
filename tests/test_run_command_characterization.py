@@ -10,6 +10,7 @@ import errno
 import io
 import json
 import os
+import shlex
 import threading
 from pathlib import Path
 
@@ -36,6 +37,7 @@ def ipmi(**overrides):
 AUTH_FAILURE = (b"", b"Error: Unable to establish IPMI v2 / RMCP+ session\nunauthorized name\n", 1)
 NO_ROUTE = (b"", b"Error: Unable to establish IPMI v2 / RMCP+ session\nno route to host\n", 1)
 OK = (b"ok\n", b"", 0)
+RSYNC_MISSING = (b"", b"bash: line 1: rsync: command not found\nrsync: connection unexpectedly closed (0 bytes received so far) [sender]\n", 12)
 EMFILE = OSError(errno.EMFILE, "Too many open files")
 
 SCENARIOS = {
@@ -67,10 +69,13 @@ SCENARIOS = {
 		bins=bins("ssh", "rsync", "scp"), results=[OK]),
 	"rsync_failure_falls_back_to_scp": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"),
-		results=[(b"", b"rsync: connection unexpectedly closed\n", 12), OK]),
+		results=[RSYNC_MISSING, OK]),
 	"rsync_failure_falls_back_to_scp_debug": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"), debug=True,
-		results=[(b"", b"rsync: connection unexpectedly closed\n", 12), OK]),
+		results=[RSYNC_MISSING, OK]),
+	"rsync_error_keeps_rsync_result": dict(
+		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"),
+		results=[(b"", b'file has vanished: "/src/a/x"\n', 24)]),
 	"scp_requested": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"], scp=True), passwds="pw",
 		bins=bins("ssh", "scp", "sshpass"), results=[OK]),
@@ -136,7 +141,7 @@ SCENARIOS = {
 		host=dict(name="node1", command="true"), bins=bins("ssh"), retry_limit=2, results=[EMFILE] * 5),
 	"too_many_open_files_with_rsync_fallback": dict(
 		host=dict(name="node1", command="/dest/", files=["/src/a"]), bins=bins("ssh", "rsync", "scp"),
-		retry_limit=2, results=[EMFILE, (b"", b"rsync failed\n", 5), EMFILE, EMFILE]),
+		retry_limit=2, results=[EMFILE, (b"", b"ssh: connect to host node1 port 22: Connection refused\n", 255), EMFILE, EMFILE]),
 	"other_os_error": dict(
 		host=dict(name="node1", command="true"), bins=bins("ssh"),
 		results=[OSError(errno.ENOENT, "No such file or directory")]),
@@ -163,7 +168,12 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setattr(multiSSH3, "_binPaths", dict(scenario["bins"]))
 	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [dict(d) for d in scenario.get("ipmi", [ipmi()])])
 	monkeypatch.setattr(multiSSH3, "SSH_STRICT_HOST_KEY_CHECKING", scenario.get("strict", False))
+	# the golden command lines are from before ssh got its timeout options: test_ssh_timeouts.py covers those
+	for setting in ("DEFAULT_SSH_CONNECT_TIMEOUT", "DEFAULT_SSH_SERVER_ALIVE_INTERVAL", "DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX"):
+		monkeypatch.setattr(multiSSH3, setting, 0)
 	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", scenario.get("debug", False))
+	# a key given as ~/... is expanded from HOME
+	monkeypatch.setenv("HOME", "/home/tester")
 	monkeypatch.setattr(multiSSH3, "_emo", False)
 	monkeypatch.setattr(multiSSH3.getpass, "getuser", lambda: "tester")
 	sleeps = []
@@ -181,6 +191,7 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setattr(multiSSH3.subprocess, "Popen", popen)
 	host = multiSSH3.Host(ip="10.0.0.7", i=7, uuid="uuid-7", **scenario["host"])
 	host.interactive_stdin = False  # no stdin writer thread polling time.sleep
+	host.use_terminal = True  # the command line of a lone -nw command; test_command_terminal.py covers the rest
 	kwargs = {"retry_limit": scenario["retry_limit"]} if "retry_limit" in scenario else {}
 
 	multiSSH3.run_command(host, threading.Semaphore(1), 30, scenario.get("passwds"), **kwargs)
@@ -219,3 +230,47 @@ def test_command_formatting_error_is_recorded(monkeypatch):
 
 	assert host.returncode == -1
 	assert host.output[0] == "Error occurred while formatting the command : None!"
+
+
+# spaces, a quote and % in each: the shell-quoted form differs from the password itself
+SSH_SECRET = "Hunter2 it's 100%"
+BMC_SECRET = "Bmc s3cret's 5%"
+
+PASSWORD_SCENARIOS = {
+	"sshpass": dict(host=dict(name="node1", command="uptime"), passwds=SSH_SECRET, bins=bins("ssh", "sshpass"), debug=True,
+		results=[OK], shown="Running command: /bin/sshpass -p *** /bin/ssh"),
+	"sshpass_scp": dict(host=dict(name="node1", command="/dest/", files=["/src/a"], scp=True), passwds=SSH_SECRET,
+		bins=bins("ssh", "scp", "sshpass"), results=[OK], shown="Running command: /bin/sshpass -p *** /bin/scp"),
+	"ipmitool_via_sh": dict(host=dict(name="node1", command="power status", ipmi=True), ipmi=[ipmi(password=BMC_SECRET)],
+		bins=bins("sh", "ipmitool", "ssh"), debug=True, results=[OK], shown="Running command: /bin/sh -c ipmitool -H node1 -U admin -P *** "),
+	"ipmitool_direct": dict(host=dict(name="node1", command="power status", ipmi=True), ipmi=[ipmi(password=BMC_SECRET)],
+		bins=bins("ipmitool", "ssh"), results=[OK], shown="Running command: /bin/ipmitool -H node1 -U admin -P *** "),
+	"redfish_via_sh": dict(host=dict(name="node1", command="Systems", ipmi=True), ipmi=[ipmi(ipmi_method="redfish", password=BMC_SECRET)],
+		bins=bins("sh", "redfishtool", "ssh"), results=[OK], shown="-r node1 -u admin -p *** "),
+	"redfish_direct": dict(host=dict(name="node1", command="Systems", ipmi=True), ipmi=[ipmi(ipmi_method="redfish", password=BMC_SECRET)],
+		bins=bins("redfishtool", "ssh"), results=[OK], shown="-r node1 -u admin -p *** "),
+	"ssh_ipmitool": dict(host=dict(name="node1", command="", ipmi=True), passwds=SSH_SECRET,
+		ipmi=[ipmi(ipmi_method="ssh_ipmitool", username="bmc", password=BMC_SECRET)], bins=bins("ssh", "sshpass"), debug=True,
+		results=[OK], shown="Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided."),
+	"ipmitool_missing_locally": dict(host=dict(name="node1", command="power on", ipmi=True), passwds=SSH_SECRET,
+		ipmi=[ipmi(password=BMC_SECRET)], bins=bins("sh", "ssh", "sshpass"), debug=True, results=[OK],
+		shown="Running command: /bin/sshpass -p *** /bin/ssh"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PASSWORD_SCENARIOS))
+def test_tui_and_debug_lines_never_show_a_password(monkeypatch, name):
+	scenario = PASSWORD_SCENARIOS[name]
+	got = run_scenario(monkeypatch, scenario)
+	shown = got["output"] + got["stderr"]
+	assert not [line for line in shown if "Hunter2" in line or "s3cret" in line]
+	assert [line for line in shown if scenario["shown"] in line]
+	# the command run is unchanged: it still gets the password
+	assert [arg for argv in got["argvs"] for arg in argv if SSH_SECRET in arg or BMC_SECRET in arg or shlex.quote(BMC_SECRET) in arg]
+
+
+def test_a_configured_password_is_hidden_after_any_dash_p(monkeypatch):
+	# passwords the run did not pass in, but the config holds: ssh's own -p (a port) stays
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", SSH_SECRET)
+	line = multiSSH3._shown_command(["/bin/sshpass", "-p", SSH_SECRET, "/bin/ssh", "-p", "2222", "--", "node1", "uptime"])
+	assert line == "/bin/sshpass -p *** /bin/ssh -p 2222 -- node1 uptime"

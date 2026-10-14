@@ -55,7 +55,17 @@ def test_expand_hostnames_local_reads_env_files(no_dns, tmp_path, monkeypatch):
 def test_expand_hostnames_local_stops_alias_loops(no_dns, monkeypatch):
 	monkeypatch.setenv('loop_a', 'loop_b')
 	monkeypatch.setenv('loop_b', 'loop_a')
-	assert multiSSH3.expand_hostnames_local('loop_a') == ([], [])
+	# loop_a inside its own expansion is the host loop_a, as mssh takes it: only DNS could confirm it
+	assert multiSSH3.expand_hostnames_local('loop_a') == (['loop_a'], ['loop_a'])
+
+
+def test_expand_hostnames_local_takes_an_alias_inside_itself_as_a_host(no_dns, monkeypatch):
+	monkeypatch.setenv('web', 'web,web-b')
+	assert multiSSH3.expand_hostnames_local('web') == (['web', 'web-b'], ['web', 'web-b'])
+
+
+def test_expand_hostnames_local_keeps_a_range_with_an_end_missing_as_one_name(no_dns):
+	assert multiSSH3.expand_hostnames_local('node[1-],rack[-x]') == (['node[1-]', 'rack[-x]'], ['node[1-]', 'rack[-x]'])
 
 
 def test_expand_hostnames_local_counts_no_failures(no_dns):
@@ -112,7 +122,7 @@ def _finishes(function, seconds=5):
 def test_expand_hostnames_local_handles_alias_cycles_with_fan_out(no_dns, monkeypatch):
 	monkeypatch.setenv('AA', 'BB,BB')
 	monkeypatch.setenv('BB', 'AA,AA')
-	assert _finishes(lambda: multiSSH3.expand_hostnames_local('AA')) == [([], [])]
+	assert _finishes(lambda: multiSSH3.expand_hostnames_local('AA')) == [(['AA'], ['AA'])]
 
 
 def test_expand_hostnames_local_handles_deep_shared_aliases(no_dns, monkeypatch):
@@ -120,3 +130,37 @@ def test_expand_hostnames_local_handles_deep_shared_aliases(no_dns, monkeypatch)
 		monkeypatch.setenv('LV{}'.format(level), 'LV{0},LV{0}'.format(level + 1))
 	monkeypatch.setenv('LV26', '127.0.0.9')
 	assert _finishes(lambda: multiSSH3.expand_hostnames_local('LV0')) == [(['127.0.0.9'], [])]
+
+
+# (env file, DNS names, hosts argument): alias set-ups mssh and the completion must expand alike
+AGREEMENT_CASES = [
+	('web="web1,app"\napp="app1,web"\n', ['web1', 'app1'], 'web'),
+	('web="web1,app"\napp="app1,web"\n', ['web1', 'app1'], 'web,app'),
+	('web="web1,app"\napp="app1,web"\n', ['web1', 'app1', 'web'], 'app,web'),
+	('web="web,web-b"\n', ['web', 'web-b'], 'web'),
+	('web="web,web-b"\n', ['web-b'], 'web'),
+	('a="b c"\nb="h1"\nc="b,h2"\n', ['h1', 'h2'], 'a'),
+	('grp="root@127.0.0.5 127.0.0.6,node[1-2]"\nsub="127.0.0.6,node[1-2]"\n', ['node1', 'node2'], 'grp,bob@sub'),
+	('grp="node[1-],node[1-2]"\nempty=""\n', ['node1', 'node2'], 'grp,empty,rack[x-]'),
+	('x="a b"\na="b,h1"\nb="a,h2"\n', ['h1', 'h2', 'b'], 'x'),
+]
+
+
+@pytest.mark.parametrize('env_text, dns, hosts', AGREEMENT_CASES)
+def test_mssh_accepts_what_the_local_expansion_lists_and_dns_knows(env_text, dns, hosts, tmp_path, monkeypatch):
+	env_file = tmp_path / 'hosts.env'
+	env_file.write_text(env_text)
+	monkeypatch.setattr(multiSSH3, '_env_files', [str(env_file)])
+	monkeypatch.setattr(multiSSH3, '_explicit_env_files', {str(env_file)})
+	monkeypatch.setattr(multiSSH3, '_no_env', True)
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_HOST_FILE', str(tmp_path / 'no-hosts'))
+	monkeypatch.setattr(multiSSH3, '_etc_hosts', {})
+	monkeypatch.setattr(multiSSH3, '_ssh_config_target', lambda hostname: None)
+	multiSSH3._refresh_expansion_caches()
+	expanded, unresolved = multiSSH3.expand_hostnames_local(hosts)
+	monkeypatch.setattr(multiSSH3, '_resolve_dns', {name: '10.0.0.9' for name in dns}.get)
+
+	accepted = multiSSH3.expand_hostnames(hosts.split(','))
+
+	known = set(dns)
+	assert sorted(accepted) == sorted(name for name in expanded if name not in unresolved or name.rsplit('@', 1)[-1] in known)

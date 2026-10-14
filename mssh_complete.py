@@ -175,11 +175,30 @@ def _one_line(text):
 	'''text on one line, with NUL, tabs and newlines turned into single spaces.'''
 	return ' '.join(str(text).replace('\0', ' ').split())
 
+def _password_free_help(help, password):
+	'''
+	The help of a password option with the password taken out. Older multiSSH3 wrote the configured
+	password into the help as "(default: ...)", and older indexes keep that help and the password.
+	'''
+	if not password:
+		return help
+	help = help.replace('(default: {})'.format(password), '(default: set, not shown)')
+	# named some other way: the whole text goes rather than any part of the password
+	return 'A password (not shown)' if password in help else help
+
 class OptionSpec(object):
-	'''One mssh option: its dest, every string naming it and how many values it takes.'''
+	'''
+	One mssh option: its dest, every string naming it and how many values it takes.
+
+	A password option keeps no default, and no password in its help: both reach the index, the
+	descriptions zsh and fish show and the picker.
+	'''
 	__slots__ = ('dest', 'strings', 'nargs', 'repeat', 'group', 'default', 'help')
 
 	def __init__(self, dest, strings, nargs='0', repeat=False, group='', default='', help=''):
+		if dest in PASSWORD_DESTS:
+			help = _password_free_help(help, default)
+			default = ''
 		self.dest = dest
 		self.strings = tuple(strings)
 		self.nargs = nargs
@@ -211,13 +230,23 @@ class ParserSpec(object):
 		for option in self.options:
 			for string in option.strings:
 				self.by_string[string] = option
-		self._long = sorted(string for string in self.by_string if string.startswith('--'))
+		self._passwords = [option for option in self.options if option.dest in PASSWORD_DESTS]
+
+	def names_option(self, text):
+		'''
+		Whether argparse reads a word starting with "-" as an option, a wrong or ambiguous one
+		included: its first two characters (one dash) or its part before "=" name an option. mssh
+		takes option names in full only (_MsshArgumentParser), so a word that only starts an option
+		name is not one.
+		'''
+		return (text[1:2] != '-' and text[:2] in self.by_string) or text.partition('=')[0] in self.by_string
 
 	def lookup(self, text):
 		'''
 		The option a word names, and the value attached to it ("-x=value", "--long=value", "-xVALUE").
 
-		Unique abbreviations of --long options are accepted, like argparse does.
+		Names count in full only: mssh takes no abbreviations ("--user" is not --username). Words
+		that give a password some other way are password options all the same (_password_spelling).
 
 		Returns:
 			tuple: (OptionSpec or None, attached value or None)
@@ -226,9 +255,12 @@ class ParserSpec(object):
 		if option is not None:
 			return option, None
 		name, sep, value = text.partition('=')
-		option = (self.by_string.get(name) or self._abbreviation(name)) if sep else self._abbreviation(text)
+		option = self.by_string.get(name) if sep else None
 		if option is not None:
-			return option, (value if sep else None)
+			return option, value
+		found = self._password_spelling(text)
+		if found is not None:
+			return found
 		if len(text) > 2 and text[0] == '-' and text[1] != '-':
 			# argparse reads -pVALUE as -p VALUE, '=' in VALUE included
 			short = self.by_string.get(text[:2])
@@ -236,16 +268,34 @@ class ParserSpec(object):
 				return short, text[2:]
 		return None, None
 
-	def _abbreviation(self, name):
-		if not name.startswith('--') or len(name) < 3:
+	def _password_spelling(self, text):
+		'''
+		(password option, the value attached to it or None) for a word that is no option name but
+		gives a password, else None; only so the password is never offered or shown. mssh up to 6.31
+		took any unique abbreviation ("--pass x", "--ipmi_passw=x"), and the shell's history keeps
+		those lines; short flags written together may end in -p ("-qp x", "-qpx"); and "-ipx" is -ip
+		with its value (argparse reads -i px, an error).
+		'''
+		name, sep, value = text.partition('=')
+		if name.startswith('--'):
+			found = [string for string in self.by_string if string.startswith(name)] if len(name) > 2 else []
+			if len(found) == 1 and self.by_string[found[0]].dest in PASSWORD_DESTS:
+				return self.by_string[found[0]], (value if sep else None)
 			return None
-		found = {}
-		for string in self._long[bisect_left(self._long, name):]:
-			if not string.startswith(name):
-				break
-			option = self.by_string[string]
-			found[id(option)] = option
-		return next(iter(found.values())) if len(found) == 1 else None
+		if len(text) < 3 or text[0] != '-':
+			return None
+		for option in self._passwords:
+			for string in option.strings:
+				if not string.startswith('--') and text.startswith(string):
+					return option, text[len(string):]
+		for index in range(1, len(text)):
+			option = self.by_string.get('-' + text[index])
+			if option is None or (option.nargs != '0' and option.dest not in PASSWORD_DESTS):
+				return None
+			if option.nargs != '0':
+				rest = text[index + 1:]
+				return option, (rest[1:] if rest.startswith('=') else rest) or None
+		return None
 
 	def to_rows(self):
 		return [option.to_row() for option in self.options]
@@ -255,7 +305,7 @@ class ParserSpec(object):
 		return cls(OptionSpec.from_row(row) for row in rows)
 
 def spec_from_parser(parser):
-	'''Describe the options of an argparse parser (index builder side).'''
+	'''Describe the options of an argparse parser (index builder side). mssh help is plain text with each % doubled for argparse.'''
 	import argparse
 	groups = {}
 	for number, group in enumerate(getattr(parser, '_mutually_exclusive_groups', ())):
@@ -271,7 +321,7 @@ def spec_from_parser(parser):
 		if isinstance(default, bool) or not isinstance(default, (int, float, str)):
 			default = ''
 		options.append(OptionSpec(action.dest, action.option_strings, nargs, repeat,
-			groups.get(id(action), ''), _one_line(default), _one_line(action.help or '')))
+			groups.get(id(action), ''), _one_line(default), _one_line((action.help or '').replace('%%', '%'))))
 	return ParserSpec(options)
 
 def flag_settings(parser):
@@ -302,6 +352,121 @@ def _flag_values(fields):
 			values[name] = value == '1'
 	return values
 
+def _negative_number(text):
+	'''Whether argparse takes a word for a negative number: -5, -1.5 (from Python 3.14: any -<digit> or -.<digit> start).'''
+	if text[:1] != '-':
+		return False
+	rest = text[1:]
+	if sys.version_info >= (3, 14):
+		return rest[:1].isdecimal() or (rest[:1] == '.' and rest[1:2].isdecimal())
+	whole, dot, fraction = rest.partition('.')
+	return whole.isdecimal() if not dot else (whole == '' or whole.isdecimal()) and fraction.isdecimal()
+
+def _takes_abbreviations(spec):
+	'''
+	Whether mssh reads an abbreviation alone ("--user") as the option it abbreviates, as argparse does
+	by default. The spec looks names up the way mssh does, so it is asked about a long name cut short.
+	'''
+	strings = spec.by_string
+	for string, option in strings.items():
+		short = string[:-1]
+		if string.startswith('--') and len(short) > 2 and short not in strings and all(
+				strings[other] is option for other in strings if other.startswith(short)):
+			return spec.lookup(short)[0] is option
+	return False
+
+def read_option_word(text, spec, abbreviations=True):
+	'''
+	How mssh's argument parsing reads one word: argparse's _parse_optional and consume_optional, after
+	process_args has read --config_file with a parser of its own.
+
+	A word names an option in full, as "name=value", as a short option with its value attached
+	("-uroot") or followed by more short flags ("-aux" is -a -u x), or as an abbreviation when
+	abbreviations is true (argparse's default; see _takes_abbreviations).
+
+	Returns:
+		tuple: (verdict, readings). verdict: 'positional'; 'options' (readings: (OptionSpec, the value
+			attached or None, where the option's name ends in the word) in order); 'unknown' (no such
+			option: mssh stops with an error, on Python 3.6 it passes the word on to the commands);
+			'error' (mssh stops with an error: ambiguous, a flag given a value); 'unsure' (Pythons
+			read it differently)
+	'''
+	strings = spec.by_string
+	if len(text) < 2 or text[0] != '-':
+		return 'positional', []
+	name, sep, value = text.partition('=')
+	value = value if sep else None
+	double = text[1] == '-'
+	# the options a name abbreviates (the two-character word itself is a short option, not one of them)
+	longer = [string for string in strings if string.startswith(name) and string != text[:2]]
+	if abbreviations and double and text != '--':
+		# process_args first reads --config_file with a parser that knows no other option: there any
+		# abbreviation of it is unique ("--c", even "--=x")
+		for string in longer:
+			if strings[string].dest == 'config_file':
+				return _read_attached(spec, abbreviations, string, value, len(name), bool(sep))
+	if text in strings:
+		return 'options', [(strings[text], None, len(text))]
+	if sep and name in strings:
+		return _read_attached(spec, abbreviations, name, value, len(name), True)
+	# argparse's _get_option_tuples: a short option with the rest of the word attached, and every option
+	# the word (up to "=") abbreviates. Taking full names only, abbreviations count only next to a full
+	# name (as on patch/no-option-abbrev: "-pr" stays "-p r" or "-pre", ambiguous)
+	short = not double and text[:2] in strings
+	if not abbreviations and not short:
+		longer = []
+	if not double and sep and longer:
+		# older Pythons abbreviate the whole word, "=" included (so nothing), newer ones the name before it
+		return 'unsure', []
+	if short + len(longer) > 1:
+		return 'error', []
+	if short:
+		return _read_attached(spec, abbreviations, text[:2], text[2:], 2, False)
+	if longer:
+		return _read_attached(spec, abbreviations, longer[0], value, len(name), bool(sep))
+	if _negative_number(text) and not any(_negative_number(string) for string in strings):
+		return 'positional', []
+	if ' ' in text:
+		return 'positional', []
+	return 'unknown', []
+
+def _read_attached(spec, abbreviations, string, attached, end, with_sign):
+	'''
+	argparse's consume_optional for read_option_word: string is the option string the word matched,
+	attached the text after it (with_sign: after "="), end where the name ends in the word. A short flag
+	with text after it reads the next letter as another short option.
+	'''
+	strings = spec.by_string
+	option = strings[string]
+	readings = []
+	while True:
+		if attached is None or option.nargs != '0':
+			readings.append((option, attached, end))
+			return 'options', readings
+		# a flag with text after it
+		if string[1] == '-' or attached == '' or attached[0] == '-':
+			# "--json=x", "-a-b" and "-q=" stop mssh with an error (older Pythons crash on "-q=")
+			return 'error', []
+		if with_sign:
+			# "-q=j" is -q -j on older Pythons, an error on newer ones
+			return 'unsure', []
+		readings.append((option, None, end))
+		string = '-' + attached[0]
+		option = strings.get(string)
+		if option is None:
+			# older Pythons stop at once; newer ones first act on the flags read so far (help, version), and
+			# some (3.11) read the rest as a word of its own ("-q x" leaves "- x", a positional)
+			if any(item[0].dest in ('help', 'version') for item in readings):
+				return 'unsure', []
+			rest = read_option_word('-' + attached, spec, abbreviations)[0]
+			return ('error' if rest in ('unknown', 'error') else 'unsure'), []
+		end += 1
+		attached = attached[1:] or None
+		if attached is not None and attached[0] == '=':
+			if option.nargs == '0':
+				return 'error', []
+			attached = attached[1:]
+
 #%% ------------ Context ----------------
 ROLE_OPTION = 'option'
 ROLE_VALUE = 'value'
@@ -319,6 +484,10 @@ def assign_roles(words, spec, current=None):
 	words[current] is the word being completed: a dash starting it means an option name,
 	except after unquoted command words, where it belongs to the remote command.
 
+	The first "--" ends the options, as in argparse (Python 3.12+; 3.6's parse_known_args too):
+	every later word is a positional, the hosts when none came before it, then command words,
+	dash words and another "--" included.
+
 	Returns:
 		list: (role, OptionSpec or None) per word
 	'''
@@ -335,17 +504,18 @@ def assign_roles(words, spec, current=None):
 		if pending is not None:
 			option = pending
 			pending = None
-			if not dashed:
+			# the word after a password option is its password, whatever it looks like: argparse stops
+			# at "-p -secret", but the shell's history keeps the line, and a password is never another word.
+			# argparse takes a dash word as the value when it holds a space and names no option
+			# (-ea "-o StrictHostKeyChecking=no"); mssh's -11 makes it read negative numbers as options
+			if not dashed or option.dest in PASSWORD_DESTS or (' ' in text and not spec.names_option(text)):
 				roles.append((ROLE_VALUE, option))
 				continue
-		if after_separator:
-			roles.append((ROLE_COMMAND, None))
-			continue
-		if text == '--' and not is_current:
+		if text == '--' and not is_current and not after_separator:
 			roles.append((ROLE_SEPARATOR, None))
 			after_separator = True
 			continue
-		if dashed:
+		if dashed and not after_separator:
 			if is_current and command_seen and not commands_quoted:
 				roles.append((ROLE_COMMAND, None))
 				continue
@@ -370,18 +540,28 @@ def assign_roles(words, spec, current=None):
 			roles.append((ROLE_COMMAND, None))
 	return roles
 
+# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
+_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+
 def split_hosts(text):
 	'''Split a hosts argument into host words, on the separators mssh accepts.'''
 	for separator in ',\n\r\t;|/&':
 		text = text.replace(separator, ' ')
 	return text.split()
 
+def words_as_typed(command):
+	'''
+	The words of a remote command with their quotes and escapes: each as it is typed among the
+	unquoted command words of an mssh line, which mssh joins as they are into the remote command.
+	'''
+	return [token.raw for token in lex(command)]
+
 def command_features(command):
-	'''Features of one remote command: the command, its program and program plus first argument.'''
+	'''Features of one remote command: the command, its program and program plus first argument (words as typed).'''
 	command = command.strip()
 	if not command:
 		return []
-	words = [token.text for token in lex(command)]
+	words = words_as_typed(command)
 	features = ['c:' + command]
 	if words:
 		features.append('p:' + words[0])
@@ -581,16 +761,20 @@ def parse_context(before, after, spec):
 			else:
 				command_words = None
 		else:
-			# the unquoted command words the current word continues
+			# the unquoted command words the current word continues; argparse drops a "--" between them
+			def joins(index):
+				role = roles[index][0]
+				return role == ROLE_SEPARATOR or (role == ROLE_COMMAND and not words[index].quoted)
 			first = current
-			while first > 0 and roles[first - 1][0] == ROLE_COMMAND and not words[first - 1].quoted:
+			while first > 0 and joins(first - 1):
 				first -= 1
 			last = current
-			while last + 1 < len(words) and roles[last + 1][0] == ROLE_COMMAND and not words[last + 1].quoted:
+			while last + 1 < len(words) and joins(last + 1):
 				last += 1
 			skip = set(range(first, last + 1))
-			command_words = [token.text for token in words[first:current]] + [prefix]
-			command_word_index = current - first
+			typed = [token.text for token, (role, _) in zip(words[first:current], roles[first:current]) if role != ROLE_SEPARATOR]
+			command_words = typed + [prefix]
+			command_word_index = len(typed)
 			command_prefix = ''
 	options, hosts, commands = _collect(words, roles, skip)
 	return Context(slot=slot, option=option, prefix=prefix, value_start=value_start,
@@ -614,6 +798,36 @@ class HistoryEntry(object):
 	def features(self):
 		return make_features(self.options, self.hosts, [command for command in self.commands if command.strip()])
 
+def history_options(field, spec):
+	'''
+	The options field of a ~/.mssh_history line.
+
+	Returns:
+		tuple: ((OptionSpec, value or None) pairs, the option strings as written)
+	'''
+	options = []
+	texts = []
+	tokens = lex(field)
+	index = 0
+	while index < len(tokens):
+		text = tokens[index].text
+		option, attached = spec.lookup(text)
+		index += 1
+		if option is None:
+			continue
+		name = text
+		if attached is not None:
+			# the option string without the value written into its word: -u=root and -uroot are -u
+			name = text[:len(text) - len(attached)]
+			if name.endswith('='):
+				name = name[:-1]
+		if attached is None and option.nargs in ('1', '+') and index < len(tokens):
+			attached = tokens[index].text
+			index += 1
+		options.append((option, attached))
+		texts.append(name)
+	return options, texts
+
 def parse_history_line(line, spec):
 	'''
 	Parse a ~/.mssh_history line: <ts>\\t<program>\\t<options>\\t<hosts>\\t<commands>.
@@ -630,21 +844,7 @@ def parse_history_line(line, spec):
 		return None
 	if not 0 <= ts < 10 ** 11:
 		return None
-	options = []
-	texts = []
-	tokens = lex(fields[2])
-	index = 0
-	while index < len(tokens):
-		text = tokens[index].text
-		option, attached = spec.lookup(text)
-		index += 1
-		if option is None:
-			continue
-		if attached is None and option.nargs in ('1', '+') and index < len(tokens):
-			attached = tokens[index].text
-			index += 1
-		options.append((option, attached))
-		texts.append(text.partition('=')[0] if attached is not None and '=' in text else text)
+	options, texts = history_options(fields[2], spec)
 	host_tokens = lex(fields[3])
 	hosts = host_tokens[0].text if host_tokens else ''
 	if hosts == 'EMPTY_HOSTS':
@@ -659,14 +859,25 @@ INDEX_NAME = 'complete-index.v1.nsv'
 class IndexCorrupt(Exception):
 	'''The index file is not a complete index this version can read.'''
 
+def _is_control(char):
+	'''
+	Whether char is a control character: C0, DEL, C1, or a byte 0x80-0x9f that was not UTF-8
+	(surrogateescape reads it as U+DC80-U+DC9F and writes the byte back: a C1 control, such as CSI,
+	on a terminal that takes 8-bit controls). Other bytes that are not UTF-8 are no control.
+	'''
+	code = ord(char)
+	return code < 32 or 127 <= code < 160 or 0xdc80 <= code < 0xdca0
+
 def _has_control(text):
-	'''Whether text holds a control character (C0, DEL, C1): such text never goes on a command line or the screen.'''
+	'''Whether text holds a control character (_is_control): such text never goes on a command line or the screen.'''
 	# nearly all text is printable, which one scan in C settles (the picker checks every history line)
-	return not text.isprintable() and any(ord(char) < 32 or 127 <= ord(char) < 160 for char in text)
+	return not text.isprintable() and any(_is_control(char) for char in text)
 
 def _printable(text):
-	'''text with each control character (C0, DEL, C1) shown as ?: safe to draw.'''
-	return ''.join('?' if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in text)
+	'''text with each control character (_is_control) shown as ?: safe to draw.'''
+	if text.isprintable():
+		return text
+	return ''.join('?' if _is_control(char) else char for char in text)
 
 def safe_field(text):
 	'''Whether text can be stored in an NSV field (no NUL, no newline).'''
@@ -802,9 +1013,11 @@ class MemoryKnowledge(object):
 	Records held in memory: identical invocations share one record whose weight sums their uses.
 
 	Used for the history tail not yet in the index, the shell's history, the replay evaluation,
-	and by the builder to aggregate records before writing them.
+	and by the builder to aggregate records before writing them. shell: it holds the shell's
+	history, where most runs are also in mssh's.
 	'''
 	def __init__(self):
+		self.shell = False
 		self.records = []
 		self._by_features = {}
 		self._postings = {}
@@ -991,6 +1204,11 @@ class HostTable(object):
 		'''Member host names of the alias at index.'''
 		return [self.names[int(member)] for member in self.index.row('aliases', index)[1:]]
 
+	def alias_member_users(self, index):
+		'''The user each member of the alias at index is written with (user@host), '' for none.'''
+		users = self.index.row('alias_users', index) if index < self.index.count('alias_users') else []
+		return users + [''] * (self.alias_size(index) - len(users))
+
 	def alias_size(self, index):
 		return len(self.index.row('aliases', index)) - 1
 
@@ -1073,6 +1291,9 @@ def expand_ranges(text, limit=100000):
 	for part in body.split(','):
 		low, sep, high = part.strip().partition('-')
 		if sep and _is_digits(low) and _is_digits(high):
+			if len(values) + int(high) - int(low) >= limit:
+				# past the limit: given back whole without writing it out (node[1-10000000] took 1.5 s)
+				return [text]
 			width = min(len(low), len(high))
 			values.extend('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
 		elif not sep and part.strip():
@@ -1087,6 +1308,84 @@ def expand_ranges(text, limit=100000):
 		if len(out) > limit:
 			return [text]
 	return out
+
+def range_union(texts, limit, budget):
+	'''
+	What expand_ranges(text, limit) gives for each of texts, as one set, writing each name once:
+	the number ranges of texts with one [...] are merged first, so hundreds of overlapping wide
+	ranges cost what the hosts they cover cost, not what all their members cost. Writing stops
+	after budget names (no deadline: the answer must not depend on how fast the machine is);
+	texts come most important first, and the merged numbers are written in the order texts
+	first name them, then the texts with more [...].
+	'''
+	names = set()
+	spans = {}   # (text before the [, text after the ], digits) -> [(low, high)] of the a-b parts
+	order = []   # keys of spans, as texts first name them
+	other = []   # texts with more than one [...]: expand_ranges takes them apart
+	for text in texts:
+		start = text.find('[')
+		end = text.find(']', start + 1)
+		if start < 0 or end < 0 or '[' in text[end + 1:]:
+			other.append(text)
+			continue
+		head, tail, body = text[:start], text[end + 1:], text[start + 1:end]
+		if '[' in body:
+			# a value holding a [ is read again as a range
+			other.append(text)
+			continue
+		parts = []
+		count = 0
+		# expand_ranges' reading of the parts: a-b with digits, or one value
+		for part in body.split(','):
+			low, sep, high = part.strip().partition('-')
+			if sep and _is_digits(low) and _is_digits(high):
+				parts.append((low, high))
+				count += max(int(high) - int(low) + 1, 0)
+			elif not sep and part.strip():
+				parts.append((part.strip(), None))
+				count += 1
+			else:
+				count = None
+				break
+		if count is None or count > limit:
+			# given back whole (letters, hex, past the limit)
+			names.add(text)
+			continue
+		for low, high in parts:
+			if high is None:
+				names.add(head + low + tail)
+				continue
+			key = (head, tail, min(len(low), len(high)))
+			if key not in spans:
+				spans[key] = []
+				order.append(key)
+			spans[key].append((int(low), int(high)))
+	written = 0
+	for key in order:
+		head, tail, width = key
+		merged = []
+		for low, high in sorted(spans[key]):
+			if low > high:
+				continue
+			if merged and low <= merged[-1][1] + 1:
+				merged[-1][1] = max(merged[-1][1], high)
+			else:
+				merged.append([low, high])
+		for low, high in merged:
+			if written >= budget:
+				return names
+			last = min(high, low + budget - written - 1)
+			names.update('{}{:0{}d}{}'.format(head, number, width, tail) for number in range(low, last + 1))
+			written += last - low + 1
+	for text in other:
+		if written >= budget:
+			break
+		members = expand_ranges(text, limit)
+		names.update(members)
+		# a range past the limit comes back whole after about the limit's worth of names
+		count = _range_count(text)
+		written += max(len(members), min(count, limit) if count is not None else 0)
+	return names
 
 #%% ------------ Cache directory ----------------
 def _private_dir(path, create=True):
@@ -1189,18 +1488,55 @@ def _debug(message):
 		pass
 
 #%% ------------ Index sources ----------------
-def read_hosts_file(path):
-	'''name -> address from a hosts file.'''
-	hosts = {}
-	try:
-		with open(path, encoding='utf-8', errors='replace') as f:
-			for line in f:
-				fields = line.split('#', 1)[0].split()
-				for name in fields[1:]:
-					hosts.setdefault(name, fields[0])
-	except OSError:
-		pass
-	return hosts
+def _ssh_config_words(line):
+	'''
+	The keyword (lower case) and arguments of an ssh config line, split as ssh splits them.
+
+	The keyword ends at blanks or one "="; arguments are split at blanks, may be quoted with " or '
+	and escape a quote, a backslash or (unquoted) a space with a backslash; an argument starting
+	with # starts a comment. Returns ('', []) for an empty or comment line, and for a line ssh
+	rejects (an unterminated quote).
+	'''
+	line = line.lstrip(' \t').rstrip(' \t\r\n\f')
+	end = 0
+	while end < len(line) and line[end] not in ' \t=':
+		end += 1
+	keyword = line[:end].lower()
+	if not keyword or keyword.startswith('#'):
+		return '', []
+	# one "=" may stand between the keyword and the arguments, blanks around it or not
+	rest = line[end:].lstrip(' \t')
+	if rest.startswith('='):
+		rest = rest[1:]
+	args = []
+	index = 0
+	while index < len(rest):
+		if rest[index] in ' \t':
+			index += 1
+			continue
+		if rest[index] == '#':
+			break
+		arg = []
+		quote = ''
+		while index < len(rest):
+			char = rest[index]
+			if char == '\\' and index + 1 < len(rest) and (rest[index + 1] in '\'"\\' or (not quote and rest[index + 1] == ' ')):
+				arg.append(rest[index + 1])
+				index += 2
+				continue
+			if not quote and char in ' \t':
+				break
+			if not quote and char in '"\'':
+				quote = char
+			elif char == quote:
+				quote = ''
+			else:
+				arg.append(char)
+			index += 1
+		if quote:
+			return '', []
+		args.append(''.join(arg))
+	return keyword, args
 
 def read_ssh_config(path, base_dir, names, users, read):
 	'''
@@ -1223,22 +1559,16 @@ def read_ssh_config(path, base_dir, names, users, read):
 	read.append(path)
 	with f:
 		for line in f:
-			line = line.strip()
-			if not line or line.startswith('#'):
-				continue
-			key, _, value = line.replace('=', ' ', 1).partition(' ')
-			key = key.lower()
-			value = value.strip()
+			key, args = _ssh_config_words(line)
 			if key == 'host':
-				for pattern in value.split():
-					pattern = pattern.strip('"')
+				for pattern in args:
 					if pattern and not any(char in pattern for char in '*?!'):
 						names.add(pattern)
-			elif key == 'user' and value:
-				users.add(value.strip('"'))
+			elif key == 'user' and args and args[0]:
+				users.add(args[0])
 			elif key == 'include':
-				for pattern in value.split():
-					pattern = os.path.expanduser(pattern.strip('"'))
+				for pattern in args:
+					pattern = os.path.expanduser(pattern)
 					if not os.path.isabs(pattern):
 						pattern = os.path.join(base_dir, pattern)
 					for included in sorted(glob.glob(pattern)):
@@ -1317,6 +1647,13 @@ def _is_ip(text):
 	except ValueError:
 		return False
 
+def _in_environ(name):
+	'''Whether name is an environment variable. A name the locale cannot encode (Python 3.6 in the C locale) is none.'''
+	try:
+		return name in os.environ
+	except UnicodeEncodeError:
+		return False
+
 _ALIAS_VALUE_CHARS = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-,[]@*?:$')
 
 def collect_aliases(mssh, history_tokens, known):
@@ -1328,8 +1665,16 @@ def collect_aliases(mssh, history_tokens, known):
 	characters (paths, prompts, ...) never count.
 
 	Returns:
-		dict: name -> (source, member host names)
+		dict: name -> (source, member host names, the user each member is written with or '')
 	'''
+	def expand(name):
+		'''(member host names, their users): mssh keeps a member's user@ over -u.'''
+		members, users = [], []
+		for member in mssh.expand_hostnames_local([name])[0]:
+			user, at, host = member.partition('@')
+			members.append(host if at else member)
+			users.append(user if at else '')
+		return members, users
 	aliases = {}
 	try:
 		variables = mssh.readEnvFromFile()
@@ -1338,17 +1683,17 @@ def collect_aliases(mssh, history_tokens, known):
 	for name, value in variables.items():
 		if not name.isidentifier() or not value or not set(value) <= _ALIAS_VALUE_CHARS:
 			continue
-		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
+		members, users = expand(name)
 		if not members or members == [name]:
 			continue
 		if name in history_tokens or ',' in value or '[' in value or all(_is_ip(member) or member in known for member in members):
-			aliases[name] = ('env_file', members)
+			aliases[name] = ('env_file', members, users)
 	for name in history_tokens:
-		if name in aliases or not name.isidentifier() or name not in os.environ:
+		if name in aliases or not name.isidentifier() or not _in_environ(name):
 			continue
-		members = [member.split('@', 1)[-1] for member in mssh.expand_hostnames_local([name])[0]]
+		members, users = expand(name)
 		if members and members != [name]:
-			aliases[name] = ('env', members)
+			aliases[name] = ('env', members, users)
 	return aliases
 
 def file_signature(path):
@@ -1370,6 +1715,7 @@ def _import_mssh():
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
 RANGE_MEMBERS_LIMIT = 4096   # a range typed before adds its members as hosts up to this many
+RANGE_COUNT_LIMIT = 16384    # a range whose names may repeat is expanded to count its hosts up to this many names
 
 def serialize_knowledge(memory):
 	'''
@@ -1413,13 +1759,16 @@ def build_index(directory, now=None, mssh=None):
 	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
 	hosts = {}
 	def add(name, source, address=''):
-		if not name or not safe_field(name) or any(char in name for char in ' \t,'):
+		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
+		# systemd's ssh config) is never one host
+		if not name or not safe_field(name) or any(char in _HOST_SEPARATORS for char in name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
 		if address and not entry[1]:
 			entry[1] = address
-	for name, address in read_hosts_file(mssh.DEFAULT_HOST_FILE).items():
+	# mssh's own reading, so the names marked as from the hosts file are the ones it finds there
+	for name, address in mssh.read_hosts_file(mssh.DEFAULT_HOST_FILE).items():
 		add(name, SRC_HOSTS_FILE, address)
 	ssh_names, users, ssh_paths = set(), set(), []
 	read_ssh_config('~/.ssh/config', os.path.expanduser('~/.ssh'), ssh_names, users, ssh_paths)
@@ -1442,13 +1791,20 @@ def build_index(directory, now=None, mssh=None):
 					add(member, SRC_HISTORY)
 			continue
 		add(name, SRC_HISTORY)
-	for _, members in aliases.values():
+	for _, members, _ in aliases.values():
 		for member in members:
 			add(member, SRC_ALIAS)
 	names = sorted(hosts)
 	host_number = {name: number for number, name in enumerate(names)}
 	alias_names = sorted(aliases)
-	alias_rows = [[aliases[name][0]] + [str(host_number[member]) for member in aliases[name][1] if member in host_number] for name in alias_names]
+	alias_rows = []
+	# the user of each member in alias_rows, '' for none; a row without any is left empty
+	alias_user_rows = []
+	for name in alias_names:
+		source, members, member_users = aliases[name]
+		kept = [(member, user) for member, user in zip(members, member_users) if member in host_number]
+		alias_rows.append([source] + [str(host_number[member]) for member, _ in kept])
+		alias_user_rows.append([user for _, user in kept] if any(user for _, user in kept) else [])
 	group_rows = []
 	for text in mssh.compact_hostnames_local(names):
 		if '[' in text and safe_field(text):
@@ -1494,6 +1850,7 @@ def build_index(directory, now=None, mssh=None):
 		('host_meta', [[str(hosts[name][0]), hosts[name][1]] for name in names]),
 		('alias_names', [alias_names]),
 		('aliases', alias_rows),
+		('alias_users', alias_user_rows),
 		('groups', group_rows),
 		('unavailable', [unavailable]),
 		# option combinations main() ignores: [option, kind, why, others...]
@@ -1509,7 +1866,9 @@ TAIL_LIMIT_ENTRIES = 500
 ARP_TTL = 300.0
 LOCK_NAME = 'complete-index.lock'
 LOCK_STALE = 60.0
-FIRST_BUILD_BUDGET = 2.0
+LOCK_FAILED = 'failed'  # the last line of a rebuild lock kept after the build failed
+FIRST_BUILD_BUDGET = 2.0    # seconds the picker and the editor (no deadline) wait for the first index
+FIRST_BUILD_RESERVE = 0.1   # a query stops waiting for the first index this long before its deadline
 
 def check_freshness(index, now):
 	'''
@@ -1551,7 +1910,13 @@ def check_freshness(index, now):
 	return 'tail', lines
 
 def take_lock(path, now=None):
-	'''Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).'''
+	'''
+	Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).
+
+	The file says who took it (pid, time and a random token), so the process the lock was taken for
+	can tell later whether it still holds it (see release_lock).
+	'''
+	import binascii
 	now = time.time() if now is None else now
 	for _ in range(2):
 		try:
@@ -1571,9 +1936,56 @@ def take_lock(path, now=None):
 		except OSError:
 			return False
 		with os.fdopen(fd, 'w') as f:
-			f.write('{} {}\n'.format(os.getpid(), int(now)))
+			f.write('{} {} {}\n'.format(os.getpid(), int(now), binascii.hexlify(os.urandom(8)).decode('ascii')))
 		return True
 	return False
+
+def read_lock(path):
+	'''What the lock file at path says, or None when it cannot be read (gone, for one).'''
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			return f.read()
+	except OSError:
+		return None
+
+def release_lock(path, owner):
+	'''
+	Remove the lock at path if it still says owner (what read_lock gave when its holder started).
+
+	A lock older than LOCK_STALE is taken over by the next process that wants it, even when its
+	holder is still running (stuck past that, or the machine was suspended): that holder must leave
+	the new lock alone, or a third process would start beside the second.
+	'''
+	if owner is None or read_lock(path) != owner:
+		return
+	try:
+		os.unlink(path)
+	except OSError:
+		pass
+
+def keep_failed_lock(path, owner):
+	'''
+	After a failed run, keep the lock at path (if it still says owner) and add that it failed: the
+	next run starts once the lock goes stale, LOCK_STALE from now, instead of at the next query. A
+	failure that repeats (a full runtime directory, multiSSH3.py missing) would otherwise cost a
+	full run on every query.
+	'''
+	if owner is None or read_lock(path) != owner:
+		return
+	try:
+		with open(path, 'a') as f:
+			f.write(LOCK_FAILED + '\n')
+	except OSError:
+		# not marked (a query without an index waits its budget out), but kept all the same
+		try:
+			os.utime(path, None)
+		except OSError:
+			pass
+
+def rebuild_failed(directory):
+	'''Whether the last rebuild failed, less than LOCK_STALE ago (see keep_failed_lock).'''
+	content = read_lock(os.path.join(directory, LOCK_NAME))
+	return content is not None and content.endswith('\n' + LOCK_FAILED + '\n')
 
 def _spawn_detached(directory, lock_name, command):
 	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
@@ -1605,11 +2017,15 @@ def _load_index(path):
 		_debug('index not usable: {!r}'.format(e))
 		return None
 
-def load_for_query(directory, now):
+def load_for_query(directory, now, deadline=None):
 	'''
 	The index to answer from and the history lines it is missing.
 
-	Starts a rebuild when the index is stale, and waits up to FIRST_BUILD_BUDGET for the first one.
+	Starts a rebuild when the index is stale. Without an index, starts the first build and waits for
+	it up to FIRST_BUILD_BUDGET; with a deadline (time.monotonic()), only until FIRST_BUILD_RESERVE
+	before it: the shell stops waiting at its deadline, so the query then answers without the index
+	while the build goes on. It stops waiting when that build failed (the next one starts when its
+	lock goes stale).
 
 	Returns:
 		tuple: (NsvIndex or None, history tail lines)
@@ -1619,8 +2035,13 @@ def load_for_query(directory, now):
 	if index is None:
 		spawn_rebuild(directory)
 		until = time.monotonic() + FIRST_BUILD_BUDGET
-		while index is None and time.monotonic() < until:
-			time.sleep(0.05)
+		if deadline is not None:
+			until = min(until, deadline - FIRST_BUILD_RESERVE)
+		while index is None and not rebuild_failed(directory):
+			left = until - time.monotonic()
+			if left <= 0:
+				break
+			time.sleep(min(0.02, left))
 			if os.path.exists(path):
 				index = _load_index(path)
 		if index is None:
@@ -1637,6 +2058,8 @@ PROBE_LOCK_NAME = 'probe.lock'
 VALIDITY_FRESH = 600.0  # seconds a valid / invalid answer stays fresh
 UNSURE_FRESH = 60.0     # seconds an unsure answer stays fresh
 PING_FRESH = 60.0       # seconds a ping result stays fresh (a host on the line is pinged again after)
+ANSWER_KEEP = 86400.0   # seconds the prober keeps when a host last answered ping, at least (answer_horizon)
+ANSWER_ROWS = 10000     # at most this many hosts are kept only for when they last answered, the latest (prune_host_states)
 
 def boot_id():
 	'''An identifier of the current boot, or None where the system has none.'''
@@ -1678,6 +2101,26 @@ def needs_probe(state, now):
 		return True
 	validity = state.fresh_validity(now)
 	return not validity or (validity != 'invalid' and not state.fresh_ping(now))
+
+def prune_host_states(states, now, horizon):
+	'''
+	The states worth writing down (host -> HostState, the same objects): those with a fresh validity
+	or ping, which queries use as they are, and of the rest the ANSWER_ROWS hosts that answered
+	ping latest, within horizon seconds. The prober carries a host's last answer into its next ping,
+	which is called unreachable when silent and that answer is within the ping expiry. A state left
+	out is as good as none: never answered, or longer ago than any expiry the horizon allows for.
+	'''
+	kept = {}
+	answered = []
+	for host, state in states.items():
+		if state.fresh_validity(now) or state.fresh_ping(now):
+			kept[host] = state
+		elif state.answered_at and now - state.answered_at <= horizon:
+			answered.append((-state.answered_at, host))
+	answered.sort()
+	for _, host in answered[:ANSWER_ROWS]:
+		kept[host] = states[host]
+	return kept
 
 _VALIDITIES = ('valid', 'invalid', 'unsure')
 _PINGS = ('', 'answer', 'silent', 'none')
@@ -1812,8 +2255,10 @@ def take_probe_queue(directory):
 
 #%% ------------ Prober ----------------
 PROBE_RUN_LIMIT = 120.0  # seconds one prober run may last; the next query starts another for what is left
-PING_COMMAND = ('ping', '-c2', '-i0.2', '-W1', '-q')
+PING_OPTIONS = ('-i0.2', '-W1', '-q')
+PING_COMMAND = ('ping', '-c2') + PING_OPTIONS
 PING_TIMEOUT = 10   # seconds: PING_COMMAND is done in about one, unless its own name lookup hangs
+PING_LOOPBACK = '127.0.0.1'  # pinged once a run, to tell whether ping works here at all
 DNS_TIMEOUT = 2.0
 
 def _out_of_resources(error):
@@ -1838,12 +2283,34 @@ def probe_parallelism(mssh):
 		pass
 	return max(parallel, 4)
 
+def ping_works():
+	'''
+	Whether ping can work here at all, from one ping of the loopback address with the prober's
+	options. Without permission (no CAP_NET_RAW, a group outside net.ipv4.ping_group_range) ping
+	fails for every host, yet no one host's failure tells: iputils ping exits 2 both for that and
+	for a name it cannot resolve, busybox ping 1 both for that and for silence, and their messages
+	are translated. The loopback address needs no name lookup, so a failure there with a message,
+	or with an exit code other than 1 (silence), means ping cannot work. A loopback that is silent
+	without saying why (a firewall dropping ICMP) leaves ping on, as does a check that cannot
+	finish for now (out of descriptors or processes, out of time).
+	'''
+	import subprocess
+	argv = [PING_COMMAND[0], '-c1'] + list(PING_OPTIONS) + [PING_LOOPBACK]
+	try:
+		result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PING_TIMEOUT)
+	except subprocess.TimeoutExpired:
+		return True
+	except OSError as e:
+		# out of resources says nothing yet; otherwise there is no ping command, or one we may not run
+		return _out_of_resources(e)
+	return result.returncode == 0 or (result.returncode == 1 and not result.stderr.strip())
+
 def ping_host(host):
 	'''
-	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (no permission, a name it
-	cannot resolve) or runs out of time (stuck on its name lookup: a slow DNS server says nothing
-	about the host). Raises FileNotFoundError without a ping command, OSError when out of
-	descriptors or processes.
+	'answer' or 'silent' after two pings; 'none' when ping fails otherwise (a name it cannot
+	resolve; run_probe finds out first whether ping works at all, see ping_works) or runs out of
+	time (stuck on its name lookup: a slow DNS server says nothing about the host). Raises
+	FileNotFoundError without a ping command, OSError when out of descriptors or processes.
 	'''
 	import subprocess
 	argv = list(PING_COMMAND) + (['-6'] if ':' in host else []) + [host]
@@ -1858,6 +2325,22 @@ def ping_host(host):
 			raise
 		return 'none'
 	return {0: 'answer', 1: 'silent'}.get(code, 'none')
+
+def answer_horizon(mssh):
+	'''
+	Seconds the prober keeps when a host last answered ping: the longest ping expiry it can see
+	($MSSH_COMPLETE_PING_TTL, mssh's unreachable host expiry from the mssh config), and ANSWER_KEEP
+	at least, for -uhe on a line, which it cannot.
+	'''
+	horizon = ANSWER_KEEP
+	ttl = os.environ.get('MSSH_COMPLETE_PING_TTL', '')
+	if _is_digits(ttl):
+		horizon = max(horizon, float(ttl))
+	try:
+		horizon = max(horizon, float(mssh.DEFAULT_UNAVAILABLE_HOST_EXPIRY))
+	except (AttributeError, TypeError, ValueError):
+		pass
+	return horizon
 
 def _probe_batch(mssh, hosts, states, now, ping_available):
 	'''
@@ -1909,25 +2392,33 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 		thread.join()
 	return sorted(retry, key=hosts.index)
 
-def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
+def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=None):
 	'''
 	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
-	learned in host-state.tsv after each batch, until the queue is empty or limit seconds have
-	passed. Hosts left over go back into the queue. Never connects to a host itself: only DNS,
-	ssh -G (which reads the ssh config, running the commands of its Match exec lines) and ping.
+	learned in host-state.tsv after each batch (without what no query can use any more:
+	prune_host_states), until the queue is empty or limit seconds have passed. Hosts left over go
+	back into the queue. Never connects to a host itself: only DNS, ssh -G (which reads the ssh
+	config, running the commands of its Match exec lines) and ping.
+
+	With lock (the lock file this run holds; owner is what it said when the run started, read now
+	when not given), the run keeps the lock fresh after each batch, and stops, leaving its hosts
+	queued, once the lock says something else: another prober took it over as stale.
 
 	Returns:
 		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
 	'''
+	if lock and owner is None:
+		owner = read_lock(lock)
 	try:
 		os.nice(10)
 	except (AttributeError, OSError):
 		pass
 	mssh = _import_mssh()
 	parallel = probe_parallelism(mssh)
+	horizon = answer_horizon(mssh)
 	started = now()
 	checked = 0
-	ping_available = [True]
+	ping_available = None
 	while now() - started < limit:
 		hosts = take_probe_queue(directory)
 		if not hosts:
@@ -1939,10 +2430,19 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT):
 			if now() - started >= limit:
 				queue_probes(directory, todo[::-1])
 				return {'checked': checked, 'parallel': parallel}
+			if ping_available is None:
+				# once a run, and only once there is a host to check
+				ping_available = [ping_works()]
 			batch, todo = todo[:parallel], todo[parallel:]
 			retry = _probe_batch(mssh, batch, states, now, ping_available)
+			if lock and read_lock(lock) != owner:
+				# the lock was taken over (this batch ran past LOCK_STALE, or the machine was
+				# suspended): the prober holding it writes host-state.tsv now, and writing ours would
+				# undo its results; it takes these hosts from the queue instead
+				queue_probes(directory, (batch + todo)[::-1])
+				return {'checked': checked, 'parallel': parallel}
 			checked += len(batch) - len(retry)
-			write_host_states(directory, states)
+			write_host_states(directory, prune_host_states(states, now(), horizon))
 			if lock:
 				# a lock that keeps changing is not stale
 				try:
@@ -1962,7 +2462,7 @@ def spawn_probe(directory):
 	return _spawn_detached(directory, PROBE_LOCK_NAME, 'probe')
 
 #%% ------------ Diagnostics ----------------
-DIAGNOSTIC_KINDS = ('unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
+DIAGNOSTIC_KINDS = ('command', 'unknown', 'range', 'unreachable', 'options')  # the order warnings are shown in
 MAX_MESSAGE = 160
 WARNING_ASKS = (0.3, 1.0, 3.0)  # seconds after an answer with the prober still working when a frontend asks again
 
@@ -1983,13 +2483,77 @@ def _punctuation():
 	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
 	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
 
-# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
-_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+def _shell_operator(raw):
+	'''
+	Where a word as typed holds an unquoted shell operator, parenthesis or backtick, or starts a
+	comment: the shell's, not part of the word mssh gets (-1: none).
+	'''
+	if raw.startswith('#'):
+		return 0
+	index = 0
+	while index < len(raw):
+		char = raw[index]
+		if char == '\\':
+			index += 2
+		elif char == "'" or (char == '$' and raw[index + 1:index + 2] == "'"):
+			# '...' ends at the next quote, $'...' at the next one not escaped
+			index = raw.find("'", index + 1) if char == "'" else index + 2
+			while char == '$' and 0 <= index < len(raw) and raw[index] != "'":
+				index += 2 if raw[index] == '\\' else 1
+			if index < 0 or index >= len(raw):
+				return -1
+			index += 1
+		elif char == '"':
+			index += 1
+			while index < len(raw) and raw[index] != '"':
+				index += 2 if raw[index] == '\\' else 1
+			index += 1
+		elif char in '|&;<>()`':
+			return index
+		else:
+			index += 1
+	return -1
+
+def _mssh_argv(line, tokens, start):
+	'''
+	The words the shell gives the mssh at tokens[start]: up to the first unquoted shell operator,
+	command substitution, comment or line break. A word holding an operator ("-aux|grep") keeps what
+	comes before it, unless that is a redirection's descriptor ("2>/dev/null").
+	'''
+	argv = []
+	end = tokens[start].start + len(tokens[start].raw)
+	for token in tokens[start + 1:]:
+		if token.start < 0 or '\n' in line[end:token.start]:
+			break
+		cut = _shell_operator(token.raw)
+		if cut < 0:
+			argv.append(token)
+			end = token.start + len(token.raw)
+			continue
+		head = token.raw[:cut]
+		if head and not (token.raw[cut] in '<>' and head.isdecimal()):
+			word = lex(head)[0]
+			argv.append(Token(word.text, word.raw, word.quoted, word.open_quote, token.start))
+		break
+	return argv
+
+def _quoted_command(text):
+	'''text in single quotes, or in double quotes when it holds single quotes and nothing double quotes expand; None otherwise.'''
+	if any(char < ' ' for char in text):
+		return None
+	if "'" not in text:
+		return "'" + text + "'"
+	if not any(char in text for char in '"$`\\!'):
+		return '"' + text + '"'
+	return None
+
+# words the shell may expand into other words: what mssh gets from them is not known here
+_EXPANDED = frozenset('$`*?[{~')
 
 def _host_parts(token):
 	'''
-	(host name without user@, (start, end) in the line) for each host of a hosts word. A quoted or
-	escaped word is marked whole: its parts have no exact place in the line.
+	(user typed before the @ or '', host name without user@, (start, end) in the line) for each host
+	of a hosts word. A quoted or escaped word is marked whole: its parts have no exact place in the line.
 	'''
 	text = token.text
 	exact = token.raw == text and token.start >= 0
@@ -2002,11 +2566,332 @@ def _host_parts(token):
 		end = position
 		while end < len(text) and text[end] not in _HOST_SEPARATORS:
 			end += 1
-		name = text[position:end].rsplit('@', 1)[-1].strip('$')
+		user, _, name = text[position:end].rpartition('@')
 		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
-		parts.append((name, span))
+		parts.append((user, name.strip('$'), span))
 		position = end
 	return parts
+
+def _run_name(host, typed_user, line_user, own_user=''):
+	'''
+	The name mssh gives a host in this run: what it records a failure under in unavailable_hosts.csv
+	and looks up to skip the host. The user typed with the host, else -u (line_user), else none.
+	own_user: the user an alias member is written with. -u does not replace it, a user typed with the
+	alias goes in front of it (for root@dbs with dbs=postgres@db1 mssh runs root@postgres@db1).
+	'''
+	if own_user:
+		host = own_user + '@' + host
+		line_user = ''
+	user = typed_user or line_user
+	return user + '@' + host if user else host
+
+# characters that can start an expansion the shell makes before mssh sees the word
+_EXPANSION_STARTS = frozenset('$`~{!(')
+# what follows a $ that the shell expands: a name, a digit, ${...}, $(...), $[...], a special parameter, zsh's flags
+_PARAMETER_STARTS = frozenset('_{([@*#?$!-=~^+')
+
+def _quoting(raw):
+	'''
+	How each character of a word's dequoted text (lex's Token.text) was typed: (how, stretch),
+	how 'u' unquoted, 'd' in "...", 'l' taken literally (in '...' or $'...', or after a backslash);
+	stretch numbers the quoted and unquoted stretches of the word. Reads quotes as lex does.
+	'''
+	marks = []
+	stretch = 0
+	index = 0
+	length = len(raw)
+	while index < length:
+		char = raw[index]
+		if char == '\\':
+			if index + 1 < length and raw[index + 1] != '\n':
+				marks.append(('l', stretch + 1))
+			index += 2
+			stretch += 2
+		elif char == "'":
+			end = raw.find("'", index + 1)
+			end = length if end < 0 else end
+			marks.extend([('l', stretch + 1)] * (end - index - 1))
+			index = end + 1
+			stretch += 2
+		elif char == '"':
+			index += 1
+			while index < length and raw[index] != '"':
+				if raw[index] == '\\' and index + 1 < length and raw[index + 1] in '"\\$`\n':
+					if raw[index + 1] != '\n':
+						marks.append(('l', stretch + 1))
+					index += 2
+				else:
+					marks.append(('d', stretch + 1))
+					index += 1
+			index += 1
+			stretch += 2
+		elif char == '$' and index + 1 < length and raw[index + 1] == "'":
+			index += 2
+			while index < length and raw[index] != "'":
+				if raw[index] == '\\' and index + 1 < length:
+					text, index = _ansi_c_escape(raw, index + 1)
+					marks.extend([('l', stretch + 1)] * len(text))
+				else:
+					marks.append(('l', stretch + 1))
+					index += 1
+			index += 1
+			stretch += 2
+		else:
+			marks.append(('u', stretch))
+			index += 1
+	return marks
+
+def _shell_expansions(text, marks, shell):
+	'''
+	(start, end) stretches of a word's dequoted text that the shell replaces before it runs the
+	command: $NAME, ${...}, $(...), $((...)), `...`, a leading ~, {a,b}, and in bash and zsh
+	{1..3} and history's !$; also an unquoted (...) (fish's command substitution; a glob pattern
+	or an error in bash and zsh). Globs are left alone: one matching no file reaches mssh as
+	typed, and mssh takes [ ], * and ? in ranges. marks: _quoting's.
+	'''
+	length = len(text)
+
+	def closing(index, how):
+		'''The index after the bracket matching the one at index (nested ones skipped), or None.'''
+		opening = text[index]
+		close = {'{': '}', '(': ')', '[': ']'}[opening]
+		depth = 0
+		for end in range(index, length):
+			if marks[end][0] not in how:
+				continue
+			if text[end] == opening:
+				depth += 1
+			elif text[end] == close:
+				depth -= 1
+				if depth == 0:
+					return end + 1
+		return None
+
+	# unquoted braces: where each one closes, and whether it holds a , of its own
+	braces = {}
+	stack = []
+	for position in range(length):
+		char = text[position]
+		if marks[position][0] != 'u':
+			continue
+		if char == '{':
+			stack.append([position, False])
+		elif char == '}' and stack:
+			start, listed = stack.pop()
+			braces[start] = (position + 1, listed)
+		elif stack and char == ',':
+			stack[-1][1] = True
+
+	found = []
+	index = 0
+	while index < length:
+		char, how = text[index], marks[index][0]
+		end = None
+		# the next character, typed in the same stretch: "$" and $"..." are no expansions
+		following = text[index + 1] if index + 1 < length and marks[index + 1] == marks[index] else ''
+		if how == 'l':
+			pass
+		elif char == '$' and following and (following.isalnum() or following in _PARAMETER_STARTS):
+			if following in '{([':
+				# unclosed: the shell asks for more or fails, mssh gets nothing of it either way
+				end = closing(index + 1, 'ud') or length
+			elif following.isalnum() or following == '_':
+				end = index + 2
+				while end < length and (text[end].isalnum() or text[end] == '_') and marks[end] == marks[index]:
+					end += 1
+			else:
+				end = index + 2
+		elif char == '`':
+			end = next((position + 1 for position in range(index + 1, length) if text[position] == '`' and marks[position][0] != 'l'), length)
+		elif char == '!' and shell != 'fish' and following and following not in ' \t\n=(':
+			# history expansion, in "..." too: how far the event reaches is hard to tell
+			end = length
+		elif how != 'u':
+			pass
+		elif char == '~' and index == 0:
+			end = text.find('/') if '/' in text else length
+		elif char == '{' and index in braces:
+			close, listed = braces[index]
+			if listed or (all(how == 'u' for how, _ in marks[index:close]) and _brace_sequence(text[index + 1:close - 1], shell)):
+				end = close
+		elif char == '(':
+			end = closing(index, 'u') or length
+		if end is None:
+			index += 1
+		else:
+			found.append((index, end))
+			index = max(end, index + 1)
+	return found
+
+def _without_shell_expansions(token, shell, users=False):
+	'''
+	A hosts word with the hosts the shell rewrites before mssh sees them ($NODES, $(cat file),
+	node{1,2}, ~, !$, ...) blanked out: mssh gets something else, nothing can be said about them.
+	Text the shell passes as typed (in '...', after a backslash) stays: mssh reads it itself.
+
+	users: the word with only the hosts the shell rewrites just the user of ($USER@gpu017) kept
+	instead, or None when it has none: mssh gets the host as typed, under a user not known here.
+	'''
+	if not _EXPANSION_STARTS.intersection(token.raw):
+		return None if users else token
+	text = token.text
+	marks = _quoting(token.raw)
+	# lex read the word another way: say nothing about it
+	spans = _shell_expansions(text, marks, shell) if len(marks) == len(text) else [(0, len(text))]
+	if not spans:
+		return None if users else token
+	expanded = [False] * len(text)
+	for start, end in spans:
+		expanded[start:end] = [True] * (end - start)
+	blanked = list(text)
+	kept = False
+	position = 0
+	while position < len(text):
+		end = position
+		while end < len(text) and text[end] not in _HOST_SEPARATORS:
+			end += 1
+		at = text.rfind('@', position, end)
+		# the shell rewrites a piece of the host, or only of its user@
+		user_only = any(expanded[position:end]) and at >= 0 and not any(expanded[at:end])
+		keep = user_only if users else not any(expanded[position:end])
+		if keep:
+			kept = True
+		else:
+			blanked[position:end] = ' ' * (end - position)
+		position = end + 1
+	if users and not kept:
+		return None
+	blanked = ''.join(blanked)
+	return Token(blanked, blanked if token.raw == text else token.raw, token.quoted, token.open_quote, token.start)
+
+# a brace warning lists the hosts to write instead up to this many
+BRACE_LIST_LIMIT = 16
+
+def _is_integer(text):
+	return _is_digits(text[1:] if text.startswith('-') else text)
+
+def _brace_sequence(inside, shell):
+	'''
+	What the shell puts in place of a {x..y} or {x..y..step}, given what is inside the braces:
+	(a range of numbers, the width the shell pads them to, 0 for none), or (a list of characters,
+	0). None when the shell leaves the braces as typed (always in fish, which has no sequences).
+	'''
+	fields = inside.split('..')
+	if shell == 'fish' or len(fields) not in (2, 3):
+		return None
+	first, last = fields[0], fields[1]
+	step = abs(int(fields[2])) if len(fields) == 3 and _is_integer(fields[2]) else (1 if len(fields) == 2 else 0)
+	if not step:
+		return None
+	if _is_integer(first) and _is_integer(last):
+		low, high = int(first), int(last)
+		# a leading zero on either end pads every number to the longer end
+		padded = any(len(field.lstrip('-')) > 1 and field.lstrip('-').startswith('0') for field in (first, last))
+		numbers = range(low, high + 1, step) if low <= high else range(low, high - 1, -step)
+		return numbers, max(len(first), len(last)) if padded else 0
+	# letters; zsh takes any two characters
+	if len(first) == 1 and len(last) == 1 and (shell == 'zsh' or ((first + last).isalpha() and max(first, last) < '\x80')):
+		low, high = ord(first), ord(last)
+		codes = range(low, high + 1, step) if low <= high else range(low, high - 1, -step)
+		return [chr(code) for code in codes], 0
+	return None
+
+def _brace_values(text, marks, start, end, shell):
+	'''
+	(values, width) for the braces text[start:end] the shell expands: a list for {a,b}, else
+	_brace_sequence's. (None, 0) when they nest or the shell leaves them as typed.
+	'''
+	inner = range(start + 1, end - 1)
+	if any(text[position] in '{}' and marks[position][0] == 'u' for position in inner):
+		return None, 0
+	cuts = [position for position in inner if text[position] == ',' and marks[position][0] == 'u']
+	if cuts:
+		bounds = [start] + cuts + [end - 1]
+		return [text[low + 1:high] for low, high in zip(bounds, bounds[1:])], 0
+	if any(marks[position][0] != 'u' for position in inner):
+		return None, 0
+	return _brace_sequence(text[start + 1:end - 1], shell) or (None, 0)
+
+def _count(values):
+	'''How many values a list or range holds: len() of a range stops at sys.maxsize ({1..99999999999999999999}).'''
+	if isinstance(values, list):
+		return len(values)
+	return max(0, (values.stop - values.start - (1 if values.step > 0 else -1)) // values.step + 1)
+
+def _closed_brackets(text):
+	'''Whether every [ of text closes before another opens: mssh pairs its [ ] as typed when more are added around it.'''
+	inside = False
+	for char in text:
+		if char == '[':
+			if inside:
+				return False
+			inside = True
+		elif char == ']':
+			inside = False
+	return not inside
+
+def _brace_split(token, shell):
+	'''
+	The warning for a hosts word the shell makes several words of by brace expansion (node{1,2},
+	gpu{01..16}): mssh takes the first as its hosts and runs the second as the command. It says
+	what to write instead (a list, an mssh range) for a word typed without quotes. None for any
+	other word.
+	'''
+	if '{' not in token.raw:
+		return None
+	text = token.text
+	marks = _quoting(token.raw)
+	if len(marks) != len(text):
+		return None
+	groups = []
+	for start, end in _shell_expansions(text, marks, shell):
+		if text[start] == '{':
+			values, width = _brace_values(text, marks, start, end, shell)
+			if values is None:
+				return None
+			groups.append((start, end, values, width))
+	bounds = [0] + [edge for start, end, _, _ in groups for edge in (start, end)] + [len(text)]
+	# braces the shell leaves around or between expanded ones change how it reads them: not worked out
+	if any(text[position] in '{}' and marks[position][0] == 'u' for low, high in zip(bounds[::2], bounds[1::2]) for position in range(low, high)):
+		return None
+	pieces = [text[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
+	count = 1
+	for _, _, values, _ in groups:
+		count *= _count(values)
+	# the shell drops an empty word: what it leaves is not worked out
+	if count < 2 or (not ''.join(pieces) and any('' in values for _, _, values, _ in groups if isinstance(values, list))):
+		return None
+
+	def value(group, number):
+		_, _, values, width = group
+		return values[number] if isinstance(values, list) else '{:0{width}d}'.format(values[number], width=width)
+
+	def mssh_range(group):
+		'''A {1..16} as an mssh range, [1-16]. mssh pads to the shorter end: both ends get the shell's width.'''
+		_, _, numbers, width = group
+		low, high = sorted((numbers[0], numbers[-1]))
+		return '[{:0{width}d}-{:0{width}d}]'.format(low, high, width=width)
+
+	def word(number):
+		'''Word number (0: the first) of those the shell makes: bash and zsh vary the last braces fastest, fish the first.'''
+		chosen = {}
+		for index in (range(len(groups)) if shell == 'fish' else range(len(groups) - 1, -1, -1)):
+			number, chosen[index] = divmod(number, _count(groups[index][2]))
+		return pieces[0] + ''.join(value(groups[index], chosen[index]) + pieces[index + 1] for index in range(len(groups)))
+
+	dash, _ = _punctuation()
+	message = '{}: the shell makes {} words of this; mssh would run {} as the command'.format(token.raw, count, word(1))
+	meant = None
+	if token.raw == text:
+		if (all(isinstance(values, range) and abs(values.step) == 1 and min(values[0], values[-1]) >= 0 for _, _, values, _ in groups)
+				and all(_closed_brackets(piece) for piece in pieces)):
+			meant = pieces[0] + ''.join(mssh_range(group) + pieces[index + 1] for index, group in enumerate(groups))
+		elif count <= BRACE_LIST_LIMIT:
+			# hosts beside the braces once
+			meant = ','.join(_unique(host for number in range(count) for host in word(number).split(',')))
+	if meant is not None and len(message) + len(dash) + len(meant) + len('did you mean ?') <= MAX_MESSAGE:
+		message += dash + 'did you mean {}?'.format(meant)
+	return Diagnostic(token.start, token.start + len(token.raw), 'range', message)
 
 def _is_ip_address(name):
 	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
@@ -2063,26 +2948,88 @@ def _ipv4_members(name, limit=None):
 	limit = RANGE_MEMBERS_LIMIT if limit is None else limit
 	return ['.'.join(address) for address in itertools.islice(itertools.product(*octets), limit)], total
 
-def _range_count(text):
-	'''How many names expand_ranges makes of text, without a limit; None when it cannot expand it.'''
+def _range_size(text):
+	'''
+	(how many names expand_ranges makes of text, repeats included, whether a name may come more
+	than once), or None when it cannot expand text (letters, hex, a [ inside [ ]).
+
+	No name comes twice when each [ ] holds one value or one a-b range, and each range but the
+	last makes values of one width or is followed by a character that is not a digit: a name then
+	splits into its values one way only. node[1-16], n[1-9][1-16] and rack[1-12]-n[1-64] cannot
+	repeat; n[1-11][1-11] makes n111 twice (1 then 11, 11 then 1), and [1-2,2-3] makes 2 twice.
+	'''
+	count = 1
+	repeats = False
+	# whether the value of the [ ] before may run on into the next [ ]'s
+	runs_on = False
+	position = 0
+	while True:
+		start = text.find('[', position)
+		end = text.find(']', start + 1)
+		if start < 0 or end < 0:
+			return count, repeats
+		repeats = repeats or runs_on
+		parts = text[start + 1:end].split(',')
+		size = 0
+		widths = set()
+		for part in parts:
+			low, sep, high = part.strip().partition('-')
+			if sep and _is_digits(low) and _is_digits(high):
+				first, last = int(low), int(high)
+				if last >= first:
+					size += last - first + 1
+					# zero padded to the shorter bound's width, longer numbers as they are
+					width = min(len(low), len(high))
+					widths.update((max(width, len(str(first))), max(width, len(str(last)))))
+			elif not sep and part.strip() and '[' not in part:
+				size += 1
+				widths.add(len(part.strip()))
+			else:
+				return None
+		count *= size
+		repeats = repeats or len(parts) > 1
+		following = text[end + 1:end + 2]
+		runs_on = len(widths) > 1 and (following == '[' or _is_digits(following))
+		position = end + 1
+
+def _has_open_range(text):
+	'''Whether a [] group of text holds a range with an end missing (node[1-], rack[-x]), as multiSSH3._has_open_range.'''
 	start = text.find('[')
-	end = text.find(']', start + 1)
-	if start < 0 or end < 0:
-		return 1
-	count = 0
-	for part in text[start + 1:end].split(','):
-		low, sep, high = part.strip().partition('-')
-		if sep and _is_digits(low) and _is_digits(high):
-			count += max(int(high) - int(low) + 1, 0)
-		elif not sep and part.strip():
-			count += 1
-		else:
-			return None
-	rest = _range_count(text[end + 1:])
-	return None if rest is None else count * rest
+	while start >= 0:
+		end = text.find(']', start + 1)
+		if end < 0:
+			return False
+		for part in text[start + 1:end].split(','):
+			low, sep, high = part.partition('-')
+			if sep and not (low.strip() and high.strip()):
+				return True
+		start = text.find('[', end + 1)
+	return False
+
+def _range_count(text):
+	'''
+	How many hosts expand_ranges makes of text: each name once, as mssh keeps it. None when it
+	cannot expand text, or when its names may repeat (_range_size) and there are more than
+	RANGE_COUNT_LIMIT of them: those are counted by expanding them, any other range without.
+	'''
+	size = _range_size(text)
+	if size is None:
+		return None
+	count, repeats = size
+	if not repeats:
+		return count
+	return len(set(_range_names(text))) if count <= RANGE_COUNT_LIMIT else None
 
 def _iter_range(text):
-	'''The names expand_ranges makes of text, one at a time (text must be one _range_count can count).'''
+	'''The names expand_ranges makes of text, one at a time, each once (text must be one _range_count can count).'''
+	names = _range_names(text)
+	if not _range_size(text)[1]:
+		return names
+	seen = set()
+	return (name for name in names if not (name in seen or seen.add(name)))
+
+def _range_names(text):
+	'''The names expand_ranges makes of text, one at a time, repeats included.'''
 	start = text.find('[')
 	end = text.find(']', start + 1)
 	if start < 0 or end < 0:
@@ -2097,7 +3044,7 @@ def _iter_range(text):
 		else:
 			values = [part.strip()]
 		for value in values:
-			for name in _iter_range(head + value + tail):
+			for name in _range_names(head + value + tail):
 				yield name
 
 def _padded_range(name):
@@ -2110,22 +3057,6 @@ def _padded_range(name):
 	if not sep or not _is_digits(low) or not _is_digits(high) or low.startswith('0') or len(low) >= len(high):
 		return None
 	return '{}[{}-{}]{}'.format(name[:start], low.zfill(len(high)), high, name[end + 1:])
-
-def _strip_zeros(name):
-	'''name with leading zeros dropped from every run of digits: gpu017 -> gpu17.'''
-	out = []
-	index = 0
-	while index < len(name):
-		end = index
-		while end < len(name) and name[end] in _DIGITS:
-			end += 1
-		if end > index:
-			out.append(name[index:end].lstrip('0') or '0')
-			index = end
-		else:
-			out.append(name[index])
-			index += 1
-	return ''.join(out)
 
 def _one_edit(typed, other):
 	'''Whether other is one insertion, deletion, substitution or swap of adjacent characters away from typed.'''
@@ -2142,6 +3073,77 @@ def _one_edit(typed, other):
 	short, long_ = (typed, other) if len(typed) < len(other) else (other, typed)
 	return any(long_[:index] + long_[index + 1:] == short for index in range(len(long_)))
 
+# Did-you-mean searches the sorted host names by bisecting: with 50k hosts, stripping or comparing
+# every name cost 33 ms per unknown host, and a line with a dozen of them outlasted the shells' wait.
+
+def _holds(names, name, lo=0, hi=None):
+	'''Whether the sorted list names holds name (between lo and hi).'''
+	index = bisect_left(names, name, lo, len(names) if hi is None else hi)
+	return index < len(names) and names[index] == name
+
+def _starts_some(names, prefix):
+	'''Whether a name of the sorted list names starts with prefix.'''
+	index = bisect_left(names, prefix)
+	return index < len(names) and names[index].startswith(prefix)
+
+def _zero_variants(names, name):
+	'''
+	The names of the sorted list names equal to name once leading zeros are dropped from every run
+	of digits (gpu017 -> gpu17; 000 -> 0), name itself included, in sorted order. They differ from
+	name only in how many zeros lead each run, so they are found run by run, never stripping a name.
+	'''
+	runs = []   # (the text before a run of digits, the run without its leading zeros)
+	text_start = index = 0
+	while index < len(name):
+		if name[index] not in _DIGITS:
+			index += 1
+			continue
+		end = index
+		while end < len(name) and name[end] in _DIGITS:
+			end += 1
+		runs.append((name[text_start:index], name[index:end].lstrip('0') or '0'))
+		text_start = index = end
+	tail = name[text_start:]
+	prefixes = ['']
+	for text, digits in runs:
+		grown = []
+		for prefix in prefixes:
+			head = prefix + text
+			zeros = ''
+			while _starts_some(names, head + zeros):
+				if _starts_some(names, head + zeros + digits):
+					grown.append(head + zeros + digits)
+				zeros += '0'
+		prefixes = grown
+	return sorted(prefix + tail for prefix in prefixes if _holds(names, prefix + tail))
+
+def _one_edit_names(names, name):
+	'''
+	The names of the sorted list names one edit away from name (_one_edit), in sorted order. A
+	changed or added character follows a part of name that some names start with: for each such
+	part only the characters that follow it in names are tried, each block of names found by bisecting.
+	'''
+	found = set()
+	for index in range(len(name) - 1):
+		found.add(name[:index] + name[index + 1] + name[index] + name[index + 2:])
+	for index in range(len(name)):
+		found.add(name[:index] + name[index + 1:])
+	found = {candidate for candidate in found if _holds(names, candidate)}
+	for index in range(len(name) + 1):
+		head = name[:index]
+		block = bisect_left(names, head)
+		if block < len(names) and names[block] == head:
+			block += 1
+		while block < len(names) and names[block].startswith(head):
+			char = names[block][index]
+			# names starting with head + char are names[block:end]
+			end = bisect_left(names, head + chr(ord(char) + 1), block) if ord(char) < sys.maxunicode else len(names)
+			for candidate in (head + char + name[index + 1:], head + char + name[index:]):
+				if _holds(names, candidate, block, end):
+					found.add(candidate)
+			block = end
+	return sorted(candidate for candidate in found if _one_edit(name, candidate))
+
 def _option_name(text, attached):
 	'''An option word without the value given with it: -ip=secret -> -ip, -uroot -> -u.'''
 	if attached is None:
@@ -2156,6 +3158,7 @@ def _unique(names):
 #%% ------------ Engine ----------------
 PRIOR = 0.001              # score of a candidate that nothing in history supports
 GROUP_THRESHOLD = 50       # list single hosts once a prefix matches at most this many
+HIDDEN_MEMBERS_LIMIT = 131072  # members of ranges typed before written out to hide them from a hosts TAB, at most (~25 ms)
 UNAVAILABLE_PENALTY = 0.5  # score factor for hosts mssh found unreachable
 SHELL_WEIGHT = 0.25        # weight of a shell history line next to an mssh history use
 MAX_CANDIDATES = 200
@@ -2272,6 +3275,7 @@ def shell_history_knowledge(lines, spec):
 	other lines as local commands.
 	'''
 	memory = MemoryKnowledge()
+	memory.shell = True
 	count = len(lines)
 	for position, line in enumerate(lines):
 		line = line.strip()
@@ -2312,9 +3316,28 @@ def _shell_escape(shell, text, strict=False):
 		return text
 	return ''.join('\\' + char if char in special else char for char in text)
 
+# what an open quote cannot hold as it is: in "..." \ $ ` and " are read, in $'...' a \ starts an escape,
+# and ' ends the other two
+_QUOTE_SPECIAL = {'"': '"\\$`', "'": "'", "$'": "'\\"}
+
+# shells that expand ! inside double quotes when they read a line (history expansion, on by default in
+# interactive bash and zsh); there a backslash stops it in bash only by staying in the word
+_BANG_SHELLS = frozenset(('bash', 'zsh'))
+
+def _bang_in_double_quotes(shell, open_quote, text):
+	'''Whether text put inside an open double quote holds a ! that shell would expand.'''
+	return open_quote == '"' and shell in _BANG_SHELLS and '!' in text
+
 def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
+
+def _joinable(word):
+	'''
+	Whether a command word keeps unquoted command words one command. mssh joins its command words
+	into one command only when none of them holds whitespace; else it runs each as its own command.
+	'''
+	return len(word.split()) == 1
 
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
@@ -2372,7 +3395,9 @@ class Engine(object):
 	def diagnose(self, request, probe=True, now=None, states=None):
 		'''
 		Warnings for the words of the request's line (before + after) already typed, most
-		important first, and whether the prober still owes answers for hosts on the line.
+		important first, and whether the prober still owes answers for hosts on the line: hosts
+		without fresh answers that this call left in the probe queue (never without probe, without
+		self.directory, or when the queue cannot be written).
 
 		Args:
 			probe (bool): queue those hosts and start the prober (needs self.directory)
@@ -2410,29 +3435,48 @@ class Engine(object):
 				# still being typed
 				continue
 			if role == ROLE_HOSTS:
-				found.extend(self._host_diagnostics(token, states, now, wanted, reach))
+				found.extend(self._host_diagnostics(_without_shell_expansions(token, request.shell), states, now, wanted, reach))
+				users = _without_shell_expansions(token, request.shell, users=True)
+				if users is not None:
+					# mssh skips unreachable hosts by the name it runs them under, user@ included: unknown here
+					found.extend(item for item in self._host_diagnostics(users, states, now, wanted, reach) if item.kind != 'unreachable')
+				try:
+					split = _brace_split(token, request.shell)
+				except Exception as e:
+					# a word of odd braces must not cost the line its other warnings
+					_debug('brace warning failed: {!r}'.format(e))
+					split = None
+				if split is not None:
+					found.append(split)
 		found.extend(self._option_diagnostics(options))
-		wanted = _unique(wanted)
+		found.extend(self._command_diagnostics(_mssh_argv(line, tokens, start), typing))
+		wanted = [host for host in _unique(wanted) if _queueable(host)]
+		# pending only once the hosts wait in the queue: then a prober takes them, the one running or
+		# one a later query starts (asking again is such a query)
+		pending = False
 		if probe and wanted and self.directory:
 			try:
 				queue_probes(self.directory, wanted)
+				pending = True
 				spawn_probe(self.directory)
 			except OSError as e:
 				_debug('cannot queue hosts: {!r}'.format(e))
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
-		return found, bool(wanted)
+		return found, pending
 
 	def _host_diagnostics(self, token, states, now, wanted, reach):
 		'''
 		Unknown hosts, range surprises and unreachable hosts in a hosts word. reach is (the hosts
 		in mssh's unavailable list, whether they are skipped, the ping expiry, whether the line
-		names its own lookup files).
+		names its own lookup files, the user -u gives).
 		'''
 		def verdict(host):
 			answer = self._verdict(host, states, now, wanted)
 			return 'unsure' if answer == 'invalid' and self._mssh_may_know(host, reach) else answer
+		def unreachable(host, user, own_user=''):
+			return self._unreachable(host, _run_name(host, user, reach[4], own_user), states.get(host), now, reach)
 		found = []
-		for name, (start, end) in _host_parts(token):
+		for user, name, (start, end) in _host_parts(token):
 			if not name:
 				continue
 			members = self._host_members(name)
@@ -2440,17 +3484,19 @@ class Engine(object):
 				if verdict(name) == 'invalid':
 					found.append(Diagnostic(start, end, 'unknown', self._unknown_message(name, states, now)))
 				else:
-					why = self._unreachable(name, states.get(name), now, reach)
+					why = unreachable(name, user)
 					if why:
 						found.append(Diagnostic(start, end, 'unreachable', why))
 			elif members:
-				members, total = members
-				verdicts = [verdict(member) for member in members]
-				item = self._range_diagnostic(name, members, verdicts, total, (start, end), states, now, wanted)
+				members, total, own_users = members
+				# an alias can list a host for two users: the host counts once, each run name can be unreachable
+				hosts = _unique(members)
+				answers = {host: verdict(host) for host in hosts}
+				item = self._range_diagnostic(name, hosts, [answers[host] for host in hosts], total, (start, end), states, now, wanted)
 				if item is not None:
 					found.append(item)
-				down = [member for member, verdict in zip(members, verdicts)
-					if verdict != 'invalid' and self._unreachable(member, states.get(member), now, reach)]
+				down = _unique(member for member, own_user in zip(members, own_users)
+					if answers[member] != 'invalid' and unreachable(member, user, own_user))
 				if down:
 					_, more = _punctuation()
 					shown = ', '.join(down[:3] + ([more] if len(down) > 3 else []))
@@ -2459,17 +3505,26 @@ class Engine(object):
 
 	def _host_members(self, name):
 		'''
-		(members, how many) for an alias or a range, the members up to RANGE_MEMBERS_LIMIT; None for
-		one host; () for a range that cannot be expanded here (letters, hex): nothing is said about it.
-		The members of an IPv4 range are addresses: they are only pinged, never unknown.
+		(members, how many, the user each member is written with or '') for an alias or a range, the
+		members up to RANGE_MEMBERS_LIMIT; None for one host; () for a range that cannot be expanded or
+		counted here (letters, hex, _range_count): nothing is said about it. The members of an IPv4 range
+		are addresses: they are only pinged, never unknown. Only alias members have users (an env file's
+		dbs=postgres@db1). A range makes each name once, as mssh checks it once (n[1-11][1-11] makes n111
+		twice); an alias lists a host once per user it is written with (a@node1,b@node1 are two runs of
+		node1), and how many counts each host once. A range with an end missing (node[1-]) is one host
+		name, as mssh takes it (an invalid one).
 		'''
 		if _ipv4_range(name):
-			return _ipv4_members(name)
+			members, total = _ipv4_members(name)
+			return members, total, [''] * len(members)
 		number = self.hosts.alias_index(name)
 		if number is not None:
 			members = self.hosts.alias_members(number)
-			return members, len(members)
-		if '[' not in name:
+			# a@node1,b@node1: two run names (each can be unreachable), one host to count; checked up to
+			# the member limit, as a range is
+			pairs = _unique(list(zip(members, self.hosts.alias_member_users(number))))[:RANGE_MEMBERS_LIMIT]
+			return [member for member, _ in pairs], len(set(members)), [user for _, user in pairs]
+		if '[' not in name or _has_open_range(name):
 			return None
 		total = _range_count(name)
 		if total is None:
@@ -2479,7 +3534,7 @@ class Engine(object):
 			if len(members) >= RANGE_MEMBERS_LIMIT:
 				break
 			members.append(member)
-		return (members, total) if members != [name] else None
+		return (members, total, [''] * len(members)) if members != [name] else None
 
 	def _mssh_may_know(self, name, reach):
 		'''
@@ -2487,7 +3542,7 @@ class Engine(object):
 		config files (mssh reads them at Enter, from the shell's directory), or the name is a variable
 		of the shell (the prober may have started from another shell).
 		'''
-		return reach[3] or name.rsplit('@', 1)[-1].strip().strip('$') in os.environ
+		return reach[3] or _in_environ(name.rsplit('@', 1)[-1].strip().strip('$'))
 
 	def _valid_at_once(self, name):
 		'''An IP address or a hosts-file name: valid without DNS.'''
@@ -2545,6 +3600,82 @@ class Engine(object):
 					found.append(Diagnostic(span[0], span[1], 'options', '{} does nothing: {}'.format(name, why)))
 		return found
 
+	def _command_diagnostics(self, argv, typing):
+		'''
+		Words of a remote command typed unquoted that mssh reads as its own options: mssh parses its
+		options among its positionals, so in `mssh web1 journalctl -u slurmd` -u is its --username, and
+		a word starting with '-' that names none stops it with an error. After an unquoted command word,
+		such words are the remote command's, as the completer takes them; with -f, -s or -G before them
+		the command words are paths, and nothing is said. argv: mssh's words (_mssh_argv).
+		'''
+		abbreviations = _takes_abbreviations(self.spec)
+		have_hosts = False
+		run = None        # where the unquoted remote command starts in argv
+		pending = None    # nargs of an option still taking the words that follow as values
+		paths = False
+		read = []
+		stop = len(argv)
+		for index, token in enumerate(argv):
+			if token.text == '--':
+				stop = index
+				break
+			if token.text.startswith('-') and any(char in _EXPANDED for char in token.raw):
+				verdict, readings = 'unsure', []
+			else:
+				verdict, readings = read_option_word(token.text, self.spec, abbreviations)
+			if verdict == 'positional':
+				if pending is not None:
+					pending = pending if pending == '+' else None
+				elif not have_hosts:
+					have_hosts = True
+				elif run is None and not token.quoted:
+					if paths:
+						return []
+					run = index
+				continue
+			pending = None
+			if verdict == 'options':
+				option, attached, _ = readings[-1]
+				if attached is None and option.nargs != '0':
+					pending = option.nargs
+				if run is None and any(option.dest in ('file', 'file_sync', 'gather_mode') for option, _, _ in readings):
+					paths = True
+			if run is not None:
+				read.append((token, verdict, readings))
+		if not read:
+			return []
+		# the remote command as it should have been typed; never with a password mssh would take from it
+		example = _quoted_command(' '.join(token.raw for token in argv[run:stop]))
+		if any(verdict == 'unsure' or any(option.dest in PASSWORD_DESTS for option, _, _ in readings) for _, verdict, readings in read):
+			example = None
+		dash, _ = _punctuation()
+		found = []
+		for token, verdict, readings in read:
+			if typing(token) or verdict == 'unsure' or (verdict == 'unknown' and sys.version_info < (3, 7)):
+				continue
+			text = token.text
+			if verdict == 'options':
+				names = []
+				for option, _, _ in readings:
+					names.append(option.long)
+					if option.dest in ('help', 'version'):
+						# mssh prints it and exits: the rest of the word is never acted on
+						break
+				names = _unique(names)
+				ends = [end for option, _, end in readings if option.dest in PASSWORD_DESTS]
+				subject = text[:min(ends)] if ends else text
+				if names == [subject]:
+					message = '{} is an mssh option here'.format(subject)
+				else:
+					message = "{} is mssh's {} here".format(subject, names[0] if len(names) == 1 else '{} and {}'.format(', '.join(names[:-1]), names[-1]))
+			else:
+				message = '{} is not an mssh option (mssh stops with an error)'.format(text.partition('=')[0])
+			message += dash + 'quote the command'
+			if example and len(message) + 2 + len(example) <= MAX_MESSAGE:
+				message += ': ' + example
+			found.append(Diagnostic(token.start, token.start + len(token.raw), 'command', message))
+		return found
+
 	def _on_by_default(self, string):
 		'''Whether a flag (by its long string) is on without being given: the mssh config turned it on.'''
 		option = self.spec.lookup(string)[0]
@@ -2553,16 +3684,18 @@ class Engine(object):
 	def _line_settings(self, words, roles):
 		'''
 		(whether unreachable hosts are skipped, the ping expiry in seconds, whether the line names
-		its own lookup files) for the options of a line.
+		its own lookup files, the user -u gives or '') for the options of a line.
 
 		Skipping: the last of -su / -nsu on the line, else the mssh config's default; --script
 		always skips (process_args); --ipmi never does (mssh reaches the host's BMC). Ping expiry:
 		$MSSH_COMPLETE_PING_TTL, else mssh's unreachable host expiry (-uhe on the line, else its
-		default). Lookup files: --env_file(s), --host_file, --config_file.
+		default). Lookup files: --env_file(s), --host_file, --config_file. User: the last -u on the
+		line, else the mssh config's default (_line_user).
 		'''
 		flags = {}
 		expiry = None
 		lookup = False
+		user = None
 		for token, (role, option) in zip(words, roles):
 			if option is None:
 				continue
@@ -2574,6 +3707,10 @@ class Engine(object):
 				value = token.text if role == ROLE_VALUE else self.spec.lookup(token.text)[1]
 				if value is not None and _is_digits(value):
 					expiry = int(value)
+			elif option.dest == 'username':
+				value = token.text if role == ROLE_VALUE else self.spec.lookup(token.text)[1]
+				if value is not None:
+					user = value
 		def flag(dest):
 			return flags.get(dest, self.flag_defaults.get(dest, False))
 		skipping = (flag('script') or flag('skip_unreachable')) and not flag('ipmi')
@@ -2583,12 +3720,25 @@ class Engine(object):
 		if expiry is None:
 			default = next((option.default for option in self.spec.options if option.dest == 'unavailable_host_expiry'), '')
 			expiry = int(default) if _is_digits(default) else 600
-		return skipping, expiry, lookup
+		return skipping, expiry, lookup, self._line_user(user)
 
-	def _unreachable(self, name, state, now, reach):
-		'''Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering ping.'''
-		unavailable, skipping, expiry, _ = reach
-		if name in unavailable:
+	def _line_user(self, given):
+		'''
+		The user -u gives the hosts of a line: given (the last -u value on the line, None without
+		one), else the mssh config's default; stripped as run_command_on_hosts strips it.
+		'''
+		if given is None:
+			given = next((option.default for option in self.spec.options if option.dest == 'username'), '')
+		return given.strip()
+
+	def _unreachable(self, name, run_name, state, now, reach):
+		'''
+		Why a host looks unreachable, or None: it failed in a recent mssh run, or stopped answering
+		ping. run_name: the name the host has in this run (_run_name), which mssh's list is keyed by;
+		ping does not depend on the user.
+		'''
+		unavailable, skipping, expiry = reach[:3]
+		if run_name in unavailable:
 			dash, _ = _punctuation()
 			return '{}: {}unreachable in a recent mssh run'.format(name, 'will be skipped' + dash if skipping else '')
 		if (state is not None and state.fresh_ping(now) == 'silent' and state.answered_at
@@ -2610,14 +3760,12 @@ class Engine(object):
 		def possible(candidate):
 			state = states.get(candidate)
 			return candidate != name and not (state is not None and state.fresh_validity(now) == 'invalid')
-		stripped = _strip_zeros(name)
-		same = [candidate for candidate in self.hosts.names if candidate != name and _strip_zeros(candidate) == stripped and possible(candidate)]
+		same = [candidate for candidate in _zero_variants(self.hosts.names, name) if possible(candidate)]
 		if same:
 			return same[0] if len(same) == 1 else None
 		if len(name) < 4:
 			return None
-		close = [candidate for candidate in self.hosts.names
-			if abs(len(candidate) - len(name)) <= 1 and _one_edit(name, candidate) and possible(candidate)]
+		close = [candidate for candidate in _one_edit_names(self.hosts.names, name) if possible(candidate)]
 		return close[0] if len(close) == 1 else None
 
 	def _range_diagnostic(self, name, members, verdicts, total, span, states, now, wanted):
@@ -2681,8 +3829,7 @@ class Engine(object):
 		rest = top[len(typed):]
 		if context.open_quote:
 			closing = '"' if context.open_quote == '"' else "'"
-			unsafe = '"\\$`' if closing == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(request.shell, context.open_quote, rest):
 				return None
 			if context.slot == SLOT_COMMAND:
 				rest += closing
@@ -2715,8 +3862,7 @@ class Engine(object):
 			return None
 		rest = common[len(typed):]
 		if context.open_quote:
-			unsafe = '"\\$`' if context.open_quote == '"' else "'"
-			if any(char in unsafe for char in rest):
+			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(shell, context.open_quote, rest):
 				return None
 		else:
 			rest = _shell_escape(shell, rest, _literal_word(context))
@@ -2726,18 +3872,21 @@ class Engine(object):
 		'''
 		Suggestion for a command typed as unquoted words: the rest of the most likely past command
 		whose words start with the typed ones, each word escaped so the remote command is the same.
+		Never a word holding whitespace: mssh would run each command word as its own command.
 		'''
 		typed = context.command_words
 		commands = {}
+		features = {}
 		for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed), context.features, deadline).items():
-			words = [token.text for token in lex(feature[2:])]
+			words = words_as_typed(feature[2:])
 			if len(words) >= len(typed) and words[:len(typed) - 1] == typed[:-1] and words[len(typed) - 1].startswith(typed[-1]):
 				key = tuple(words)
 				commands[key] = commands.get(key, 0.0) + score
+				features.setdefault(key, []).append(feature)
 		top, share = _top_share(commands)
 		if top is None:
 			return None
-		uses = self._uses('c:' + ' '.join(top))
+		uses = sum(self._uses(feature) for feature in features[top])
 		share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
 		next_words = {}
 		for words, score in commands.items():
@@ -2746,10 +3895,10 @@ class Engine(object):
 		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
 		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
 		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
-		if more and share >= T_LINE:
+		if more and share >= T_LINE and all(_joinable(extra) for extra in top[len(typed) - 1:]):
 			return Ghost('line', rest + more, share)
 		word_rest = _shell_escape(shell, word[len(typed[-1]):], True)
-		if word_rest and word_share >= T_WORD:
+		if word_rest and word_share >= T_WORD and _joinable(word):
 			return Ghost('word', word_rest, word_share)
 		return None
 
@@ -2762,8 +3911,8 @@ class Engine(object):
 				count += knowledge.feature_uses(key)[0]
 		return count
 
-	def usage(self, context, value):
-		'''(times used, last used unix time) of a value of the current slot, over all knowledge.'''
+	def usage(self, context, value, knowledges=None):
+		'''(times used, last used unix time) of a value of the current slot, over all knowledge (or the given knowledges).'''
 		if context.slot == SLOT_HOSTS:
 			segment = value.rpartition(',')[2].rpartition('@')[2]
 			features = ['h:' + value, 't:' + segment]
@@ -2778,7 +3927,7 @@ class Engine(object):
 		for feature in features:
 			count = 0
 			last = 0
-			for knowledge in self.knowledges:
+			for knowledge in self.knowledges if knowledges is None else knowledges:
 				key = knowledge.feature_key(feature)
 				if key is not None and hasattr(knowledge, 'feature_uses'):
 					uses, when = knowledge.feature_uses(key)
@@ -2831,7 +3980,7 @@ class Engine(object):
 				shares.append(share)
 				features.update(make_features([], hosts, []))
 		command, share = _top_share(self._feature_values('c:', features, deadline))
-		quote = _quote_command(command) if command is not None else None
+		quote = _quote_command(command, shell) if command is not None else None
 		if quote is None:
 			return '', 0.0
 		text += ' ' + quote + command + quote
@@ -2848,8 +3997,9 @@ class Engine(object):
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
 		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
+		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do.
 		'''
-		literal = request.shell == 'bash' or request.flags.get('insert') == '1'
+		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		word = _shell_word(request)
@@ -2869,9 +4019,9 @@ class Engine(object):
 				continue
 			rest = full[len(prefix):]
 			if literal:
-				if context.open_quote == '"' and any(char in rest for char in '"\\$`'):
+				if context.open_quote and any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest):
 					continue
-				if context.open_quote in ("'", "$'") and "'" in rest:
+				if _bang_in_double_quotes(request.shell, context.open_quote, rest):
 					continue
 				if not context.open_quote and not bash_quotes:
 					rest = _shell_escape(request.shell, rest, _literal_word(context))
@@ -2927,7 +4077,9 @@ class Engine(object):
 				users.add(os.environ['USER'])
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if user.startswith(word))
 		elif dest == 'skip_hosts':
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts)))
+			# the members that can complete the host being typed (after its "," and "user@")
+			prefix = word.rpartition(',')[2].rpartition('@')[2]
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if action.startswith(word))
 		elif dest == 'encoding':
@@ -2951,16 +4103,26 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text):
-		'''The host names a hosts argument names, as far as the index knows them (aliases, number ranges).'''
+	def _members(self, hosts_text, prefix=''):
+		'''
+		The host names a hosts argument names, as far as the index knows them (aliases, number
+		ranges), that start with prefix: the first RANGE_MEMBERS_LIMIT of them, as for its warnings.
+		'''
+		import itertools
 		members = set()
 		for word in split_hosts(hosts_text or ''):
+			room = RANGE_MEMBERS_LIMIT - len(members)
+			if room <= 0:
+				break
 			word = word.rpartition('@')[2]
 			alias = self.hosts.alias_index(word)
 			if alias is not None:
-				members.update(self.hosts.alias_members(alias))
+				named = self.hosts.alias_members(alias)
 			else:
-				members.update(expand_ranges(word))
+				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
+				# a range past its limit names no member, and costs nothing to find out
+				named = expand_ranges(word)
+			members.update(itertools.islice((name for name in named if name.startswith(prefix)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -2983,23 +4145,31 @@ class Engine(object):
 		names = set(self.hosts.names_with_prefix(host_prefix))
 		names.update(name for name in scores if name.startswith(host_prefix) and '[' not in name)
 		names -= aliases
+		# mssh's list is keyed by the name a host runs as: the user typed with it, else -u's (-X hosts get it too)
 		unavailable = self.hosts.unavailable
+		line_user = self._line_user(next((value for option, value in reversed(context.options or ())
+			if option.dest == 'username' and value is not None), None))
+		def unreachable(name):
+			return _run_name(name, user, line_user) in unavailable
 		def host_score(name):
 			score = scores.get(name, 0.0) + PRIOR
 			if name in boost:
 				score += 1.0
-			if name in unavailable:
+			if unreachable(name):
 				score *= UNAVAILABLE_PENALTY
 			return score
 		def single(name):
-			return Candidate(lead + name, 'unreachable recently' if name in unavailable else '', 'hosts', host_score(name))
+			return Candidate(lead + name, 'unreachable recently' if unreachable(name) else '', 'hosts', host_score(name))
 		# ranges typed before, e.g. node[1-3]: their members are not listed beside them, unless typed
-		# on their own before or named by the hosts argument (-X)
-		in_ranges = set()
+		# on their own before or named by the hosts argument (-X). range_union writes each member
+		# once (expanding hundreds of wide ranges one by one outlasted the shells' wait), up to
+		# HIDDEN_MEMBERS_LIMIT members.
+		ranges = []
 		for name, score in scores.items():
 			if '[' in name and name not in aliases:
 				out.append(Candidate(lead + name, 'used before', 'groups', score))
-				in_ranges.update(expand_ranges(name, limit=RANGE_MEMBERS_LIMIT))
+				ranges.append((-score, name))
+		in_ranges = range_union([name for _, name in sorted(ranges)], RANGE_MEMBERS_LIMIT, HIDDEN_MEMBERS_LIMIT)
 		names -= in_ranges - set(boost) - set(scores)
 		if len(names) <= GROUP_THRESHOLD:
 			out.extend(single(name) for name in names)
@@ -3042,14 +4212,16 @@ class Engine(object):
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
+			# a word holding whitespace would make mssh run each command word as its own command
 			if not typed:
 				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline).items():
-					out.append(Candidate(feature[2:], '', 'history', score))
+					if _joinable(feature[2:]):
+						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
 				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline).items():
-					words = [token.text for token in lex(feature[2:])]
-					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial):
+					words = words_as_typed(feature[2:])
+					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
 		if context.mode == 'plain' and context.command_words is not None:
@@ -3110,16 +4282,20 @@ def format_response(response, nul=True):
 def answer(request, deadline=None, directory=Ellipsis, now=None):
 	'''
 	Answer a request from the index in directory: mssh's cache dir by default, None for no index
-	(degraded: options from mssh's parser, shell history, no ranking from mssh history).
+	(degraded: options from mssh's parser, shell history, no ranking from mssh history). Before the
+	first index is built, the answer is degraded unless the build ends in time (see load_for_query).
 	'''
-	return engine_for(request, directory, now).query(request, deadline)
+	return engine_for(request, directory, now, deadline).query(request, deadline)
 
-def engine_for(request, directory=Ellipsis, now=None):
-	'''The engine for a request: the index in directory (as for answer), its history tail, the shell's history.'''
+def engine_for(request, directory=Ellipsis, now=None, deadline=None):
+	'''
+	The engine for a request: the index in directory (as for answer), its history tail, the shell's
+	history. deadline limits the wait for a first index (load_for_query).
+	'''
 	now = time.time() if now is None else now
 	if directory is Ellipsis:
 		directory = cache_dir()
-	index, tail = (None, []) if directory is None else load_for_query(directory, now)
+	index, tail = (None, []) if directory is None else load_for_query(directory, now, deadline)
 	knowledges = []
 	users = ()
 	if index is not None:
@@ -3162,8 +4338,75 @@ _KEY_SEQUENCES = {
 	'\x1b[1;5C': 'ctrl-right', '\x1b[1;5D': 'ctrl-left', '\x1b[5C': 'ctrl-right', '\x1b[5D': 'ctrl-left',
 	'\x1bOc': 'ctrl-right', '\x1bOd': 'ctrl-left',
 	'\x1b[1;3C': 'alt-right', '\x1b[1;3D': 'alt-left', '\x1b\x1b[C': 'alt-right', '\x1b\x1b[D': 'alt-left',
+	# bracketed paste (the shell turned it on): what comes between these was pasted, not typed
+	'\x1b[200~': 'paste', '\x1b[201~': 'paste-end',
 }
 _KEY_NAMES = {'\r': 'enter', '\n': 'enter', '\t': 'tab', '\x7f': 'backspace', '\x08': 'backspace', '\x00': 'ctrl-space'}
+# keys the kitty keyboard protocol numbers by the byte legacy terminals send for them, and its modifier bits
+_CSI_U_KEYS = {27: '\x1b', 13: '\r', 9: '\t', 127: '\x7f'}
+_SHIFT, _ALT, _CTRL, _CAPS_LOCK, _NUM_LOCK = 1, 2, 4, 64, 128
+
+def _legacy_key(params, final):
+	'''
+	The bytes a terminal sends without the kitty keyboard protocol for a key it sent as CSI params
+	final: the protocol's CSI code[:shifted[:base]][;modifiers[:event][;text]] u, or xterm's
+	modifyOtherKeys CSI 27;modifiers;code ~. Terminals send these when a program (or a multiplexer
+	in between) asked for them and did not turn them off.
+
+	Returns:
+		str, or None for any other sequence, a key with no legacy bytes (Ctrl+Enter, Super+A, a
+		Shift+key whose character is not given) or a key release
+	'''
+	fields = params.split(';')
+	if final == '~' and len(fields) == 3 and fields[0] == '27':
+		fields = [fields[2], fields[1]]
+	elif final != 'u' or len(fields) > 3:
+		return None
+	try:
+		codes = [int(code) if code else 0 for code in fields[0].split(':')]
+		modifier = (fields[1] if len(fields) > 1 else '').split(':')
+		bits = int(modifier[0] or 1) - 1
+		release = len(modifier) > 1 and modifier[1] == '3'
+		text = ''.join(chr(int(code)) for code in fields[2].split(':')) if len(fields) > 2 else ''
+		char = chr(codes[0])
+		shifted = chr(codes[1]) if len(codes) > 1 and codes[1] else ''
+	except (ValueError, OverflowError):
+		return None
+	# Num Lock changes none of these keys; Caps Lock only the case of a letter
+	bits &= ~_NUM_LOCK
+	if release or bits < 0 or bits & ~(_SHIFT | _ALT | _CTRL | _CAPS_LOCK):
+		return None
+	if codes[0] in _CSI_U_KEYS:
+		if bits & _CTRL:
+			return None
+		key = '\x1b[Z' if codes[0] == 9 and bits & _SHIFT else _CSI_U_KEYS[codes[0]]
+	elif bits & _CTRL:
+		# the control character, as legacy terminals send Ctrl with a letter, space or @[\]^_?
+		if char in (' ', '@'):
+			key = '\x00'
+		elif char == '?':
+			key = '\x7f'
+		elif 'a' <= char <= 'z' or '@' <= char <= '_':
+			key = chr(ord(char.upper()) - 64)
+		else:
+			return None
+	else:
+		if text:
+			key = text
+		elif bits & _SHIFT and shifted:
+			key = shifted
+		elif char.isalpha() and char.islower():
+			key = char.upper() if bool(bits & _SHIFT) != bool(bits & _CAPS_LOCK) else char
+		elif bits & _SHIFT and final == 'u' and not char.isupper():
+			# the kitty protocol sends the key Shift was pressed with (xterm the character it made, as
+			# in ~ and with upper case letters): what Shift makes of it depends on the keyboard layout
+			return None
+		else:
+			key = char
+		# the protocol's own codes (keypad, media and modifier keys) are private-use characters
+		if not key.isprintable():
+			return None
+	return '\x1b' + key if bits & _ALT else key
 
 def decode_keys(data):
 	'''
@@ -3171,7 +4414,9 @@ def decode_keys(data):
 
 	Returns:
 		list: (name, raw bytes) pairs. name is a key name ('up', 'enter', 'ctrl-r', 'alt-f', 'esc', 'unknown')
-			or, for text, the character itself.
+			or, for text, the character itself. A key sent the kitty keyboard protocol's way or by
+			modifyOtherKeys has the bytes legacy terminals send for it as raw bytes: what readline
+			understands when the editor hands it the key.
 	'''
 	text = data.decode('utf-8', 'replace')
 	keys = []
@@ -3191,8 +4436,15 @@ def decode_keys(data):
 					end = index + 2
 					while end < len(text) and not '@' <= text[end] <= '~':
 						end += 1
-					keys.append(('unknown', text[index:end + 1].encode()))
+					sequence = text[index:end + 1]
+					legacy = _legacy_key(sequence[2:-1], sequence[-1]) if sequence[1] == '[' and end < len(text) else None
+					found = decode_keys(legacy.encode('utf-8')) if legacy is not None else []
+					keys.append(found[0] if len(found) == 1 else ('unknown', sequence.encode()))
 					index = end + 1
+				elif text[index + 1:index + 2] == '\x1b' and text[index + 2:index + 3] not in ('[', 'O'):
+					# Esc twice (two presses that arrived together) or Alt+Esc: Esc either way
+					keys.append(('esc', b'\x1b\x1b'))
+					index += 2
 				elif index + 1 < len(text):
 					# Alt + key arrives as Esc then the key
 					keys.append(('alt-' + text[index + 1], text[index:index + 2].encode('utf-8')))
@@ -3263,12 +4515,21 @@ def ghost_style(term):
 		return '\x1b[38;5;244m'
 	return '\x1b[2m'
 
+# bytes of a paste kept at most: all of it is read (none may reach the shell as typed keys), the rest dropped
+PASTE_KEEP = 65536
+
 class Terminal(object):
-	'''The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on SIGTERM / SIGHUP.'''
+	'''
+	The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on
+	SIGTERM / SIGHUP; a resize (SIGWINCH) ends the wait for a key (read_key returns 'resize').
+	'''
 	def __init__(self, path='/dev/tty'):
 		self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
 		self._saved = None
 		self._handlers = {}
+		# a pipe the SIGWINCH handler writes to, so the wait for a key ends: Python would retry an
+		# interrupted select() after running the handler
+		self._resized = None
 
 	def __enter__(self):
 		import signal
@@ -3277,13 +4538,31 @@ class Terminal(object):
 		self._saved = termios.tcgetattr(self.fd)
 		for number in (signal.SIGTERM, signal.SIGHUP):
 			self._handlers[number] = signal.signal(number, self._interrupted)
+		if hasattr(signal, 'SIGWINCH'):
+			self._resized = os.pipe()
+			for end in self._resized:
+				os.set_blocking(end, False)
+			self._handlers[signal.SIGWINCH] = signal.signal(signal.SIGWINCH, self._resize)
 		# TCSANOW: TCSAFLUSH (the default) would drop keys typed while the program started
 		tty.setraw(self.fd, termios.TCSANOW)
+		# line breaks as sent: raw mode before Python 3.12 keeps INLCR and IGNCR, and zsh runs its
+		# widgets with INLCR on (a CR LF Enter would come as CR CR, two line breaks)
+		mode = termios.tcgetattr(self.fd)
+		if mode[0] & (termios.INLCR | termios.IGNCR):
+			mode[0] &= ~(termios.INLCR | termios.IGNCR)
+			termios.tcsetattr(self.fd, termios.TCSANOW, mode)
 		return self
 
 	def _interrupted(self, number, frame):
 		self.restore()
 		raise SystemExit(128 + number)
+
+	def _resize(self, number, frame):
+		try:
+			os.write(self._resized[1], b'.')
+		except OSError:
+			# the pipe is full: a resize is waiting already
+			pass
 
 	def restore(self):
 		import termios
@@ -3298,6 +4577,10 @@ class Terminal(object):
 		self.restore()
 		for number, handler in self._handlers.items():
 			signal.signal(number, handler)
+		# after the handler is gone, which writes to it
+		for end in self._resized or ():
+			os.close(end)
+		self._resized = None
 		os.close(self.fd)
 
 	def size(self):
@@ -3326,26 +4609,64 @@ class Terminal(object):
 			return None
 		return os.read(self.fd, 1) or None
 
-	def has_input(self):
-		'''Whether more typed keys are waiting.'''
+	def has_input(self, timeout=0):
+		'''Whether more typed keys are waiting, or arrive within timeout seconds.'''
 		import select
-		return bool(select.select([self.fd], [], [], 0)[0])
+		return bool(select.select([self.fd], [], [], timeout)[0])
+
+	def read_paste(self, limit=PASTE_KEEP, idle=0.5):
+		'''
+		After the paste key: the pasted text, read up to the mark that ends the paste and no further
+		(keys typed after it stay in the terminal). All of the paste is read, so none of it reaches the
+		shell as typed keys, but only its first limit bytes are kept. A paste whose end mark does not
+		come within idle seconds of its last byte is taken as ended there.
+		'''
+		end = b'\x1b[201~'
+		kept = bytearray()
+		tail = b''
+		while tail != end:
+			byte = self._byte(idle)
+			if byte is None:
+				break
+			tail = (tail + byte)[-len(end):]
+			if len(kept) < limit + len(end):
+				kept += byte
+		if kept.endswith(end):
+			del kept[-len(end):]
+		return bytes(kept[:limit]).decode('utf-8', 'replace')
 
 	def read_key(self, timeout=None):
 		'''
-		The next key typed, as (name, raw bytes) like decode_keys; None when timeout seconds pass first
-		(None: wait forever). Reads that key's bytes and no more: what was typed after it stays in the
-		terminal, in order, for whoever reads next (the shell, once the picker or the editor is done).
+		The next key typed, as (name, raw bytes) like decode_keys; ('resize', b'') when the terminal
+		changed size first (keys typed meanwhile stay for the next reads); None when timeout seconds
+		pass first (None: wait forever). Reads that key's bytes and no more: what was typed after it
+		stays in the terminal, in order, for whoever reads next (the shell, once the picker or the
+		editor is done).
 		'''
-		data = self._byte(timeout)
-		if data is None:
+		import select
+		waiting = [self.fd] + ([self._resized[0]] if self._resized else [])
+		ready = select.select(waiting, [], [], timeout)[0]
+		if self._resized and self._resized[0] in ready:
+			try:
+				# one report for all the resizes so far
+				while os.read(self._resized[0], 64):
+					pass
+			except OSError:
+				pass
+			return 'resize', b''
+		data = os.read(self.fd, 1) if ready else b''
+		if not data:
 			return None
 		if data == b'\x1b':
 			data += self._escape()
 		else:
 			data += self._utf8_rest(data)
 		keys = decode_keys(data)
-		return keys[0] if len(keys) == 1 else ('unknown', data)
+		if len(keys) == 1:
+			return keys[0]
+		# Esc again, or Esc and then a key, all at once: what was read cannot go back to the terminal,
+		# so it comes with the Esc (the picker closes, the editor hands all of it to readline)
+		return ('esc' if keys and keys[0][0] == 'esc' else 'unknown', data)
 
 	def _utf8_rest(self, lead):
 		'''The continuation bytes of a UTF-8 character that starts with lead.'''
@@ -3365,7 +4686,7 @@ class Terminal(object):
 		if second is None:
 			return b''
 		if second == b'\x1b':
-			# Esc Esc [ C: Alt + an arrow on some terminals
+			# Esc Esc [ C: Alt + an arrow on some terminals; Esc Esc alone: Esc pressed twice, or Alt+Esc
 			return second + self._escape()
 		if second == b'O':
 			return second + (self._byte(0.03) or b'')
@@ -3397,6 +4718,10 @@ def text_layout(text, width, row=0, column=0):
 #%% ------------ Picker ----------------
 PICKER_ROWS = 10       # candidate rows the picker shows at most
 HISTORY_LIMIT = 5000   # distinct past invocations the history tab offers
+# characters a paste brings to the filter at most: the filter is matched against every row at every key
+PICKER_FILTER_LIMIT = 1000
+# seconds: keys that come closer together than this came together (a paste, not typing)
+PASTE_GAP = 0.05
 
 class PickItem(object):
 	'''A picker row: text replaces the word (slot tab) or the whole line (history tab).'''
@@ -3445,8 +4770,21 @@ def _age(seconds):
 	return 'now'
 
 def _unicode_terminal():
-	import locale
-	return (locale.getpreferredencoding(False) or '').lower().replace('-', '') == 'utf8'
+	'''
+	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG. Python's own encoding says
+	UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
+	always runs in UTF-8 mode.
+	'''
+	def utf8(name):
+		return 'utf8' in (name or '').lower().replace('-', '')
+	environ = os.environ
+	if environ.get('LC_ALL'):
+		return utf8(environ['LC_ALL'])
+	ctype = environ.get('LC_CTYPE')
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not utf8(environ.get('LANG')):
+		# what Python sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
+		return False
+	return utf8(ctype or environ.get('LANG'))
 
 class Picker(object):
 	'''
@@ -3464,6 +4802,8 @@ class Picker(object):
 		self.offset = 0
 		self.now = time.time() if now is None else now
 		self.unicode = _unicode_terminal() if unicode is None else unicode
+		# text typed right behind the Enter that chose: it goes after the choice (apply_pick)
+		self.typed_after = ''
 
 	def matches(self):
 		'''The rows of the current tab that match the filter, best first.'''
@@ -3506,6 +4846,64 @@ class Picker(object):
 			self.query += name
 			self.selected = self.offset = 0
 		return None
+
+	def paste(self, text):
+		'''
+		Add pasted text to the filter. Its line breaks, tabs and other control characters only part
+		words (a run of them is one space); escape sequences in it are left out.
+		'''
+		import re
+		text = re.sub('[\\s\\x00-\\x1f\\x7f]+', ' ', strip_escapes(text))
+		if not self.query or self.query.endswith(' '):
+			text = text.lstrip(' ')
+		self.query += text[:max(PICKER_FILTER_LIMIT - len(self.query), 0)]
+		self.selected = self.offset = 0
+
+	def _enter_with_keys_behind(self, term, raw):
+		'''
+		Enter (raw: its bytes) with more keys right behind it: read them all, each within PASTE_GAP of
+		the last. Another line break among them makes it a paste the terminal did not mark (bracketed
+		paste off): all of it filters, as choosing would leave the rest to the shell, which runs it.
+		Else Enter chooses, and the text typed behind it (fast typing, keys a slow link brought
+		together) goes after the choice, where the shell would have put it; other keys are left out.
+		An LF or NUL right after a CR is the same Enter (CR LF and CR NUL terminals).
+
+		Returns:
+			str: 'choose', 'cancel', or None (it was a paste)
+		'''
+		parts = []
+		size = 0
+		pasted = False
+		first = True
+		while term.has_input(PASTE_GAP):
+			name, more = term.read_key()
+			joined = first and raw == b'\r' and more in (b'\n', b'\x00')
+			first = False
+			if joined:
+				continue
+			if name == 'paste':
+				text = term.read_paste()
+				pasted = True
+			elif name == 'enter':
+				text = '\n'
+				pasted = True
+			elif name == 'tab':
+				text = '\t'
+			elif len(name) == 1 and name >= ' ':
+				text = name
+			else:
+				continue
+			if size < PASTE_KEEP:
+				parts.append(text)
+				size += len(text)
+		text = ''.join(parts)
+		if pasted:
+			self.paste('\n' + text)
+			return None
+		outcome = self.handle('enter')
+		if outcome == 'choose':
+			self.typed_after = text.replace('\t', '')
+		return outcome
 
 	def chosen(self):
 		matches = self.matches()
@@ -3571,14 +4969,75 @@ class Picker(object):
 				cursor's row and the cursor ends where it was.
 			before (str): With line: its part before the cursor
 
+		When the terminal changes size, the menu opens again at the new size, from the line's start
+		(line given) or the cursor as they were drawn: the terminal keeps what it shows, as readline
+		assumes. It closes as cancelled when it no longer fits.
+
 		Returns:
 			str: 'choose', 'cancel', or 'unavailable' when the terminal is too small
 		'''
-		rows, width = term.size()
-		height = min(PICKER_ROWS, rows - 4 - len(self.warnings))
+		height, width = self._size(term)
 		if height < 1 or width < 20:
 			return 'unavailable'
-		up = 0
+		up, row, cursor = self._open(term, line, before, height, width)
+		try:
+			draw = True
+			# A choice in the middle of a paste leaves the rest of it to the shell, which runs it (its
+			# line breaks are Enter there): what comes right behind an Enter is looked at first. Not
+			# behind one typed ahead (read before the picker first waited for a key) unless text came
+			# right before it: keys typed ahead after a choice are for the shell, as they come.
+			live = not term.has_input()
+			after_text = False
+			while True:
+				if draw:
+					menu = self.render(width - 1, height)
+					# from the saved place below the line: between draws the cursor is in the line
+					term.write('\x1b8' + ''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
+				name, raw = term.read_key()
+				if name == 'resize':
+					if line is not None:
+						# back to the line's start, as it was drawn
+						term.write(('\x1b[{}A'.format(row) if row else '') + '\r')
+					height, width = self._size(term)
+					up, row, cursor = self._open(term, line, before, height, width)
+					# clear what is left of the menu drawn at the old size
+					term.write('\r\n\x1b[J')
+					if height < 1 or width < 20:
+						return 'cancel'
+					draw = True
+					continue
+				if name == 'paste':
+					# the terminal marks the paste: all of it filters
+					self.paste(term.read_paste())
+				elif name == 'enter' and (live or after_text) and term.has_input(PASTE_GAP):
+					outcome = self._enter_with_keys_behind(term, raw)
+					if outcome:
+						return outcome
+				else:
+					outcome = self.handle(name)
+					if outcome:
+						return outcome
+				after_text = len(name) == 1 and name >= ' '
+				# keys already typed are handled before the menu is drawn again
+				draw = not term.has_input()
+				live = live or draw
+		finally:
+			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+
+	def _size(self, term):
+		'''(candidate rows, columns) the menu gets: it fits with at least 1 row and 20 columns.'''
+		rows, width = term.size()
+		return min(PICKER_ROWS, rows - 4 - len(self.warnings)), width
+
+	def _open(self, term, line, before, height, width):
+		'''
+		Draw the line when given (see run), make room below it for the menu and save that place.
+
+		Returns:
+			tuple: rows from the saved place up to the line's start, the row of the line the cursor is
+				on, and the moves from the saved place to the cursor (line given)
+		'''
+		up = row = 0
 		cursor = ''
 		if line is not None:
 			end_row, end_column = text_layout(line, width)
@@ -3595,21 +5054,9 @@ class Picker(object):
 			# while the menu is open the cursor shows where it is in the line
 			cursor = ('\x1b[{}A'.format(end_row - row) if end_row > row else '') + '\r' + ('\x1b[{}C'.format(column) if column else '')
 		# make room below the line (the screen may scroll), come back to the same column and save it
-		lines = height + 2 + len(self.warnings)
+		lines = max(height, 1) + 2 + len(self.warnings)
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
-		try:
-			draw = True
-			while True:
-				if draw:
-					menu = self.render(width - 1, height)
-					term.write(''.join('\r\n' + text + '\x1b[K' for text in menu) + '\x1b8' + cursor)
-				outcome = self.handle(term.read_key()[0])
-				if outcome:
-					return outcome
-				# keys already typed are handled before the menu is drawn again
-				draw = not term.has_input()
-		finally:
-			term.write('\x1b8\r\n\x1b[J\x1b8' + ('\x1b[{}A'.format(up) if up else '') + ('\r' if line is not None else ''))
+		return up, row, cursor
 
 def reason_line(diagnostics, unicode=None):
 	'''The one line shown under the prompt: the first warning, and how many more there are ('' for none).'''
@@ -3632,9 +5079,168 @@ def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
 	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
 
+# the options mssh may record in another form than the line typed for the run: 6.31 and earlier left
+# the script timeout (-t 50), 0 and '' values and these options out; it records -T as the timeout,
+# -uk and -k DIR as the key found, -s PATH as -f PATH -fs, and (later versions) --config_file absolute
+_RECORDED_AS = {'use_script_timeout': ('timeout',), 'use_key': ('identity_file',), 'file_sync': ('file',)}
+_RECORDED_LOOSELY = frozenset(('timeout', 'identity_file', 'config_file', 'host_file', 'window_width', 'window_height',
+	'single_window', 'no_output', 'success_hosts', 'return_zero', 'encoding', 'diff_display_threshold', 'force_truecolor',
+	'debug', 'ipmi_interface_ip_prefix', 'ipmi_username', 'ipmi_args', 'ipmi_method', 'ipmi_retry_lockout_time'))
+
+def _run_options(options, engine):
+	'''
+	The options of a run that change something, as sorted (dest, value) pairs, whatever their order
+	and spelling: a flag by the value it leaves ('on' / 'off') when that is not the default (mssh's
+	history has -su on every line), a value ('=' and the value) unless it is the default (mssh leaves
+	those out), an option without one by ''.
+
+	Args:
+		options (list): (OptionSpec, value or None) pairs
+		engine (Engine): Its flag_sets and flag_defaults say what the flags do
+	'''
+	flags = {}
+	pairs = []
+	for option, value in options:
+		if option.nargs == '0' and option.long in engine.flag_sets:
+			flags[option.dest] = engine.flag_sets[option.long]
+		elif value is None:
+			pairs.append((option.dest, ''))
+		elif value != option.default:
+			pairs.append((option.dest, '=' + value))
+	pairs.extend((dest, 'on' if on else 'off') for dest, on in flags.items() if on != engine.flag_defaults.get(dest, False))
+	return tuple(sorted(pairs))
+
+# options with which mssh records a run in no history (-I, --script) or in another file (-hf)
+_RECORDED_ELSEWHERE = frozenset(('no_history', 'script', 'history_file'))
+
+def _loose_dests(pairs):
+	'''The dests of a typed run's options (_run_options) whose record may differ from them.'''
+	dests = set()
+	for dest, value in pairs:
+		if dest in _RECORDED_AS:
+			dests.add(dest)
+			dests.update(_RECORDED_AS[dest])
+		elif dest in _RECORDED_LOOSELY or value in ('=', '=0'):
+			dests.add(dest)
+	return dests
+
+def _typed_run(line, engine):
+	'''
+	(run key, (options, hosts, commands)) of a shell line running mssh, or None when the history tab
+	cannot offer it. The run key is (hosts, commands, options as _run_options gives them).
+	'''
+	if 'mssh' not in line and 'multissh' not in line and 'multiSSH' not in line:
+		# most lines run something else: no need to read them
+		return None
+	tokens = lex(line)
+	if not tokens or os.path.basename(tokens[0].text) not in MSSH_NAMES or _has_control(line):
+		return None
+	words = tokens[1:]
+	roles = assign_roles(words, engine.spec)
+	if any(option is not None and option.dest in PASSWORD_DESTS for _, option in roles):
+		return None
+	options, hosts, commands = _collect(words, roles)
+	commands = _join_commands(commands)
+	return (hosts, tuple(commands), _run_options(options, engine)), (options, hosts, commands)
+
+def _history_items(request, engine, history_lines, name, features):
+	'''
+	The history tab: the past invocations, those most like the line first, then the newest.
+
+	A run is in mssh's history and, as typed, in the shell's: the shell's lines add the rows and
+	the uses mssh's history does not hold (runs with -I, and those it no longer holds).
+	HISTORY_LIMIT bounds the rows (lines of mssh's history past it are not read); every line the
+	shell sent is. With some of mssh's history unread, a shell line matching none of the rows counts
+	only when mssh records it nowhere there (-I, --script, -hf): the index counts the others.
+
+	Returns:
+		tuple: (PickItem list, MemoryKnowledge of the runs only the shell's history holds)
+	'''
+	entries = []   # [features shared with the line, unix time, text, uses]
+	numbers = {}   # text -> its number in entries
+	parsed = []    # (number in entries, hosts, commands, line) of mssh's history
+	unread = False # some of mssh's history is past the rows
+	for line in reversed(history_lines):
+		fields = line.rstrip('\r\n').split('\t')
+		if len(fields) != 5:
+			continue
+		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
+		text = ' '.join([name] + parts)
+		if text in numbers:
+			# the same text passed the checks already: count it without parsing it again
+			entries[numbers[text]][3] += 1
+			continue
+		if len(entries) >= HISTORY_LIMIT:
+			unread = True
+			continue
+		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
+			continue
+		entry = parse_history_line(line, engine.spec)
+		numbers[text] = len(entries)
+		if entry is None:
+			entries.append([0, 0, text, 1])
+			continue
+		parsed.append((len(entries), entry.hosts, tuple(entry.commands), line))
+		entries.append([len(features & set(entry.features())), entry.ts, text, 1])
+	unrecorded = MemoryKnowledge()
+	typed = {}  # run key -> [times in the shell's history, its (options, hosts, commands), its newest line]
+	runs = []   # the run keys, newest first
+	keys = {}   # line -> run key (None: not offered), so a line typed often is read once
+	for line in request.history[::-1] if request.shell != 'fish' else request.history:
+		line = line.strip()
+		if line not in keys:
+			found = _typed_run(line, engine)
+			keys[line] = found[0] if found is not None else None
+			if found is not None and found[0] not in typed:
+				typed[found[0]] = [0, found[1], line]
+				runs.append(found[0])
+		if keys[line] is not None:
+			typed[keys[line]][0] += 1
+	# the entries of mssh's history with the hosts and commands of those runs, and their options
+	candidates = {}
+	wanted = set(key[:2] for key in runs)
+	for number, hosts, commands, line in parsed:
+		if (hosts, commands) in wanted:
+			options = history_options(line.rstrip('\r\n').split('\t')[2], engine.spec)[0]
+			candidates.setdefault((hosts, commands), []).append((number, _run_options(options, engine)))
+	pools = {}  # the entries some runs' lines count towards -> [times typed, the newest of those runs]
+	for key in runs:
+		count, parts, line = typed[key]
+		bucket = candidates.get(key[:2], ())
+		# the record of this run, else one mssh may have written in another form
+		found = [number for number, pairs in bucket if pairs == key[2]]
+		loose = _loose_dests(key[2]) if not found else ()
+		if loose:
+			kept = [pair for pair in key[2] if pair[0] not in loose]
+			found = [number for number, pairs in bucket if [pair for pair in pairs if pair[0] not in loose] == kept]
+		if found:
+			pool = pools.setdefault(tuple(found), [0, key])
+			pool[0] += count
+			continue
+		if unread and not any(dest in _RECORDED_ELSEWHERE and value != 'off' for dest, value in key[2]):
+			# its record may be past the rows: the index counts it already
+			continue
+		run_features = make_features(*parts)
+		if len(entries) < HISTORY_LIMIT:
+			# the newest spelling of a run only the shell's history holds
+			entries.append([len(features & set(run_features)), 0, line, count])
+		for _ in range(count):
+			unrecorded.add(run_features, 0.0)
+	for found, (count, key) in pools.items():
+		# mssh's history holds this many of the shell's lines; any more are runs it does not hold
+		count -= sum(entries[number][3] for number in found)
+		if count > 0:
+			entries[found[0]][3] += count
+			run_features = make_features(*typed[key][1])
+			for _ in range(count):
+				unrecorded.add(run_features, 0.0)
+	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
+	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order], unrecorded
+
 def picker_items(request, engine, history_lines, now=None):
 	'''
-	What the picker offers for a request.
+	What the picker offers for a request. A row's uses count runs of mssh: one in mssh's history
+	and the shell's is one use, a local command none.
 
 	Returns:
 		tuple: (slot items, slot title, history items, word): word is the text before the cursor the
@@ -3642,6 +5248,12 @@ def picker_items(request, engine, history_lines, now=None):
 	'''
 	now = time.time() if now is None else now
 	context = parse_context(request.before, request.after, engine.spec)
+	name = 'mssh'
+	tokens = lex(request.before)
+	if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES:
+		name = tokens[0].raw
+	features = set(context.features) if context is not None else set()
+	history, unrecorded = _history_items(request, engine, history_lines, name, features)
 	slot = []
 	title = ''
 	word = None
@@ -3654,65 +5266,88 @@ def picker_items(request, engine, history_lines, now=None):
 			if tokens and tokens[-1].text == word and request.before.endswith(tokens[-1].raw):
 				asked = tokens[-1].raw
 		response = engine.query(Request(request.shell, request.before, request.after, asked, request.shell_version, dict(request.flags, insert='1')))
+		# the shell's history counts only for runs mssh's history does not hold
+		counted = [knowledge for knowledge in engine.knowledges if not getattr(knowledge, 'shell', False)] + [unrecorded]
 		for candidate in response.candidates:
 			value = (candidate.raw or candidate.text)[context.value_start:]
-			uses, last = engine.usage(context, value)
+			uses, last = engine.usage(context, value, counted)
 			slot.append(PickItem(candidate.text, candidate.description, uses, last))
 		title = {SLOT_HOSTS: 'hosts', SLOT_OPTION: 'options'}.get(context.slot, '')
 		if context.slot == SLOT_VALUE:
 			title = context.option.long
 		elif context.slot == SLOT_COMMAND:
 			title = 'commands for ' + context.hosts if context.hosts else 'commands'
-	name = 'mssh'
-	tokens = lex(request.before)
-	if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES:
-		name = tokens[0].raw
-	features = set(context.features) if context is not None else set()
-	seen = {}
-	entries = []
-	for line in reversed(history_lines):
-		fields = line.rstrip('\r\n').split('\t')
-		if len(fields) != 5:
-			continue
-		parts = [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']
-		text = ' '.join([name] + parts)
-		if text in seen:
-			# the same text passed the checks already: count it without parsing it again
-			seen[text][1] += 1
-			continue
-		if len(entries) >= HISTORY_LIMIT or not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
-			continue
-		entry = parse_history_line(line, engine.spec)
-		overlap = len(features & set(entry.features())) if entry is not None else 0
-		ts = entry.ts if entry is not None else 0
-		seen[text] = [len(entries), 1]
-		entries.append([overlap, ts, text])
-	shell_lines = request.history[::-1] if request.shell != 'fish' else request.history
-	for line in shell_lines:
-		if len(entries) >= HISTORY_LIMIT:
-			break
-		line = line.strip()
-		if line in seen:
-			continue
-		tokens = lex(line)
-		if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES and not _has_control(line) and not _sets_password(tokens[1:], engine.spec):
-			seen[line] = [len(entries), 1]
-			entries.append([len(features & set(line_features(tokens[1:], engine.spec))), 0, line])
-	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
-	history = [PickItem(entries[number][2], '', seen[entries[number][2]][1], entries[number][1]) for number in order]
 	return slot, title, history, word
 
+def _bangs_out(text, after_dollar):
+	'''Double quoted text (its quotes left out) as bangs_out_of_double_quotes writes it, quotes included.'''
+	pieces = ['']
+	position = 0
+	while position < len(text):
+		char = text[position]
+		if char == '\\':
+			pieces[-1] += text[position:position + 2]
+			position += 2
+			continue
+		# $! is a parameter (zsh also takes flags between: $=!, $#!)
+		if char == '!' and text[position + 1:position + 2] not in (' ', '\t', '=') and not pieces[-1].rstrip('=~^#+').endswith('$'):
+			pieces.append('')
+		else:
+			pieces[-1] += char
+		position += 1
+	if len(pieces) == 1:
+		return '"' + text + '"'
+	# no empty "" next to a ! (but the one after a $ stays: bash reads $"..." as a translated string)
+	return '\\!'.join('"' + piece + '"' if piece or (number == 0 and after_dollar) else '' for number, piece in enumerate(pieces))
+
+def bangs_out_of_double_quotes(line):
+	'''
+	line with each ! that bash or zsh would expand inside double quotes taken out of them, escaped:
+	"a!b" -> "a"\\!"b", "done!" -> "done"\\!. The words mean what they meant. Left as they are: a ! outside
+	double quotes, before a blank or =, or in $! (none of which bash expands), and the rest of the line
+	from double quotes holding ${, $( or ` on, since the shell reads quotes inside those again.
+	'''
+	out = []
+	index = 0
+	while index < len(line):
+		char = line[index]
+		end = index + 1
+		if char == '\\':
+			end = index + 2
+		elif char == "'" or line.startswith("$'", index):
+			# nothing expands in single quotes; in $'...' a backslash escapes the quote
+			end = index + (2 if char == '$' else 1)
+			while end < len(line) and line[end] != "'":
+				end += 2 if char == '$' and line[end] == '\\' else 1
+			end += 1
+		elif char == '"':
+			while end < len(line) and line[end] != '"':
+				end += 2 if line[end] == '\\' else 1
+			text = line[index + 1:end]
+			if end >= len(line) or '`' in text or '$(' in text or '${' in text:
+				# where these quotes end, and so how the rest reads, is not sure
+				out.append(line[index:])
+				break
+			out.append(_bangs_out(text, out[-1:] == ['$']))
+			index = end + 1
+			continue
+		out.append(line[index:end])
+		index = end
+	return ''.join(out)
+
 def apply_pick(request, picker, word, context):
-	'''The new line and cursor after a choice: (line, cursor).'''
+	'''The new line and cursor after a choice: (line, cursor); text typed right behind the Enter that chose follows it.'''
 	item = picker.chosen()
 	if picker.tab == 'history':
-		return item.text, len(item.text)
+		# a line recorded in double quotes (mssh 6.26 and older) may hold a ! the shell would expand
+		text = bangs_out_of_double_quotes(item.text) if request.shell in _BANG_SHELLS else item.text
+		return text + picker.typed_after, len(text) + len(picker.typed_after)
 	suffix = ' '
 	if context is not None and context.open_quote:
 		suffix = ('"' if context.open_quote == '"' else "'") + ' '
 	elif item.text.endswith('/'):
 		suffix = ''
-	before = request.before[:len(request.before) - len(word)] + item.text + suffix
+	before = request.before[:len(request.before) - len(word)] + item.text + suffix + picker.typed_after
 	return before + request.after, len(before)
 
 #%% ------------ Line editor ----------------
@@ -4108,6 +5743,11 @@ class LineEditor(object):
 				self.draw(term, prompt, style)
 				continue
 			name, raw = key
+			if name == 'resize':
+				# draw again at the new width, from the prompt's row as the old width put it (the terminal
+				# keeps what it shows, as readline assumes)
+				self.draw(term, prompt, style)
+				continue
 			self.busy = term.has_input()
 			outcome = self.handle(name, raw)
 			if outcome is not None:
@@ -4209,7 +5849,8 @@ _mssh_complete() {
 		_mssh_complete_icase=0
 		[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_icase=1
 	fi
-	[[ -n ${BLE_VERSION-} ]] && ble=1
+	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
+	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
 	flags="nosort=0 icase=$_mssh_complete_icase ble=$ble term=${TERM-}"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		flags="nosort=1 ${flags#nosort=0 }"
@@ -4329,17 +5970,71 @@ _mssh_complete_apply() {
 	_mssh_complete_set "$text" "$cursor"
 }
 
+_mssh_complete_start() {
+	# run the engine's picker or editor ("$@" prints its answer and returns its exit status): wait
+	# MSSH_COMPLETE_START_TIMEOUT seconds (2) at most for it to say "ready", just before it takes the
+	# terminal, then as long as the operator takes. Sets _mssh_complete_resp to its answer and
+	# _mssh_complete_status to its exit status, 124 when it was not ready in time, 130 when Ctrl-C
+	# came first. An engine ready too late finds nobody reading and leaves the terminal alone.
+	local line= rest= got=142 waited=0 tenths=20 trapped= _mssh_complete_interrupted=0
+	_mssh_complete_resp=
+	_mssh_complete_status=124
+	# in tenths of a second: bash counts in integers
+	[[ ${MSSH_COMPLETE_START_TIMEOUT:-2} =~ ^([0-9]*)\.?([0-9]?)[0-9]*$ ]] && tenths=$(( 10#0${BASH_REMATCH[1]} * 10 + 10#0${BASH_REMATCH[2]} ))
+	if [[ -z ${BLE_VERSION-} ]]; then
+		# Ctrl-C while waiting comes back here (bash would drop the line, and wait for an engine that
+		# does not die of it); ble.sh reads Ctrl-C as a key
+		trapped=$(trap -p INT)
+		trap '_mssh_complete_interrupted=1' INT
+	fi
+	{
+		# in short reads: a trapped Ctrl-C does not end a read
+		while (( got > 128 && !_mssh_complete_interrupted && waited++ < tenths )); do
+			IFS= read -r -t 0.1 line && got=0 || got=$?
+		done
+		(( got > 128 )) || IFS= read -r -d '' rest || :
+	} < <("$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
+	if [[ -z ${BLE_VERSION-} ]]; then
+		if [[ -n $trapped ]]; then eval "$trapped"; else trap - INT; fi
+	fi
+	if [[ $line == ready ]]; then
+		# it had the terminal: as cancelled unless it says otherwise
+		_mssh_complete_status=1
+	elif (( _mssh_complete_interrupted )); then
+		_mssh_complete_status=130
+		return 0
+	elif (( got > 128 )); then
+		return 0
+	else
+		rest=$line$'\n'$rest
+	fi
+	rest=${rest%$'\n'}
+	line=${rest##*$'\n'}
+	if [[ $line =~ ^S\ ([0-9]+)$ ]]; then
+		_mssh_complete_status=${BASH_REMATCH[1]}
+		rest=${rest%"$line"}
+	fi
+	_mssh_complete_resp=${rest%$'\n'}
+	return 0
+}
+
+_mssh_complete_run_pick() {
+	# the picker, for _mssh_complete_start, on _mssh_complete_pick's line
+	_mssh_complete_request "pick=1 ready=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null
+	return "${PIPESTATUS[1]}"
+}
+
 _mssh_complete_pick() {
-	# the picker for the mssh line in READLINE_LINE; fails when it is unavailable
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand resp status
+	# the picker for the mssh line in READLINE_LINE; fails when it is unavailable or too slow to start
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_resp _mssh_complete_status
 	local _mssh_complete_action _mssh_complete_keys
 	_mssh_complete_cut
 	_mssh_complete_prompt
-	resp=$(_mssh_complete_request "pick=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null)
-	status=$?
-	(( status == 0 )) && _mssh_complete_apply "$resp"
-	(( status <= 1 ))
+	_mssh_complete_start _mssh_complete_run_pick
+	(( _mssh_complete_status == 0 )) && _mssh_complete_apply "$_mssh_complete_resp"
+	# cancelled, or Ctrl-C before it opened: the line stays as it is
+	(( _mssh_complete_status <= 1 || _mssh_complete_status == 130 ))
 }
 
 _mssh_complete_ctrl_r() {
@@ -4391,8 +6086,11 @@ _mssh_complete_previous() {
 	local line
 	_mssh_complete_found=
 	while IFS= read -r line; do
-		[[ $line == '"\C-r": "'*'"' ]] || continue
-		line=${line#'"\C-r": "'}
+		# bind -X prints '"\C-r": "command"', from bash 5.3 on '"\C-r" "command"'
+		[[ $line == '"\C-r": "'*'"' || $line == '"\C-r" "'*'"' ]] || continue
+		line=${line#'"\C-r"'}
+		line=${line#:}
+		line=${line#' "'}
 		line=${line%'"'}
 		line=${line//'\"'/'"'}
 		_mssh_complete_found=x:${line//'\\'/'\'}
@@ -4407,10 +6105,17 @@ _mssh_complete_previous() {
 	return 1
 }
 
+_mssh_complete_run_edit() {
+	# the editor, for _mssh_complete_start, on _mssh_complete_space's line
+	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null
+	return "${PIPESTATUS[1]}"
+}
+
 _mssh_complete_space() {
 	# space ("\C-x\C-t\C-x\C-y"): after an mssh name alone, the mssh line editor; else a space
-	local resp _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
-	local _mssh_complete_before _mssh_complete_after
+	local shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
 	local -a expand=()
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
@@ -4418,9 +6123,15 @@ _mssh_complete_space() {
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
 				_mssh_complete_prompt
 				(( _mssh_complete_expand )) && expand=(--expand)
-				resp=$(fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-					MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null)
-				if _mssh_complete_apply "$resp"; then
+				_mssh_complete_start _mssh_complete_run_edit
+				if (( _mssh_complete_status == 130 )); then
+					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
+					shown=${_mssh_complete_ps1##*$'\n'}
+					printf '\r%s%s ^C\e[J\r\n' "${shown//[$'\001\002']/}" "$READLINE_LINE"
+					READLINE_LINE= READLINE_POINT=0
+					return 0
+				fi
+				if (( _mssh_complete_status == 0 )) && _mssh_complete_apply "$_mssh_complete_resp"; then
 					case $_mssh_complete_action in
 						# the editor left the line and ^C on screen: readline draws a fresh prompt below
 						abandon) READLINE_LINE= READLINE_POINT=0 ;;
@@ -4487,8 +6198,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 			((_ble_edit_ind == ${#_ble_edit_str})) || return 1
 			_mssh_complete_is_mssh "$_ble_edit_str" || return 1
 			local request=$_ble_base_run/$$.mssh-complete.request answer=$_ble_base_run/$$.mssh-complete.answer line text= status
-			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' > "$request" 2>/dev/null || return 1
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			# >|: the files are written again for every question, which > refuses under noclobber
+			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' >| "$request" 2>/dev/null || return 1
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
 			status=$?
 			((status == 148)) && return 148
 			((status == 0)) || return 1
@@ -4525,8 +6237,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		local line reason= pending=0 status start
 		local -a ranges=() starts=()
 		if _mssh_complete_is_mssh "$_ble_edit_str"; then
-			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" > "$request" 2>/dev/null || return 0
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" > "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			# >| for noclobber, as for the grey text
+			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" >| "$request" 2>/dev/null || return 0
+			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
 			status=$?
 			if ((status == 148)); then
 				# typing interrupted: ask again at the next redraw
@@ -4615,13 +6328,16 @@ elif [[ $- == *i* ]]; then
 	_mssh_complete_keys() {
 		# PROMPT_COMMAND, once, at the first prompt: take the keys. Not while the rc file loads: there
 		# stderr is often /dev/null, and readline starting then would lose its terminal setup
-		local status=$? keymap previous
+		local status=$? keymap line previous
 		PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_keys;/}
 		[[ -o emacs || -o vi ]] || return $status
 		for keymap in emacs vi-insert; do
 			# take Ctrl-R only when its binding can be called back (and is not already ours)
 			if _mssh_complete_previous "$keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
 				printf -v "_mssh_complete_previous_${keymap//-/_}" '%s' "$_mssh_complete_found"
+				# a Ctrl-R bound with bind -x (fzf, atuin) is unbound first: when a bind replaces a bind -x
+				# key, bash 5.1 drops the command of another bind -x key (our hook key, or the operator's)
+				[[ $_mssh_complete_found == x:* ]] && bind -m "$keymap" -r '\C-r'
 				# "$_" last: bash sets $_ to a command's last argument, so it keeps the operator's $_
 				if [[ $keymap == emacs ]]; then
 					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs "$_"'
@@ -4634,8 +6350,19 @@ elif [[ $- == *i* ]]; then
 		# the mssh line editor, entered with a space after an mssh name; only over a plain space key and
 		# from bash 4.4 on (bash 4.2 redraws a wrapped line wrongly after every bind -x command)
 		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]] && (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
-			previous=$(bind -m emacs -p 2>/dev/null | grep -F '" ": ' || :)
-			_mssh_complete_space_previous=${previous#'" ": '}
+			# what space does, read without grep: the operator's grep alias or function (colours, line
+			# numbers) or GREP_OPTIONS would change what it prints
+			previous=
+			while IFS= read -r line; do
+				if [[ $line == '" ": '* ]]; then
+					previous=${line#'" ": '}
+				fi
+			done < <(bind -m emacs -p 2>/dev/null || :)
+			# space is ours already when the rc file is sourced again: keep the binding it had before
+			if [[ -z $previous && $(bind -m emacs -s 2>/dev/null) == *'" ": "\C-x\C-t\C-x\C-y"'* ]]; then
+				previous=${_mssh_complete_space_previous:-self-insert}
+			fi
+			_mssh_complete_space_previous=$previous
 			case $_mssh_complete_space_previous in
 				self-insert|magic-space)
 					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space "$_"'
@@ -4653,11 +6380,20 @@ ZSH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ zsh: autocomplete for mssh (multiS
 # Generated by `mssh --completion zsh`. Sourcing it only defines a function and registers it.
 
 _mssh() {
+	# without the modules that read the engine's answer: what zsh offers for a command it has no
+	# completion for (see the end). An if, not `|| { ...; return }`: ignore_braces and ignore_close_braces
+	# read a } after a command on the same line as its argument, and the whole file would not parse
+	if ! zmodload zsh/zselect zsh/system zsh/datetime 2>/dev/null; then
+		_default "$@"
+		return
+	fi
+	# the options the completion system runs completion functions in, the operator's own among them
+	local -A compsys_options
+	compsys_options=("${(@kv)options}")
 	emulate -L zsh
-	zmodload zsh/zselect zsh/system zsh/datetime 2>/dev/null || return 1
-	local before after flags resp chunk line item fd kind rest
+	local before after flags resp chunk line item name fd kind rest
 	local -F end
-	local -i remaining files=0 delegate=0 dcword start
+	local -i remaining files=0 nodefault=0 delegate=0 dcword start matches=$compstate[nmatches]
 	local -a fields texts shown dwords
 	before="${(j: :)words[1,CURRENT-1]} ${compstate[quote]}$PREFIX"
 	after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
@@ -4668,6 +6404,7 @@ _mssh() {
 			fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null
 	)
+	_mssh_complete_keep_terminal
 	(( end = EPOCHREALTIME + ${MSSH_COMPLETE_TIMEOUT:-0.3} ))
 	resp=
 	while true; do
@@ -4679,12 +6416,18 @@ _mssh() {
 		[[ $resp == *$'\0' ]] && break
 	done
 	exec {fd}<&-
-	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n'$'\0' ]] || return 1
+	# no answer (the engine failed, was too slow, or speaks another protocol) offers nothing
+	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n'$'\0' ]] || resp=
 	for line in "${(@f)${resp%$'\0'}}"; do
 		kind=${line[1]}
 		rest=${line[3,-1]}
 		case $kind in
-			(D) for item in ${=rest}; do [[ $item == (files|dirs) ]] && files=1; done ;;
+			(D)
+				for item in ${=rest}; do
+					[[ $item == (files|dirs) ]] && files=1
+					[[ $item == nodefault ]] && nodefault=1
+				done
+				;;
 			(C)
 				fields=("${(@ps:\t:)rest}")
 				texts+=("$fields[1]")
@@ -4692,6 +6435,11 @@ _mssh() {
 				;;
 			(X) fields=("${(@ps:\t:)rest}"); delegate=1; dcword=$fields[1]; dwords=("${(@)fields[3,-1]}") ;;
 		esac
+	done
+	# the completion functions below run in those options again: under zsh's defaults _arguments misreads
+	# its specs, and a glob in _files that matches nothing aborts the completion
+	for name in ${(k)compsys_options}; do
+		[[ $options[$name] == $compsys_options[$name] ]] || options[$name]=$compsys_options[$name]
 	done
 	(( ${#texts} )) && compadd -V mssh -l -d shown -- "${texts[@]}"
 	(( files )) && _files
@@ -4704,7 +6452,24 @@ _mssh() {
 			_normal
 		fi
 	fi
+	# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
+	# -o default), unless the engine said there is nothing to offer here (nodefault: a password)
+	(( compstate[nmatches] > matches || nodefault )) || _default "$@"
 	return 0
+}
+
+_mssh_complete_register() {
+	# precmd: TAB for the mssh names without a completion, once compinit has run (it defines compdef
+	# and _comps; a stand-in compdef that queues calls for later is left alone). compinit can run
+	# after this file, later in the rc file or after the first prompt (zinit turbo, zsh-defer), and
+	# one loading its dump file forgets what was registered before it. A completion set for an mssh
+	# name by hand stays.
+	emulate -L zsh
+	(( $+functions[compdef] )) && [[ ${(t)_comps} == association* ]] || return 0
+	local name
+	for name in mssh mssh3 multissh multissh3 multiSSH3; do
+		(( $+_comps[$name] )) || compdef _mssh $name
+	done
 }
 
 (( $+functions[compdef] )) && compdef _mssh mssh mssh3 multissh multissh3 multiSSH3
@@ -4713,6 +6478,15 @@ _mssh() {
 
 _mssh_complete_engine() {
 	@ENGINE@ "$@"
+}
+
+_mssh_complete_keep_terminal() {
+	# after each `exec {fd}< <(...)`: before zsh 5.8 the process substitution takes the terminal from the
+	# shell (Ctrl-C then goes to it, and the shell's next reads can fail with "error on TTY read"); a
+	# command run in the foreground hands the terminal back when it ends, as zsh-autosuggestions does
+	# (its issue 364)
+	(( _mssh_complete_fork )) && [[ -o monitor ]] && command true
+	return 0
 }
 
 _mssh_complete_is_mssh() {
@@ -4749,7 +6523,12 @@ _mssh_complete_ctrl_r() {
 			fi
 		fi
 		zle reset-prompt
-		(( st <= 1 )) && return 0
+		if (( st <= 1 )); then
+			# the menu was drawn over the reason line, which zsh does not draw again: show it (the
+			# redraw hook asks anew only when a finished word changed; that answer replaces it)
+			[[ -n ${_mssh_complete_warn_reason-} ]] && zle -M -- "$_mssh_complete_warn_reason"
+			return 0
+		fi
 	fi
 	[[ -n $_mssh_complete_previous ]] && zle $_mssh_complete_previous
 	return 0
@@ -4782,6 +6561,7 @@ _zsh_autosuggest_strategy_mssh() {
 	# synchronous zsh-autosuggestions waits for the strategy while the operator types
 	(( ${+ZSH_AUTOSUGGEST_USE_ASYNC} )) || limit=0.05
 	exec {fd}< <(_mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
+	_mssh_complete_keep_terminal
 	(( end = EPOCHREALTIME + limit ))
 	while true; do
 		(( remaining = (end - EPOCHREALTIME) * 100 ))
@@ -4798,13 +6578,18 @@ _zsh_autosuggest_strategy_mssh() {
 	return 0
 }
 
+_mssh_complete_ghost_unmark() {
+	# drop the grey text's highlights, found by their style: zsh moves a highlight along with the text
+	# typed before it, so it is no longer where it was put
+	[[ -n $_mssh_complete_drawn ]] && region_highlight=("${(@)region_highlight:#<-> <-> ${(b)_mssh_complete_drawn}}")
+}
+
 _mssh_complete_ghost_clear() {
 	# drop the grey text (inside a widget)
 	[[ -n $_mssh_complete_shown ]] || return 0
 	POSTDISPLAY=
-	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
+	_mssh_complete_ghost_unmark
 	_mssh_complete_shown=
-	_mssh_complete_highlight=
 }
 
 _mssh_complete_ghost_show() {
@@ -4813,8 +6598,9 @@ _mssh_complete_ghost_show() {
 	[[ -n $1 ]] || return 0
 	POSTDISPLAY=$1
 	_mssh_complete_shown=$1
-	_mssh_complete_highlight="$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style"
-	region_highlight+=("$_mssh_complete_highlight")
+	region_highlight+=("$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style")
+	# the style as zsh reports it, to find the highlight again
+	_mssh_complete_drawn=${region_highlight[-1]#<-> <-> }
 }
 
 _mssh_complete_ghost_cancel() {
@@ -4865,7 +6651,12 @@ _mssh_complete_ghost_redraw() {
 		fi
 	fi
 	if [[ $BUFFER == "$last" ]]; then
-		(( CURSOR == $#BUFFER )) || _mssh_complete_ghost_clear
+		if (( CURSOR != $#BUFFER )); then
+			_mssh_complete_ghost_clear
+		elif [[ -n $_mssh_complete_shown && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_drawn}} ]]; then
+			# zsh-syntax-highlighting emptied region_highlight after the key (see _mssh_complete_warn_redraw)
+			region_highlight+=("$#BUFFER $(( $#BUFFER + $#POSTDISPLAY )) $_mssh_complete_style")
+		fi
 		return 0
 	fi
 	_mssh_complete_last=$BUFFER
@@ -4882,6 +6673,7 @@ _mssh_complete_ghost_redraw() {
 	(( CURSOR == $#BUFFER )) && _mssh_complete_is_mssh "$BUFFER" || return 0
 	_mssh_complete_asked=$BUFFER
 	exec {_mssh_complete_fd}< <(_mssh_complete_request 'ghost=1 nul=0' "$BUFFER" '' | _mssh_complete_engine query 2>/dev/null)
+	_mssh_complete_keep_terminal
 	zle -F $_mssh_complete_fd _mssh_complete_ghost_ready
 }
 
@@ -4891,8 +6683,8 @@ _mssh_complete_ghost_handover() {
 	add-zle-hook-widget -d line-finish _mssh_complete_ghost_finish
 	_mssh_complete_ghost_cancel
 	[[ -n $_mssh_complete_shown && $POSTDISPLAY == "$_mssh_complete_shown" ]] && POSTDISPLAY=
-	region_highlight=("${(@)region_highlight:#$_mssh_complete_highlight}")
-	_mssh_complete_shown= _mssh_complete_highlight= _mssh_complete_last=
+	_mssh_complete_ghost_unmark
+	_mssh_complete_shown= _mssh_complete_last=
 }
 
 _mssh_complete_ghost_finish() {
@@ -4925,16 +6717,20 @@ _mssh_complete_accept() {
 }
 
 _mssh_complete_ghost_setup() {
-	# grey text with own widgets (zsh 5.3 and later, a terminal with colours)
+	# grey text with own widgets (zsh 5.3 and later, a terminal with colours). Not under the operator's
+	# sh_glob: zsh's add-zle-hook-widget runs the hooks in the operator's options, and there finds none
+	# of them ("No such widget" at every key; a zle-line-init or -finish widget set before stops too)
+	[[ -o sh_glob ]] && return 0
 	emulate -L zsh
 	autoload -Uz is-at-least add-zle-hook-widget
 	is-at-least 5.3 || return 0
 	[[ -n $TERM && $TERM != dumb ]] || return 0
 	zmodload zsh/zleparameter zsh/system 2>/dev/null || return 0
 	local widget key
-	typeset -g _mssh_complete_fd= _mssh_complete_asked= _mssh_complete_last= _mssh_complete_shown= _mssh_complete_highlight=
+	typeset -g _mssh_complete_fd= _mssh_complete_asked= _mssh_complete_last= _mssh_complete_shown= _mssh_complete_drawn=
 	typeset -g _mssh_complete_style=fg=8
 	[[ $TERM == *256col* ]] && _mssh_complete_style=fg=244
+	(( _mssh_complete_memo )) && _mssh_complete_style+=' memo=mssh-ghost'
 	zle -N _mssh_complete_ghost_answer
 	zle -N _mssh_complete_ghost_redraw
 	zle -N _mssh_complete_ghost_finish
@@ -4952,12 +6748,28 @@ _mssh_complete_ghost_setup() {
 }
 
 _mssh_complete_warn_unmark() {
-	# drop our marks (others' highlights stay)
-	local mark
-	for mark in "${_mssh_complete_warn_marks[@]}"; do
-		region_highlight=("${(@)region_highlight:#${(b)mark}}")
-	done
+	# drop our marks, found by their style: zsh moves a mark along with the text edited before it, so
+	# it is no longer where it was put (from zsh 5.9 the style holds memo=mssh-warn; before, another
+	# plugin's highlight in just that style goes too)
+	[[ -n $_mssh_complete_warn_drawn ]] && region_highlight=("${(@)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}}")
+	_mssh_complete_warn_drawn=
 	_mssh_complete_warn_marks=()
+}
+
+_mssh_complete_warn_mark() {
+	# draw the last answer's marks: only the word at the cursor changed since, so the marks after it
+	# move with the end of the line
+	local span
+	local -i start end
+	for span in "${_mssh_complete_warn_marks[@]}"; do
+		start=${span% *} end=${span#* }
+		if (( start >= _mssh_complete_warn_cursor )); then
+			(( start += $#BUFFER - _mssh_complete_warn_length, end += $#BUFFER - _mssh_complete_warn_length ))
+		fi
+		region_highlight+=("$start $end $_mssh_complete_warn_style")
+	done
+	# the style as zsh reports it (fg=red,underline), to find the marks again
+	(( $#_mssh_complete_warn_marks )) && _mssh_complete_warn_drawn=${region_highlight[-1]#<-> <-> }
 }
 
 _mssh_complete_warn_clear() {
@@ -4983,10 +6795,7 @@ _mssh_complete_warn_ask() {
 	exec {_mssh_complete_warn_fd}< <(
 		(( $1 > 0 )) && zselect -t $1
 		_mssh_complete_request 'diag=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine query 2>/dev/null)
-	# before zsh 5.8, a process substitution started while keys arrive (from the zle -F handler) can
-	# leave the shell out of the terminal's foreground: forcing a fork sets that right, as
-	# zsh-autosuggestions does (its issue 364)
-	(( _mssh_complete_warn_fork )) && command true
+	_mssh_complete_keep_terminal
 	zle -F $_mssh_complete_warn_fd _mssh_complete_warn_ready
 }
 
@@ -4997,9 +6806,16 @@ _mssh_complete_warn_redraw() {
 	setopt extended_glob
 	# the line without the word at the cursor, which is still being typed
 	local key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
-	[[ $key == "$_mssh_complete_warn_key" ]] && return 0
+	if [[ $key == "$_mssh_complete_warn_key" ]]; then
+		# zsh-syntax-highlighting empties region_highlight after each key before zsh 5.9 (and before its
+		# 0.8, on any zsh): mark again
+		[[ -n $_mssh_complete_warn_drawn && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}} ]] && _mssh_complete_warn_mark
+		return 0
+	fi
 	_mssh_complete_warn_key=$key
 	_mssh_complete_warn_cancel
+	# the marks shown stay until the answer, but no longer redrawn: they were placed for other words
+	_mssh_complete_warn_marks=()
 	if ! _mssh_complete_is_mssh "$BUFFER"; then
 		_mssh_complete_warn_clear
 		return 0
@@ -5043,14 +6859,15 @@ _mssh_complete_warn_answer() {
 		_mssh_complete_warn_ask 0
 		return 0
 	fi
-	local pending=$1 reason=$2 mark style=underline,fg=red
+	local pending=$1 reason=$2 style=underline,fg=red
 	shift 2
 	[[ -n ${NO_COLOR-} ]] && style=underline
+	(( _mssh_complete_memo )) && style+=' memo=mssh-warn'
 	_mssh_complete_warn_unmark
-	for mark in "$@"; do
-		_mssh_complete_warn_marks+=("$mark $style")
-	done
-	region_highlight+=("${_mssh_complete_warn_marks[@]}")
+	_mssh_complete_warn_marks=("$@")
+	_mssh_complete_warn_style=$style
+	_mssh_complete_warn_length=$#BUFFER _mssh_complete_warn_cursor=$CURSOR
+	_mssh_complete_warn_mark
 	# one zle -M in a widget: after a second one zsh draws the line a row too high
 	if [[ -n $reason ]]; then
 		_mssh_complete_warn_reason=$reason
@@ -5075,15 +6892,17 @@ _mssh_complete_warn_finish() {
 }
 
 _mssh_complete_warn_setup() {
-	# warnings under the line (zsh 5.3 and later), with grey text from either source
+	# warnings under the line (zsh 5.3 and later), with grey text from either source; not under the
+	# operator's sh_glob (see _mssh_complete_ghost_setup)
+	[[ -o sh_glob ]] && return 0
 	emulate -L zsh
 	autoload -Uz is-at-least add-zle-hook-widget
 	is-at-least 5.3 || return 0
 	zmodload zsh/zleparameter zsh/system zsh/zselect 2>/dev/null || return 0
-	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason=
+	typeset -g _mssh_complete_warn_fd= _mssh_complete_warn_asked= _mssh_complete_warn_key= _mssh_complete_warn_reason= _mssh_complete_warn_drawn=
+	typeset -g _mssh_complete_warn_style=
+	typeset -gi _mssh_complete_warn_length=0 _mssh_complete_warn_cursor=0
 	typeset -ga _mssh_complete_warn_marks _mssh_complete_warn_delays
-	typeset -gi _mssh_complete_warn_fork=0
-	is-at-least 5.8 || _mssh_complete_warn_fork=1
 	zle -N _mssh_complete_warn_answer
 	zle -N _mssh_complete_warn_redraw
 	zle -N _mssh_complete_warn_finish
@@ -5095,6 +6914,11 @@ _mssh_complete_setup() {
 	# precmd, once, at the first prompt (plugins loaded after the mssh block are there by then):
 	# Ctrl-R, warnings, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
 	add-zsh-hook -d precmd _mssh_complete_setup
+	autoload -Uz is-at-least
+	typeset -gi _mssh_complete_fork=0 _mssh_complete_memo=0
+	is-at-least 5.8 || _mssh_complete_fork=1
+	# from zsh 5.9 a highlight can carry a memo: the glue's own are then told apart from other plugins'
+	is-at-least 5.9 && _mssh_complete_memo=1
 	_mssh_complete_take_ctrl_r
 	_mssh_complete_warn_setup
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
@@ -5105,44 +6929,90 @@ _mssh_complete_setup() {
 }
 
 _mssh_complete_zas_strategy() {
-	# zsh-autosuggestions asks mssh first
+	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
+	emulate -L zsh
 	(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 
 if [[ -o interactive ]]; then
 	autoload -Uz add-zsh-hook
+	add-zsh-hook precmd _mssh_complete_register
 	add-zsh-hook precmd _mssh_complete_setup
 fi
 '''
 
+# Both fish glue files ask the engine through these (a file defines them again when it loads: the same text)
+_FISH_QUERY = r'''function __mssh_complete_request --argument-names flags before after word
+	# print a request with flags for the line before and after the cursor, then the history tail
+	set -l keep 1000
+	set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
+	command printf '%s\0' MSSHC1 fish $FISH_VERSION "$flags term=$TERM" "$before" "$after" "$word"
+	# the history builtin: the operator's history function or alias (one showing times) would change the lines
+	builtin history search -n $keep 2>/dev/null
+end
+function __mssh_complete_query --argument-names flags before after word
+	# print the records of the engine's answer, one per line; status 1, and nothing printed anywhere,
+	# when there is no answer within MSSH_COMPLETE_TIMEOUT seconds
+	set -l limit 0.3
+	set -q MSSH_COMPLETE_TIMEOUT; and set limit $MSSH_COMPLETE_TIMEOUT
+	set -l lines
+	if command -sq timeout
+		set lines (__mssh_complete_request "$flags" "$before" "$after" "$word" | command timeout $limit @ENGINE@ query 2>/dev/null)
+	else
+		# no coreutils timeout (macOS): sh keeps the time limit. It runs the engine in the background on
+		# files (the request read whole first, so fish never waits to write it), and a timer; it prints
+		# the answer when the engine ends, or stops it and prints nothing when the timer does. A failure
+		# to start the engine is then sh's to report (fish prints its own on the terminal)
+		set lines (__mssh_complete_request "$flags" "$before" "$after" "$word" | command sh -c '
+			limit=$1
+			shift
+			cleanup() {
+				kill "$engine"
+				rm -f "$request" "$answer"
+				exit 1
+			}
+			trap cleanup HUP INT TERM
+			request=$(mktemp) && answer=$(mktemp) || cleanup
+			(sleep "$limit"; kill "$$") >/dev/null 2>&1 &
+			timer=$!
+			cat >"$request"
+			"$@" <"$request" >"$answer" &
+			engine=$!
+			wait "$engine"
+			kill "$timer"
+			cat "$answer"
+			rm -f "$request" "$answer"
+		' sh $limit @ENGINE@ query 2>/dev/null)
+	end
+	test (count $lines) -ge 2; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E; or return 1
+	set -q lines[3]; and printf '%s\n' $lines[2..-2]
+	return 0
+end'''
+
+def _fish_nested(text, depth):
+	'''text indented by depth tabs, to sit inside a glue's blocks.'''
+	return '\n'.join('\t' * depth + line if line else line for line in text.split('\n'))
+
 FISH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ fish: autocomplete for mssh (multiSSH3), protocol MSSHC1
-# Generated by `mssh --completion fish`. Loading it only defines a function and registers it.
+# Generated by `mssh --completion fish`. Loading it only defines functions and registers one.
 switch "$FISH_VERSION"
 	case '1.*' '2.*'
 		# needs fish 3.0 or later: register nothing
 	case '*'
+''' + _fish_nested(_FISH_QUERY, 2) + r'''
 		function __mssh_complete
 			set -l before (string join \n -- (commandline -cp))
 			set -l full (string join \n -- (commandline -p))
 			set -l after (string sub -s (math (string length -- "$before") + 1) -- "$full")
 			set -l word (commandline -ct)
-			set -l keep 1000
-			set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
-			set -l timeout_cmd
-			if command -sq timeout
-				set -l limit 0.3
-				set -q MSSH_COMPLETE_TIMEOUT; and set limit $MSSH_COMPLETE_TIMEOUT
-				set timeout_cmd timeout $limit
+			set -l lines (__mssh_complete_query nul=0 "$before" "$after" "$word")
+			or begin
+				# no answer (slow, failing or missing engine): file names, as bash's default completion gives
+				__fish_complete_path "$word"
+				return
 			end
-			set -l lines (begin
-				command printf '%s\0' MSSHC1 fish $FISH_VERSION "nul=0 term=$TERM" "$before" "$after" "$word"
-				history -n $keep 2>/dev/null
-			end | $timeout_cmd @ENGINE@ query 2>/dev/null)
-			test (count $lines) -ge 2; or return
-			test "$lines[1]" = MSSHC1; or return
-			test "$lines[-1]" = E; or return
 			set -l files 0
-			for line in $lines[2..-2]
+			for line in $lines
 				set -l rest (string sub -s 3 -- "$line")
 				switch (string sub -l 1 -- "$line")
 					case D
@@ -5184,6 +7054,7 @@ switch "$FISH_VERSION"
 	case '*'
 		if not set -q __mssh_complete_keys
 			set -g __mssh_complete_keys 1
+''' + _fish_nested(_FISH_QUERY, 3) + r'''
 			function __mssh_complete_is_mssh
 				string match -qr '^\s*(\S*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)\s' -- "$argv[1]"
 			end
@@ -5195,9 +7066,10 @@ switch "$FISH_VERSION"
 					set -l after (string sub -s (math (string length -- "$before") + 1) -- "$full")
 					set -l keep 1000
 					set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
+					# the history builtin: the operator's history function or alias (one showing times) would change the lines
 					set -l lines (begin
 						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM" "$before" "$after" ''
-						history -n $keep 2>/dev/null
+						builtin history search -n $keep 2>/dev/null
 					end | @ENGINE@ pick 2>/dev/null)
 					set -l st $status
 					if test $st -eq 0; and test (count $lines) -ge 3; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E
@@ -5227,7 +7099,8 @@ switch "$FISH_VERSION"
 					set -l line (bind -M $mode \cr 2>/dev/null)
 					test (count $line) -ge 1; or continue
 					string match -q '*__mssh_complete_ctrl_r*' -- "$line[-1]"; and continue
-					eval "set -g __mssh_complete_words -- $line[-1]"
+					# the words of bind's line: -- goes before the name (after it, set keeps a -- as a value)
+					eval "set -g -- __mssh_complete_words $line[-1]"
 					set -l words $__mssh_complete_words[2..-1]
 					set -e __mssh_complete_words
 					while set -q words[1]; and string match -q -- '-*' $words[1]
@@ -5256,22 +7129,8 @@ switch "$FISH_VERSION"
 				if __mssh_complete_is_mssh "$full"
 					set -l before (string join \n -- (commandline -c))
 					set -l after (string sub -s (math (string length -- "$before") + 1) -- "$full")
-					set -l keep 1000
-					set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
-					set -l timeout_cmd
-					if command -sq timeout
-						set -l limit 0.3
-						set -q MSSH_COMPLETE_TIMEOUT; and set limit $MSSH_COMPLETE_TIMEOUT
-						set timeout_cmd timeout $limit
-					end
-					set -l lines (begin
-						command printf '%s\0' MSSHC1 fish $FISH_VERSION "diag=1 nul=0 term=$TERM" "$before" "$after" ''
-						history -n $keep 2>/dev/null
-					end | $timeout_cmd @ENGINE@ query 2>/dev/null)
-					if test (count $lines) -ge 2; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E
-						for line in $lines
-							string match -q 'R *' -- $line; and set reason (string sub -s 3 -- $line)
-						end
+					for line in (__mssh_complete_query 'diag=1 nul=0' "$before" "$after" '')
+						string match -q 'R *' -- $line; and set reason (string sub -s 3 -- $line)
 					end
 				end
 				test "$reason" = "$__mssh_complete_reason"; and return
@@ -5287,7 +7146,7 @@ switch "$FISH_VERSION"
 					set -l line (bind -M $mode ' ' 2>/dev/null)
 					test (count $line) -ge 1; or continue
 					string match -q '*__mssh_complete_check*' -- "$line[-1]"; and continue
-					eval "set -g __mssh_complete_words -- $line[-1]"
+					eval "set -g -- __mssh_complete_words $line[-1]"
 					set -l words $__mssh_complete_words[2..-1]
 					set -e __mssh_complete_words
 					while set -q words[1]; and string match -q -- '-*' $words[1]
@@ -5319,6 +7178,24 @@ def engine_command():
 def _fish_quote(word):
 	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
+def _zsh_guard(text):
+	'''
+	The zsh glue as zsh must read it: after its comment lines, read by eval in zsh's own options.
+
+	zsh parses what it sources in the options of the moment, and a .zshrc can set them before the mssh
+	block: sh_glob made `(files|dirs)` a parse error, ignore_braces made `exec {fd}< <(...)` run a
+	command named {fd} (the shell exited), ksh_arrays kept compdef from running, and aliases were
+	expanded into the functions. emulate -L in an anonymous function gives the operator's options back
+	when it returns, however loading ended (no_aliases is set apart: zsh 5.0.2 forgets -L when emulate
+	is also given -o). Not `emulate zsh -c`: its sticky emulation would switch the options at every
+	call of a glue function too, and _mssh must hand over to the completion functions in the options
+	it was called with.
+	'''
+	import re
+	head = re.match(r'(?:#[^\n]*\n)*', text).group(0)
+	return (head + "# Read in zsh's own options whatever the .zshrc set before it; the .zshrc's options are back after it.\n"
+		+ "() {\n\temulate -L zsh\n\tsetopt no_aliases\n\teval '\n" + text[len(head):].replace("'", "'\\''") + "'\n}\n")
+
 def render_glue(shell, command=None):
 	'''The glue script for shell, running the engine with command (a list of words).'''
 	import shlex
@@ -5326,12 +7203,183 @@ def render_glue(shell, command=None):
 		raise ValueError('unsupported shell {!r}, use one of {}'.format(shell, ', '.join(SHELLS)))
 	command = engine_command() if command is None else command
 	quote = _fish_quote if shell.startswith('fish') else shlex.quote
-	return _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
+	text = _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
+	return _zsh_guard(text) if shell == 'zsh' else text
+
+#%% ------------ Printing to a reader that may go ----------------
+# the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`
+SIGPIPE_STATUS = 141
+
+def _discard_stdout():
+	'''
+	Point stdout, and stderr when it is the same file (2>&1), at devnull, after a write to it failed
+	(as the Python docs suggest for a reader that has gone): what is left in the buffer then goes
+	nowhere, and the flush at exit does not fail again.
+	'''
+	try:
+		stdout_fd = sys.stdout.fileno()
+		fds = [stdout_fd]
+		try:
+			if os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (a caller's own stream): nothing to redirect
+		pass
+
+def _flush_stdout():
+	'''
+	Flush stdout now, in the command rather than at exit, where a failure is out of reach ("Exception
+	ignored" and status 120; Python 3.6 and 3.13 even exited 0 when the fish glue could not be written).
+	A failure other than a reader gone (a full disk) is raised once: stdout is discarded.
+	'''
+	if sys.stdout is None:
+		return
+	try:
+		sys.stdout.flush()
+	except BrokenPipeError:
+		raise
+	except OSError:
+		_discard_stdout()
+		raise
+
+def _quiet_when_stdout_is_gone(command):
+	'''
+	command, ending as SIGPIPE ends other tools when the reader of its output exits early
+	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS.
+
+	stdout is flushed before command returns, also when it exits through argparse (--help): an output
+	that fits stdout's buffer would otherwise only fail in the flush at exit.
+	'''
+	def run(*args, **kwargs):
+		try:
+			try:
+				code = command(*args, **kwargs)
+			except SystemExit:
+				_flush_stdout()
+				raise
+			_flush_stdout()
+			return code
+		except BrokenPipeError:
+			_discard_stdout()
+			return SIGPIPE_STATUS
+	run.__name__, run.__doc__, run.__wrapped__ = command.__name__, command.__doc__, command
+	return run
 
 #%% ------------ Install ----------------
 RC_BEGIN = '# >>> mssh completion >>>'
 RC_BEGIN_CREATED = '# >>> mssh completion (created this file) >>>'
 RC_END = '# <<< mssh completion <<<'
+
+class InstallError(Exception):
+	'''Install or uninstall stopped without changing the file it names; its args are the lines to print.'''
+
+class NotRegularFile(InstallError):
+	'''The rc file is not a regular file: /dev/null (rc files turned off), a FIFO, a device.'''
+
+def _reason(error, path):
+	'''What went wrong with path in an OSError, in a few words (naming the file it was about if another one).'''
+	if not error.strerror:
+		return str(error)
+	return error.strerror + (': ' + error.filename if error.filename and error.filename != path else '')
+
+def _replace_file(path, text):
+	'''
+	Replace the file at path with text, all at once: a write that fails part way (disk full, quota)
+	leaves the old file as it was.
+
+	The text goes to a temporary file in the same directory, which then takes the old file's place.
+	A symbolic link stays a link: the file it points to is the one replaced. The new file keeps the
+	old one's permissions and owner (a file whose owner we may not set is not replaced); ACLs and
+	other extended attributes are not copied.
+
+	Raises:
+		OSError: nothing was changed; a file we may not write counts, as it did when files were written in place
+	'''
+	import errno
+	import stat
+	import tempfile
+	target = os.path.realpath(path)
+	try:
+		old = os.stat(target)
+	except FileNotFoundError:
+		old = None
+	if old is not None and not stat.S_ISREG(old.st_mode):
+		# renaming over /dev/null would replace the device with a file
+		raise OSError(errno.EINVAL, 'not a regular file')
+	if old is not None and not os.access(target, os.W_OK):
+		raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+	try:
+		fd, temporary = tempfile.mkstemp(prefix='.' + os.path.basename(target).lstrip('.') + '.', suffix='.mssh-tmp', dir=os.path.dirname(target))
+	except OSError as error:
+		# a directory the user may not write: say so, not the temporary file's name
+		raise OSError(error.errno, 'cannot make a file beside it ({})'.format(error.strerror))
+	try:
+		with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
+			f.write(text)
+			f.flush()
+			if old is None:
+				# what creating the file directly would have given it
+				mask = os.umask(0o22)
+				os.umask(mask)
+				mode = 0o666 & ~mask
+			else:
+				mode = stat.S_IMODE(old.st_mode)
+				new = os.fstat(f.fileno())
+				if (new.st_uid, new.st_gid) != (old.st_uid, old.st_gid):
+					try:
+						os.fchown(f.fileno(), old.st_uid, old.st_gid)
+					except OSError:
+						# another user's file we may write (group-writable): it must stay theirs
+						raise PermissionError(errno.EPERM, 'replacing it would change its owner')
+			os.fchmod(f.fileno(), mode)
+			os.fsync(f.fileno())
+		try:
+			os.replace(temporary, target)
+		except OSError as error:
+			# a bind-mounted file (EBUSY, EXDEV) cannot be renamed over
+			raise OSError(error.errno, 'cannot replace it ({})'.format(error.strerror))
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
+def _append_file(path, text):
+	'''
+	Append text to the regular file at path in place, as a shell's >> would: links (hard or symbolic),
+	bind mounts, owner and attributes stay as they are, and the directory need not be writable.
+
+	A write that fails part way is cut off again, which leaves the file as it was.
+	'''
+	import errno
+	import stat
+	data = memoryview(text.encode('utf-8', 'surrogateescape'))
+	fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK)
+	try:
+		info = os.fstat(fd)
+		if not stat.S_ISREG(info.st_mode):
+			raise OSError(errno.EINVAL, 'not a regular file')
+		try:
+			while data:
+				data = data[os.write(fd, data):]
+			os.fsync(fd)
+		except BaseException:
+			try:
+				os.ftruncate(fd, info.st_size)
+			except OSError:
+				pass
+			raise
+	finally:
+		os.close(fd)
 
 def detect_shell(environ=None):
 	'''The shell that ran us (parent process), else $SHELL; None if neither is bash, zsh or fish.'''
@@ -5348,13 +7396,21 @@ def detect_shell(environ=None):
 	return name if name in SHELLS else None
 
 def _fish_major():
-	'''The major version of the fish on PATH, or None.'''
+	'''
+	The major version of the fish on PATH, or None.
+
+	From `fish --version`, which reads no configuration: `fish -c` runs the operator's config.fish and
+	conf.d first, which may print, be slow or do things. The line may be translated ("fish, Version
+	3.7.1"), and old releases wrote it to stderr: its first number is the version.
+	'''
+	import re
 	import subprocess
 	try:
-		output = subprocess.run(['fish', '-c', 'echo $FISH_VERSION'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
-		return int(output.decode('ascii', 'replace').strip().split('.')[0])
-	except (OSError, ValueError, subprocess.SubprocessError):
+		output = subprocess.run(['fish', '--version'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5).stdout
+	except (OSError, subprocess.SubprocessError):
 		return None
+	found = re.search(r'\b(\d+)\.\d+', output.decode('ascii', 'replace'))
+	return int(found.group(1)) if found else None
 
 def _ours(path):
 	try:
@@ -5368,102 +7424,314 @@ def _write_glue(path, text, messages):
 	if os.path.lexists(path) and not _ours(path):
 		messages.append('skipped {}: it exists and mssh did not write it'.format(path))
 		return False
-	os.makedirs(os.path.dirname(path), exist_ok=True)
-	temporary = path + '.mssh-tmp'
-	with open(temporary, 'w', encoding='utf-8') as f:
-		f.write(text)
-	os.replace(temporary, path)
+	try:
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		_replace_file(path, text)
+	except OSError as error:
+		raise InstallError('could not write {}: {}'.format(path, _reason(error, path)))
 	messages.append('wrote ' + path)
 	return True
 
-def _rc_block(text, begin):
+def _as_written(path):
 	'''
-	Where the block opened by begin is in text: (start, body start, body end, end), or None.
+	path as text for a file written as UTF-8 (surrogateescape), so that the file holds the bytes the
+	path has on disk: under a Latin-1 locale Python decodes them as Latin-1.
+	'''
+	return os.fsencode(path).decode('utf-8', 'surrogateescape')
 
-	Its markers are whole lines anywhere in the file: the first line, CRLF line ends and a closing
-	marker without a final newline included.
+def _as_shown(text):
+	'''Text written by _as_written, as printed: in the locale's encoding, the bytes on disk again.'''
+	return os.fsdecode(text.encode('utf-8', 'surrogateescape'))
+
+def _read_rc(rc):
 	'''
-	import re
-	head = re.search(r'(?m)^' + re.escape(begin) + r'[ \t]*\r?\n', text)
-	if head is None:
+	The text of the rc file, or None when there is none.
+
+	Raises:
+		NotRegularFile: it is /dev/null, a FIFO or a device (reading a FIFO would wait for a writer)
+		InstallError: it cannot be read
+	'''
+	import stat
+	try:
+		if not stat.S_ISREG(os.stat(rc).st_mode):
+			raise NotRegularFile('did not change {}: not a regular file'.format(_shown(rc)))
+		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
+			return f.read()
+	except FileNotFoundError:
 		return None
-	tail = re.compile(r'(?m)^' + re.escape(RC_END) + r'[ \t]*(?:\r?\n|\Z)').search(text, head.end())
-	if tail is None:
+	except OSError as error:
+		raise InstallError('could not read {}: {}'.format(rc, _reason(error, rc)))
+
+def _shown(rc):
+	'''rc as messages name it: with the file it links to, the one that changes.'''
+	return '{} (a link to {})'.format(rc, os.path.realpath(rc)) if os.path.islink(rc) else rc
+
+def _write_rc(rc, text, by_hand, append=False):
+	'''
+	Replace rc with text, or append text to it. by_hand: the lines that tell the operator how to make
+	the change when mssh may not.
+	'''
+	import errno
+	try:
+		if append:
+			_append_file(rc, text)
+		else:
+			try:
+				links = os.stat(rc).st_nlink
+			except FileNotFoundError:
+				links = 0
+			if links > 1:
+				# the other name (a dotfiles copy) would keep the old text; writing in place risks the
+				# file when the disk is full: the operator edits it (editors write hard-linked files in place)
+				raise InstallError('did not change {}: it has {} hard links, which replacing it would split'.format(rc, links), *by_hand)
+			_replace_file(rc, text)
+	except OSError as error:
+		lines = ['could not change {}: {}; it is as it was'.format(rc, _reason(error, rc))]
+		# a file mssh may not change: home-manager links rc files into the read-only Nix store, managed
+		# dotfiles may be read-only, a bind-mounted one cannot be replaced; a full disk is fixed by
+		# freeing space and running this again
+		if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS, errno.EBUSY, errno.EXDEV):
+			lines += by_hand
+		raise InstallError(*lines)
+
+def _rc_block(rc, text):
+	'''
+	Where the mssh block is in text, rc's contents: (begin marker, start, body start, body end, end), or None.
+
+	Its marker lines are found anywhere in the file, with spaces around them, CRLF line ends, and an
+	end marker without a final newline.
+
+	Raises:
+		InstallError: the markers are not one begin line followed by one end line (one was deleted,
+			or the block copied): mssh can no longer tell its own lines from the user's
+	'''
+	markers = []
+	line_start = number = 0
+	while line_start < len(text):
+		newline = text.find('\n', line_start)
+		line_end = len(text) if newline < 0 else newline + 1
+		number += 1
+		line = text[line_start:line_end].strip()
+		if line in (RC_BEGIN, RC_BEGIN_CREATED, RC_END):
+			markers.append((line, number, line_start, line_end))
+		line_start = line_end
+	if not markers:
 		return None
-	return head.start(), head.end(), tail.start(), tail.end()
+	ends = [marker == RC_END for marker, _, _, _ in markers]
+	# one begin line, then one end line
+	if ends != [False, True]:
+		where = ['{} at line {}'.format('end' if is_end else 'begin', marker[1]) for is_end, marker in zip(ends, markers)]
+		where += ['no end'] if not any(ends) else ['no begin'] if all(ends) else []
+		raise InstallError('did not change {}: its mssh completion markers ({}) are not one block, so mssh cannot tell its lines from yours'.format(rc, ', '.join(where)),
+			'fix them by hand (leave one block or none), then run this again')
+	(begin, _, start, body_start), (_, _, body_end, end) = markers
+	return begin, start, body_start, body_end, end
 
 def _editor_on(rc):
 	'''Whether the mssh block in rc turns the mssh line editor on.'''
 	try:
-		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
-			text = f.read()
-	except OSError:
+		text = _read_rc(rc)
+		found = _rc_block(rc, text) if text is not None else None
+	except InstallError:
+		# adding the block says what is wrong
 		return False
-	for begin in (RC_BEGIN, RC_BEGIN_CREATED):
-		found = _rc_block(text, begin)
-		if found is not None:
-			return 'export MSSH_COMPLETE_EDITOR=1' in text[found[1]:found[2]].splitlines()
-	return False
+	return found is not None and 'export MSSH_COMPLETE_EDITOR=1' in text[found[2]:found[3]].splitlines()
 
 def _add_rc_block(rc, body, messages):
 	'''Append a marked block holding body to rc; a block with other lines (editor on or off) is replaced.'''
+	shown = _as_shown(body).split('\n')
+	add_by_hand = ['to load it anyway, add these lines to it yourself:', RC_BEGIN] + shown + [RC_END]
 	try:
-		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
-			text = f.read()
-	except FileNotFoundError:
-		text = None
-	if text is not None:
-		for begin in (RC_BEGIN, RC_BEGIN_CREATED):
-			found = _rc_block(text, begin)
-			if found is None:
-				continue
-			_, body_start, body_end, _ = found
-			if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
-				messages.append('{} already loads it'.format(rc))
-				return
-			text = text[:body_start] + body + '\n' + text[body_end:]
-			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
-				f.write(text)
-			messages.append('updated the mssh block in ' + rc)
+		text = _read_rc(rc)
+	except NotRegularFile as error:
+		raise InstallError(*(error.args + tuple(add_by_hand)))
+	found = _rc_block(rc, text) if text is not None else None
+	if found is not None:
+		begin, start, body_start, body_end, _ = found
+		if text[body_start:body_end].replace('\r\n', '\n') == body + '\n':
+			messages.append('{} already loads it'.format(_shown(rc)))
 			return
+		by_hand = ['to load it anyway, replace lines {} to {} of it (the mssh block) with these yourself:'.format(
+			text.count('\n', 0, start) + 1, text.count('\n', 0, body_end) + 1), begin] + shown + [RC_END]
+		_write_rc(rc, text[:body_start] + body + '\n' + text[body_end:], by_hand)
+		messages.append('updated the mssh block in ' + _shown(rc))
+		return
 	block = '\n{}\n{}\n{}\n'.format(RC_BEGIN if text is not None else RC_BEGIN_CREATED, body, RC_END)
-	with open(rc, 'a', encoding='utf-8', errors='surrogateescape') as f:
-		f.write(block)
-	messages.append('added a block loading it to ' + rc)
+	# a new block is appended in place: the user's lines are never rewritten, and a write that fails
+	# part way could only leave an incomplete block, which is cut off again (or refused next time)
+	_write_rc(rc, block, add_by_hand, append=text is not None)
+	messages.append('added a block loading it to ' + _shown(rc))
 
 def _remove_rc_block(rc, messages):
 	try:
-		with open(rc, encoding='utf-8', errors='surrogateescape', newline='') as f:
-			text = f.read()
-	except FileNotFoundError:
+		text = _read_rc(rc)
+	except NotRegularFile:
+		# nothing mssh wrote can be in it
 		return
-	for begin in (RC_BEGIN_CREATED, RC_BEGIN):
-		found = _rc_block(text, begin)
-		if found is None:
-			continue
-		start, _, _, end = found
-		# the line break install put before the block goes with it
-		head = text[:start]
-		head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
-		text = head + text[end:]
-		if begin == RC_BEGIN_CREATED and not text:
+	found = _rc_block(rc, text) if text is not None else None
+	if found is None:
+		return
+	begin, start, _, body_end, end = found
+	by_hand = ['to remove it anyway, delete lines {} to {} of it (the mssh block) yourself'.format(
+		text.count('\n', 0, start) + 1, text.count('\n', 0, body_end) + 1)]
+	# the line break install put before the block goes with it
+	head = text[:start]
+	head = head[:-2] if head.endswith('\r\n') else head[:-1] if head.endswith('\n') else head
+	text = head + text[end:]
+	if begin == RC_BEGIN_CREATED and not text and not os.path.islink(rc):
+		try:
 			os.unlink(rc)
-			messages.append('removed ' + rc + ' (mssh had created it)')
+		except OSError as error:
+			raise InstallError('could not remove {}: {}'.format(rc, _reason(error, rc)))
+		messages.append('removed ' + rc + ' (mssh had created it)')
+	else:
+		_write_rc(rc, text, by_hand)
+		messages.append('removed the mssh block from ' + _shown(rc))
+
+def _login_text(path):
+	'''
+	The text of a login file, or None when there is none, or it is not a regular file (a FIFO
+	would wait for a writer); raises OSError when it cannot be read.
+	'''
+	import stat
+	try:
+		if not stat.S_ISREG(os.stat(path).st_mode):
+			return None
+	except FileNotFoundError:
+		return None
+	with open(path, encoding='utf-8', errors='replace') as f:
+		return f.read()
+
+def _loads_bashrc(home, text):
+	'''Whether a login file's text loads ~/.bashrc: itself, or through a file in home it sources (one level).'''
+	import re
+	if 'bashrc' in text:
+		return True
+	for line in text.splitlines():
+		if line.lstrip().startswith('#'):
+			continue
+		# `. ~/.profile`, `source "$HOME/.profile"`, `. "$HOME"/.profile`, `[ -f ~/.profile ] && . ~/.profile`
+		for name in re.findall(r'''(?:^|[\s;&|(])(?:\.|source)\s+["']?(?:~|\$HOME|\$\{HOME\})["']?/([^\s"';&|)]+)''', line):
+			try:
+				sourced = _login_text(os.path.join(home, name))
+			except OSError:
+				continue
+			if sourced is not None and 'bashrc' in sourced:
+				return True
+	return False
+
+def _bash_login_note(home, rc):
+	'''
+	A note for when bash login shells (ssh logins, macOS terminals) do not seem to load rc, else None.
+
+	They read the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists and is readable,
+	not ~/.bashrc; most of those load ~/.bashrc (the distributions' own do), but not all.
+	'''
+	line = '[ -f ~/.bashrc ] && . ~/.bashrc'
+	for name in ('.bash_profile', '.bash_login', '.profile'):
+		login = os.path.join(home, name)
+		if not os.path.exists(login):
+			continue
+		try:
+			text = _login_text(login)
+		except PermissionError:
+			# bash skips a login file it cannot read
+			continue
+		except OSError:
+			return None
+		if text is None or _loads_bashrc(home, text):
+			# no telling what a FIFO holds
+			return None
+		return 'note: bash login shells (ssh logins, macOS terminals) read {}, which does not seem to load {}; for autocomplete there too, add this line to it: {}'.format(login, rc, line)
+	return ('note: bash login shells (ssh logins, macOS terminals) read {0}/.bash_profile, .bash_login or .profile, and there is none to load {1};'
+		' for autocomplete there too, create {0}/.bash_profile holding: {2}').format(home, rc, line)
+
+def _zsh_rc(home, environ):
+	'''
+	The .zshrc zsh reads, the one in $ZDOTDIR when that is set (and not empty), else ~/.zshrc; and a
+	note when zsh could not say which (else None).
+
+	ZDOTDIR is often set in ~/.zshenv or /etc/zshenv, not always exported, so mssh's environment may
+	not hold it: zsh is asked, running only those zshenv files, as every zsh does. Without an answer
+	from zsh, the environment's ZDOTDIR is used.
+	'''
+	import subprocess
+	import tempfile
+	zdotdir = environ.get('ZDOTDIR')
+	why = None
+	fd, answer = tempfile.mkstemp(prefix='mssh-zdotdir.')
+	os.close(fd)
+	try:
+		# the answer goes to a file: a zshenv may print, or start a background job that keeps zsh's
+		# stdout open long after zsh is done
+		process = subprocess.Popen(['zsh', '-c', 'print -r -- "${ZDOTDIR-}" >| "$1"', 'zsh', answer], env=environ,
+			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		try:
+			status = process.wait(timeout=5)
+		except subprocess.TimeoutExpired:
+			process.kill()
+			process.wait()
+			why = 'it took over 5 s'
 		else:
-			with open(rc, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
-				f.write(text)
-			messages.append('removed the mssh block from ' + rc)
-		return
+			with open(answer, 'rb') as f:
+				said = f.read()
+			if said.endswith(b'\n'):
+				zdotdir = os.fsdecode(said[:-1])
+			else:
+				why = 'it exited with status {}'.format(status) if status else 'it gave no answer'
+	except FileNotFoundError:
+		why = 'zsh is not on PATH'
+	except OSError as error:
+		why = 'zsh could not be run: {}'.format(error.strerror or error)
+	finally:
+		os.unlink(answer)
+	rc = os.path.join(zdotdir or home, '.zshrc')
+	return rc, (None if why is None else 'note: zsh did not say whether ZDOTDIR is set ({}): using {}'.format(why, rc))
+
+def _home_directory(home, environ):
+	'''
+	The home directory to install into: home when given, else $HOME, else the user database's.
+
+	Raises:
+		InstallError: there is none, or it is / (with HOME empty, expanduser('~') gives '/', and
+			install wrote /.bashrc)
+	'''
+	where = 'HOME'
+	if not home:
+		home = environ.get('HOME')
+	if not home:
+		where = 'the user database (HOME is empty)'
+		try:
+			import pwd
+			home = pwd.getpwuid(os.getuid()).pw_dir
+		except (ImportError, KeyError):
+			raise InstallError('did not change anything: HOME is empty and the user database names no home directory; set HOME and run this again')
+	if not home or os.path.realpath(home) == os.path.realpath(os.sep):
+		raise InstallError('did not change anything: the home directory from {} is {!r}; set HOME to your home directory and run this again'.format(where, home))
+	return home
+
+def _zsh_starts_completion(rc):
+	'''Whether rc (comments left out) starts zsh's completion system, which TAB needs: compinit, or a framework that runs it.'''
+	import re
+	try:
+		with open(rc, encoding='utf-8', errors='replace') as f:
+			text = ''.join(line for line in f if not line.lstrip().startswith('#'))
+	except OSError:
+		return False
+	return re.search(r'compinit|oh-my-zsh|prezto|zimfw|ZIM_HOME|antigen|zplug|zgen', text) is not None
 
 def _paths(shell, home, environ):
 	data = environ.get('XDG_DATA_HOME') or os.path.join(home, '.local', 'share')
+	# fish's own configuration directory: $XDG_CONFIG_HOME/fish, else ~/.config/fish
 	config = environ.get('XDG_CONFIG_HOME') or os.path.join(home, '.config')
 	if shell == 'fish':
 		# completions load lazily; the Ctrl-R glue must load at startup: conf.d (written whole, like the rc blocks)
 		return {'files': [os.path.join(config, 'fish', 'completions', name + '.fish') for name in MSSH_NAMES],
 			'keys': os.path.join(config, 'fish', 'conf.d', 'mssh-complete.fish')}
 	if shell == 'zsh':
-		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': os.path.join(home, '.zshrc')}
+		# zsh reads .zshrc from $ZDOTDIR when that is set (often in ~/.zshenv), and never reads ~/.zshrc then
+		rc, note = _zsh_rc(home, environ)
+		return {'files': [os.path.join(data, 'multiSSH3', 'completion.zsh')], 'rc': rc, 'note': note}
 	# always from ~/.bashrc: bash-completion's per-user directory only loads where bash-completion
 	# runs, which an installed package does not guarantee (stock Debian root shells do not load it)
 	return {'files': [os.path.join(data, 'multiSSH3', 'completion.bash')], 'rc': os.path.join(home, '.bashrc')}
@@ -5471,6 +7739,8 @@ def _paths(shell, home, environ):
 def install(shell, home=None, environ=None, command=None, editor=False):
 	'''
 	Install the glue for shell for the current user. Never overwrites a file mssh did not write.
+
+	An rc file is replaced whole or not at all, and left alone when its mssh markers are not one block.
 
 	Args:
 		editor (bool): bash only: also turn on the mssh line editor (MSSH_COMPLETE_EDITOR=1 in the rc block);
@@ -5481,44 +7751,87 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 	'''
 	import shlex
 	environ = os.environ if environ is None else environ
-	home = home or os.path.expanduser('~')
+	try:
+		home = _home_directory(home, environ)
+	except InstallError as error:
+		return 1, list(error.args)
 	messages = []
 	if shell == 'fish':
 		major = _fish_major()
 		if major is not None and major < 3:
 			return 1, ['fish {} is too old for mssh autocomplete: it needs fish 3.0 or later'.format(major)]
+	# paths go into files written as UTF-8 as the bytes they have on disk
+	command = [_as_written(word) for word in (engine_command() if command is None else command)]
 	text = render_glue(shell, command)
 	paths = _paths(shell, home, environ)
-	written = [path for path in paths['files'] if _write_glue(path, text, messages)]
-	if paths.get('keys') and written:
-		_write_glue(paths['keys'], render_glue('fish-keys', command), messages)
-	if paths.get('rc') and written:
-		quoted = shlex.quote(written[0])
-		# always ends with status 0: a missing or broken file must not even change $? in a new shell
-		line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
-		body = line.format(quoted)
-		if shell == 'bash' and not editor and _editor_on(paths['rc']):
-			# installing again after an upgrade keeps what the operator turned on
-			editor = True
-			messages.append('kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)')
-		if editor and shell == 'bash':
-			body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
-		_add_rc_block(paths['rc'], body, messages)
+	if paths.get('note'):
+		messages.append(paths['note'])
+	try:
+		written = [path for path in paths['files'] if _write_glue(path, text, messages)]
+		if paths.get('keys') and written:
+			_write_glue(paths['keys'], render_glue('fish-keys', command), messages)
+		if paths.get('rc') and written:
+			quoted = shlex.quote(_as_written(written[0]))
+			# always ends with status 0: a missing or broken file must not even change $? in a new shell
+			line = '[[ -r {0} ]] && source {0} 2>/dev/null || :' if shell == 'zsh' else '[ -r {0} ] && . {0} 2>/dev/null || :'
+			body = line.format(quoted)
+			if shell == 'bash' and not editor and _editor_on(paths['rc']):
+				# installing again after an upgrade keeps what the operator turned on
+				editor = True
+				messages.append('kept the mssh line editor on (to turn it off: mssh --completion uninstall bash, then install bash)')
+			if editor and shell == 'bash':
+				body = 'export MSSH_COMPLETE_EDITOR=1\n' + body
+			_add_rc_block(paths['rc'], body, messages)
+			if shell == 'zsh' and not _zsh_starts_completion(paths['rc']):
+				messages.append("TAB needs zsh's completion system, which {0} does not seem to start: if TAB does not complete mssh in a new zsh, add this line to {0}: autoload -Uz compinit && compinit".format(paths['rc']))
+			if shell == 'bash':
+				note = _bash_login_note(home, paths['rc'])
+				if note:
+					messages.append(note)
+	except InstallError as error:
+		return 1, messages + list(error.args)
 	return (0 if written else 1), messages
 
 def uninstall(shell, home=None, environ=None):
 	'''Remove what install wrote for shell. Returns (exit code, messages).'''
 	environ = os.environ if environ is None else environ
-	home = home or os.path.expanduser('~')
+	try:
+		home = _home_directory(home, environ)
+	except InstallError as error:
+		return 1, list(error.args)
 	messages = []
 	paths = _paths(shell, home, environ)
-	for path in paths['files'] + ([paths['keys']] if paths.get('keys') else []):
-		if _ours(path):
-			os.unlink(path)
-			messages.append('removed ' + path)
-	if paths.get('rc'):
-		_remove_rc_block(paths['rc'], messages)
-	return 0, messages or ['nothing to remove']
+	if paths.get('note'):
+		messages.append(paths['note'])
+	try:
+		for path in paths['files'] + ([paths['keys']] if paths.get('keys') else []):
+			if _ours(path):
+				try:
+					os.unlink(path)
+				except OSError as error:
+					raise InstallError('could not remove {}: {}'.format(path, _reason(error, path)))
+				messages.append('removed ' + path)
+		if paths.get('rc'):
+			_remove_rc_block(paths['rc'], messages)
+	except InstallError as error:
+		return 1, messages + list(error.args)
+	if len(messages) == (1 if paths.get('note') else 0):
+		messages.append('nothing to remove')
+	return 0, messages
+
+def prepare_index():
+	'''
+	Build the index now, for `mssh --completion install`: the first TAB in a new shell then answers
+	from it instead of starting the build. A failure does not fail the install. Returns the message.
+	'''
+	directory = cache_dir()
+	if directory is None:
+		return 'no private runtime directory for the completion index: TAB offers options and shell history only'
+	try:
+		return 'built the completion index ' + build_index(directory)
+	except Exception as e:
+		_debug('install: rebuild failed: {!r}'.format(e))
+		return 'could not build the completion index now ({}): the first TAB tries again'.format(e)
 
 def completion_command(values):
 	'''`mssh --completion ...`: print the glue for a shell, or install / uninstall it.'''
@@ -5531,6 +7844,9 @@ def completion_command(values):
 		values = values[:-1]
 	if action in ('install', 'uninstall') and len(values) <= 2:
 		shell = values[1] if len(values) == 2 else detect_shell()
+		if shell not in SHELLS and len(values) == 2:
+			print('mssh: autocomplete is for bash, zsh and fish, not {}'.format(shell), file=sys.stderr)
+			return 2
 		if shell not in SHELLS:
 			print('mssh: cannot tell which shell to set up, name it: mssh --completion {} bash|zsh|fish'.format(action), file=sys.stderr)
 			return 2
@@ -5538,11 +7854,16 @@ def completion_command(values):
 			print('mssh: the mssh line editor is for bash only', file=sys.stderr)
 			return 2
 		code, messages = install(shell, editor=editor) if action == 'install' else uninstall(shell)
+		if action == 'install' and code == 0:
+			messages.append(prepare_index())
 		for message in messages:
 			print(message)
 		return code
 	print('usage: mssh --completion bash|zsh|fish | install [SHELL] [editor] | uninstall [SHELL]', file=sys.stderr)
 	return 2
+
+# as main is: mssh --completion calls this directly, not through main
+completion_command = _quiet_when_stdout_is_gone(completion_command)
 
 #%% ------------ Replay evaluation ----------------
 def _tab(candidates, typed, policy, quoted, nospace):
@@ -5559,12 +7880,15 @@ def _tab(candidates, typed, policy, quoted, nospace):
 	suffix = ('"' if quoted else '') + ' ' if unique and not nospace else ''
 	return choice[len(typed):], suffix
 
-def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', shell='zsh'):
+def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', shell='zsh', equivalents=()):
 	'''
 	Simulate an operator typing intended after before (with after behind the cursor), using TAB.
 
 	The operator types a character at a time and presses TAB whenever it inserts the intended
 	continuation. An appended space or quote that the operator then has to delete costs one key.
+	equivalents are texts that do what intended does (the other strings of an option): a candidate
+	that is one of them ranks as intended does, and a TAB toward one is taken, the operator typing
+	on to its end.
 
 	Returns:
 		dict: keys, chars, rank (of intended at the start, 0 if absent), visited and divergent
@@ -5572,24 +7896,28 @@ def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', 
 			extending what was typed: must stay 0), suffix_cost
 	'''
 	result = {'keys': 0, 'chars': len(intended), 'rank': 0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0}
+	targets = [intended] + [text for text in equivalents if text != intended]
+	target = intended
 	position = 0
-	while position < len(intended):
-		typed = intended[:position]
+	while position < len(target):
+		typed = target[:position]
 		response = engine.query(Request(shell, before + typed, after, typed))
 		candidates = response.candidates
 		result['visited'] += 1
 		if position == 0:
 			for number, candidate in enumerate(candidates):
-				if candidate.text == intended:
+				if candidate.text in targets:
 					result['rank'] = number + 1
 					break
 		result['altered'] += sum(1 for candidate in candidates if not candidate.text.startswith(typed))
 		inserted, suffix = _tab(candidates, typed, policy, quoted, 'nospace' in response.directives)
-		remaining = intended[position:]
+		if inserted and not target.startswith(typed + inserted):
+			target = next((text for text in targets if text.startswith(typed + inserted)), target)
+		remaining = target[position:]
 		if inserted and remaining.startswith(inserted):
 			result['keys'] += 1
 			position += len(inserted)
-			if suffix and position < len(intended):
+			if suffix and position < len(target):
 				result['keys'] += 1
 				result['suffix_cost'] += 1
 			continue
@@ -5599,9 +7927,9 @@ def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', 
 		position += 1
 	return result
 
-def _quote_command(command):
-	'''(quote char, command) for typing command inside quotes, or None when that would need escapes.'''
-	if not any(char in command for char in '"\\$`'):
+def _quote_command(command, shell):
+	'''The quote char for typing command inside quotes in shell, or None when that would need escapes.'''
+	if not any(char in command for char in '"\\$`') and not _bang_in_double_quotes(shell, '"', command):
 		return '"'
 	if "'" not in command:
 		return "'"
@@ -5667,7 +7995,8 @@ def slot_cases(entry):
 	commands = [command for command in entry.commands if command.strip()]
 	quoted_commands = []
 	for command in commands:
-		quote = _quote_command(command)
+		# the replay types as an operator does in bash
+		quote = _quote_command(command, 'bash')
 		if quote is None:
 			commands = []
 			quoted_commands = []
@@ -5682,7 +8011,7 @@ def slot_cases(entry):
 		cases.append(('hosts', head, '', entry.hosts, False, first_command if plain else ''))
 		if tail:
 			cases.append(('hosts-back', head, tail, entry.hosts, False, ''))
-		if commands and _quote_command(commands[0]) == '"':
+		if commands and _quote_command(commands[0], 'bash') == '"':
 			cases.append(('command', head + entry.hosts + ' "', '', commands[0], True, ''))
 	for number, (_, value, name) in enumerate(options):
 		others = ' '.join(['mssh'] + option_texts[:number] + option_texts[number + 1:]) + ' '
@@ -5692,6 +8021,10 @@ def slot_cases(entry):
 			ahead = ((' ' + entry.hosts) if entry.hosts else '') + first_command if plain else ''
 			cases.append(('value', others + name + ' ', rest, value, False, ahead))
 	return cases
+
+def _newest(items, limit):
+	'''The last limit items (the newest of a history), none when limit is 0 or less.'''
+	return items[-limit:] if limit > 0 else []
 
 def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost')):
 	'''
@@ -5708,7 +8041,7 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 			results plus 'cases'
 	'''
 	entries = sorted((entry for entry in (parse_history_line(line, spec) for line in lines) if entry is not None), key=lambda entry: entry.ts)
-	replay = [number for number, entry in enumerate(entries) if entry.ts >= since][-limit:] if limit else []
+	replay = _newest([number for number, entry in enumerate(entries) if entry.ts >= since], limit)
 	first = replay[0] if replay else len(entries)
 	memory = MemoryKnowledge()
 	reference = entries[-1].ts if entries else 0
@@ -5721,6 +8054,13 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 		for slot, before, after, intended, quoted, ahead in slot_cases(entry):
 			if not intended:
 				continue
+			equivalents = ()
+			if slot == 'option':
+				# every string of the option typed does what it does (-u, --username): offering another
+				# is no miss. Strings of one action, not of one dest: -su and -nsu share their dest
+				option, _ = spec.lookup('-' + intended)
+				if option is not None:
+					equivalents = tuple(string[1:] for string in option.strings)
 			for policy in policies:
 				if policy == 'ghost':
 					# suggestions need the cursor at the end of the line: replay the slot typed last
@@ -5732,7 +8072,7 @@ def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost
 					for key in ('keys', 'chars', 'visited', 'shown', 'divergent', 'altered'):
 						total[key] += result[key]
 					continue
-				result = simulate_slot(engine, before, after, intended, quoted, policy)
+				result = simulate_slot(engine, before, after, intended, quoted, policy, equivalents=equivalents)
 				total = totals.setdefault((policy, slot), {'cases': 0, 'keys': 0, 'chars': 0, 'top1': 0, 'top3': 0,
 					'mrr': 0.0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0})
 				total['cases'] += 1
@@ -5874,11 +8214,24 @@ def _prompt_from_flags(flags):
 		prompt = expand_prompt(prompt)
 	return prompt.rsplit('\n', 1)[-1].replace('\x01', '').replace('\x02', '')
 
+def _ready():
+	'''
+	Say "ready" on stdout, just before taking the terminal (pick with ready=1, edit --ready): the shell
+	waits only so long for it. False when nobody reads any more: the shell went on without the picker
+	or the editor, and the terminal must be left alone.
+	'''
+	try:
+		os.write(1, b'ready\n')
+		return True
+	except OSError:
+		return False
+
 def _cmd_pick():
 	'''
 	mssh-complete pick: the Ctrl-R picker. Reads a request on stdin, draws on /dev/tty, prints the new
 	line (MSSHC1, L <cursor>\\t<line>, E; no NUL: shells read it with command substitution). Exit 0
-	chosen, 1 cancelled, 2 unavailable (the shell then does what Ctrl-R did before).
+	chosen, 1 cancelled, 2 unavailable (the shell then does what Ctrl-R did before). With the flag
+	ready=1, "ready" comes first, before the terminal is taken.
 	'''
 	data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
 	try:
@@ -5899,6 +8252,8 @@ def _cmd_pick():
 		line = before = None
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
+		if request.flags.get('ready') == '1' and not _ready():
+			return 2
 		with Terminal() as term:
 			outcome = picker.run(term, line, before)
 	except Exception as e:
@@ -5943,7 +8298,10 @@ def editor_completions(engine, before):
 			names = sorted(os.listdir(listed))
 		except OSError:
 			names = []
-		unsafe = {'"': '"\\$`', "'": "'", "$'": "'\\"}.get(context.open_quote, '')
+		unsafe = _QUOTE_SPECIAL.get(context.open_quote, '')
+		if context.open_quote == '"':
+			# in "..." bash also expands ! (history expansion)
+			unsafe += '!'
 		for name in names:
 			if not name.startswith(start) or _has_control(name):
 				continue
@@ -5967,11 +8325,13 @@ def _cmd_edit(args):
 	The prompt to redraw is in $MSSH_COMPLETE_PROMPT (PS1 itself with --expand); stdin holds the
 	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
 	replays keys, written as a readline key sequence; abandon: drop the line), E. Exit 3 when the
-	editor cannot start; the shell then goes on as if it had not been asked.
+	editor cannot start; the shell then goes on as if it had not been asked. With --ready, "ready"
+	comes first, before the terminal is taken.
 	'''
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
 	parser.add_argument('--expand', action='store_true')
+	parser.add_argument('--ready', action='store_true')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
 	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
@@ -6011,6 +8371,11 @@ def _cmd_edit(args):
 		return engine.diagnose(Request('bash', text[:cursor], text[cursor:], ''))
 
 	editor = LineEditor(options.text, suggest, complete, pick, diagnose)
+	# the suggestion and the warnings it opens with: asked before the shell hears "ready"
+	editor.refresh()
+	editor.refresh_warnings()
+	if options.ready and not _ready():
+		return 3
 	try:
 		with term:
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
@@ -6024,41 +8389,61 @@ def _cmd_edit(args):
 
 def _cmd_rebuild(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	# what the query that started us wrote into the lock, read before anything else
+	owner = read_lock(lock) if lock else None
+	built = False
 	try:
 		directory = cache_dir()
 		if directory is None:
 			print('mssh-complete: no private cache directory', file=sys.stderr)
 			return 1
-		print(build_index(directory))
+		path = build_index(directory)
+		built = True
+		print(path)
 		return 0
 	except Exception as e:
 		_debug('rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
 		return 1
 	finally:
-		if lock:
-			try:
-				os.unlink(lock)
-			except OSError:
-				pass
+		if lock and built:
+			release_lock(lock, owner)
+		elif lock:
+			keep_failed_lock(lock, owner)
 
 def _cmd_probe(args):
 	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
+	# what the query that started us wrote into the lock, read before anything else
+	owner = read_lock(lock) if lock else None
 	try:
 		directory = cache_dir()
 		if directory is None:
 			return 1
-		run_probe(directory, lock)
+		run_probe(directory, lock, owner=owner)
 		return 0
 	except Exception as e:
 		_debug('probe failed: {!r}'.format(e))
 		return 1
 	finally:
 		if lock:
-			try:
-				os.unlink(lock)
-			except OSError:
-				pass
+			release_lock(lock, owner)
+
+def _print_as_stdout_can(text):
+	'''
+	Print text that may hold host names from the history, as stdout can: characters that came from bytes
+	that are not UTF-8 as those bytes, characters stdout's encoding lacks (all but ASCII in the C locale
+	on Python 3.6) as backslash escapes. print() failed on either.
+	'''
+	import re
+	buffer = getattr(sys.stdout, 'buffer', None)
+	if buffer is None:
+		sys.stdout.write(text)
+		return
+	encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+	parts = re.split('([\udc80-\udcff]+)', text)
+	sys.stdout.flush()
+	buffer.write(b''.join(part.encode('ascii', 'surrogateescape') if index % 2 else part.encode(encoding, 'backslashreplace')
+		for index, part in enumerate(parts)))
 
 def _cmd_eval(args):
 	import argparse
@@ -6076,9 +8461,9 @@ def _cmd_eval(args):
 	else:
 		lines, _, _ = read_history(os.path.expanduser(options.history_file or mssh.DEFAULT_HISTORY_FILE))
 	if options.diagnostics:
-		lines = [line for line in lines if _entry_time(line) >= options.since][-options.limit:]
+		lines = _newest([line for line in lines if _entry_time(line) >= options.since], options.limit)
 		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
-		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
+		_print_as_stdout_can(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)))
 		return 0
 	print(format_report(evaluate(lines, spec, options.since, options.limit)))
 	return 0
@@ -6088,6 +8473,7 @@ def _entry_time(line):
 	head = line.split('\t', 1)[0]
 	return int(head) if _is_digits(head) else 0
 
+@_quiet_when_stdout_is_gone
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv
 	command = argv[0] if argv else ''

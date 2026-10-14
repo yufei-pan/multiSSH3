@@ -1,4 +1,6 @@
 '''Grey suggestions: how much of the line the engine dares to predict, and that it only ever extends what was typed.'''
+import signal
+
 import pytest
 
 import multiSSH3
@@ -78,6 +80,46 @@ def test_inside_an_open_quote_the_suggestion_closes_it():
 	assert ghost.text == 'idia-smi"'
 
 
+def test_inside_an_ansi_c_quote_backslashes_are_never_suggested():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	history = [line(NOW - number, '-su', 'node1', '\'printf "%s\\n" x\'') for number in range(5)]
+	assert suggest("mssh node1 'pri", history=history).text == 'ntf "%s\\n" x\''
+	assert suggest("mssh node1 $'pri", history=history) is None
+	# nor the start two such commands share
+	history = [line(NOW - number, '-su', 'node1', '\'printf "%s\\n" {}\''.format(name)) for number in range(3) for name in 'ab']
+	assert suggest("mssh node1 'pri", history=history).text == 'ntf "%s\\n" '
+	assert suggest("mssh node1 $'pri", history=history) is None
+
+
+# bash and zsh expand ! inside double quotes when they read the line (history expansion, on by default)
+BANG = [line(NOW - number, '-su -u=ops', 'web1', "'grep !important /etc/x'") for number in range(6)]
+
+
+@pytest.mark.parametrize('shell, quoted', [
+	('bash', "'grep !important /etc/x'"), ('zsh', "'grep !important /etc/x'"), ('fish', '"grep !important /etc/x"')])
+def test_a_command_holding_a_bang_is_suggested_in_single_quotes(shell, quoted):
+	assert suggest('mssh -u o', shell=shell, history=BANG).text == 'ps web1 ' + quoted
+
+
+def test_a_command_holding_a_bang_and_a_single_quote_is_not_suggested():
+	history = [line(NOW - number, '-su -u=ops', 'web1', '"echo it\'s done!"') for number in range(6)]
+	assert suggest('mssh -u o', history=history).text == 'ps'
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_no_bang_is_suggested_inside_an_open_double_quote(shell):
+	assert suggest('mssh -u=ops web1 "gr', shell=shell, history=BANG) is None
+	assert suggest("mssh -u=ops web1 'gr", shell=shell, history=BANG).text == "ep !important /etc/x'"
+	# nor in the start values share
+	shared = [line(NOW - number, '-su', 'web1', "'echo hi!{}'".format(end)) for number in range(3) for end in 'ab']
+	assert suggest('mssh web1 "ec', shell=shell, history=shared) is None
+	assert suggest("mssh web1 'ec", shell=shell, history=shared).text == 'ho hi!'
+
+
+def test_fish_suggests_a_bang_inside_double_quotes():
+	assert suggest('mssh -u=ops web1 "gr', shell='fish', history=BANG).text == 'ep !important /etc/x"'
+
+
 def test_unquoted_command_words_are_escaped():
 	ghost = suggest('mssh storage1 cat /da', history=[line(NOW - number, '-su', 'storage1', '"cat /data|wc"') for number in range(5)])
 	assert ghost.text == 'ta\\|wc'
@@ -127,3 +169,37 @@ def test_ghost_requests_answer_with_one_g_record():
 	engine = mc.Engine(SPEC, [memory])
 	response = engine.query(mc.Request('bash', 'mssh gp', '', 'gp', flags={'ghost': '1'}))
 	assert mc.format_response(response, nul=False) == 'MSSHC1\nG line\tu[01-16] "nvidia-smi"\nE\n'.encode()
+
+
+def mssh_runs(line_text, monkeypatch):
+	'''The remote commands mssh runs for an mssh line, answering its "one command or several" question with the default.'''
+	monkeypatch.setattr(multiSSH3, 'input_with_timeout_and_countdown', lambda *args, **kwargs: None)
+	handler = signal.getsignal(signal.SIGINT)
+	try:
+		return multiSSH3.process_commands(multiSSH3.process_args([token.text for token in mc.lex(line_text)[1:]])).commands
+	finally:
+		signal.signal(signal.SIGINT, handler)
+
+
+def test_no_suggestion_mssh_would_run_as_several_commands(monkeypatch):
+	# mssh joins the command words into one command only when none of them holds whitespace:
+	# `echo hello\ world` runs echo, then `hello world`
+	history = [line(NOW - number, '-su', 'web1', '\'echo "hello world"\'') for number in range(5)]
+	history += [line(NOW - 100 - number, '-su', 'web2', "'echo hello world'") for number in range(5)]
+	shown = 0
+	for before in ('mssh web1 ec', 'mssh web1 echo ', 'mssh web1 echo hel', 'mssh web2 ec'):
+		ghost = suggest(before, history=history)
+		if ghost is not None:
+			shown += 1
+			assert len(mssh_runs(before + ghost.text, monkeypatch)) == 1, before + ghost.text
+	assert shown
+
+
+def test_commands_with_quoted_words_are_suggested_as_typed(monkeypatch):
+	# as mssh records `mssh web1 "systemctl status 'ssh*'"`
+	history = [line(NOW - number, '-su', 'web1', multiSSH3._shell_quote("systemctl status 'ssh*'")) for number in range(5)]
+	ghost = suggest('mssh web1 sys', history=history)
+	assert (ghost.kind, ghost.text) == ('line', "temctl status \\'ssh\\*\\'")
+	assert mssh_runs('mssh web1 sys' + ghost.text, monkeypatch) == ["systemctl status 'ssh*'"]
+	assert suggest('mssh web1 systemctl status ', history=history).text == "\\'ssh\\*\\'"
+	assert suggest('mssh web1 sys', shell='zsh', history=history).text == "temctl status \\'ssh\\*\\'"

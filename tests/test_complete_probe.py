@@ -3,6 +3,7 @@ import errno
 import os
 import socket
 import subprocess
+import time
 import types
 
 import pytest
@@ -12,12 +13,18 @@ import mssh_complete as mc
 
 NOW = 1790000000.0
 REAL_HOST_VALIDITY = multiSSH3.host_validity
-# a stand-in for ping: the last argument is the host; hosts in $FAKE_PING_UP answer
+# a stand-in for ping: the last argument is the host; hosts in $FAKE_PING_UP answer, names in
+# $FAKE_PING_UNKNOWN do not resolve, and with $FAKE_PING_DENIED (its exit code) ping has no permission
 FAKE_PING = '''#!/bin/sh
 for host; do :; done
 echo "$host" >> "$FAKE_PING_LOG"
+if [ -n "$FAKE_PING_DENIED" ]; then
+	echo 'ping: socket: Operation not permitted' >&2
+	exit "$FAKE_PING_DENIED"
+fi
 case " $FAKE_PING_HANG " in *" $host "*) exec sleep 30 ;; esac
 case " $FAKE_PING_UP " in *" $host "*) exit 0 ;; esac
+case " $FAKE_PING_UNKNOWN " in *" $host "*) echo "ping: $host: Name or service not known" >&2; exit 2 ;; esac
 exit "${FAKE_PING_SILENT:-1}"
 '''
 
@@ -30,7 +37,7 @@ def env(tmp_path, monkeypatch):
 	(bin_dir / 'ping').chmod(0o755)
 	monkeypatch.setenv('PATH', str(bin_dir) + os.pathsep + os.environ.get('PATH', ''))
 	monkeypatch.setenv('FAKE_PING_LOG', str(tmp_path / 'ping.log'))
-	monkeypatch.setenv('FAKE_PING_UP', 'node1 node2')
+	monkeypatch.setenv('FAKE_PING_UP', '127.0.0.1 node1 node2')
 	verdicts = {'node1': 'valid', 'node2': 'valid', 'node3': 'valid', 'gpu017': 'invalid'}
 	monkeypatch.setattr(multiSSH3, 'host_validity', lambda host, timeout=2.0: verdicts.get(host, 'valid'))
 	monkeypatch.setattr(mc, 'boot_id', lambda: 'boot-a')
@@ -54,8 +61,8 @@ def test_queued_hosts_are_checked_and_pinged(env):
 		'node3': ('valid', 'silent', NOW, 0.0),
 		'gpu017': ('invalid', '', 0.0, 0.0),
 	}
-	# a host that does not exist is not pinged
-	assert sorted(env.pinged()) == ['node1', 'node3']
+	# a host that does not exist is not pinged; the run first checks ping works, on the loopback address
+	assert sorted(env.pinged()) == ['127.0.0.1', 'node1', 'node3']
 	assert mc.take_probe_queue(env.directory) == []
 
 
@@ -73,16 +80,37 @@ def test_a_host_going_silent_keeps_when_it_last_answered(env):
 	assert states(env)['node3'] == ('valid', 'silent', NOW + 90, NOW)
 
 
-@pytest.mark.parametrize('ping', ['missing', 'failing'])
+@pytest.mark.parametrize('ping', ['missing', 'denied', 'denied-busybox'])
 def test_without_a_working_ping_hosts_get_none(env, monkeypatch, ping):
 	if ping == 'missing':
 		monkeypatch.setenv('PATH', '/nonexistent')
 	else:
-		# iputils ping exits 2 on errors (no permission, a name it cannot resolve)
-		monkeypatch.setenv('FAKE_PING_SILENT', '2')
+		# no permission (no CAP_NET_RAW, outside net.ipv4.ping_group_range): iputils ping exits 2, as
+		# for a name it cannot resolve; busybox ping exits 1, as for silence; both say why
+		monkeypatch.setenv('FAKE_PING_DENIED', '2' if ping == 'denied' else '1')
 	mc.queue_probes(env.directory, ['node3', 'node4'])
 	mc.run_probe(env.directory, now=lambda: NOW)
 	assert {host: state[1] for host, state in states(env).items()} == {'node3': 'none', 'node4': 'none'}
+	# found out once, on the loopback address: ping is off for the rest of the run
+	assert env.pinged() == ([] if ping == 'missing' else ['127.0.0.1'])
+
+
+def test_a_name_ping_cannot_resolve_leaves_ping_on(env, monkeypatch):
+	# iputils ping exits 2 for it, as without permission: that alone must not turn ping off
+	monkeypatch.setenv('FAKE_PING_UNKNOWN', 'node4')
+	monkeypatch.setattr(mc, 'probe_parallelism', lambda mssh: 1)
+	mc.queue_probes(env.directory, ['node3', 'node4', 'node1'])
+	mc.run_probe(env.directory, now=lambda: NOW)
+	assert {host: state[1] for host, state in states(env).items()} == {'node1': 'answer', 'node3': 'silent', 'node4': 'none'}
+	assert sorted(env.pinged()) == ['127.0.0.1', 'node1', 'node3', 'node4']
+
+
+def test_a_silent_loopback_leaves_ping_on(env, monkeypatch):
+	# no answer from 127.0.0.1 and no reason given: a firewall dropping ICMP, which may spare other hosts
+	monkeypatch.setenv('FAKE_PING_UP', 'node1')
+	mc.queue_probes(env.directory, ['node1', 'node3'])
+	mc.run_probe(env.directory, now=lambda: NOW)
+	assert {host: state[1] for host, state in states(env).items()} == {'node1': 'answer', 'node3': 'silent'}
 
 
 def test_a_ping_that_does_not_finish_says_nothing(env, monkeypatch):
@@ -121,9 +149,10 @@ def test_running_out_of_descriptors_halves_and_retries(env, monkeypatch):
 	calls = []
 
 	def flaky_run(argv, **kwargs):
-		calls.append(argv)
-		if len(calls) == 1:
-			raise OSError(errno.EMFILE, 'Too many open files')
+		if argv[-1] != mc.PING_LOOPBACK:
+			calls.append(argv)
+			if len(calls) == 1:
+				raise OSError(errno.EMFILE, 'Too many open files')
 		return real_run(argv, **kwargs)
 	monkeypatch.setattr(subprocess, 'run', flaky_run)
 	monkeypatch.setattr(mc, 'probe_parallelism', lambda mssh: 8)
@@ -180,3 +209,84 @@ def test_one_prober_at_a_time(tmp_path, monkeypatch):
 	assert mc.spawn_probe(str(tmp_path)) is True
 	assert mc.spawn_probe(str(tmp_path)) is False
 	assert len(started) == 1 and started[0][-3:] == ['probe', '--lock', os.path.join(str(tmp_path), mc.PROBE_LOCK_NAME)]
+
+
+def test_answers_are_kept_for_the_longest_ping_expiry_known(monkeypatch):
+	monkeypatch.delenv('MSSH_COMPLETE_PING_TTL', raising=False)
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 600)
+	# -uhe on a line can ask for more than mssh's default: a day at least
+	assert mc.answer_horizon(multiSSH3) == mc.ANSWER_KEEP == 86400
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 3 * 86400)
+	assert mc.answer_horizon(multiSSH3) == 3 * 86400
+	monkeypatch.setenv('MSSH_COMPLETE_PING_TTL', str(5 * 86400))
+	assert mc.answer_horizon(multiSSH3) == 5 * 86400
+	monkeypatch.setenv('MSSH_COMPLETE_PING_TTL', 'soon')
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 'later')
+	assert mc.answer_horizon(multiSSH3) == mc.ANSWER_KEEP
+
+
+def test_the_prober_writes_only_states_queries_can_use(env, monkeypatch):
+	monkeypatch.delenv('MSSH_COMPLETE_PING_TTL', raising=False)
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_UNAVAILABLE_HOST_EXPIRY', 600)
+	day = 86400.0
+	mc.write_host_states(env.directory, {
+		'typo1': mc.HostState('invalid', NOW - 700),
+		'old1': mc.HostState('valid', NOW - 2 * day, 'answer', NOW - 2 * day, NOW - 2 * day),
+		'node4': mc.HostState('valid', NOW - 3600, 'answer', NOW - 3600, NOW - 3600),
+	})
+	mc.queue_probes(env.directory, ['node1'])
+	mc.run_probe(env.directory, now=lambda: NOW)
+	assert sorted(states(env)) == ['node1', 'node4']
+
+
+def take_over(lock):
+	'''What the next query does once the lock looks stale: takes it for a prober of its own. Returns what it wrote.'''
+	stale = time.time() - mc.LOCK_STALE - 1
+	os.utime(lock, (stale, stale))
+	assert mc.take_lock(lock)
+	with open(lock) as f:
+		return f.read()
+
+
+def test_a_prober_removes_its_own_lock(env, monkeypatch):
+	monkeypatch.setattr(mc, 'cache_dir', lambda: env.directory)
+	lock = os.path.join(env.directory, mc.PROBE_LOCK_NAME)
+	assert mc.take_lock(lock)
+	mc.queue_probes(env.directory, ['node1'])
+	assert mc.main(['probe', '--lock', lock]) == 0
+	assert sorted(states(env)) == ['node1']
+	assert not os.path.exists(lock)
+
+
+def test_a_prober_leaves_a_lock_taken_over_from_it(env, monkeypatch):
+	# a prober that looked stale (one batch past LOCK_STALE, a suspended machine) has lost its lock to
+	# the next one: removing that lock would let a third prober start beside the second
+	monkeypatch.setattr(mc, 'cache_dir', lambda: env.directory)
+	lock = os.path.join(env.directory, mc.PROBE_LOCK_NAME)
+	assert mc.take_lock(lock)
+	successor = []
+	monkeypatch.setattr(mc, 'run_probe', lambda directory, lock, **kwargs: successor.append(take_over(lock)))
+	assert mc.main(['probe', '--lock', lock]) == 0
+	with open(lock) as f:
+		assert f.read() == successor[0]
+
+
+def test_a_prober_whose_lock_was_taken_over_stops(env, monkeypatch):
+	# the prober holding the lock now writes host-state.tsv: this one writes nothing more, which would
+	# undo that one's results, and leaves its hosts queued
+	monkeypatch.setattr(mc, 'cache_dir', lambda: env.directory)
+	monkeypatch.setattr(mc, 'probe_parallelism', lambda mssh: 2)
+	lock = os.path.join(env.directory, mc.PROBE_LOCK_NAME)
+	assert mc.take_lock(lock)
+	mc.queue_probes(env.directory, ['node10', 'node11', 'node12', 'node13'])
+	probe_batch = mc._probe_batch
+
+	def batch_then_lose_the_lock(*args):
+		retry = probe_batch(*args)
+		take_over(lock)
+		return retry
+	monkeypatch.setattr(mc, '_probe_batch', batch_then_lose_the_lock)
+	assert mc.main(['probe', '--lock', lock]) == 0
+	assert states(env) == {}
+	assert mc.take_probe_queue(env.directory) == ['node13', 'node12', 'node11', 'node10']
+	assert os.path.exists(lock)

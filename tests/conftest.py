@@ -1,14 +1,55 @@
+import atexit
 import ipaddress
 import os
+import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-import multiSSH3
+# The tests see mssh's built-in defaults and nothing of the machine they run on. multiSSH3 reads the
+# config files under ~ when it is imported, and env files, history and keys under ~ later: the session,
+# and every process it starts, gets an empty HOME of its own first. ssh finds ~/.ssh through the passwd
+# database, not HOME, so the live localhost tests still have their keys.
+_SESSION_DIR = tempfile.mkdtemp(prefix="mssh-tests-")
+atexit.register(shutil.rmtree, _SESSION_DIR, True)
+SESSION_HOME = os.path.join(_SESSION_DIR, "home")
+os.mkdir(SESSION_HOME)
+os.environ["HOME"] = SESSION_HOME
+
+# ssh -G (how mssh validates names) without the developer's ssh config, whose aliases would decide
+# which test names are valid and whose Match exec lines would run commands. Every other ssh, the live
+# localhost tests' included, is the real one with the real config.
+_REAL_SSH = shutil.which("ssh")
+if _REAL_SSH:
+	os.mkdir(os.path.join(_SESSION_DIR, "bin"))
+	with open(os.path.join(_SESSION_DIR, "bin", "ssh"), "w") as _wrapper:
+		_wrapper.write('#!/bin/sh\nif [ "$1" = -G ]; then exec {0} -F /dev/null "$@"; fi\nexec {0} "$@"\n'.format(shlex.quote(_REAL_SSH)))
+	os.chmod(os.path.join(_SESSION_DIR, "bin", "ssh"), 0o755)
+	os.environ["PATH"] = os.path.join(_SESSION_DIR, "bin") + os.pathsep + os.environ.get("PATH", "")
+
+import multiSSH3  # noqa: E402 (after HOME and PATH)
+
+# outside HOME: this machine's host names and aliases are not the tests'
+multiSSH3.DEFAULT_HOST_FILE = os.path.join(_SESSION_DIR, "hosts")
+with open(multiSSH3.DEFAULT_HOST_FILE, "w") as _hosts:
+	_hosts.write("127.0.0.1\tlocalhost\n")
+multiSSH3._etc_hosts.clear()
+# in place: _env_files is this list until a test replaces it, and main() starts over from it
+multiSSH3.DEFAULT_ENV_FILES[:] = [path for path in multiSSH3.DEFAULT_ENV_FILES if path.startswith("~")]
+
+
+def pytest_configure(config):
+	# a config file outside HOME (/etc/multiSSH3.config.json, /etc/multiSSH3.d/...) changes every default
+	if multiSSH3.__configs_from_file:
+		found = [path for path in multiSSH3.CONFIG_FILE_CHAIN if os.path.isfile(os.path.expanduser(path))]
+		raise pytest.UsageError("the tests expect mssh's built-in defaults, but {} changes them: "
+			"move it aside while the tests run".format(" and ".join(found)))
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MULTISSH3_PY = PACKAGE_ROOT / "multiSSH3.py"
@@ -84,7 +125,8 @@ def ssh_host_works(host):
 				host,
 				"true",
 			],
-			capture_output=True,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
 			timeout=5,
 		)
 		return r.returncode == 0
@@ -101,10 +143,12 @@ def ssh_localhost_works():
 
 
 def run_cli(args, timeout=30, check=False):
+	# capture_output and text arrived in Python 3.7
 	return subprocess.run(
 		[sys.executable, str(MULTISSH3_PY), *args],
-		capture_output=True,
-		text=True,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE,
+		universal_newlines=True,
 		timeout=timeout,
 		check=check,
 	)
@@ -124,6 +168,7 @@ def _clear_expand_caches():
 		"__expand_hostname",
 		"__expand_hostnames",
 		"_ssh_config_target",
+		"_ssh_config_mapping",
 		"_ssh_config_values",
 		"get_terminal_color_capability",
 		"rgb_to_ansi_color_string",
@@ -134,15 +179,43 @@ def _clear_expand_caches():
 			fn.cache_clear()
 
 
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def getaddrinfo_without_dns(host, port, family=0, type=0, proto=0, flags=0):
+	"""socket.getaddrinfo for the tests: IP addresses and localhost, no other name exists (no DNS)."""
+	name = host.decode("ascii", "replace") if isinstance(host, bytes) else host
+	if name is not None and name.lower().rstrip(".") == "localhost":
+		host = "127.0.0.1"
+	elif name is not None:
+		try:
+			ipaddress.ip_address(name.split("%")[0])
+		except ValueError:
+			raise socket.gaierror(socket.EAI_NONAME, "Name or service not known (the tests look no names up)")
+	return _real_getaddrinfo(host, port, family, type, proto, flags | socket.AI_NUMERICHOST)
+
+
 @pytest.fixture(autouse=True)
-def no_system_runtime_dirs():
-	"""Keep tests out of the real /run/user/<uid> and /dev/shm: the runtime chain sees neither."""
+def no_machine_state(tmp_path_factory):
+	"""
+	Keep tests off this machine's state: its runtime dirs ($XDG_RUNTIME_DIR, /run/user/<uid>, /dev/shm,
+	the temp dir) hold the developer's cache of unreachable hosts, and its DNS answers (or hangs) for names.
+	A test patching any of these itself wins.
+	"""
 	import mssh_complete
+	machine = tmp_path_factory.mktemp("machine")
+	runtime = machine / "runtime"
+	runtime.mkdir(mode=0o700)
+	(machine / "tmp").mkdir()
 	# a patcher of its own: a test's monkeypatch must still be undone before restore_module_globals runs
 	with pytest.MonkeyPatch.context() as patch:
 		for module in (multiSSH3, mssh_complete):
 			patch.setattr(module, "_RUN_USER_ROOT", "/dev/null/no-run-user", raising=False)
 			patch.setattr(module, "_SHM_DIR", "/dev/null/no-shm", raising=False)
+		# processes the test starts inherit the variable
+		patch.setenv("XDG_RUNTIME_DIR", str(runtime))
+		patch.setattr(tempfile, "tempdir", str(machine / "tmp"))
+		patch.setattr(socket, "getaddrinfo", getaddrinfo_without_dns)
 		yield
 
 
@@ -151,16 +224,19 @@ def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,
 		"_commands_started": multiSSH3._commands_started,
+		"_stopping": multiSSH3._stopping,
 		"_env_files": list(multiSSH3._env_files),
 		"_explicit_env_files": set(multiSSH3._explicit_env_files),
 		"__globalUnavailableHosts": dict(multiSSH3.__globalUnavailableHosts),
 		"__keyPressesIn": [list(line) for line in multiSSH3.__keyPressesIn],
 		"DEFAULT_IPMI_DEFINITIONS": [dict(item) for item in multiSSH3.DEFAULT_IPMI_DEFINITIONS],
+		"_ipmi_command_line": dict(multiSSH3._ipmi_command_line),
 		"ERRORS": list(multiSSH3.ERRORS),
 		"_no_env": multiSSH3._no_env,
 		"__global_suppress_printout": multiSSH3.__global_suppress_printout,
 		"__mainReturnCode": multiSSH3.__mainReturnCode,
 		"__failedHosts": set(multiSSH3.__failedHosts),
+		"_counted_alias_loops": set(multiSSH3._counted_alias_loops),
 		"_encoding": multiSSH3._encoding,
 		"DEFAULT_PASSWORD": multiSSH3.DEFAULT_PASSWORD,
 		"SSH_STRICT_HOST_KEY_CHECKING": multiSSH3.SSH_STRICT_HOST_KEY_CHECKING,
@@ -171,6 +247,8 @@ def restore_module_globals():
 		"DEFAULT_DIFF_DISPLAY_THRESHOLD": multiSSH3.DEFAULT_DIFF_DISPLAY_THRESHOLD,
 		"DEFAULT_HOST_FILE": multiSSH3.DEFAULT_HOST_FILE,
 		"_binPaths": dict(multiSSH3._binPaths),
+		# process_args keeps its parser's defaults for the echoed / recorded command line
+		"__cli_option_defaults": multiSSH3.__cli_option_defaults,
 	}
 	_clear_expand_caches()
 	yield
@@ -183,6 +261,7 @@ def restore_module_globals():
 			"DEFAULT_IPMI_DEFINITIONS",
 			"ERRORS",
 			"__failedHosts",
+			"_counted_alias_loops",
 			"_binPaths",
 		):
 			continue
@@ -194,9 +273,22 @@ def restore_module_globals():
 	multiSSH3.DEFAULT_IPMI_DEFINITIONS = [dict(item) for item in saved["DEFAULT_IPMI_DEFINITIONS"]]
 	multiSSH3.ERRORS = list(saved["ERRORS"])
 	multiSSH3.__failedHosts = set(saved["__failedHosts"])
+	multiSSH3._counted_alias_loops = set(saved["_counted_alias_loops"])
 	multiSSH3._binPaths = dict(saved["_binPaths"])
 	multiSSH3.join_threads(timeout=2)
 	_clear_expand_caches()
+
+
+@pytest.fixture(autouse=True)
+def restore_signal_handlers():
+	"""main() and process_args install mssh's handlers for Ctrl C, SIGTERM, SIGHUP and SIGQUIT: keep them out of pytest."""
+	import signal
+	numbers = [getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT") if hasattr(signal, name)]
+	saved = {number: signal.getsignal(number) for number in numbers}
+	yield
+	for number, handler in saved.items():
+		if handler is not None:
+			signal.signal(number, handler)
 
 
 @pytest.fixture
@@ -206,6 +298,9 @@ def no_hostname_validation(monkeypatch):
 		"__validate_expand_hostname",
 		lambda hostname: [hostname],
 	)
+	# nor the lookups that go with it: names are taken as typed, none has an address
+	monkeypatch.setattr(multiSSH3, "_prefetch_ips", lambda hostnames: None)
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: None)
 	_clear_expand_caches()
 	yield
 	_clear_expand_caches()
@@ -402,3 +497,14 @@ def stub_curses_harness(monkeypatch):
 	monkeypatch.setattr(multiSSH3, "__curses_global_color_pairs", {})
 	monkeypatch.setattr(multiSSH3, "__curses_current_color_pair_index", 1)
 	return harness
+
+
+@pytest.fixture(autouse=True)
+def no_ssh_config_files():
+	"""ssh's config files on the machine running the tests do not change the ssh options mssh adds."""
+	with pytest.MonkeyPatch.context() as patch:
+		patch.setattr(multiSSH3, "_ssh_config_dirs", lambda: ("/dev/null/no-user-ssh", "/dev/null/no-etc-ssh"), raising=False)
+		clear = getattr(getattr(multiSSH3, "_ssh_config_keywords", None), "cache_clear", lambda: None)
+		clear()
+		yield
+		clear()

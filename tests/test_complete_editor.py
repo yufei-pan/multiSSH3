@@ -3,7 +3,7 @@ import pytest
 
 import multiSSH3
 import mssh_complete as mc
-from vt_grid import FakeTerminal, Grid
+from vt_grid import FakeTerminal, Grid, Resize
 
 GHOST = 'u[01-16] "nvidia-smi"'
 
@@ -170,6 +170,25 @@ def test_editor_file_names_follow_bash(tmp_path, monkeypatch):
 	assert texts('mssh -f ~/my') == ['~/my\\ file.txt']
 
 
+def test_editor_tab_inside_an_ansi_c_quote_keeps_the_command():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	memory = mc.MemoryKnowledge()
+	memory.add_history(['1790000000\t/x/multiSSH3.py\t-su\tnode1\t\'printf "%s\\n" x\'', '1790000000\t/x/multiSSH3.py\t-su\tnode1\t"printf ok"'], spec, 1790000000)
+	engine = mc.Engine(spec, [memory])
+	assert mc.editor_completions(engine, "mssh node1 $'pri") == (["$'printf ok"], "$'pri")
+
+
+def test_editor_file_names_put_no_bang_inside_double_quotes(tmp_path, monkeypatch):
+	# bash expands ! inside double quotes when it reads the line (history expansion)
+	(tmp_path / 'wow!.txt').write_text('')
+	monkeypatch.chdir(tmp_path)
+	engine = mc.Engine(mc.spec_from_parser(multiSSH3.get_parser()), [])
+	assert mc.editor_completions(engine, 'mssh -f "wo')[0] == []
+	assert mc.editor_completions(engine, "mssh -f 'wo")[0] == ["'wow!.txt"]
+	assert mc.editor_completions(engine, 'mssh -f wo')[0] == ['wow\\!.txt']
+
+
 def test_tab_with_nothing_to_insert_opens_the_slot_menu():
 	opened = []
 
@@ -214,6 +233,59 @@ def test_an_accept_key_in_a_burst_still_takes_the_suggestion():
 	edit = editor()
 	assert edit.run(FakeTerminal(['gp\x1b[C\r']), '$ ', None) == ('pass', b'\r')
 	assert edit.text == 'mssh gpu[01-16] "nvidia-smi"'
+
+
+@pytest.mark.parametrize('burst, outcome', [
+	# Esc is readline's: the editor hands it on, as a legacy terminal sends it
+	('\x1b', ('pass', b'\x1b')),
+	('\x1b\x1b', ('pass', b'\x1b\x1b')),
+	('\x1b[27u', ('pass', b'\x1b')),
+	('\x1b[27;1u', ('pass', b'\x1b')),
+	('\x1b[27;1;27~', ('pass', b'\x1b')),
+	# the kitty keyboard protocol's Enter and Ctrl-C, and xterm's modifyOtherKeys Ctrl-C
+	('\x1b[13u', ('pass', b'\r')),
+	('\x1b[99;5u', ('abandon', b'')),
+	('\x1b[27;5;99~', ('abandon', b'')),
+	# a key with no legacy bytes is handed on as it came
+	('\x1b[13;5u', ('pass', b'\x1b[13;5u')),
+])
+def test_keys_however_the_terminal_sends_them_reach_readline_as_it_reads_them(burst, outcome):
+	assert editor('mssh x').run(FakeTerminal([burst]), '$ ', None) == outcome
+
+
+def test_editing_keys_sent_as_csi_u_edit():
+	# Alt-F takes a word of the suggestion, Ctrl-A goes home, Ctrl-E to the end and then takes the
+	# rest, Backspace deletes
+	edit = editor()
+	typed = ['gp', '\x1b[102;3u', '\x1b[97;5u', '\x1b[101;5u', '\x1b[101;5u', '\x1b[127u', '\x1b[13u']
+	assert edit.run(FakeTerminal(typed), '$ ', None) == ('pass', b'\r')
+	assert edit.text == 'mssh gpu[01-16] "nvidia-smi'
+
+
+class Watching(FakeTerminal):
+	'''A FakeTerminal that keeps what the screen showed (lines, cursor) each time a key was read.'''
+	def __init__(self, bursts, **kwargs):
+		FakeTerminal.__init__(self, bursts, **kwargs)
+		self.seen = []
+
+	def read_key(self, timeout=None):
+		self.seen.append((self.grid.lines()[:3], self.grid.cursor))
+		return FakeTerminal.read_key(self, timeout)
+
+
+def test_run_draws_again_at_once_when_the_terminal_gets_narrower():
+	# the terminal cut the line (no key pressed): it is drawn again, wrapped at the new width
+	term = Watching(['gp', Resize(24, 20), '\r'])
+	assert editor().run(term, '$ ', '\x1b[2m') == ('pass', b'\r')
+	assert term.seen[3] == (['$ mssh gpu[01-16] "n', 'vidia-smi"', ''], (0, 9))
+
+
+def test_run_draws_a_wrapped_line_again_when_the_terminal_gets_wider():
+	# from the prompt's row, where the cursor's row was counted at the old width
+	term = Watching(['gpu[01-16] "nv', Resize(24, 80), '\r'], rows=24, columns=20)
+	assert editor().run(term, '$ ', '\x1b[2m') == ('pass', b'\r')
+	assert term.seen[-2] == (['$ mssh gpu[01-16] "n', 'vidia-smi"', ''], (1, 1))
+	assert term.seen[-1] == (['$ mssh gpu[01-16] "nvidia-smi"', '', ''], (0, 21))
 
 
 def test_draw_shows_grey_text_and_puts_the_cursor_after_the_typed_text():

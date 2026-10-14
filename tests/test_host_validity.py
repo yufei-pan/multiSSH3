@@ -71,19 +71,41 @@ def test_an_env_alias_is_valid(hermetic, monkeypatch):
 	assert multiSSH3.host_validity('MSSHTESTGROUP') == 'valid'
 
 
-def test_ssh_config_mapping_is_mssh_s_rule(hermetic, monkeypatch):
-	# ssh -G only reads the config: a HostName or a ProxyJump makes a name valid, a catch-all block does not
+def ssh_with_config(hermetic, monkeypatch, text):
+	'''The real ssh reading only an ssh config with text (ssh -G does not connect).'''
 	real_ssh = shutil.which('ssh')
 	if not real_ssh:
 		pytest.skip('ssh not installed')
 	config = hermetic / 'ssh_config'
-	config.write_text('Host gpu-alias\n  HostName 127.0.0.7\nHost jump-*\n  ProxyJump bastion2\nHost *\n  ProxyJump bastion\n')
+	config.write_text(text)
 	wrapper = hermetic / 'ssh'
 	wrapper.write_text('#!/bin/sh\nexec {} -F {} "$@"\n'.format(real_ssh, config))
 	wrapper.chmod(0o755)
 	monkeypatch.setitem(multiSSH3._binPaths, 'ssh', str(wrapper))
+
+
+def test_ssh_config_mapping_is_mssh_s_rule(hermetic, monkeypatch):
+	# ssh -G only reads the config: a HostName or a ProxyJump makes a name valid, a catch-all block does not
+	ssh_with_config(hermetic, monkeypatch, 'Host gpu-alias\n  HostName 127.0.0.7\nHost jump-*\n  ProxyJump bastion2\nHost *\n  ProxyJump bastion\n')
 	fake_dns(monkeypatch, {})
 	assert [multiSSH3.host_validity(name) for name in ('gpu-alias', 'jump-a', 'nodee1-typo')] == ['valid', 'valid', 'invalid']
+
+
+@pytest.mark.parametrize('target_answer, verdict', [
+	('10.9.9.1', 'valid'),
+	(socket.EAI_NONAME, 'invalid'),
+	# the target's lookup failing or hanging says nothing about the name
+	(socket.EAI_AGAIN, 'unsure'),
+	('hang', 'unsure'),
+])
+def test_a_hostname_template_counts_when_its_target_resolves(hermetic, monkeypatch, target_answer, verdict):
+	# a catch-all HostName template applies to typos too: a name counts when its target resolves, and
+	# that lookup has the same timeout as the name's own (the prober's batches must not hang on it)
+	ssh_with_config(hermetic, monkeypatch, 'Host *\n  HostName %h.corp.example\n')
+	fake_dns(monkeypatch, {'node1.corp.example': target_answer})
+	started = time.monotonic()
+	assert multiSSH3.host_validity('node1', timeout=0.2) == verdict
+	assert time.monotonic() - started < 2
 
 
 def test_an_ssh_config_that_cannot_be_read_is_unsure(hermetic, monkeypatch):

@@ -17,3 +17,7 @@ ENV MSSH_TEST_BLESH=/opt/blesh/ble.sh
 ADD --checksum=sha256:0df7affff21cd87ed298e6a3970ed08a1dd66a6efa676454ee5b091ad503badf \
     https://github.com/zsh-users/zsh-autosuggestions/archive/refs/tags/v0.7.1.tar.gz /tmp/zas.tar.gz
 RUN mkdir -p /opt/zsh-autosuggestions && tar -xzf /tmp/zas.tar.gz -C /opt/zsh-autosuggestions --strip-components=1 && rm /tmp/zas.tar.gz
+# zsh-syntax-highlighting, pinned (0.8.0, as Debian 13 ships it): the warning tests also run with it
+ADD --checksum=sha256:5981c19ebaab027e356fe1ee5284f7a021b89d4405cc53dc84b476c3aee9cc32 \
+    https://github.com/zsh-users/zsh-syntax-highlighting/archive/refs/tags/0.8.0.tar.gz /tmp/zsyh.tar.gz
+RUN mkdir -p /opt/zsh-syntax-highlighting && tar -xzf /tmp/zsyh.tar.gz -C /opt/zsh-syntax-highlighting --strip-components=1 && rm /tmp/zsyh.tar.gz

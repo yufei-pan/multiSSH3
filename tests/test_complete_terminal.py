@@ -2,8 +2,11 @@
 import fcntl
 import os
 import pty
+import signal
 import struct
 import termios
+import threading
+import time
 
 import pytest
 
@@ -21,9 +24,78 @@ from vt_grid import Grid
 	(b'\x1b[15~', [('unknown', b'\x1b[15~')]),
 	(b'\r\t\x7f\x08\x12\x03', [('enter', b'\r'), ('tab', b'\t'), ('backspace', b'\x7f'), ('backspace', b'\x08'), ('ctrl-r', b'\x12'), ('ctrl-c', b'\x03')]),
 	('é漢'.encode('utf-8'), [('é', 'é'.encode('utf-8')), ('漢', '漢'.encode('utf-8'))]),
+	# bracketed paste: the terminal marks where pasted text starts and ends
+	(b'\x1b[200~a\r\x1b[201~', [('paste', b'\x1b[200~'), ('a', b'a'), ('enter', b'\r'), ('paste-end', b'\x1b[201~')]),
 ])
 def test_decode_keys(data, expected):
 	assert mc.decode_keys(data) == expected
+
+
+@pytest.mark.parametrize('data, expected', [
+	# two Esc bytes together: a double press that arrived at once (ssh, mosh, a multiplexer) or Alt+Esc
+	(b'\x1b\x1b', ('esc', b'\x1b\x1b')),
+	# the kitty keyboard protocol ("CSI u"), with and without its default modifier
+	(b'\x1b[27u', ('esc', b'\x1b')),
+	(b'\x1b[27;1u', ('esc', b'\x1b')),
+	# xterm's modifyOtherKeys
+	(b'\x1b[27;1;27~', ('esc', b'\x1b')),
+	# Alt+Esc in the kitty protocol: what a legacy terminal sends for it
+	(b'\x1b[27;3u', ('esc', b'\x1b\x1b')),
+	# Alt + an arrow as Esc Esc [ C is still Alt + the arrow
+	(b'\x1b\x1b[C', ('alt-right', b'\x1b\x1b[C')),
+])
+def test_decode_keys_reads_esc_however_it_is_sent(data, expected):
+	assert mc.decode_keys(data) == [expected]
+
+
+@pytest.mark.parametrize('data, expected', [
+	# the key, with the bytes a terminal sends for it without the kitty protocol or modifyOtherKeys:
+	# what readline understands when the editor hands it the key
+	(b'\x1b[13u', ('enter', b'\r')),
+	(b'\x1b[9u', ('tab', b'\t')),
+	(b'\x1b[127u', ('backspace', b'\x7f')),
+	(b'\x1b[99;5u', ('ctrl-c', b'\x03')),
+	(b'\x1b[103;5u', ('ctrl-g', b'\x07')),
+	(b'\x1b[114;5u', ('ctrl-r', b'\x12')),
+	(b'\x1b[110;5u', ('ctrl-n', b'\x0e')),
+	(b'\x1b[32;5u', ('ctrl-space', b'\x00')),
+	(b'\x1b[91;5u', ('esc', b'\x1b')),
+	(b'\x1b[27;5;99~', ('ctrl-c', b'\x03')),
+	(b'\x1b[27;5;114~', ('ctrl-r', b'\x12')),
+	(b'\x1b[102;3u', ('alt-f', b'\x1bf')),
+	(b'\x1b[27;3;98~', ('alt-b', b'\x1bb')),
+	(b'\x1b[97u', ('a', b'a')),
+	(b'\x1b[97;2u', ('A', b'A')),
+	(b'\x1b[97;65u', ('A', b'A')),
+	(b'\x1b[97;66u', ('a', b'a')),
+	(b'\x1b[97;129u', ('a', b'a')),
+	(b'\x1b[49:33;2u', ('!', b'!')),
+	(b'\x1b[49;2;33u', ('!', b'!')),
+	# xterm sends the character Shift made (the kitty protocol the key and, when asked, what Shift makes of it)
+	(b'\x1b[27;2;65~', ('A', b'A')),
+	(b'\x1b[27;2;33~', ('!', b'!')),
+	(b'\x1b[65;2u', ('A', b'A')),
+	(b'\x1b[27;6;65~', ('ctrl-a', b'\x01')),
+	(b'\x1b[233u', ('é', 'é'.encode('utf-8'))),
+	(b'\x1b[13;2u', ('enter', b'\r')),
+	(b'\x1b[99;5:1u', ('ctrl-c', b'\x03')),
+	(b'\x1b[99;5:2u', ('ctrl-c', b'\x03')),
+	# keys with no legacy bytes, or not keys typed: unknown, as read
+	(b'\x1b[9;2u', ('unknown', b'\x1b[Z')),
+	(b'\x1b[13;5u', ('unknown', b'\x1b[13;5u')),
+	(b'\x1b[97;9u', ('unknown', b'\x1b[97;9u')),
+	(b'\x1b[49;2u', ('unknown', b'\x1b[49;2u')),
+	(b'\x1b[99;5:3u', ('unknown', b'\x1b[99;5:3u')),
+	(b'\x1b[57414u', ('unknown', b'\x1b[57414u')),
+	(b'\x1b[1114112u', ('unknown', b'\x1b[1114112u')),
+	(b'\x1b[55296u', ('unknown', b'\x1b[55296u')),
+	(b'\x1b[;5u', ('unknown', b'\x1b[;5u')),
+	(b'\x1b[?1u', ('unknown', b'\x1b[?1u')),
+	(b'\x1b[27;5;99;1~', ('unknown', b'\x1b[27;5;99;1~')),
+	(b'\x1b[15;5~', ('unknown', b'\x1b[15;5~')),
+])
+def test_decode_keys_reads_csi_u_and_modify_other_keys(data, expected):
+	assert mc.decode_keys(data) == [expected]
 
 
 def test_display_width_counts_wide_and_combining_characters():
@@ -86,6 +158,132 @@ def test_terminal_tells_a_lone_esc_from_a_sequence(tty_pair):
 		assert term.read_key(timeout=0.05) is None
 
 
+@pytest.mark.parametrize('typed, expected', [
+	(b'\x1b[27u', ('esc', b'\x1b')),
+	(b'\x1b[27;1u', ('esc', b'\x1b')),
+	(b'\x1b[27;1;27~', ('esc', b'\x1b')),
+	(b'\x1b[13u', ('enter', b'\r')),
+	(b'\x1b[99;5u', ('ctrl-c', b'\x03')),
+	(b'\x1b[27;5;114~', ('ctrl-r', b'\x12')),
+])
+def test_terminal_reads_a_csi_u_key_and_no_more(tty_pair, typed, expected):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, typed + b'z')
+		assert term.read_key(timeout=1) == expected
+		assert term.read_key(timeout=1) == ('z', b'z')
+		assert term.read_key(timeout=0.05) is None
+
+
+@pytest.mark.parametrize('typed', [
+	b'\x1b\x1b',
+	# Esc pressed again and again, or Esc and then a key, all at once: what was read cannot go back
+	# to the terminal, so it comes with the Esc
+	b'\x1b\x1b\x1b', b'\x1b\x1bf', b'\x1b\x1b\x1b[A',
+])
+def test_terminal_reads_esc_pressed_twice_as_esc(tty_pair, typed):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, typed)
+		assert term.read_key(timeout=1) == ('esc', typed)
+		assert term.read_key(timeout=0.05) is None
+		# a key typed after the Esc presses is a key of its own
+		os.write(master, b'z')
+		assert term.read_key(timeout=1) == ('z', b'z')
+
+
+@pytest.mark.parametrize('typed', [b'\x1b', b'\x1b\x1b', b'\x1b[27u', b'\x1b[27;1u', b'\x1b[27;1;27~', b'\x1b[103;5u', b'\x1b[99;5u'])
+def test_the_picker_cancels_on_esc_ctrl_g_and_ctrl_c_however_they_are_sent(tty_pair, typed):
+	master, slave, path = tty_pair
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+	picker = mc.Picker([mc.PickItem('gpu01'), mc.PickItem('gpu02')], [], 'hosts')
+	# a picker that missed the key would wait for ever: Enter comes later and chooses
+	enter = threading.Timer(2, os.write, (master, b'\r'))
+	try:
+		with mc.Terminal(path) as term:
+			os.write(master, typed)
+			enter.start()
+			assert picker.run(term) == 'cancel'
+			assert not term.has_input()
+	finally:
+		enter.cancel()
+		enter.join()
+
+
+def test_terminal_reads_a_paste_to_its_end_and_no_further(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~line one\r\n\tl\xc3\xa9ne \x1b[Atwo\n\x1b[201~XY')
+		assert term.read_key(timeout=1) == ('paste', b'\x1b[200~')
+		# all of the paste, line breaks and escape sequences in it included
+		assert term.read_paste() == 'line one\r\n\tléne \x1b[Atwo\n'
+		# keys typed after the paste stay in the terminal
+		assert term.read_key(timeout=1) == ('X', b'X')
+		assert os.read(term.fd, 10) == b'Y'
+
+
+def test_terminal_reads_a_paste_whose_end_comes_later(tty_pair):
+	# the terminal (or the network) may split a paste anywhere, its end mark too
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~abc\x1b[2')
+		timer = threading.Timer(0.1, os.write, (master, b'01~Z'))
+		timer.start()
+		try:
+			assert term.read_key(timeout=1)[0] == 'paste'
+			assert term.read_paste() == 'abc'
+			assert term.read_key(timeout=1) == ('Z', b'Z')
+		finally:
+			timer.join()
+
+
+def test_terminal_reads_a_long_paste_whole_but_keeps_its_start(tty_pair):
+	# what is past the limit is read all the same: none of the paste may reach the shell as typed keys
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~' + b'x\r' * 1000 + b'\x1b[201~Z')
+		assert term.read_key(timeout=1)[0] == 'paste'
+		assert term.read_paste(limit=10) == 'x\r' * 5
+		assert term.read_key(timeout=1) == ('Z', b'Z')
+
+
+def test_terminal_ends_a_paste_that_never_says_so(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		os.write(master, b'\x1b[200~abc')
+		assert term.read_key(timeout=1)[0] == 'paste'
+		start = time.monotonic()
+		assert term.read_paste(idle=0.1) == 'abc'
+		assert time.monotonic() - start < 1
+
+
+def test_terminal_waits_for_input_when_asked(tty_pair):
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		assert not term.has_input()
+		assert not term.has_input(0.05)
+		timer = threading.Timer(0.05, os.write, (master, b'a'))
+		timer.start()
+		try:
+			assert term.has_input(2)
+		finally:
+			timer.join()
+		assert term.has_input()
+
+
+def test_terminal_reads_line_breaks_as_sent(tty_pair):
+	# zsh runs its widgets with INLCR and ICRNL on, and Python's raw mode before 3.12 kept INLCR:
+	# a CR LF Enter then came as CR CR (a paste's line breaks)
+	master, slave, path = tty_pair
+	mode = termios.tcgetattr(slave)
+	mode[0] |= termios.INLCR | termios.ICRNL | termios.IGNCR
+	termios.tcsetattr(slave, termios.TCSANOW, mode)
+	with mc.Terminal(path) as term:
+		os.write(master, b'\r\n')
+		assert [term.read_key(timeout=1), term.read_key(timeout=1)] == [('enter', b'\r'), ('enter', b'\n')]
+	assert termios.tcgetattr(slave)[0] & termios.INLCR
+
+
 def test_terminal_restores_the_mode(tty_pair):
 	master, slave, path = tty_pair
 	before = termios.tcgetattr(slave)
@@ -102,6 +300,45 @@ def test_terminal_reads_its_size(tty_pair):
 	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 960, 600))
 	with mc.Terminal(path) as term:
 		assert term.size() == (30, 120)
+
+
+def test_terminal_reports_a_resize_before_the_keys_waiting(tty_pair):
+	master, slave, path = tty_pair
+	os.write(master, b'ab')
+	with mc.Terminal(path) as term:
+		os.kill(os.getpid(), signal.SIGWINCH)
+		assert term.read_key(timeout=1) == ('resize', b'')
+		assert [term.read_key(timeout=1), term.read_key(timeout=1)] == [('a', b'a'), ('b', b'b')]
+		# one report for one resize
+		assert term.read_key(timeout=0.05) is None
+
+
+def test_terminal_wakes_up_on_a_resize(tty_pair):
+	# the editor and the picker wait for a key with no timeout: a resize must end that wait
+	master, slave, path = tty_pair
+	with mc.Terminal(path) as term:
+		timer = threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGWINCH))
+		timer.start()
+		started = time.monotonic()
+		try:
+			assert term.read_key(timeout=5) == ('resize', b'')
+		finally:
+			timer.cancel()
+		assert time.monotonic() - started < 2
+
+
+def test_terminal_puts_the_resize_handler_back(tty_pair):
+	master, slave, path = tty_pair
+	seen = []
+	previous = signal.signal(signal.SIGWINCH, lambda number, frame: seen.append(number))
+	try:
+		with mc.Terminal(path) as term:
+			os.kill(os.getpid(), signal.SIGWINCH)
+			assert term.read_key(timeout=1) == ('resize', b'') and seen == []
+		os.kill(os.getpid(), signal.SIGWINCH)
+		assert seen == [signal.SIGWINCH]
+	finally:
+		signal.signal(signal.SIGWINCH, previous)
 
 
 def test_terminal_joins_a_character_cut_between_writes(tty_pair):
@@ -127,3 +364,24 @@ def test_grid_wraps_wide_characters_and_restores_the_cursor():
 	grid.feed('abcd漢\x1b7xy\r\n\x1b[2Cz\x1b8!')
 	assert grid.lines() == ['abcd', '漢!y', '  z']
 	assert grid.cursor == (1, 3)
+
+
+def test_grid_resizes_like_xterm():
+	# nothing reflows: rows are cut on the right, and the cursor's row stays on screen
+	grid = Grid(4, 10)
+	grid.feed('0123456789\r\nab\r\ncd\r\nef\x1b[2D')
+	grid.resize(3, 5)
+	assert grid.lines() == ['ab', 'cd', 'ef'] and grid.cursor == (2, 0)
+	grid.resize(3, 8)
+	assert grid.lines() == ['ab', 'cd', 'ef'] and (grid.rows, grid.columns) == (3, 8)
+
+
+def test_grid_inserts_blank_characters():
+	# what bash 5.3 sends while Ctrl-R searches for "aa": CSI @ moves the rest of the row right
+	grid = Grid(2, 80)
+	grid.feed("\r(reverse-i-search)`': " + "\x08\x08\x08a': echo a\x1b[7ma\x1b[27m2\x08\x08" + '\x08' * 9 + "\x1b[1@a': echo \x1b[7ma\x1b[27m\x08")
+	assert grid.lines()[0] == "(reverse-i-search)`aa': echo aa2"
+	# what is pushed past the last column is lost
+	grid = Grid(1, 6)
+	grid.feed('abcdef\x1b[1G\x1b[2@')
+	assert grid.lines() == ['  abcd']

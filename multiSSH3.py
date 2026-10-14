@@ -4,6 +4,8 @@
 # dependencies = []
 # ///
 import argparse
+import codecs
+import copy
 import errno
 import functools
 import getpass
@@ -15,7 +17,9 @@ import json
 import math
 import os
 import queue
+import random
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -29,6 +33,7 @@ import textwrap
 import threading
 import time
 import typing
+import unicodedata
 from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap, namedtuple
 from itertools import count, product
@@ -52,6 +57,8 @@ CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 ERRORS = []
 
 #%% ------------ User Defined Global Variables ----------------
+# the names defined before this section, to tell the settings below apart (see _BUILTIN_SETTINGS)
+_names_before_settings = set(globals())
 AUTHOR = 'Yufei Pan'
 AUTHOR_EMAIL = 'pan@zopyr.us'
 DEFAULT_HOSTS = 'all'
@@ -66,6 +73,11 @@ DEFAULT_SCP = False
 DEFAULT_FILE_SYNC = False
 DEFAULT_TIMEOUT = 50
 DEFAULT_CLI_TIMEOUT = 0
+# seconds after which ssh gives up on a host that does not answer (ConnectTimeout) or stops answering
+# (ServerAliveInterval x ServerAliveCountMax), unless -ea or the ssh config set them; 0 leaves them to ssh
+DEFAULT_SSH_CONNECT_TIMEOUT = 30
+DEFAULT_SSH_SERVER_ALIVE_INTERVAL = 15
+DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX = 4
 DEFAULT_UNAVAILABLE_HOST_EXPIRY = 600
 DEFAULT_REPEAT = 1
 DEFAULT_INTERVAL = 0
@@ -85,6 +97,8 @@ def get_default_ipmi_definition():
 	'hostname_keyword': '',
 	'retry_lockout_time': DEFAULT_IPMI_RETRY_LOCKOUT_TIME,
 }
+# the built-in values, before config files change them: see _ipmi_definitions_for_host
+_BUILTIN_IPMI_DEFINITION = get_default_ipmi_definition()
 DEFAULT_IPMI_DEFINITIONS = [get_default_ipmi_definition()]
 DEFAULT_INTERFACE_IP_PREFIX = None
 DEFAULT_NO_WATCH = False
@@ -113,19 +127,23 @@ DEFAULT_PRINT_SUCCESS_HOSTS = False
 DEFAULT_GREPPABLE_MODE = False
 DEFAULT_SKIP_UNREACHABLE = True
 DEFAULT_SKIP_HOSTS = ''
-DEFAULT_HOST_FILE = '/etc/hosts'
+_SYSTEM_HOST_FILE = '/etc/hosts'
+DEFAULT_HOST_FILE = _SYSTEM_HOST_FILE
 DEFAULT_ENCODING = 'utf-8'
 DEFAULT_DIFF_DISPLAY_THRESHOLD = 0.9
 SSH_STRICT_HOST_KEY_CHECKING = False
 FORCE_TRUECOLOR = False
+# ssh's own notices, left out of each host's stderr. Each regex is searched in every stderr line; these
+# are anchored to the lines OpenSSH prints, so a remote program's error using the same words is kept.
+# Connection resets stay: "kex_exchange_identification: read: Connection reset by peer" is how sshd's
+# MaxStartups turns away connections opened at once.
 ERROR_MESSAGES_TO_IGNORE = [
-	'Pseudo-terminal will not be allocated because stdin is not a terminal',
-	'Connection to .* closed',
-	'Warning: Permanently added',
-	'mux_client_request_session',
-	'disabling multiplexing',
-	'Killed by signal',
-	'Connection reset by peer',
+	r'^Pseudo-terminal will not be allocated because stdin is not a terminal',
+	r'^Connection to \S+ closed( by remote host)?\.$',
+	r'^Warning: Permanently added ',
+	r'^mux_client_request_session: ',
+	r'^ControlSocket .* already exists, disabling multiplexing$',
+	r'^Killed by signal \d+\.$',
 ]
 POSSIBLE_SSH_KEY_FILES = ['id_ed25519','id_ed25519_sk','id_ecdsa','id_ecdsa_sk','id_rsa','id_dsa']
 __DEFAULT_COLOR_PALETTE = {
@@ -151,8 +169,29 @@ _DEFAULT_RETURN_UNFINISHED = False
 _DEFAULT_UPDATE_UNREACHABLE_HOSTS = True
 _DEFAULT_NO_START = False
 _etc_hosts = {}
+_etc_hosts_lock = threading.Lock()
 __ERROR_MESSAGES_TO_IGNORE_REGEX =None
 __DEBUG_MODE = False
+
+#%% ------------ Settings a config file can change ----------------
+# the settings above whose name starts with _: any other such name there is mssh's own state
+_UNDERSCORE_SETTINGS = ('__DEFAULT_COLOR_PALETTE', '_DEFAULT_CALLED', '_DEFAULT_RETURN_UNFINISHED',
+	'_DEFAULT_UPDATE_UNREACHABLE_HOSTS', '_DEFAULT_NO_START', '_etc_hosts', '__ERROR_MESSAGES_TO_IGNORE_REGEX', '__DEBUG_MODE')
+# the settings (what config files can change) with their built-in values, to check config values against: what
+# the section above defines that is public or listed in _UNDERSCORE_SETTINGS and a JSON value (not a function)
+_BUILTIN_SETTINGS = {name: copy.deepcopy(globals()[name]) for name in sorted(set(globals()) - _names_before_settings)
+	if (not name.startswith('_') or name in _UNDERSCORE_SETTINGS)
+	and isinstance(globals()[name], (str, int, float, bool, type(None), list, dict))}
+del _names_before_settings
+
+def _setting_type(name):
+	'''(type, item type) of setting name: the item type when its built-in value is a list whose items share one.'''
+	value = _BUILTIN_SETTINGS[name]
+	if name == '_etc_hosts':
+		# host name -> address, empty by default
+		return dict, str
+	item_types = {type(item) for item in value} if isinstance(value, list) else set()
+	return type(value), (item_types.pop() if len(item_types) == 1 else None)
 
 #%% ------------ Pre Helper Functions ----------------
 def cache_decorator(user_function):
@@ -259,19 +298,138 @@ def signal_handler(sig, frame):
 		_emo = True
 	else:
 		eprint('Ctrl C caught again, exiting immediately!')
-		# only kill the subprocesses this process started
+		_kill_commands_for_exit()
+		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
+
+def _kill_commands_for_exit():
+	'''
+	Kill the commands this process started (only those) and start no more: mssh exits right after.
+	'''
+	global _emo
+	global _stopping
+	_emo = True
+	# hosts waiting for a connection slot start nothing now
+	_stopping = True
+	for attempt in range(2):
+		if attempt:
+			# a command that was starting when the signal came is listed a moment later
+			time.sleep(0.05)
 		for proc in list(__running_procs):
 			try:
 				proc.kill()
 			except Exception:
 				pass
-		_exit_with_code(1, 'Exiting immediately due to Ctrl C')
+
+def _stop_signal_handler(sig, frame):
+	'''
+	Handle SIGTERM, SIGHUP and SIGQUIT (kill, a batch scheduler or service manager stopping mssh, the
+	terminal closing, Ctrl-\\) like a second Ctrl C: kill the running commands and exit with 128 + the
+	signal number.
+
+	The exit unwinds curses.wrapper on the main thread, which restores the terminal.
+	'''
+	_kill_commands_for_exit()
+	try:
+		eprint('Exiting: {} received, the running commands were killed'.format(signal.Signals(sig).name))
+	except Exception:
+		# the terminal is gone (SIGHUP): nowhere to say it
+		pass
+	# not _exit_with_code: --return_zero is for failed hosts, a stopped mssh did not succeed
+	raise SystemExit(128 + sig)
+
+def _exit_replaced_by(error):
+	'''The SystemExit that error replaced while it was being raised, None if there is none.'''
+	while error is not None:
+		if isinstance(error, SystemExit):
+			return error
+		error = error.__context__
+	return None
+
+def _install_signal_handlers():
+	'''
+	Install the command line's signal handlers: Ctrl C stops the commands (pressed again: kills them),
+	SIGTERM, SIGHUP and SIGQUIT (Ctrl-\\) kill them and exit. Commands running in sessions of their own
+	do not get the terminal's Ctrl-\\, so mssh passes it on as it does a closing terminal.
+
+	Only on the main thread, the only one Python lets set them. SIGTERM, SIGHUP and SIGQUIT only when
+	not ignored: `nohup mssh ...` must keep running when its terminal closes.
+	'''
+	if threading.current_thread() is not threading.main_thread():
+		return
+	signal.signal(signal.SIGINT, signal_handler)
+	for name in ('SIGTERM', 'SIGHUP', 'SIGQUIT'):
+		number = getattr(signal, name, None)
+		if number is not None and signal.getsignal(number) == signal.SIG_DFL:
+			signal.signal(number, _stop_signal_handler)
 
 def input_with_timeout_and_countdown(timeout, prompt='Please enter your selection'):
 	"""
-	Read input from the user with a timeout (cross-platform).
-	If the user does not enter any input within `timeout` seconds, return None.
-	Otherwise, return the input string.
+	Ask the user for a line, counting down `timeout` seconds.
+
+	Returns the line stripped, or None when the time is up or nobody can answer (stdin is not a
+	terminal), so the caller takes its default. Outside Windows nothing keeps reading stdin once it
+	returns: the TUI that may start next gets every key typed after the prompt.
+	"""
+	try:
+		interactive = sys.stdin.isatty()
+	except Exception:
+		# no stdin at all (None) or a closed one
+		interactive = False
+	if not interactive:
+		# a pipe or file holds input for someone else (e.g. the hosts left in a `while read host` loop)
+		# and nobody is there to answer: take the default without reading any of it
+		eprint(f"{prompt}: stdin is not a terminal, taking the default")
+		return None
+	try:
+		fd = sys.stdin.fileno()
+	except Exception:
+		fd = None
+	if fd is None or os.name == 'nt':
+		# select() cannot wait on a Windows console, nor on a stdin without a file descriptor
+		return _input_with_timeout_by_thread(timeout, prompt)
+	import select
+	encoding = getattr(sys.stdin, 'encoding', None) or 'utf-8'
+	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
+	typed = b''
+	shown = timeout
+	start_time = time.monotonic()
+	try:
+		while True:
+			elapsed = time.monotonic() - start_time
+			remaining = timeout - int(elapsed)
+			if remaining <= 0:
+				break
+			if remaining != shown:
+				shown = remaining
+				eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
+			# wait for a line (a terminal in its usual line mode only shows complete lines), at most
+			# until the next whole second, when the countdown changes
+			if not select.select([fd], [], [], int(elapsed) + 1 - elapsed)[0]:
+				continue
+			# read the descriptor itself: sys.stdin would buffer whatever comes after the line
+			data = os.read(fd, 4096)
+			typed += data
+			if not data or b'\n' in typed or b'\r' in typed:
+				# Enter, or Ctrl-D (end of input)
+				eprint()  # move to the next line
+				return typed.decode(encoding, errors='replace').strip()
+	except (OSError, ValueError):
+		# the terminal went away
+		eprint()
+		return None
+	# time is up: drop a half-typed answer, it was meant for this prompt, not for what reads the terminal next
+	try:
+		import termios
+		termios.tcflush(fd, termios.TCIFLUSH)
+	except Exception:
+		pass
+	eprint()  # move to the next line
+	return None
+
+def _input_with_timeout_by_thread(timeout, prompt):
+	"""
+	input_with_timeout_and_countdown for a stdin select() cannot wait on (Windows, or one without a
+	file descriptor). On a timeout the reader thread stays blocked in readline and takes the next line typed.
 	"""
 	# Queue to receive user input from the background thread
 	input_queue = queue.Queue()
@@ -303,6 +461,68 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 		eprint(f"\r{prompt} [{remaining}s]: ", end='', flush=True)
 		time.sleep(1)
 
+def read_hosts_file(path):
+	'''
+	Read a hosts file such as /etc/hosts: lines of an IP address followed by its names.
+
+	It is read as the C library reads it: text after # is a comment, lines that do not start with
+	an IP address are skipped, and a name listed twice keeps its first address. When a name has
+	both, it gets its first IPv4 address, as names looked up in DNS do. Bytes that are not UTF-8
+	are replaced, they never stop the read.
+
+	Args:
+		path (str): The hosts file
+
+	Returns:
+		dict: host name -> IP address, empty when the file cannot be read
+	'''
+	hosts = {}
+	if not path:
+		return hosts
+	try:
+		with open(path, encoding='utf-8', errors='replace') as f:
+			for line in f:
+				fields = line.split('#', 1)[0].split()
+				if len(fields) < 2:
+					continue
+				address = fields[0]
+				ipv4 = ':' not in address
+				try:
+					socket.inet_pton(socket.AF_INET if ipv4 else socket.AF_INET6, address)
+				except (OSError, ValueError):
+					continue
+				for name in fields[1:]:
+					known = hosts.get(name)
+					if known is None or (ipv4 and ':' in known):
+						hosts[name] = address
+	except OSError:
+		pass
+	return hosts
+
+def _load_etc_hosts():
+	'''_etc_hosts, read from DEFAULT_HOST_FILE when empty (by one thread: the parallel lookups of a range all start here).'''
+	if not _etc_hosts:
+		with _etc_hosts_lock:
+			if not _etc_hosts:
+				_etc_hosts.update(read_hosts_file(DEFAULT_HOST_FILE))
+	return _etc_hosts
+
+def _host_file_warning():
+	'''
+	Why the hosts file the operator chose (--host_file) gives mssh no host names, or None when it does.
+
+	The system's own /etc/hosts is not checked: a system without one is not the operator's mistake.
+	'''
+	path = DEFAULT_HOST_FILE
+	if not path or path == _SYSTEM_HOST_FILE or _load_etc_hosts():
+		return None
+	if not os.path.exists(path):
+		return f'Warning: --host_file {path} does not exist'
+	if os.path.isdir(path) or not os.access(path, os.R_OK):
+		return f'Warning: --host_file {path} cannot be read'
+	return (f'Warning: --host_file {path} has no address lines, so it gives no host names. It is a hosts file like '
+		f'{_SYSTEM_HOST_FILE} (an IP address, then names, per line), not a list of hosts to run on.')
+
 def getIP(hostname: str,local=False):
 	'''
 	Get the IP address of the hostname
@@ -330,19 +550,7 @@ def _getIP(hostname, local):
 	except ValueError:
 		pass
 	# Then we check DEFAULT_HOST_FILE
-	if not _etc_hosts and os.path.exists(DEFAULT_HOST_FILE):
-		with open(DEFAULT_HOST_FILE,'r') as f:
-			for line in f:
-				if line.startswith('#') or not line.strip():
-					continue
-				#ip, host = line.split()[:2]
-				chunks = line.split()
-				if len(chunks) < 2:
-					continue
-				ip = chunks[0]
-				for host in chunks[1:]:
-					_etc_hosts[host] = ip
-	if hostname in _etc_hosts:
+	if hostname in _load_etc_hosts():
 		return _etc_hosts[hostname]
 	if local:
 		return None
@@ -363,7 +571,7 @@ def _clear_ip_caches():
 	'''getIP.cache_clear(): forget every lookup result getIP depends on, failures included.'''
 	_getIP.cache_clear()
 	_dns_cache.clear()
-	for cached_function in (_ssh_config_values, _ssh_config_target):
+	for cached_function in (_ssh_config_values, _ssh_config_mapping, _ssh_config_target):
 		# tests (or embedders) may have replaced them with plain functions
 		getattr(cached_function, 'cache_clear', lambda: None)()
 
@@ -387,10 +595,10 @@ def _resolve_dns(hostname):
 _SSH_CONFIG_PROBE_NAME = 'multissh3-unknown-host.invalid'
 
 @cache_decorator
-def _ssh_config_values(hostname):
-	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None.'''
+def _ssh_config_values(hostname, config_file=None):
+	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None. config_file: ssh -F.'''
 	try:
-		result = subprocess.run([_binPaths['ssh'], '-G', '--', hostname], stdout=subprocess.PIPE,
+		result = subprocess.run([_binPaths['ssh'], '-G'] + (['-F', config_file] if config_file else []) + ['--', hostname], stdout=subprocess.PIPE,
 						  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
 	except Exception:
 		return None
@@ -403,25 +611,26 @@ def _ssh_config_values(hostname):
 	return config
 
 @cache_decorator
-def _ssh_config_target(hostname):
+def _ssh_config_mapping(hostname):
 	'''
-	The host ssh really connects to for hostname, when the ssh config maps it.
+	What the ssh config does with hostname, before any DNS lookup (see _ssh_config_target).
 
 	Returns:
-		str: The HostName ssh would use, when the config gives hostname another HostName or a
-			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
-			None for names the config does not single out, so typos are still caught.
+		tuple: (target, templated). target is the HostName ssh would use when the config gives
+			hostname another HostName or a ProxyJump / ProxyCommand, else None. templated is True
+			when only a catch-all HostName template (Host * / HostName %h.example) gives it, which
+			applies to typos too: such a target counts only when it resolves.
 	'''
 	if 'ssh' not in _binPaths or not hostname or hostname.startswith('-'):
-		return None
+		return None, False
 	config = _ssh_config_values(hostname)
 	if not config or not config.get('hostname'):
-		return None
+		return None, False
 	target = config['hostname']
 	proxies = [config.get(key, 'none').lower() for key in ('proxyjump', 'proxycommand')]
 	# for a name it does not know, ssh -G prints the name back (lowercased) as the hostname
 	if target.lower() == hostname.lower() and all(proxy == 'none' for proxy in proxies):
-		return None
+		return None, False
 	# a catch-all block (Host * with HostName %h.example or a ProxyJump) applies to every name,
 	# typos included: only accept names the config treats differently from a made-up one
 	probe = _ssh_config_values(_SSH_CONFIG_PROBE_NAME)
@@ -432,10 +641,164 @@ def _ssh_config_target(hostname):
 		probe_proxies = [as_for_this_name(probe.get(key, 'none')) for key in ('proxyjump', 'proxycommand')]
 		if probe_target == target.lower() and probe_proxies == proxies:
 			# a HostName template (Host * / HostName %h.example) is only real for names whose target resolves
-			if target.lower() != hostname.lower() and (getIP(target,local=True) or _resolve_dns(target)):
-				return target
-			return None
+			if target.lower() != hostname.lower():
+				return target, True
+			return None, False
+	return target, False
+
+@cache_decorator
+def _ssh_config_target(hostname):
+	'''
+	The host ssh really connects to for hostname, when the ssh config maps it.
+
+	Returns:
+		str: The HostName ssh would use, when the config gives hostname another HostName or a
+			ProxyJump / ProxyCommand (hosts behind a bastion may only resolve on its far side).
+			None for names the config does not single out, so typos are still caught.
+	'''
+	target, templated = _ssh_config_mapping(hostname)
+	if templated and not (getIP(target,local=True) or _resolve_dns(target)):
+		return None
 	return target
+
+def _ssh_config_dirs():
+	'''
+	Where ssh reads its config: (the user's ~/.ssh, /etc/ssh). Like ssh, the user's home directory
+	is the passwd database's, not $HOME.
+	'''
+	try:
+		import pwd
+		home = pwd.getpwuid(os.getuid()).pw_dir
+	except Exception:
+		home = os.path.expanduser('~')
+	return os.path.join(home, '.ssh'), '/etc/ssh'
+
+# "keyword arguments" or "keyword=arguments", as ssh reads a config line; no match for comments and blank lines
+_SSH_CONFIG_LINE = re.compile(r'\s*([^\s=#]+)\s*=?\s*(.*)')
+
+@cache_decorator
+def _ssh_config_keywords(config_file=None):
+	'''
+	The keywords (lowercased) set anywhere in ssh's config files, for any host, or None when mssh
+	cannot tell which files ssh reads (an Include with %d or ${HOME}, which ssh expands itself).
+
+	Reads ~/.ssh/config and /etc/ssh/ssh_config, or config_file (ssh -F), and the files they
+	Include, without running anything: only an option the files mention is worth an ssh -G per
+	host, which runs their Match exec lines.
+	'''
+	user_dir, system_dir = _ssh_config_dirs()
+	if config_file:
+		files = [] if config_file.lower() == 'none' else [(config_file, user_dir)]
+	else:
+		files = [(os.path.join(user_dir, 'config'), user_dir), (os.path.join(system_dir, 'ssh_config'), system_dir)]
+	keywords = set()
+	read = set()
+	while files:
+		path, include_dir = files.pop()
+		# a file including itself, or includes without end, are read once; a pipe is left to ssh
+		if path in read or len(read) > 256 or not os.path.isfile(path):
+			continue
+		read.add(path)
+		try:
+			with open(path, errors='replace') as f:
+				lines = f.read().splitlines()
+		except OSError:
+			continue
+		for line in lines:
+			match = _SSH_CONFIG_LINE.match(line)
+			if not match:
+				continue
+			keyword = match.group(1).lower()
+			keywords.add(keyword)
+			if keyword != 'include':
+				continue
+			try:
+				patterns = shlex.split(match.group(2), comments=True)
+			except ValueError:
+				return None
+			for pattern in patterns:
+				if '%' in pattern or '$' in pattern:
+					return None
+				if pattern.startswith('~/'):
+					pattern = os.path.join(os.path.dirname(user_dir), pattern[2:])
+				# relative to ~/.ssh in the user's files, to /etc/ssh in the system's
+				pattern = os.path.join(include_dir, os.path.expanduser(pattern))
+				files.extend((included, include_dir) for included in glob.glob(pattern))
+	return keywords
+
+def _ssh_options_given(args):
+	'''
+	What the ssh options among args (-ea: its words, or the string) set: (the keywords of the -o
+	options, lowercased; the config file of -F, or None). For an rsync copy too: rsync's own -o and
+	-F take no value.
+	'''
+	keywords = set()
+	config_file = None
+	args = args.split() if isinstance(args, str) else [str(arg) for arg in args or ()]
+	for index, arg in enumerate(args):
+		if arg[:2] not in ('-o', '-F'):
+			continue
+		# -oKeyword=value, or -o Keyword=value: the keyword up to a space or =
+		value = arg[2:] if arg[2:] else (args[index + 1] if index + 1 < len(args) else '')
+		if not arg[2:] and value.startswith('-'):
+			continue
+		if arg[:2] == '-o':
+			keywords.add(re.split(r'[\s=]', value.strip().strip('\'"'), maxsplit=1)[0].lower())
+		elif value.strip().lower() == 'none' or os.path.isfile(value.strip()):
+			# not rsync's -FF (filter rules)
+			config_file = value.strip()
+	return keywords, config_file
+
+def _whole_number(value):
+	'''A DEFAULT_SSH_* setting as the whole number ssh takes (rounded up), 0 for none.'''
+	try:
+		return max(0, int(math.ceil(float(value))))
+	except (TypeError, ValueError, OverflowError):
+		return 0
+
+# many hosts start at once: at most this many ssh -G for _ssh_timeout_options at a time
+_ssh_config_slots = threading.BoundedSemaphore(8)
+
+def _ssh_timeout_options(destination, ssh_args=()):
+	'''
+	The -o options that make ssh give up on a host that does not answer, or stops answering, so it
+	cannot hold up the run: ConnectTimeout, ServerAliveInterval and ServerAliveCountMax from the
+	DEFAULT_SSH_* settings, 0 leaving one to ssh.
+
+	The operator's values win. ssh uses the first value it gets, and a command-line -o beats the
+	ssh config, so an option is left out when ssh_args (-ea) give it, or when the ssh config sets it
+	for this destination: ssh -G is asked only when the config files mention the option. mssh's
+	ServerAliveCountMax only goes with mssh's ServerAliveInterval.
+
+	Args:
+		destination (str): [user@]host, as ssh gets it
+		ssh_args (list): -ea's words
+
+	Returns:
+		list: '-o', 'Keyword=number' words
+	'''
+	given, config_file = _ssh_options_given(ssh_args)
+	wanted = []
+	# (keyword, number, what ssh -G shows when nothing sets it)
+	for keyword, value, unset in (('ConnectTimeout', DEFAULT_SSH_CONNECT_TIMEOUT, 'none'),
+			('ServerAliveInterval', DEFAULT_SSH_SERVER_ALIVE_INTERVAL, '0'),
+			('ServerAliveCountMax', DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX, '3')):
+		number = _whole_number(value)
+		if number and keyword.lower() not in given:
+			wanted.append((keyword, number, unset))
+	mentioned = _ssh_config_keywords(config_file)
+	if wanted and (mentioned is None or any(keyword.lower() in mentioned for keyword, _, _ in wanted)):
+		with _ssh_config_slots:
+			config = _ssh_config_values(destination, config_file) if config_file else _ssh_config_values(destination)
+		if config:
+			wanted = [(keyword, number, unset) for keyword, number, unset in wanted if config.get(keyword.lower(), unset) == unset]
+	if not any(keyword == 'ServerAliveInterval' for keyword, _, _ in wanted):
+		# with the operator's keepalive interval (or none), the count is theirs too
+		wanted = [option for option in wanted if option[0] != 'ServerAliveCountMax']
+	options = []
+	for keyword, number, _ in wanted:
+		options += ['-o', '{}={}'.format(keyword, number)]
+	return options
 
 
 _i_counter = count()
@@ -521,8 +884,179 @@ def _open_trusted_file(path, explicit_flag, errors=None):
 	eprint('Warning: Ignoring {!r} because {}; {}'.format(path, reason, fix))
 	return None
 
+def _json_kind(value):
+	'''What value is, in JSON terms, for messages about config files.'''
+	if value is None:
+		return 'null'
+	if isinstance(value, bool):
+		return 'true' if value else 'false'
+	if isinstance(value, (int, float)):
+		return 'a number'
+	if isinstance(value, str):
+		return 'a string'
+	if isinstance(value, list):
+		return 'a list'
+	return 'an object'
+
+def _encoding_problem(name):
+	'''Why output cannot be decoded with the encoding called name (unknown, or not a text encoding), or None.'''
+	try:
+		# the reader decodes with backslashreplace: idna, for one, refuses that handler
+		b'\xff\n'.decode(name, 'backslashreplace')
+		'\xe9\n'.encode(name, 'backslashreplace')
+	except (LookupError, ValueError) as e:
+		# UnicodeError is a ValueError
+		return 'cannot decode output with {!r}: {}'.format(name, e)
+	return None
+
+def _text_encoding(name):
+	'''argparse type of -e: refuse an encoding the reader threads would die on, before any host runs.'''
+	problem = _encoding_problem(name)
+	if problem:
+		raise argparse.ArgumentTypeError(problem)
+	return name
+
+def _regex_problem(pattern):
+	'''Why pattern is not a regular expression, or None.'''
+	try:
+		re.compile(pattern)
+	except re.error as e:
+		return '{!r} is not a valid regular expression: {}'.format(pattern, e)
+	return None
+
+def _config_number(value):
+	'''value as an int or a float when it is a number or a string holding one, else None.'''
+	if isinstance(value, str):
+		try:
+			return int(value.strip())
+		except ValueError:
+			try:
+				value = float(value.strip())
+			except ValueError:
+				return None
+	if isinstance(value, bool):
+		return None
+	if isinstance(value, int):
+		return value
+	if isinstance(value, float) and math.isfinite(value):
+		return value
+	return None
+
+def _config_value_text(value):
+	'''value for a warning: strings and numbers as they are, anything else by its JSON kind.'''
+	if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+		return repr(value)
+	return _json_kind(value)
+
+_TRUE_WORDS = ('true', 'yes', 'on', '1')
+_FALSE_WORDS = ('false', 'no', 'off', '0')
+# keys naming the program mssh runs, e.g. _sshPath (see check_path)
+_PROGRAM_PATH_KEY = re.compile(r'_.+Path$')
+
+def _check_config_value(name, value):
+	'''
+	Check the value a config file gives setting name against the type of its built-in value.
+
+	Values whose meaning is clear are converted: "false" for a true / false setting, "50" for a
+	number, 1234 for a string, a list of host names for a host string.
+
+	Returns:
+		tuple: (value, None) when it can be used, else (None, why not)
+	'''
+	if name not in _BUILTIN_SETTINGS:
+		# a program path such as _sshPath: null or empty for the one on PATH
+		if value is None or isinstance(value, str):
+			return value, None
+		return None, 'expected the path to the program, got {}'.format(_config_value_text(value))
+	kind, item_kind = _setting_type(name)
+	list_of_strings = isinstance(value, list) and all(isinstance(item, str) for item in value)
+	if name in ('DEFAULT_HOSTS', 'DEFAULT_SKIP_HOSTS') and list_of_strings:
+		return ','.join(value), None
+	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
+		return value, None
+	if value is None and (kind is type(None) or name in ('DEFAULT_MAX_CONNECTIONS', 'DEFAULT_HOSTS')):
+		# --store_config_file writes null for the built-in max_connections; null hosts runs a command
+		# typed without hosts on none (not on the built-in "all"), as it always did
+		return None, None
+	if value is None and kind is str:
+		# a string setting mssh ran with as null before values were checked: null reads as "not set"
+		return _BUILTIN_SETTINGS[name], None
+	if kind is bool:
+		if isinstance(value, bool):
+			return value, None
+		word = str(value).strip().lower() if isinstance(value, (str, int)) else None
+		if word in _TRUE_WORDS or word in _FALSE_WORDS:
+			return word in _TRUE_WORDS, None
+		expected = 'true or false'
+	elif kind in (int, float):
+		number = _config_number(value)
+		if number is not None and kind is float:
+			return float(number), None
+		if number is not None:
+			# whole numbers as int, as the command line gives them; a fraction of a second still works
+			return (int(number) if number == int(number) else number), None
+		expected = 'a number or null' if name == 'DEFAULT_MAX_CONNECTIONS' else 'a number'
+	elif kind in (str, type(None)):
+		if isinstance(value, (int, float)) and not isinstance(value, bool):
+			value = str(value)
+		if not isinstance(value, str):
+			expected = 'a string' if kind is str else 'a string or null'
+		elif name == 'DEFAULT_ENCODING':
+			problem = _encoding_problem(value)
+			return (None, problem) if problem else (value, None)
+		elif name == '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+			problem = _regex_problem(value)
+			return (None, problem) if problem else (value, None)
+		else:
+			return value, None
+	elif kind is list:
+		if not isinstance(value, list):
+			expected = {str: 'a list of strings', dict: 'a list of objects'}.get(item_kind, 'a list')
+		elif item_kind and not all(isinstance(item, item_kind) for item in value):
+			odd = next(item for item in value if not isinstance(item, item_kind))
+			return None, 'expected {}, got a list holding {}'.format(
+				{str: 'a list of strings', dict: 'a list of objects'}.get(item_kind, 'a list'), _json_kind(odd))
+		elif name == 'ERROR_MESSAGES_TO_IGNORE':
+			problem = _regex_problem('|'.join(value))
+			return (None, problem) if problem else (value, None)
+		else:
+			return value, None
+	elif kind is dict:
+		if not isinstance(value, dict):
+			expected = 'an object'
+		elif item_kind and not all(isinstance(item, item_kind) for item in value.values()):
+			odd = next(item for item in value.values() if not isinstance(item, item_kind))
+			return None, 'expected an object of strings, got one holding {}'.format(_json_kind(odd))
+		else:
+			return value, None
+	else:
+		return None, 'not a setting a config file can change'
+	return None, 'expected {}, got {}'.format(expected, _config_value_text(value))
+
+def _check_config(config, config_file, replaced=()):
+	'''
+	The settings of config_file that can be used.
+
+	A value of the wrong type is left out with a warning naming the file and the key, so the
+	setting keeps its built-in (or less specific config file's) value. Keys that are not settings
+	are kept as they are: --store_config_file writes them back.
+
+	Args:
+		replaced (set): Keys a more specific config file sets: a wrong value is left out quietly, it
+			would not be used anyway (and the user may not be able to edit, say, a file in /etc)
+	'''
+	checked = {}
+	for name, value in config.items():
+		if name in _BUILTIN_SETTINGS or _PROGRAM_PATH_KEY.match(name):
+			value, problem = _check_config_value(name, value)
+			if problem:
+				if name not in replaced:
+					eprint('Warning: Ignoring {} in config file {!r}: {}'.format(name, config_file, problem))
+				continue
+		checked[name] = value
+	return checked
+
 def load_config_file(config_file, check_trust=True):
-	global __working_config_file
 	'''
 	Load the config file to global variables
 
@@ -532,8 +1066,26 @@ def load_config_file(config_file, check_trust=True):
 			files the user named explicitly.
 
 	Returns:
-		dict: The config
+		dict: The config, without values of the wrong type (see _check_config)
 	'''
+	return _check_config(_read_config_file(config_file, check_trust), config_file)
+
+def _load_config_chain(chain):
+	'''
+	The settings of the config files in chain (the most specific first, as CONFIG_FILE_CHAIN), merged.
+
+	A wrong value only warns when no more specific file in chain sets that key.
+	'''
+	files = [(path, _read_config_file(path)) for path in (os.path.expanduser(entry) for entry in reversed(chain))]
+	configs = {}
+	for index, (path, config) in enumerate(files):
+		replaced = set().union(*(more_specific for _, more_specific in files[index + 1:]))
+		configs.update(_check_config(config, path, replaced))
+	return configs
+
+def _read_config_file(config_file, check_trust=True):
+	'''The JSON object config_file holds, legacy keys mapped (see load_config_file), or {} when it cannot be used.'''
+	global __working_config_file
 	if not os.path.exists(config_file) or os.path.isdir(config_file):
 		return {}
 	try:
@@ -542,12 +1094,28 @@ def load_config_file(config_file, check_trust=True):
 			return {}
 		with f:
 			config = json.load(f)
-		__working_config_file = config_file
 	except Exception as e:
 		eprint(f"Error: Cannot load config file {config_file!r}: {e}")
 		return {}
-	return config
+	if not isinstance(config, dict):
+		# null or a list would break every run (and -V) at import, the rest of the chain still applies
+		eprint(f"Error: Cannot load config file {config_file!r}: it holds {_json_kind(config)}, not an object of settings")
+		return {}
+	__working_config_file = config_file
+	return apply_config_key_compat(config)
 
+
+# The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.18,
+# --store_config_file wrote it into config files. Unanchored, it also hid remote programs' errors.
+_OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE = [
+	'Pseudo-terminal will not be allocated because stdin is not a terminal',
+	'Connection to .* closed',
+	'Warning: Permanently added',
+	'mux_client_request_session',
+	'disabling multiplexing',
+	'Killed by signal',
+	'Connection reset by peer',
+]
 
 def apply_config_key_compat(configs):
 	'''
@@ -555,32 +1123,54 @@ def apply_config_key_compat(configs):
 
 	Configs written before 6.24 used DEAFULT_IPMI_ARGS (typo). Map it to
 	DEFAULT_IPMI_ARGS when the correct key is absent.
+
+	Configs written before 6.20 hold a copy of the built-in ERROR_MESSAGES_TO_IGNORE of the
+	time. An unchanged copy is dropped, so the current built-in list applies.
 	'''
 	if not configs:
 		return configs
 	if 'DEAFULT_IPMI_ARGS' in configs and 'DEFAULT_IPMI_ARGS' not in configs:
 		configs['DEFAULT_IPMI_ARGS'] = configs['DEAFULT_IPMI_ARGS']
+	if configs.get('ERROR_MESSAGES_TO_IGNORE') in (_OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE, _OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE[:5]):
+		del configs['ERROR_MESSAGES_TO_IGNORE']
 	return configs
+
+def _apply_config(configs):
+	'''
+	Set the settings configs holds (checked by load_config_file), then what is derived from them.
+
+	Runs for the config file chain at import and again for --config_file, so both apply the same
+	way. Other keys do not become globals, so a config file cannot replace mssh's own state;
+	check_path reads the program paths (_sshPath ...) from __configs_from_file.
+	'''
+	global __ERROR_MESSAGES_TO_IGNORE_REGEX
+	global DEFAULT_ENV_FILES
+	for name, value in configs.items():
+		# the config holds the pattern, the global its compiled form
+		if name in _BUILTIN_SETTINGS and name != '__ERROR_MESSAGES_TO_IGNORE_REGEX':
+			globals()[name] = value
+	pattern = __configs_from_file.get('__ERROR_MESSAGES_TO_IGNORE_REGEX')
+	if pattern:
+		if configs.get('__ERROR_MESSAGES_TO_IGNORE_REGEX'):
+			eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(pattern)
+	else:
+		# an empty pattern matches every line: no messages to ignore must hide nothing
+		patterns = [message for message in ERROR_MESSAGES_TO_IGNORE if message]
+		__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile('|'.join(patterns) if patterns else '(?!)')
+	if DEFAULT_ENV_FILE and DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
+		DEFAULT_ENV_FILES = DEFAULT_ENV_FILES + [DEFAULT_ENV_FILE]
 
 #%% Load Config Based Default Global variables
 __configs_from_file = {}
 # where --store_config_file writes without a path, unless a config file was loaded: one mssh reads by default
 __working_config_file = os.path.expanduser('~/.multiSSH3.config.json')
-for config_file in reversed(CONFIG_FILE_CHAIN.copy()):
-	__configs_from_file.update(load_config_file(os.path.expanduser(config_file)))
-apply_config_key_compat(__configs_from_file)
-globals().update(__configs_from_file)
-# form the regex from the list
-if __ERROR_MESSAGES_TO_IGNORE_REGEX:
-	eprint('Using __ERROR_MESSAGES_TO_IGNORE_REGEX, ignoring ERROR_MESSAGES_TO_IGNORE')
-	__ERROR_MESSAGES_TO_IGNORE_REGEX = re.compile(__ERROR_MESSAGES_TO_IGNORE_REGEX)
-else:
-	__ERROR_MESSAGES_TO_IGNORE_REGEX =  re.compile('|'.join(ERROR_MESSAGES_TO_IGNORE))
-if DEFAULT_ENV_FILE:
-	if DEFAULT_ENV_FILE not in DEFAULT_ENV_FILES:
-		DEFAULT_ENV_FILES.append(DEFAULT_ENV_FILE)
+__configs_from_file.update(_load_config_chain(CONFIG_FILE_CHAIN))
+_apply_config(__configs_from_file)
 
 #%% Load mssh Functional Global Variables
+# IPMI options the command line gives (definition key -> value), set by process_args
+_ipmi_command_line = {}
 __global_suppress_printout = False
 __mainReturnCode = 0
 __failedHosts = set()
@@ -594,6 +1184,8 @@ __keyPressesIn = [[]]
 _emo = False
 # set once the first command starts: before that, Ctrl-C has nothing to stop and exits
 _commands_started = False
+# set when mssh exits now (a second Ctrl C, SIGTERM, SIGHUP): no command may start any more
+_stopping = False
 __curses_global_color_pairs = {(-1,-1):1}
 __curses_current_color_pair_index = 2  # Start from 1, as 0 is the default color pair
 __curses_color_table = {}
@@ -604,11 +1196,6 @@ _encoding = DEFAULT_ENCODING
 __returnZero = DEFAULT_RETURN_ZERO
 __running_threads = set()
 __running_procs = set()
-__control_master_string = '''Host *
-  ControlMaster auto
-  ControlPath /run/user/%i/ssh_sockets_%C
-  ControlPersist 3600
-'''
 __curses_available = False
 __resource_lib_available = False
 try:
@@ -672,7 +1259,12 @@ def check_path(program_name):
 		return True
 	return False
 
-[check_path(program) for program in _binCalled]
+def _find_programs():
+	'''Look up every program mssh runs, again after --config_file (it can set their paths).'''
+	for program in _binCalled:
+		check_path(program)
+
+_find_programs()
 
 #%% Mapping of ANSI 4-bit colors to curses colors
 if __curses_available:
@@ -704,7 +1296,7 @@ class Host:
 		self.output = [] # the output of the command for curses
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
-		self.lineNumToPrintSet = set() # line numbers to reprint
+		self.lineNumToPrintSet = set() # line numbers the TUI must draw: the readers note them only while it runs (interactive_stdin)
 		self.lastUpdateTime = time.monotonic() # the last time the output was updated
 		self.lastPrintedUpdateTime = 0 # the last time the output was printed
 		self.files = files # the files to be copied to the host
@@ -718,14 +1310,18 @@ class Host:
 		# also store a globally unique integer i from 0
 		self.i = i if i != -1 else _get_i()
 		self.uuid = uuid if uuid is not ... else uuid4()
-		self.identity_file = identity_file
+		# the key file mssh found: ssh expands a ~ from the passwd entry, not $HOME (sudo -E, containers)
+		self.identity_file = os.path.expanduser(identity_file) if identity_file else identity_file
 		self.ip = ip if ip else getIP(name)
 		self.current_color_pair = [-1, -1, 1]
 		self.output_buffer = io.BytesIO()
 		self.stdout_buffer = io.BytesIO()
 		self.stderr_buffer = io.BytesIO()
 		self.thread = None
+		self.use_terminal = False # let the command use the operator's terminal, where ssh asks for passwords and host keys: only when it runs alone without the TUI
 		self.interactive_stdin = False # forward the curses TUI key presses to stdin (set while the TUI runs), else /dev/null
+		self.skipped = False # True when mssh did not run the command: the host was unreachable in a recent run
+		self.dropped_before_login = False # the last try ended with the server dropping ssh's connection before login (sshd MaxStartups?)
 
 	def __iter__(self):
 		return zip(['name', 'command', 'returncode', 'stdout', 'stderr'], [self.name, self.command, self.returncode, self.stdout, self.stderr])
@@ -764,7 +1360,10 @@ class Host:
 		newHost.lastUpdateTime = self.lastUpdateTime
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
+		newHost.use_terminal = self.use_terminal
 		newHost.interactive_stdin = self.interactive_stdin
+		newHost.skipped = self.skipped
+		newHost.dropped_before_login = self.dropped_before_login
 		return newHost
 
 #%% ------------ Exportable Help Functions ----------------
@@ -841,7 +1440,8 @@ def readEnvFromFile():
 							values = values.strip().strip("'")
 							if '$' in values:
 								scrubCounter += 16
-							if key and values and key != values:
+							# an empty value is kept: an empty host group (eu='') stands for no hosts
+							if key and key != values:
 								environemnt[key] = values
 						except Exception:
 							continue
@@ -853,9 +1453,10 @@ def readEnvFromFile():
 				for match in replacement_re.findall(value):
 					ref_key = match.strip('${}')
 					ref_value = environemnt.get(ref_key) if ref_key != key else None
-					if not ref_value and not _no_env:
+					if ref_value is None and not _no_env:
 						ref_value = _consult_env(ref_key)
-					if ref_value:
+					# a variable set to nothing is replaced by nothing, as the shell does
+					if ref_value is not None:
 						environemnt[key] = value.replace(match, ref_value)
 						found = True
 		if not found:
@@ -989,7 +1590,11 @@ def format_commands(commands):
 
 def get_terminal_size():
 	'''
-	Get the terminal size
+	Get the terminal size: stdout's terminal, else stdin's (mssh ... | less), else COLUMNS / LINES, else 120x30.
+
+	A terminal that reports 0 columns or rows does not know its size (a pty nobody set one on: script
+	without a terminal, some CI runners). As shutil.get_terminal_size does, what it does not know comes
+	from COLUMNS / LINES or the fallback.
 
 	@params:
 		None
@@ -998,8 +1603,7 @@ def get_terminal_size():
 		(int,int): the number of columns and rows of the terminal
 	'''
 	try:
-		import os
-		_tsize = os.get_terminal_size()
+		columns, rows = os.get_terminal_size()
 	except Exception:
 		try:
 			import fcntl
@@ -1007,11 +1611,19 @@ def get_terminal_size():
 			import termios
 			packed = fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0))
 			rows, columns = struct.unpack('HHHH', packed)[:2]
-			_tsize = (columns, rows)
 		except Exception:
-			import shutil
-			_tsize = shutil.get_terminal_size(fallback=(120, 30))
-	return _tsize
+			columns = rows = 0
+	def from_environment(name, fallback):
+		try:
+			value = int(os.environ.get(name, ''))
+		except ValueError:
+			return fallback
+		return value if value > 0 else fallback
+	if columns <= 0:
+		columns = from_environment('COLUMNS', 120)
+	if rows <= 0:
+		rows = from_environment('LINES', 30)
+	return os.terminal_size((columns, rows))
 
 @cache_decorator
 def get_terminal_color_capability():
@@ -1493,13 +2105,15 @@ def __compact_hostnames(Hostnames):
 			rtnSet.add(''.join(hostnameList))
 	return frozenset(rtnSet)
 
-def compact_hostnames(Hostnames,verify = True):
+def compact_hostnames(Hostnames,verify = True, hosts_only = False):
 	"""
 	Compact a list of hostnames.
 	Compact numeric numbers into ranges.
 
 	Args:
 		Hostnames (list): A list of hostnames.
+		hosts_only (bool): The names are hosts mssh expanded already, to be shown: one that is
+			also an alias's name (web="web,web-b") is that host, not the alias.
 
 	Returns:
 		list: A list of comapcted hostname list.
@@ -1523,14 +2137,14 @@ def compact_hostnames(Hostnames,verify = True):
 	# 	hostSet = frozenset(Hostnames)
 	# else:
 	# 	hostSet = Hostnames
-	hostSet = frozenset(expand_hostnames(
+	hostSet = frozenset(expand_hostnames((
 		hostname.strip()
 		for hostnames_str in Hostnames
 		for hostname in hostnames_str.split(',')
-	))
+	), hosts_only=hosts_only))
 	compact_hosts = __compact_hostnames(hostSet)
 	if verify:
-		if frozenset(expand_hostnames(compact_hosts)) != hostSet:
+		if frozenset(expand_hostnames(compact_hosts, hosts_only=hosts_only)) != hostSet:
 			if not __global_suppress_printout:
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 			compact_hosts = hostSet
@@ -1539,6 +2153,8 @@ def compact_hostnames(Hostnames,verify = True):
 #%% ------------ Expanding Hostnames ----------------
 # invalid host names reported during the current run_command_on_hosts call
 _reported_invalid_hosts = set()
+# aliases met inside themselves that are no host either, each counted once towards the exit code
+_counted_alias_loops = set()
 
 # env files mssh read from the current directory before 6.27, for a hint when a name is missing
 _FORMER_CURRENT_DIR_ENV_FILES = ('.env', 'host.env', 'hosts.env')
@@ -1601,12 +2217,13 @@ def host_validity(hostname, timeout=2.0):
 	file alias, a name DNS resolves, a name the ssh config maps to another HostName or puts
 	behind a ProxyJump / ProxyCommand), except that DNS answers in three ways: only "no such name"
 	(EAI_NONAME, EAI_NODATA) can make a name invalid. A lookup failing otherwise or taking longer
-	than timeout seconds, or an ssh -G that fails, makes it 'unsure'. This does not connect to the
-	host, but ssh -G runs the commands of Match exec lines in the ssh config, which may.
+	than timeout seconds, or an ssh -G that fails, makes it 'unsure', and so does such a lookup of
+	the target a catch-all HostName template gives the name. This does not connect to the host,
+	but ssh -G runs the commands of Match exec lines in the ssh config, which may.
 
 	Args:
 		hostname (str): One host name, user@ allowed
-		timeout (float): Seconds the DNS lookup may take
+		timeout (float): Seconds each DNS lookup may take (the name's, its template target's)
 	'''
 	if '@' in hostname:
 		hostname = hostname.rsplit('@', 1)[1]
@@ -1621,14 +2238,23 @@ def host_validity(hostname, timeout=2.0):
 	if 'ssh' in _binPaths and not hostname.startswith('-'):
 		if _ssh_config_values(hostname) is None:
 			return 'unsure'
-		if _ssh_config_target(hostname):
+		target, templated = _ssh_config_mapping(hostname)
+		if target and not templated:
 			return 'valid'
+		if target:
+			# a HostName template: as _ssh_config_target decides, with the target's lookup bounded
+			# too (_resolve_dns waits as long as the resolver does, a minute with timeout:30)
+			if getIP(target,local=True):
+				return 'valid'
+			target_answer = _dns_answer(target, timeout)
+			if target_answer != 'no':
+				return 'valid' if target_answer == 'yes' else 'unsure'
 	return 'invalid' if answer == 'no' else 'unsure'
 
 @cache_decorator
 def __validate_expand_hostname(hostname):
 	'''
-	Validate the hostname and expand it if it is a range of IP addresses
+	Validate the hostname and expand it if it is an env / env file alias
 
 	Args:
 		hostname (str): The hostname to be validated and expanded
@@ -1641,32 +2267,141 @@ def __validate_expand_hostname(hostname):
 	source = _local_hostname_source(hostname)
 	if source == 'ip':
 		return [hostname]
-	elif source == 'env':
-		# we will expand these hostnames again
-		return expand_hostnames(os.environ[hostname].split(','))
-	elif source == 'env_file':
-		# we will expand these hostnames again
-		return expand_hostnames(readEnvFromFile()[hostname].split(','))
-	elif getIP(hostname,local=False):
+	if source in ('env', 'env_file'):
+		return _expand_alias(hostname, source)
+	return _validate_host(hostname)
+
+def _validate_host(hostname, loop=None):
+	'''
+	[hostname] when DNS or the ssh config knows it, else [] after reporting it (once per run).
+
+	Args:
+		hostname (str): A host name that is not an IP address, hosts file name or alias
+		loop (tuple, optional): The aliases walked to reach hostname, when it is an alias met
+			inside its own expansion (see _alias_members)
+	'''
+	if getIP(hostname,local=False):
 		return [hostname]
-	elif _ssh_config_target(hostname):
+	if _ssh_config_target(hostname):
 		# ssh reaches it through the ssh config, e.g. a host behind a ProxyJump
 		return [hostname]
-	else:
-		global __mainReturnCode
-		global __failedHosts
-		# validated again after the caches refresh: report once per run_command_on_hosts call
-		if hostname not in _reported_invalid_hosts:
+	global __mainReturnCode
+	global __failedHosts
+	# validated again after the caches refresh: report once per run_command_on_hosts call
+	if hostname not in _reported_invalid_hosts:
+		if loop:
+			eprint(f"Error: alias loop through {hostname!r} ({' -> '.join(loop)}): {hostname!r} is not a valid hostname or IP address!")
+		else:
 			eprint(f"Error: {hostname!r} is not a valid hostname or IP address!")
 			defined_in = _current_dir_env_file_defining(hostname)
 			if defined_in:
 				eprint(f"Note: {hostname!r} is defined in ./{defined_in}, which is no longer read automatically; use --env_files {defined_in}")
-			_reported_invalid_hosts.add(hostname)
-		# and count once towards the exit code
-		if hostname not in __failedHosts:
-			__mainReturnCode += 1
-			__failedHosts.add(hostname)
-		return []
+		_reported_invalid_hosts.add(hostname)
+	# and count once towards the exit code. The failed hosts are expanded again to be listed:
+	# an alias name there would list the alias's members, so a loop is counted on its own
+	counted = _counted_alias_loops if loop else __failedHosts
+	if hostname not in counted:
+		__mainReturnCode += 1
+		counted.add(hostname)
+	return []
+
+def _validate_shown_hostname(hostname):
+	'''
+	__validate_expand_hostname for a host name mssh expanded already: an alias's name there is
+	the host of that name, which an alias inside its own expansion stands for (_alias_members).
+	'''
+	hostname = hostname.strip().strip('$')
+	if _local_hostname_source(hostname) in ('env', 'env_file'):
+		return [hostname]
+	return __validate_expand_hostname(hostname)
+
+def _alias_value(name, source):
+	'''The hosts string an alias holds: source 'env' (an environment variable) or 'env_file'.'''
+	value = _consult_env(name) if source == 'env' else readEnvFromFile().get(name)
+	return value or ''
+
+def _host_names_in(text, user=None):
+	'''
+	(user, name, source) for each host name in a hosts string, ranges expanded, aliases not.
+
+	The string is split as the hosts argument is (, space ; | / &). user is the name's user@
+	prefix, else the user given; source is _local_hostname_source(name): 'ip', 'env',
+	'env_file', or None when only DNS or the ssh config could confirm the name.
+	'''
+	for token in _split_host_str(text):
+		token_user = user
+		if '@' in token:
+			token_user, token = token.split('@', 1)
+			token_user = token_user.strip() or user
+		token = token.strip()
+		if not token:
+			continue
+		if _IPV4_RANGE_RE.match(token):
+			for address in __expandIPv4Address(frozenset([token])):
+				yield token_user, address, 'ip'
+			continue
+		# sorted: which name closes an alias loop must not depend on the order of a set
+		for name in sorted(__expand_hostname(token, validate=False)):
+			name = name.strip().strip('$')
+			if name:
+				yield token_user, name, _local_hostname_source(name)
+
+def _alias_members(alias, source, user=None):
+	'''
+	The host names an alias stands for, with the aliases inside it expanded, without DNS.
+
+	An alias met again inside its own expansion (directly or through other aliases) is not
+	expanded again: there it names the host of that name, as bash does with an alias inside its
+	own definition, so web="web,web-b" stands for the host web and web-b. When no such host
+	exists, mssh reports an alias loop. Each alias is walked once per user, so aliases that are
+	shared or fan out (AA='BB,BB', BB='AA,AA') cost no more than one walk each.
+
+	Args:
+		alias (str): The alias name
+		source (str): 'env' or 'env_file', as _local_hostname_source gives it
+		user (str, optional): The user@ the alias was given with
+
+	Returns:
+		list: (user, name, source, loop) per member. source is 'ip' (an IP address or hosts file
+			name) or None (only DNS or the ssh config could confirm it); loop is the aliases walked
+			to reach a member that is an alias met inside itself (web -> app -> web), else None.
+	'''
+	members = []
+	walked = {(alias, user)}
+	path = [alias]
+	# a stack instead of recursion: a long chain of aliases cannot reach the recursion limit
+	walks = [_host_names_in(_alias_value(alias, source), user)]
+	while walks:
+		item = next(walks[-1], None)
+		if item is None:
+			walks.pop()
+			path.pop()
+			continue
+		name_user, name, name_source = item
+		if name_source not in ('env', 'env_file'):
+			members.append((name_user, name, name_source, None))
+		elif name in path:
+			members.append((name_user, name, None, tuple(path) + (name,)))
+		elif (name, name_user) not in walked:
+			walked.add((name, name_user))
+			path.append(name)
+			walks.append(_host_names_in(_alias_value(name, name_source), name_user))
+	return members
+
+def _expand_alias(alias, source):
+	'''The valid host names (user@ kept) an alias stands for; the members mssh rejects are reported.'''
+	members = _alias_members(alias, source)
+	_prefetch_ips([name for _, name, _, loop in members if not loop])
+	hosts = []
+	for user, name, _, loop in members:
+		# other members through the cache, as if typed: each is looked up and reported once
+		if not (_validate_host(name, loop) if loop else __validate_expand_hostname(name)):
+			continue
+		if user:
+			hosts.extend(f'{each}@{name}' for each in sorted(__expand_hostname(user, validate=False)))
+		else:
+			hosts.append(name)
+	return hosts
 
 @cache_decorator
 def __expandIPv4Address(hosts):
@@ -1713,6 +2448,15 @@ def __expandIPv4Address(hosts):
 	expandedHosts.extend(expandedHost)
 	return expandedHosts
 
+def _has_open_range(text):
+	'''Whether a [] group of text holds a range with an end missing: node[1-], node[-3], rack[a-].'''
+	for group in re.findall(r'\[(.*?)]', text):
+		for part in group.split(','):
+			range_start, dash, range_end = part.partition('-')
+			if dash and not (range_start.strip() and range_end.strip()):
+				return True
+	return False
+
 @cache_decorator 
 def __expand_hostname(text, validate=True):# -> set:
 	'''
@@ -1734,7 +2478,11 @@ def __expand_hostname(text, validate=True):# -> set:
 		- Mixed alphanumeric ranges walk string.digits + string.ascii_letters in that order
 		  (0-9 then A-Z then a-z), so [9-A] yields 9,A and [Z-a] yields Z then a — not a
 		  contiguous Unicode range.
+		- A range with an end missing (node[1-], node[-3], rack[a-]) makes the name invalid: it
+		  is kept whole and unexpanded, so mssh reports it instead of guessing the other end.
 	'''
+	if _has_open_range(text):
+		return set(__validate_expand_hostname(text)) if validate else {text}
 	expandinghosts = [text]
 	expandedhosts = set()
 	# all valid alphanumeric characters
@@ -1757,6 +2505,10 @@ def __expand_hostname(text, validate=True):# -> set:
 					continue
 				range_start = range_start.strip()
 				range_end = range_end.strip()
+				if not range_start or not range_end:
+					# an open range only an earlier expansion made (a[x,[]1-]): _has_open_range saw none
+					expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
+					continue
 				if range_start.isdigit() and range_end.isdigit():
 					padding_length = min(len(range_start), len(range_end))
 					format_str = "{:0" + str(padding_length) + "d}"
@@ -1840,12 +2592,13 @@ def _run_in_threads(function, items, max_workers=32):
 			thread.join(0.1)
 
 @cache_decorator
-def __expand_hostnames(hosts) -> dict:
+def __expand_hostnames(hosts, hosts_only=False) -> dict:
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
+		hosts_only (bool): Names that are also an alias's name are hosts (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -1882,8 +2635,9 @@ def __expand_hostnames(hosts) -> dict:
 			iplist = hostSetToAdd
 		else:
 			# validate the names expanded (and cached) for the prefetch instead of expanding again
+			validate = _validate_shown_hostname if hosts_only else __validate_expand_hostname
 			hostSetToAdd = sorted(set(itertools.chain.from_iterable(
-				__validate_expand_hostname(name) for name in __expand_hostname(host, validate=False))))
+				validate(name) for name in __expand_hostname(host, validate=False))))
 			for host in hostSetToAdd:
 				iplist.append(getIP(host,local=False))
 		if username:
@@ -1896,12 +2650,14 @@ def __expand_hostnames(hosts) -> dict:
 			[expandedhosts.update({host:ip}) for host,ip in zip(hostSetToAdd,iplist)]
 	return expandedhosts
 
-def expand_hostnames(hosts):
+def expand_hostnames(hosts, hosts_only=False):
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
+		hosts_only (bool): The names are hosts mssh expanded already: one that is also an
+			alias's name is that host (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -1911,15 +2667,18 @@ def expand_hostnames(hosts):
 	# change data type to frozenset if it is not hashable
 	if not isinstance(hosts, frozenset):
 		hosts = frozenset(hosts)
+	if hosts_only:
+		return __expand_hostnames(hosts, hosts_only=True)
 	return __expand_hostnames(hosts)
 
 def expand_hostnames_local(hosts):
 	'''
 	Expand host strings without DNS or ssh config lookups.
 
-	Ranges, IPv4 ranges and env / env file aliases (recursively) are expanded like
-	expand_hostnames does. A name that is not an IP address, in the hosts file or an alias
-	is kept as it is and also listed as unresolved: only DNS or the ssh config could confirm it.
+	Ranges, IPv4 ranges and env / env file aliases (recursively, with _alias_members, as
+	expand_hostnames does) are expanded. A name that is not an IP address, in the hosts file or
+	an alias is kept as it is and also listed as unresolved: only DNS or the ssh config could
+	confirm it. So is an alias met inside its own expansion, which there names a host.
 	Nothing is printed and no failure is counted.
 
 	Args:
@@ -1932,39 +2691,17 @@ def expand_hostnames_local(hosts):
 		hosts = [hosts]
 	expanded = set()
 	unresolved = set()
-	# each alias is expanded once per user: shared and looping aliases cannot multiply the work
-	walked = set()
-	def walk(text, user, depth):
-		for token in _split_host_str(text):
-			token_user = user
-			if '@' in token:
-				token_user, token = token.split('@', 1)
-				token_user = token_user.strip() or user
-			token = token.strip()
-			if not token:
-				continue
-			if _IPV4_RANGE_RE.match(token):
-				names = __expandIPv4Address(frozenset([token]))
-			else:
-				names = __expand_hostname(token, validate=False)
-			for name in names:
-				name = name.strip().strip('$')
-				if not name:
-					continue
-				source = _local_hostname_source(name)
-				if source in ('env', 'env_file'):
-					# an alias loop expands to nothing
-					if depth < 32 and (name, token_user) not in walked:
-						walked.add((name, token_user))
-						value = os.environ.get(name) if source == 'env' else readEnvFromFile().get(name)
-						walk(value or '', token_user, depth + 1)
-					continue
-				full = '{}@{}'.format(token_user, name) if token_user else name
-				expanded.add(full)
-				if source is None:
-					unresolved.add(full)
 	for host in hosts:
-		walk(str(host), None, 0)
+		for user, name, source in _host_names_in(str(host)):
+			if source in ('env', 'env_file'):
+				members = _alias_members(name, source, user)
+			else:
+				members = [(user, name, source, None)]
+			for member_user, member, member_source, _ in members:
+				full = '{}@{}'.format(member_user, member) if member_user else member
+				expanded.add(full)
+				if member_source is None:
+					unresolved.add(full)
 	return sorted(expanded, key=_natural_sort_key), sorted(unresolved, key=_natural_sort_key)
 
 def compact_hostnames_local(names):
@@ -1997,7 +2734,11 @@ _consulted_env = {}
 
 def _consult_env(name):
 	'''os.environ.get(name), remembering the value so the caches refresh when it changes.'''
-	value = os.environ.get(name)
+	try:
+		value = os.environ.get(name)
+	except UnicodeEncodeError:
+		# a name the locale cannot encode (Python 3.6 in the C locale) cannot be a variable either
+		return None
 	_consulted_env.setdefault(name, value)
 	return value
 
@@ -2031,15 +2772,20 @@ def _refresh_expansion_caches():
 # bytes the reader treats specially, and the unicode line breaks str.splitlines() also splits on
 _READER_SPECIAL_BYTES = re.compile(rb'([\n\r\x08])')
 _UNICODE_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
+# encodings in which a \n byte is always a character of its own and ends any character before it: lines
+# decode as one text just as one at a time. Not e.g. utf-16, or utf-8-sig, which drops a BOM at the start
+# of each text it decodes.
+_READER_BULK_ENCODINGS = frozenset(('utf-8', 'ascii', 'iso8859-1'))
 
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
 	Read the stream and append the lines to the target list
 
-	Output is read in chunks. \n, \r and backspace bytes, and runs of other bytes that may hold a
-	unicode line break, go through add_byte, which processes one byte at a time (\r returns to
-	the line start, backspace deletes, unicode line breaks split lines that grow past each 100
-	bytes). Other runs are appended at once, which gives the same result.
+	Output is read in chunks. The lines that start and end in a chunk, with no \r (but in \r\n) or
+	backspace, are decoded and added at once when none holds a unicode line break. The rest is split
+	on \n, \r and backspace: \r returns to the line start, backspace deletes the byte before, and
+	unicode line breaks split lines that grow past each 100 bytes, which add_run checks only where
+	that can happen. This gives the same lines as reading one byte at a time.
 
 	Args:
 		stream (io.BufferedReader): The stream to be read
@@ -2051,35 +2797,40 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		None
 	'''
 	global _encoding
+	try:
+		bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
+	except (LookupError, TypeError):
+		# not an encoding: the decode fails as it did before
+		bulk_encoding = False
 	def add_line(buffer,target, host):
 		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
-		host.lineNumToPrintSet.add(len(host.output)-1)
+		# only the TUI draws from the set, and interactive_stdin is set while it runs: without it the set
+		# would hold every line number for nothing
+		if host.interactive_stdin:
+			host.lineNumToPrintSet.add(len(host.output)-1)
 		buffer.seek(0)
 		buffer.truncate(0)
 		host.output_buffer.seek(0)
 		host.output_buffer.truncate(0)
-	def add_byte(char):
-		if char == b'\n':
-			add_line(buffer,target, host)
-			return
-		elif char == b'\r':
-			buffer.seek(0)
-			host.output_buffer.seek(0)
-		elif char == b'\x08':
-			# backspace
-			if buffer.tell() > 0:
-				buffer.seek(buffer.tell() - 1)
-				buffer.truncate()
-			if host.output_buffer.tell() > 0:
-				host.output_buffer.seek(host.output_buffer.tell() - 1)
-				host.output_buffer.truncate()
-		else:
-			# normal character
-			buffer.write(char)
-			host.output_buffer.write(char)
-		# every 100 bytes, split the line on unicode line breaks
+	def add_lines(data):
+		'''
+		Add whole lines at once while the buffer is empty: data is the bytes before a \n, with no \r or backspace.
+
+		Returns False, having added nothing, when a line holds a unicode line break: add_bytes splits it.
+		'''
+		text = data.decode(_encoding,errors='backslashreplace')
+		if _UNICODE_LINE_BREAK.search(text):
+			return False
+		lines = text.split('\n')
+		target.extend(lines)
+		host.output.extend(lines)
+		if host.interactive_stdin:
+			host.lineNumToPrintSet.update(range(len(host.output) - len(lines), len(host.output)))
+		return True
+	def split_line_breaks():
+		'''Split the line on unicode line breaks when it grew to a multiple of 100 bytes.'''
 		if buffer.tell() % 100 == 0 and buffer.tell() > 0:
 			decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
 			lines = decodedLine.splitlines()
@@ -2089,7 +2840,8 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 					# for all lines except the last one, we add them to the target
 					target.append(line)
 					host.output.append(line)
-					host.lineNumToPrintSet.add(len(host.output)-1)
+					if host.interactive_stdin:
+						host.lineNumToPrintSet.add(len(host.output)-1)
 				# we keep the last line in the buffer
 				buffer.seek(0)
 				buffer.truncate(0)
@@ -2097,6 +2849,19 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 				host.output_buffer.seek(0)
 				host.output_buffer.truncate(0)
 				host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
+	def add_cr_or_backspace(char):
+		'''\r moves back to the line start, backspace deletes the byte before.'''
+		if char == b'\r':
+			buffer.seek(0)
+			host.output_buffer.seek(0)
+			return
+		if buffer.tell() > 0:
+			buffer.seek(buffer.tell() - 1)
+			buffer.truncate()
+		if host.output_buffer.tell() > 0:
+			host.output_buffer.seek(host.output_buffer.tell() - 1)
+			host.output_buffer.truncate()
+		split_line_breaks()
 	def add_run(run, clean):
 		'''
 		Add bytes that hold no \n, \r or backspace.
@@ -2118,9 +2883,28 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 				buffer.write(run)
 				host.output_buffer.write(run)
 				return True
-		for i in range(len(run)):
-			add_byte(run[i:i + 1])
+		# a split can only happen where the write position reaches a multiple of 100: write up to there at once
+		offset = 0
+		while offset < len(run):
+			part = run[offset:offset + 100 - buffer.tell() % 100]
+			offset += len(part)
+			buffer.write(part)
+			host.output_buffer.write(part)
+			split_line_breaks()
 		return False
+	def add_bytes(data, clean):
+		'''Add bytes as they come. clean: as for add_run, and returns the same for after.'''
+		# split keeps the special bytes at the odd indexes
+		for index, part in enumerate(_READER_SPECIAL_BYTES.split(data)):
+			if index % 2 == 0:
+				if part:
+					clean = add_run(part, clean)
+			elif part == b'\n':
+				add_line(buffer,target, host)
+				clean = True
+			else:
+				add_cr_or_backspace(part)
+		return clean
 	read = stream.read1 if hasattr(stream, 'read1') else stream.read
 	clean = False
 	try:
@@ -2130,21 +2914,39 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 			if not chunk:
 				break
 			host.lastUpdateTime = time.monotonic()
-			# split keeps the special bytes at the odd indexes
-			for index, part in enumerate(_READER_SPECIAL_BYTES.split(chunk)):
-				if index % 2 == 0:
-					if part:
-						clean = add_run(part, clean)
-				elif part == b'\n':
-					add_line(buffer,target, host)
-					clean = True
-				else:
-					add_byte(part)
+			if bulk_encoding:
+				if b'\r' in chunk:
+					# \r\n ends a line just as \n does: the \r moves back to the line start, the line is taken whole
+					chunk = chunk.replace(b'\r\n', b'\n')
+				first_newline = chunk.find(b'\n')
+				last_newline = chunk.rfind(b'\n')
+				if first_newline < last_newline:
+					# the line in the buffer ends at the first \n, the lines after it are whole in the chunk
+					whole_lines = chunk[first_newline + 1:last_newline]
+					if b'\r' not in whole_lines and b'\x08' not in whole_lines:
+						clean = add_bytes(chunk[:first_newline + 1], clean)
+						if add_lines(whole_lines):
+							chunk = chunk[last_newline + 1:]
+						else:
+							chunk = chunk[first_newline + 1:]
+			clean = add_bytes(chunk, clean)
 	except ValueError:
 		pass
 	if buffer.tell() > 0:
 		# if there is still some data in the buffer, we add it to the target
 		add_line(buffer,target, host)
+
+def _encode_typed_line(chars):
+	'''The bytes a line typed in the TUI sends: bytes typed outside _encoding (surrogates) go out as typed.'''
+	text = ''.join(chars)
+	try:
+		return text.encode(encoding=_encoding, errors='surrogateescape')
+	except UnicodeEncodeError:
+		return text.encode(encoding=_encoding, errors='backslashreplace')
+
+def _typed_line_for_display(chars):
+	'''A typed line as text to show: what _encode_typed_line sends, with bytes outside _encoding as \\xe9.'''
+	return _encode_typed_line(chars).decode(encoding=_encoding, errors='backslashreplace')
 
 def __handle_writing_stream(stream,stop_event,host):
 	'''
@@ -2166,9 +2968,9 @@ def __handle_writing_stream(stream,stop_event,host):
 	sentInputPos = 0
 	while not stop_event.is_set() and host.interactive_stdin:
 		if sentInputPos < len(__keyPressesIn) - 1 :
-			stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+			stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 			stream.flush()
-			line = '> ' + ''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').replace('\n', '↵')
+			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
 			host.lineNumToPrintSet.add(len(host.output)-1)
@@ -2180,7 +2982,7 @@ def __handle_writing_stream(stream,stop_event,host):
 		# the TUI ended while the command runs: send the lines already typed, then end of input
 		try:
 			while sentInputPos < len(__keyPressesIn) - 1:
-				stream.write(''.join(__keyPressesIn[sentInputPos]).encode(encoding=_encoding,errors='backslashreplace'))
+				stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
 				sentInputPos += 1
 			stream.flush()
 		except Exception:
@@ -2199,8 +3001,314 @@ def __handle_writing_stream(stream,stop_event,host):
 	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
 
+# once the command ended, at most a pipe's worth of its output is left to read (64 KiB by default, on Linux
+# at most 1 MiB without root): a reader that takes in more than this since then reads a process the command
+# left behind
+_READER_MAX_BYTES_AFTER_EXIT = 4 * 1024 * 1024
+# seconds in all a reader may wait for input after the command ended, before it is given up
+_READER_WAIT_AFTER_EXIT = 1.0
+
+def _pipe_has_input(fd):
+	'''True when a read from fd returns at once: output or end of file is there.'''
+	try:
+		poller = select.poll()
+		poller.register(fd, select.POLLIN)
+		return bool(poller.poll(0))
+	except Exception:
+		return False
+
+class _CommandPipe:
+	'''
+	One of the command's output pipes, as its reader thread reads it.
+
+	A process the command left in the background can keep the pipe open after the command ended, and
+	the reader would wait for it. This tells run_command when the reader waits for input, and lets it
+	give the reader up: reads then return end of file. Where the pipe can be polled, the reader waits
+	for input before it reads, so a reader given up while it waits takes in nothing more.
+
+	The reader reads 64 KiB at a time with read1, which leaves nothing in the pipe object's own buffer,
+	where polling would not see it.
+	'''
+	def __init__(self, pipe):
+		self.pipe = pipe
+		self._read = getattr(pipe, 'read1', None) or pipe.read
+		self.lock = threading.Lock()
+		self.waiting = False # waits for input (where polled: has not read anything yet)
+		self.given_up = False
+		self.bytes_read = 0
+		self.fd = None
+		self.poller = None
+		try:
+			self.fd = pipe.fileno()
+			poller = select.poll()
+			poller.register(self.fd, select.POLLIN)
+			self.poller = poller
+		except Exception:
+			# no file descriptor (a stand-in in tests) or no poll (Windows): the reader just reads
+			pass
+
+	def read1(self, size):
+		with self.lock:
+			if self.given_up:
+				return b''
+			self.waiting = True
+		try:
+			if self.poller is not None:
+				try:
+					self.poller.poll()
+				except OSError:
+					pass # the read reports a closed pipe
+				with self.lock:
+					if self.given_up:
+						return b''
+					self.waiting = False
+			data = self._read(size)
+		finally:
+			self.waiting = False
+		self.bytes_read += len(data)
+		return data
+
+def _wait_for_readers(host, readers):
+	'''
+	Wait until the reader threads took in what the command wrote, now that it ended or was stopped.
+
+	A reader busy with output is waited for however long it takes: once the command ended, at most a
+	pipe's worth of output is left. A reader is given up when a process the command left in the
+	background holds its pipe open: once it waited for input _READER_WAIT_AFTER_EXIT seconds in all, or
+	took in more than _READER_MAX_BYTES_AFTER_EXIT bytes, more than the command can have left. Its
+	unfinished last line is recorded; what that process writes later is not. After Ctrl C, the readers
+	get _READER_WAIT_AFTER_EXIT seconds.
+
+	Args:
+		host (Host): The host object
+		readers (list): (thread, _CommandPipe, target list, line buffer) for stdout and stderr
+
+	Returns:
+		bool: True when every reader read its pipe to the end
+	'''
+	bytes_at_exit = [pipe.bytes_read for _thread, pipe, _target, _buffer in readers]
+	waited = [0.0] * len(readers)
+	pending = list(range(len(readers)))
+	all_read = True
+	stop_at = None
+	last = time.monotonic()
+	while pending:
+		readers[pending[0]][0].join(0.05)
+		now = time.monotonic()
+		elapsed, last = now - last, now
+		if _emo and stop_at is None:
+			stop_at = now + _READER_WAIT_AFTER_EXIT
+		stopping = stop_at is not None and now >= stop_at
+		for index in list(pending):
+			thread, pipe, target, buffer = readers[index]
+			if not thread.is_alive():
+				pending.remove(index)
+				continue
+			with pipe.lock:
+				# output or end of file that is there but not taken yet is not waiting: the thread is slow to wake
+				idle = pipe.waiting and (pipe.poller is None or not _pipe_has_input(pipe.fd))
+				if idle:
+					waited[index] += elapsed
+				if not pipe.given_up and (stopping or waited[index] >= _READER_WAIT_AFTER_EXIT
+						or pipe.bytes_read - bytes_at_exit[index] > _READER_MAX_BYTES_AFTER_EXIT):
+					pipe.given_up = True
+					all_read = False
+				# done with a reader given up while it waits; one given up while busy ends at its next read,
+				# after the output in hand
+				if pipe.given_up and (idle or stopping):
+					if idle and pipe.poller is not None:
+						# it waits for input it will not take: record its unfinished last line for it
+						__handle_reading_stream(io.BytesIO(), target, host, buffer)
+					pending.remove(index)
+	return all_read
+
 def _emfile_backoff_seconds(attempt):
-	return min(0.1 * (2 ** attempt), 1.0)
+	# 0.1, 0.2, 0.4, 0.8, then 1 s; the exponent stops growing, as waiting for processes or threads has no attempt limit
+	return min(0.1 * (2 ** min(attempt, 4)), 1.0)
+
+def _start_waiting_thread(function):
+	'''
+	Start a daemon thread that calls function(*args) once it is given args.
+
+	Returns:
+		tuple: (thread, give): give(args) hands the thread its arguments, give(None) ends it without the call
+	'''
+	given = queue.Queue()
+	def run():
+		args = given.get()
+		if args is not None:
+			function(*args)
+	thread = threading.Thread(target=run, daemon=True)
+	thread.start()
+	return thread, given.put
+
+# How many times a host is tried again when the server dropped ssh's connection before login. sshd does
+# that past MaxStartups (default 10:30:100: connections not logged in yet), which a ProxyJump bastion
+# meets as soon as mssh opens more than 10 connections through it at once.
+_LOGIN_DROP_RETRIES = 3
+
+def _login_drop_backoff_seconds(retry):
+	'''
+	Seconds to wait before the retry-th try (1, 2, ...) of a host dropped before login: random, so the
+	hosts dropped together come back spread out, and longer each time (0.2 to 1 s, then up to 2 s, 3 s).
+	'''
+	return random.uniform(0.2, 1.0) * retry
+
+# ssh's own lines when the server closed or reset its connection before login. The banner exchange is
+# the very first step. "Connection closed by ADDRESS port PORT" is an end of file met while connecting
+# or logging in (once logged in, ssh says "Connection to HOST closed by remote host."), naming the
+# address ssh connected to, or UNKNOWN port 65535 through a ProxyJump / ProxyCommand. A reset reads the
+# same before and after login: only the banner exchange line before it tells.
+_SSH_BANNER_DROP = re.compile(r'(?:kex|ssh)_exchange_identification: (read: Connection reset by peer|Connection closed by remote host)')
+_SSH_CONNECTION_DROP = re.compile(r'Connection (closed|reset) by (\S+) port (\d+)')
+_SSH_RESET_BANNER = 'read: Connection reset by peer'
+# what scp and rsync print when the ssh they run was dropped. scp's legacy protocol (before OpenSSH 9.0,
+# and scp -O) exits with 1; rsync with ssh's 255, or with 12 when it notices the closed stream first
+_COPY_TOOL_DROP_LINES = {
+	'scp': re.compile(r'(?:\S*/)?scp: Connection closed|lost connection'),
+	'rsync': re.compile(r'rsync: connection unexpectedly closed \((\d+) bytes received so far\) \[\w+\]'
+		r'|rsync error: (?:unexplained error \(code 255\)|error in rsync protocol data stream \(code 12\)) at io\.c\(\d+\) \[\w+=[^\]]*\]'),
+}
+_LOGIN_DROP_RETURN_CODES = {'ssh': (255,), 'scp': (255, 1), 'rsync': (255, 12)}
+
+_LoginDrop = namedtuple('_LoginDrop', ['banners', 'drops', 'nothing_received'])
+_LoginDrop.__doc__ = '''
+A run that ended with the server dropping ssh's connection before login, from _login_drop.
+
+banners holds each banner exchange line's reason ('read: Connection reset by peer' or 'Connection
+closed by remote host'); drops the (closed or reset, address, port) of each "Connection closed / reset
+by" line, in order; nothing_received is True when rsync said it received 0 bytes.
+'''
+
+def _login_drop(returncode, stdout, stderr, tool):
+	'''
+	Read a finished run as one whose connection the server dropped before login.
+
+	It exited with ssh's 255 (or scp's 1, rsync's 12), printed nothing on stdout, and every stderr line
+	is ssh's report of the dropped connection (or scp's / rsync's of the ssh they ran).
+
+	Args:
+		returncode (int): The run's exit code
+		stdout (list): The run's stdout lines
+		stderr (list): The run's stderr lines, before ERROR_MESSAGES_TO_IGNORE removed any
+		tool (str): 'ssh', 'scp' or 'rsync', the program mssh ran
+
+	Returns:
+		_LoginDrop: What the lines say, or None when the run is anything else
+	'''
+	if returncode not in _LOGIN_DROP_RETURN_CODES.get(tool, ()) or any(line.strip() for line in stdout):
+		return None
+	tool_lines = _COPY_TOOL_DROP_LINES.get(tool)
+	banners = []
+	drops = []
+	nothing_received = False
+	for line in stderr:
+		line = line.strip()
+		if not line:
+			continue
+		match = _SSH_BANNER_DROP.fullmatch(line)
+		if match:
+			banners.append(match.group(1))
+			continue
+		match = _SSH_CONNECTION_DROP.fullmatch(line)
+		if match:
+			drops.append(match.groups())
+			continue
+		match = tool_lines.fullmatch(line) if tool_lines else None
+		if not match:
+			return None
+		if tool == 'rsync' and match.group(1) == '0':
+			nothing_received = True
+	if not banners and not drops:
+		return None
+	return _LoginDrop(banners, drops, nothing_received)
+
+def _shows_dropped_login(drop):
+	'''Whether a _login_drop result shows the connection ended before login: a lone reset can come later too.'''
+	return bool(drop) and (bool(drop.banners) or any(kind == 'closed' for kind, _address, _port in drop.drops))
+
+def _ssh_uses_proxy(host):
+	'''Whether ssh reaches host through a ProxyJump / ProxyCommand, given in -ea or the ssh config (ssh -G).'''
+	if isinstance(host.extraargs, str):
+		extraargs = host.extraargs.split()
+	else:
+		extraargs = [str(arg) for arg in host.extraargs or []]
+	for arg in extraargs:
+		if arg.startswith('-J') or 'proxyjump' in arg.lower() or 'proxycommand' in arg.lower():
+			return True
+	address = getattr(host, 'address', None) or host.name.rsplit('@', 1)[-1]
+	if 'ssh' not in _binPaths or not address or address.startswith('-'):
+		return False
+	config = _ssh_config_values(address)
+	return bool(config) and any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
+
+def _names_ssh_target(host, address):
+	'''
+	Whether address, from ssh's "Connection closed by ADDRESS port PORT", is where ssh connects for host:
+	the address mssh resolved, another address of the name (ssh may pick the IPv6 one), or of the
+	HostName the ssh config gives it.
+	'''
+	address = address.lower()
+	target = (getattr(host, 'address', None) or host.name.rsplit('@', 1)[-1]).strip()
+	if address == target.lower() or (host.ip and address == str(host.ip).lower()):
+		return True
+	names = [target]
+	if 'ssh' in _binPaths and target and not target.startswith('-'):
+		config = _ssh_config_values(target)
+		if config and config.get('hostname'):
+			names.append(config['hostname'])
+	for name in names:
+		try:
+			infos = socket.getaddrinfo(name, None, 0, socket.SOCK_STREAM)
+		except Exception:
+			continue
+		if any(str(info[4][0]).lower() == address for info in infos):
+			return True
+	return False
+
+def _dropped_login_hint(count, max_connections):
+	'''
+	The hint for a run whose failed hosts include count hosts the server dropped before login.
+
+	Args:
+		count (int): How many hosts
+		max_connections (int): The -m given, 0 or negative for the limits derived from it
+	'''
+	if isinstance(max_connections, int) and 0 < max_connections <= 10:
+		cure = 'try a lower -m'
+	else:
+		cure = 'try fewer at once, e.g. -m 10'
+	return ("Hint: the server dropped {} before login: sshd's MaxStartups (default 10:30:100), on the hosts "
+		"or a ProxyJump bastion, turns away connections opened at once; {}".format(
+		'1 connection' if count == 1 else '{} connections'.format(count), cure))
+
+def _login_drop_is_safe_to_retry(host, drop, tool):
+	'''
+	Whether a run dropped before login can run again without running anything on the host twice.
+
+	The lines must be this ssh's own, not those of an ssh the remote command ran after mssh's ssh had
+	logged in: they name the address this ssh connected to, or UNKNOWN port 65535 when it goes through
+	a ProxyJump / ProxyCommand (the jump host's ssh reports first). Older OpenSSH (8.0 on RHEL 8) names
+	no address, so its drops are not tried again. rsync is: it received nothing, and running it again
+	only syncs again.
+
+	Args:
+		host (Host): The host object, after _build_command
+		drop (_LoginDrop): From _login_drop
+		tool (str): 'ssh', 'scp' or 'rsync'
+
+	Returns:
+		bool: True when the run may start again
+	'''
+	if tool == 'rsync':
+		return drop.nothing_received and _shows_dropped_login(drop)
+	if not drop.drops:
+		return False
+	if any(kind == 'reset' for kind, _address, _port in drop.drops) and _SSH_RESET_BANNER not in drop.banners:
+		return False
+	if drop.drops[-1][1:] == ('UNKNOWN', '65535'):
+		return _ssh_uses_proxy(host)
+	return all(_names_ssh_target(host, address) for _kind, address, _port in drop.drops)
 
 def _record_host_exception(host, exc):
 	'''Record an exception raised while running the host's command as a failure. Call from an except block.'''
@@ -2210,6 +3318,23 @@ def _record_host_exception(host, exc):
 	host.stderr.extend(traceback.format_exc().split('\n'))
 	host.output.extend(traceback.format_exc().split('\n'))
 	host.returncode = -1
+
+def _stopped_command_note(formatedCMD):
+	'''
+	What mssh stopped when it stopped formatedCMD (-t, Ctrl C), and what that leaves behind.
+
+	Only the local program ends: a command ssh runs on a host gets no signal (it has no terminal), it
+	runs on until it ends, or until it writes to the closed connection.
+	'''
+	program = formatedCMD[0] if formatedCMD else ''
+	if program == _binPaths.get('sshpass') and len(formatedCMD) > 3:
+		program = formatedCMD[3]
+	if program == _binPaths.get('ssh'):
+		return 'ssh was stopped: the command may still run on the host'
+	name = os.path.basename(str(program))
+	if program in (_binPaths.get('rsync'), _binPaths.get('scp')):
+		return f'{name} was stopped: the copy may be incomplete'
+	return f'{name} was stopped'
 
 def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 	'''Return True when the next IPMI password should wait out retry_lockout_time.
@@ -2264,6 +3389,374 @@ def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 		return True
 	return True
 
+# how a host without rsync answers: its shell's "not found" (bash and tcsh, dash / busybox / ksh, zsh,
+# fish, mksh, a missing --rsync-path, Windows cmd and PowerShell), or rsync's words for exit code 127
+_RSYNC_MISSING_MARKERS = (
+	'rsync: command not found',
+	'rsync: not found',
+	'command not found: rsync',
+	'unknown command: rsync',
+	'rsync: inaccessible or not found',
+	'rsync: no such file or directory',
+	"'rsync' is not recognized",
+	'remote command not found',
+)
+# how an rsync turns down its command line before copying anything: rsync's popt (macOS's 2.6.9 has
+# neither -X nor --info), openrsync's getopt, and rsync's own words for exit code 1
+_RSYNC_OPTION_MARKERS = (
+	'unknown option',
+	'unrecognized option',
+	'illegal option',
+	'invalid option',
+	'syntax or usage error',
+)
+
+def _rsync_failure_scp_reason(host, line_starts=(0, 0, 0)):
+	'''Return why a failed rsync is worth retrying with scp, or None when rsync's result stands.
+
+	scp helps only when rsync copied nothing: the host has no rsync (127, or its shell's "not found",
+	which rsync reports as 12), an rsync here or there turned down mssh's options (1 or 2, e.g. an
+	rsync older than 3.1), ssh failed (rsync exits 255), or the host never answered rsync ("0 bytes
+	received so far": rsync's own words, which are not translated, unlike the shell's).
+	Any other failure is rsync's verdict on a copy it made (23 partial transfer, 24 files vanished,
+	a connection lost midway, ...), and scp would copy everything again.
+
+	line_starts holds where the failed attempt's lines begin in host.output, host.stdout
+	and host.stderr, so messages left over from earlier attempts are not considered.
+	'''
+	text = '\n'.join(str(line) for line in host.stderr[line_starts[2]:]).lower()
+	if host.returncode == 127 or any(marker in text for marker in _RSYNC_MISSING_MARKERS):
+		return 'Rsync is not available on the host!'
+	if host.returncode in (1, 2) and any(marker in text for marker in _RSYNC_OPTION_MARKERS):
+		return 'Rsync turned down its options!'
+	if host.returncode == 255:
+		return 'Rsync connection failed!'
+	if '(0 bytes received so far)' in text:
+		return 'Rsync could not start on the host!'
+	return None
+
+def _rsync_xattr_error(host, line_starts=(0, 0, 0)):
+	'''Return the failed attempt's first complaint about extended attributes, or None.'''
+	for line in host.stderr[line_starts[2]:]:
+		if 'xattr' in str(line).lower():
+			return str(line).strip()
+	return None
+
+def _scp_sources_like_rsync(files, destination):
+	'''
+	Return (sources, destination) that make scp lay the local files out as rsync does.
+
+	rsync copies only the contents of a directory given with a trailing slash, scp copies the
+	directory itself (destination/name). Such a directory is replaced by its entries, hidden ones
+	too. A lone directory, or the one entry left, is aimed at destination/. : scp then copies it into
+	the destination directory, or fails when there is none, where it would create the destination
+	as a copy of it (rsync creates the destination directory and copies into it).
+
+	Raises OSError when a directory cannot be listed.
+	'''
+	sources = []
+	from_directory = False
+	for path in files:
+		if path.endswith(('/', os.sep)) and os.path.isdir(path):
+			from_directory = True
+			sources.extend(os.path.join(path, name) for name in sorted(os.listdir(path)))
+		else:
+			sources.append(path)
+	if len(sources) == 1 and (from_directory or os.path.isdir(sources[0])) and destination.rstrip('/'):
+		destination = destination.rstrip('/') + '/.'
+	return sources, destination
+
+def _rsync_link_sources(files):
+	'''
+	Return (copy_links, kept) for the local sources of an rsync copy that are symbolic links.
+
+	A source that is a link to a file is meant as that file (as cp and scp read it), but rsync -l
+	copies the link, which points elsewhere or nowhere on the host. copy_links is True when rsync
+	should copy what the links point to (--copy-links): some source is a link to a file and no
+	source is a directory, whose links --copy-links would follow too (rsync then reports a link that
+	points nowhere, as scp does). Otherwise kept holds (source, link target, why) for each link
+	rsync copies as a link, why being a key of _KEPT_LINK_WARNINGS: one to a directory, one that
+	points nowhere, and one copied together with a directory.
+	'''
+	links = []
+	with_directory = False
+	for path in files:
+		# a trailing slash makes the system follow a link: the source is the directory's contents
+		is_link = not path.endswith(('/', os.sep)) and os.path.islink(path)
+		is_directory = os.path.isdir(path)
+		with_directory = with_directory or is_directory
+		if is_link:
+			links.append((path, is_directory, os.path.exists(path)))
+	copy_links = not with_directory and any(exists for _, _, exists in links)
+	kept = []
+	for path, is_directory, exists in links:
+		if copy_links:
+			break
+		try:
+			target = os.readlink(path)
+		except OSError:
+			target = '?'
+		kept.append((path, target, 'directory' if is_directory else 'nothing' if not exists else 'with_directory'))
+	return copy_links, kept
+
+# ssh's options that take a value. rsync has most of these letters as options without one (-o
+# owner, -p perms, -i itemize, ...) and took the value for a file to copy; -e and -B take a value in
+# rsync as well and stay rsync's
+_SSH_OPTIONS_WITH_VALUE = frozenset('bcDEFIiJLlmOoPpQRSWw')
+
+def _ssh_options_in(words):
+	'''
+	Split -ea's words into (ssh's options, the rest) for a copy that rsync runs over ssh.
+
+	An option is ssh's when it takes a value in ssh and its value follows as the next word, one
+	that does not start with -, or is attached as -oName=value or -pPORT: rsync has no such forms.
+	rsync read "-o ConnectTimeout=5" as --owner and a file to copy named ConnectTimeout=5, and
+	"-i ~/.ssh/id_ed25519" as --itemize-changes and the private key, which it copied to the hosts.
+	'''
+	ssh_words, rest = [], []
+	i = 0
+	while i < len(words):
+		word = str(words[i])
+		letter = word[1:2] if word.startswith('-') and not word.startswith('--') else ''
+		if letter in _SSH_OPTIONS_WITH_VALUE and len(word) == 2 and i + 1 < len(words) and not str(words[i + 1]).startswith('-'):
+			ssh_words += [word, str(words[i + 1])]
+			i += 2
+			continue
+		if (letter == 'o' and '=' in word) or (letter == 'p' and word[2:].isdigit()):
+			ssh_words.append(word)
+		else:
+			rest.append(word)
+		i += 1
+	return ssh_words, rest
+
+def _scp_port_option(words):
+	'''Return -ea's words for scp: ssh's -p PORT becomes -P PORT (scp's -p keeps file times).'''
+	out = []
+	i = 0
+	while i < len(words):
+		word = str(words[i])
+		if word == '-p' and i + 1 < len(words) and str(words[i + 1]).isdigit():
+			out += ['-P', str(words[i + 1])]
+			i += 2
+			continue
+		out.append('-P' + word[2:] if word.startswith('-p') and word[2:].isdigit() else word)
+		i += 1
+	return out
+
+# what a POSIX shell reads specially in a word, glob characters and a leading ~ aside
+_SHELL_SPECIAL_CHARACTERS = frozenset(' \t\'"\\$`;&|<>()#!')
+_GLOB_CHARACTERS = frozenset('*?[]{}')
+
+def _scp_shell_quoted(path, keep_globs):
+	'''
+	Return a remote path for scp with a backslash before each character a shell reads specially.
+
+	scp's legacy protocol (OpenSSH before 9.0, or scp -O) hands remote paths to the host's shell,
+	which split '/tmp/dst y/' in two ("scp: ambiguous target"). keep_globs leaves glob characters
+	active, for a source: the legacy protocol's shell expands them, and the SFTP protocol reads a
+	source as a glob in which a backslash quotes the next character, so a quoted source serves
+	both protocols. A leading ~ stays the home directory.
+	'''
+	special = _SHELL_SPECIAL_CHARACTERS if keep_globs else _SHELL_SPECIAL_CHARACTERS | _GLOB_CHARACTERS
+	return ''.join('\\' + char if char in special else char for char in path)
+
+_scp_protocol_cache = {}
+_scp_protocol_lock = threading.Lock()
+
+def _scp_uses_remote_shell(scp_argv):
+	'''
+	Return True when scp, run with these options, hands remote paths to the host's shell: its legacy
+	protocol, the default before OpenSSH 9.0 or with -O. The SFTP protocol takes a destination as
+	written. The OpenSSH version alone does not tell: -O and -s choose, and distributions may
+	backport the SFTP default (RHEL 9's 8.7 is said to).
+
+	scp -v names the protocol it starts before it connects ("command scp -t" or "command sftp");
+	with a stand-in for ssh that exits at once, nothing is connected to. Asked once per command
+	line; False when scp names neither.
+	'''
+	key = tuple(scp_argv)
+	with _scp_protocol_lock:
+		if key not in _scp_protocol_cache:
+			legacy = False
+			stand_in = shutil.which('false') or shutil.which('true')
+			if stand_in:
+				try:
+					ran = subprocess.run(list(scp_argv) + ['-v', '-S', stand_in, '--', os.devnull, 'mssh-scp-protocol.invalid:/'],
+						stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+					legacy = b', command scp ' in ran.stderr
+				except Exception:
+					legacy = False
+			_scp_protocol_cache[key] = legacy
+		return _scp_protocol_cache[key]
+
+_KEPT_LINK_WARNINGS = {
+	'directory': '{path} is a symbolic link to a directory, rsync copies the link (-> {target}), not the directory.',
+	'nothing': '{path} is a symbolic link to nothing here, rsync copies the link (-> {target}).',
+	'with_directory': '{path} is a symbolic link, rsync copies the link (-> {target}), not the file, as a directory is copied with it. Copy the link on its own to copy the file.',
+}
+
+def _gather_copy_paths(host):
+	'''
+	Return (source, local path of its copy) for each source of a gather that rsync copies to one
+	path of its own, worked out before rsync runs.
+
+	A source goes into the destination directory under its name, or becomes the destination when
+	it is alone and the destination is no directory. Left out: a source with a trailing slash (its
+	contents) or a glob, and every source when the destination is a symbolic link, which rsync
+	follows: copying again there with --copy-links could write anywhere it points.
+	'''
+	destination = host.command
+	if not destination or os.path.islink(destination.rstrip('/' + os.sep) or destination):
+		return []
+	into_directory = len(host.files) > 1 or destination.endswith(('/', os.sep)) or os.path.isdir(destination)
+	copies = []
+	for source in host.files:
+		name = source.rsplit('/', 1)[-1]
+		if name in ('', '.', '..') or glob.has_magic(source):
+			continue
+		copies.append((source, os.path.join(destination, name) if into_directory else destination))
+	return copies
+
+def _put_back_gathered_links(host, links):
+	'''
+	Put back, as the link rsync copied first, each gathered (source, copy, link target) that the copy
+	with --copy-links --no-recursive did not replace: a link to a directory, which it skips, or a link
+	it could not follow. A warning on host.stderr says which.
+	'''
+	for source, copy, target in links:
+		if os.path.lexists(copy):
+			continue
+		try:
+			os.symlink(target, copy)
+		except OSError:
+			continue
+		if any(str(line).strip() == 'skipping directory ' + source.rsplit('/', 1)[-1] for line in host.stdout):
+			host.stderr.append(f'Warning: {source} is a symbolic link to a directory on the host, copied as the link (-> {target}).')
+		else:
+			host.stderr.append(f'Warning: {source} is a symbolic link on the host (-> {target}), copying what it points to failed: copied as the link.')
+
+# bytes the entries of a dir/ may take on scp's command line: half of Linux's usual 2 MiB argument
+# limit (macOS has 1 MiB), the environment and the rest of the command line need their share
+_SCP_ARGV_BUDGET = 1 << 20
+
+def _scp_cannot_copy_like_rsync(host):
+	'''Return why scp cannot copy host.files as rsync would have, or None when it can.'''
+	if host.gatherMode:
+		# a remote dir/ cannot be listed from here; scp copies it whole, which is only its contents
+		# when scp creates the local destination as that copy
+		for path in host.files:
+			if path.endswith('/') and (len(host.files) > 1 or os.path.lexists(host.command)):
+				return f'it would copy {path} whole into {host.command}, rsync copies only its contents (trailing slash).'
+		return None
+	try:
+		sources, _ = _scp_sources_like_rsync(host.files, host.command)
+	except OSError as e:
+		return f'cannot list the directory to copy: {e}'
+	if not sources:
+		return f'{" ".join(host.files)} is empty, it has nothing to copy.'
+	# each argument also takes a pointer and its terminating NUL
+	if sum(len(os.fsencode(path)) + 9 for path in sources) > _SCP_ARGV_BUDGET:
+		directories = ' '.join(path for path in host.files if path.endswith(('/', os.sep)))
+		return f'it would have to list the {len(sources)} entries of {directories} on its command line, more than a command line holds.'
+	return None
+
+# the fields that make up one IPMI attempt: definitions equal in these are the same login
+_IPMI_ATTEMPT_KEYS = ('ipmi_method', 'interface_ip_prefix', 'username', 'password', 'args')
+
+def _ipmi_default_definitions():
+	'''
+	Return (the DEFAULT_IPMI_* definition with the command line's IPMI options, the definitions that stand for it).
+
+	A definition in DEFAULT_IPMI_DEFINITIONS with every key equal to the built-in values or to the
+	DEFAULT_IPMI_* ones is what mssh itself puts there (the list it starts with, --generate_config_file,
+	--store_config_file): it marks where the DEFAULT_IPMI_* definition goes, it is not a login of its own.
+	'''
+	configured = get_default_ipmi_definition()
+	default = dict(configured)
+	default.update(_ipmi_command_line)
+	return default, (_BUILTIN_IPMI_DEFINITION, configured, default)
+
+def _ipmi_definitions_for_host(hostname):
+	'''
+	The IPMI definitions to try on a host, in order, with every key filled in.
+
+	The DEFAULT_IPMI_DEFINITIONS whose hostname_keyword is in hostname (keys they leave out come from
+	the DEFAULT_IPMI_* values, as the command line's IPMI options change them), and the DEFAULT_IPMI_*
+	definition itself: first when the command line gives IPMI options, else where the list marks it,
+	else last. Every wrong login can count towards the BMC locking the account, so:
+	- when a listed definition applies to the host, the DEFAULT_IPMI_* one is only added with -iu / -ip,
+	  or when DEFAULT_IPMI_PASSWORD was set (by a config file, or to something else than the built-in
+	  one) and the login is not admin / admin (mssh writes the built-in login into the config files it
+	  makes): else nobody gave it as a login
+	- a login is tried once, however many definitions hold it
+
+	Args:
+		hostname (str): The host's name as given (hostname_keyword is looked for in it)
+
+	Returns:
+		list: The definitions (dicts), first to try first
+	'''
+	default, marks = _ipmi_default_definitions()
+	listed = []
+	default_at = None
+	for definition in DEFAULT_IPMI_DEFINITIONS:
+		if definition in marks:
+			if default_at is None:
+				default_at = len(listed)
+			continue
+		keyword = definition.get('hostname_keyword')
+		if keyword and str(keyword).strip() not in hostname:
+			continue
+		listed.append(dict(ChainMap(definition, default)))
+	login_given = 'username' in _ipmi_command_line or 'password' in _ipmi_command_line
+	builtin_login = all(str(default.get(key)) == str(_BUILTIN_IPMI_DEFINITION[key]) for key in ('username', 'password'))
+	# a password configured as 'admin' is still a login of the user's (root / admin on some boards);
+	# one that is not 'admin' was set by someone (a config file, or a program importing mssh)
+	password_configured = 'DEFAULT_IPMI_PASSWORD' in __configs_from_file or str(default.get('password')) != str(_BUILTIN_IPMI_DEFINITION['password'])
+	login_configured = password_configured and not builtin_login
+	if listed and not login_given and not login_configured:
+		candidates = listed
+	elif _ipmi_command_line:
+		candidates = [default] + listed
+	elif default_at is not None:
+		candidates = listed[:default_at] + [default] + listed[default_at:]
+	else:
+		candidates = listed + [default]
+	definitions = []
+	logins = set()
+	for definition in candidates:
+		login = tuple(str(definition.get(key)) for key in _IPMI_ATTEMPT_KEYS)
+		if login not in logins:
+			logins.add(login)
+			definitions.append(definition)
+	return definitions
+
+def _ipmi_definitions_to_store(args):
+	'''
+	DEFAULT_IPMI_DEFINITIONS for a config file that stores args' IPMI options as the DEFAULT_IPMI_* values.
+
+	The list as loaded, with the definition of the stored values marking where it is tried: first
+	when the command line gives IPMI options (as in this run), else where the list marked it. mssh
+	6.31 and earlier add that definition again unless the list ends with it.
+	'''
+	stored = {
+		'interface_ip_prefix': args.ipmi_interface_ip_prefix,
+		'username': args.ipmi_username,
+		'password': args.ipmi_password,
+		'args': args.ipmi_args,
+		'ipmi_method': args.ipmi_method,
+		'hostname_keyword': '',
+		'retry_lockout_time': args.ipmi_retry_lockout_time,
+	}
+	marks = _ipmi_default_definitions()[1] + (stored,)
+	definitions = [stored] if _ipmi_command_line else []
+	for definition in DEFAULT_IPMI_DEFINITIONS:
+		if definition not in marks:
+			definitions.append(definition)
+		elif stored not in definitions:
+			definitions.append(stored)
+	return definitions
+
 _CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
 _CommandAttempt.__doc__ = '''
 What _build_command decided for one attempt.
@@ -2273,7 +3766,23 @@ next attempt uses ssh_ipmitool) or 'stop' (host.returncode is set). The other fi
 attempt's state into the retry decisions and the next attempt.
 '''
 
-def _build_command(host, passwds, ipmi_definitions_list):
+def _split_extra_args(text):
+	'''
+	Split the -ea string into arguments as a shell would: -ea "-o ProxyCommand='ssh -W %h:%p bastion'"
+	is two arguments. On Windows a backslash is a path separator, not an escape: C:\\keys\\id stays.
+	An unclosed quote splits on spaces, as before quotes were understood.
+	'''
+	lexer = shlex.shlex(text, posix=True)
+	lexer.whitespace_split = True
+	lexer.commenters = ''
+	if os.name == 'nt':
+		lexer.escape = ''
+	try:
+		return list(lexer)
+	except ValueError:
+		return text.split()
+
+def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, rsync_xattrs=True, gather_links=None):
 	'''
 	Build the command line for one attempt to run host.command, without running it.
 
@@ -2285,6 +3794,9 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		host (Host): The host object
 		passwds (str): The password for the host
 		ipmi_definitions_list (list): The IPMI definitions left to try, ... for the matching defaults
+		scp_like_rsync (bool): scp stands in for a failed rsync, so it copies what rsync would have
+		rsync_xattrs (bool): rsync copies extended attributes (-X)
+		gather_links (list): gather only these sources, links on the host, as what they point to
 
 	Returns:
 		_CommandAttempt: What to do next
@@ -2300,15 +3812,23 @@ def _build_command(host, passwds, ipmi_definitions_list):
 	try:
 		if not SSH_STRICT_HOST_KEY_CHECKING:
 			sshLocalExtraArgs = ['-o StrictHostKeyChecking=no','-o UserKnownHostsFile=/dev/null']
+		if _ssh_cannot_ask(host, passwds):
+			# it would send the passwords it cannot ask for empty, each a failed login in the host's auth log (fail2ban)
+			sshLocalExtraArgs += ['-o NumberOfPasswordPrompts=0']
+		if host.identity_file and os.path.exists(os.path.expanduser(host.identity_file)):
+			# log in with this key only: ssh offers every ssh-agent key before it, and sshd ends the login
+			# after MaxAuthTries (6) failures. A key file that is not there leaves ssh the agent's keys
+			sshLocalExtraArgs += ['-o','IdentitiesOnly=yes']
 		if host.identity_file:
 			sshLocalExtraArgs += ['-i',host.identity_file]
-		rsyncLocalExtraArgs = ['--rsh','ssh ' + ' '.join(sshLocalExtraArgs)]
+		# rsync splits --rsh on spaces and honours quotes: quoted, an identity path with a space stays one argument
+		rsyncLocalExtraArgs = ['--rsh',' '.join(shlex.quote(arg) for arg in [_binPaths.get('ssh', 'ssh')] + sshLocalExtraArgs)]
 		host.address = host.name
 		if '@' in host.name:
 			username, host.address = host.name.rsplit('@',1)
 		if host.ipmi:
 			if ipmi_definitions_list is ...:
-				ipmi_definitions_list = [ipmi_definition for ipmi_definition in DEFAULT_IPMI_DEFINITIONS if not ipmi_definition.get('hostname_keyword') or str(ipmi_definition.get('hostname_keyword')).strip() in host.name]
+				ipmi_definitions_list = _ipmi_definitions_for_host(host.name)
 			if not ipmi_definitions_list:
 				host.output.append('Error: Exhausted all matching ipmi definitions!')
 				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
@@ -2326,9 +3846,10 @@ def _build_command(host, passwds, ipmi_definitions_list):
 						host.stderr.append(f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
 				username = ipmi_definition.get('username',username)
 				if passwds:
-					host.output.append(f'Warning: -p SSH_PASSWORD {passwds} is provided! Using the password from the ipmi definition if provided: {ipmi_definition.get("password")}')
+					# not the passwords themselves: the TUI shows this line
+					host.output.append('Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 					if __DEBUG_MODE:
-						host.stderr.append(f'Warning: -p SSH_PASSWORD  {passwds} is provided! Using the password from the ipmi definition if provided: {ipmi_definition.get("password")}')
+						host.stderr.append('Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 				passwds = ipmi_definition.get('password',passwds)
 				if ipmi_definition.get('interface_ip_prefix') and ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
 					host.output.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
@@ -2349,7 +3870,7 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		host.command = replace_magic_strings(host.command,['#IP#'],str(host.ip) if host.ip else host.address,case_sensitive=False)
 		formatedCMD = []
 		if host.extraargs and isinstance(host.extraargs, str):
-			extraargs = host.extraargs.split()
+			extraargs = _split_extra_args(host.extraargs)
 		elif host.extraargs and isinstance(host.extraargs, list):
 			extraargs = [str(arg) for arg in host.extraargs]
 		else:
@@ -2357,16 +3878,17 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		if not ip_prefix:
 			ip_prefix = host.interface_ip_prefix
 		if ip_prefix:
-			try:
-				if ':' in str(host.ip):
-					raise ValueError('interface_ip_prefix only applies to IPv4 addresses')
-				hostOctets = host.ip.split('.')
-				prefixOctets = ip_prefix.split('.')
+			if _interface_prefix_applies(host.ip):
+				hostOctets = str(host.ip).split('.')
+				# '172.30.' means the same as '172.30', not an empty third octet
+				prefixOctets = str(ip_prefix).rstrip('.').split('.')
 				host.address = '.'.join(prefixOctets[:3]+hostOctets[min(3,len(prefixOctets)):])
-			except Exception:
-				host.output.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+			else:
+				# run_command_on_hosts said so before the run too, outside the TUI
+				warning = _interface_prefix_warning(ip_prefix, [host.name])
+				host.output.append(warning)
 				if __DEBUG_MODE:
-					host.stderr.append(f'Warning: Failed to resolve the IP address for the host {host.name}. Unable to resolve ip_prefix {ip_prefix}!')
+					host.stderr.append(warning)
 		if username:
 			host.resolvedName = username + '@' + host.address
 		else:
@@ -2404,6 +3926,17 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				else:
 					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}',f'-P {ipmi_definition.get("password",passwds)}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
 			elif ipmi_definition.get('ipmi_method') == 'redfish':
+				if 'redfishtool' not in _binPaths:
+					# this definition cannot run on this machine: the next one may
+					host.output.append('Error: redfishtool not found on the local machine!')
+					if not ipmi_definitions_list:
+						host.stderr.append('Error: redfishtool not found on the local machine!')
+						host.returncode = 1
+						return attempt('stop')
+					host.output.append('Trying the next ipmi definition...')
+					if __DEBUG_MODE:
+						host.stderr.append('Error: redfishtool not found on the local machine! Trying the next ipmi definition...')
+					return attempt('rebuild')
 				if host.command.startswith('redfishtool '):
 					host.command = host.command.replace('redfishtool ','')
 				elif host.command.startswith(_binPaths['redfishtool']):
@@ -2425,7 +3958,12 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				host.output.append('Running command in shell mode, ignoring the hosts...')
 				if __DEBUG_MODE:
 					host.stderr.append('Running command in shell mode, ignoring the hosts...')
-				formatedCMD = [_binPaths['sh'],'-c',host.command]
+				shellCommand = host.command
+				if passwds and 'sshpass' in _binPaths:
+					# for the password prompts of the command (ssh-copy-id). Not in host.command: mssh shows that,
+					# and replaces the magic strings in it
+					shellCommand = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(str(passwds))} {shellCommand}"
+				formatedCMD = [_binPaths['sh'],'-c',shellCommand]
 			else:
 				host.output.append('shell not found on the local machine! Using ssh localhost instead...')
 				if __DEBUG_MODE:
@@ -2434,6 +3972,11 @@ def _build_command(host, passwds, ipmi_definitions_list):
 				host.name = 'localhost'
 				return attempt('rebuild')
 		else:
+			# ssh, scp and rsync's ssh give up on a host that does not answer, or stops answering. An -o
+			# or -F in -ea is ssh's for rsync too: rsync's own -o and -F take no value
+			timeoutOptions = _ssh_timeout_options(host.resolvedName, extraargs)
+			sshLocalExtraArgs += timeoutOptions
+			rsyncLocalExtraArgs[-1] += ''.join(' ' + option for option in timeoutOptions)
 			if host.files:
 				if host.scp:
 					if 'scp' in _binPaths:
@@ -2460,14 +4003,49 @@ def _build_command(host, passwds, ipmi_definitions_list):
 					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
 					return attempt('stop')
+				# rsync and scp end the host at the first colon, an IPv6 address goes in brackets
+				remoteName = host.resolvedName
+				if ':' in host.address and not host.address.startswith('['):
+					remoteName = f'{username}@[{host.address}]' if username else f'[{host.address}]'
+				scpOptions = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + _scp_port_option(extraargs) if useScp else []
 				if host.gatherMode:
-					fileArgs = [f'{host.resolvedName}:{file}' for file in host.files] + [host.command]
+					sources = gather_links or host.files
+					if useScp:
+						# a quoted source serves both of scp's protocols (see _scp_shell_quoted)
+						sources = [_scp_shell_quoted(path, keep_globs=True) for path in sources]
+					fileArgs = [f'{remoteName}:{file}' for file in sources] + [host.command]
 				else:
-					fileArgs = host.files + [f'{host.resolvedName}:{host.command}']
+					if useScp and scp_like_rsync:
+						sources, destination = _scp_sources_like_rsync(host.files, host.command)
+					else:
+						sources, destination = host.files, host.command
+					# a quoted destination only serves scp's legacy protocol, SFTP takes it as written
+					if useScp and _scp_shell_quoted(destination, keep_globs=False) != destination and _scp_uses_remote_shell(scpOptions):
+						destination = _scp_shell_quoted(destination, keep_globs=False)
+					fileArgs = sources + [f'{remoteName}:{destination}']
 				if useScp:
-					formatedCMD = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + extraargs +['--']+fileArgs
+					formatedCMD = scpOptions +['--']+fileArgs
 				else:
-					formatedCMD = [_binPaths['rsync'],'-ahlX','--partial','--inplace', '--info=name'] + rsyncLocalExtraArgs + extraargs +['--']+fileArgs	
+					# no --inplace: rsync writes a new file and renames it over the old one, so a running
+					# binary can be replaced and no reader sees a file half written. A copy that is stopped
+					# keeps its part in .rsync-partial/ for the next one to continue (--partial would rename
+					# it over the destination, a truncated file in place of the old one)
+					formatedCMD = [_binPaths['rsync'],'-ahlX' if rsync_xattrs else '-ahl','--partial-dir=.rsync-partial', '--info=name']
+					# a source that is a link to a file is copied as that file: a gather finds out after
+					# copying (see run_command), a push before (see _rsync_link_sources)
+					if host.gatherMode:
+						copy_links = bool(gather_links)
+					else:
+						copy_links = _rsync_link_sources(host.files)[0]
+					if copy_links:
+						formatedCMD.append('--copy-links')
+					if gather_links:
+						# a link to a directory is skipped, rather than its links followed (see run_command)
+						formatedCMD.append('--no-recursive')
+					# -ea's ssh options go to ssh, after mssh's own as for a command
+					ssh_words, rsync_words = _ssh_options_in(extraargs)
+					rsh = ' '.join([rsyncLocalExtraArgs[1]] + [shlex.quote(word) for word in ssh_words])
+					formatedCMD += ['--rsh', rsh] + rsync_words +['--']+fileArgs
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
@@ -2492,9 +4070,44 @@ def _build_command(host, passwds, ipmi_definitions_list):
 		return attempt('stop')
 	return attempt('run', formatedCMD)
 
-def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
+def _interface_prefix_applies(ip):
+	'''Whether an interface IP prefix (-pre, -mpre) can rewrite ip: it replaces the leading octets of IPv4 addresses.'''
+	return bool(ip) and ':' not in str(ip)
+
+def _interface_prefix_warning(prefix, names):
+	'''The warning for hosts an interface IP prefix cannot apply to: mssh connects to them by name.'''
+	return f"Warning: interface IP prefix {prefix} not applied to {','.join(compact_hostnames_local(names))}: no IPv4 address, connecting by name"
+
+def _shown_command(argv, passwords=()):
 	'''
-	Run one built command, retrying (within retry_limit) while too many files are open.
+	argv as the line the TUI and --debug show, each password in it shown as ***.
+
+	A password is the word after -p or -P (sshpass, ipmitool, redfishtool, also inside the sh -c line
+	they run in) that is one of passwords or a configured password. Other words stay, ssh's -p port too.
+	'''
+	known = list(passwords) + [DEFAULT_PASSWORD, DEFAULT_IPMI_PASSWORD]
+	known += [definition.get('password') for definition in DEFAULT_IPMI_DEFINITIONS if isinstance(definition, dict)]
+	# longest first, so a password inside another one does not leave the rest of that one
+	secrets = sorted({str(password) for password in known if password is not None and str(password)}, key=len, reverse=True)
+	words = [str(word) for word in argv]
+	for index, word in enumerate(words):
+		if index and words[index - 1] in ('-p', '-P') and word in secrets:
+			words[index] = '***'
+			continue
+		# '-P password' as one argument, or inside an sh -c line, where it is shell-quoted
+		for secret in secrets:
+			for form in (shlex.quote(secret), secret):
+				for flag in ('-p ', '-P '):
+					word = word.replace(flag + form, flag + '***')
+		words[index] = word
+	return ' '.join(words)
+
+def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(), tool=None):
+	'''
+	Run one built command, retrying (within retry_limit) while too many files are open, or no process or
+	thread can be started, and up to _LOGIN_DROP_RETRIES times when the server dropped ssh's connection
+	before login. Waiting for processes or threads uses no retries while other commands run: they give
+	theirs back when they end.
 
 	Args:
 		host (Host): The host object
@@ -2502,6 +4115,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 		sem (threading.Semaphore): The semaphore to limit the number of concurrent SSH sessions
 		timeout (int): Seconds without output before the command is stopped, 0 for no limit
 		retry_limit (int): Retries left
+		passwords (tuple): The passwords in formatedCMD, shown as *** (configured ones are anyway)
+		tool (str): 'ssh', 'scp' or 'rsync' when the command is mssh's own connection to the host,
+			None for local and IPMI commands, which are never tried again for a dropped login
 
 	Returns:
 		tuple: (stop, retry_limit, attempt_line_starts). stop is True when the retries ran out
@@ -2510,45 +4126,80 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 	# where this attempt's lines start, earlier ipmi attempts must not affect the lockout decision
 	attempt_line_starts = (len(host.output), len(host.stdout), len(host.stderr))
 	emfile_attempt = 0
+	retry_reason = None
+	login_drop_retries = 0
 	while True:
-		retry_after_emfile = False
+		previous_reason, retry_reason = retry_reason, None
+		retry_after_login_drop = False
+		dropped_lines = []
 		proc = None
+		lines_before = (len(host.output), len(host.stderr))
+		give_streams = []
 		with sem:
+			if _stopping:
+				# mssh is exiting (SIGTERM, SIGHUP, a second Ctrl C): a host waiting for its turn does not start
+				host.output.append('Not started: mssh is exiting')
+				host.returncode = -1
+				return True, retry_limit, attempt_line_starts
+			if _emo:
+				# the first Ctrl C stops the running commands; a host still waiting for its turn does not
+				# start either: it would only be one more login attempt on that host
+				host.output.append('Not started: Ctrl C')
+				host.stderr.append('Not started: Ctrl C')
+				host.returncode = 130
+				return True, retry_limit, attempt_line_starts
 			try:
-				host.output.append('Running command: '+' '.join(formatedCMD))
+				shown = 'Running command: ' + _shown_command(formatedCMD, passwords)
+				host.output.append(shown)
 				if __DEBUG_MODE:
-					host.stderr.append('Running command: '+' '.join(formatedCMD))
+					host.stderr.append(shown)
+				# this try's lines, to tell whether the server dropped the connection before login
+				run_stdout_start, run_stderr_start = len(host.stdout), len(host.stderr)
+				host.dropped_before_login = False
 				#host.stdout = []
 				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
 				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
 				interactive_stdin = host.interactive_stdin
 				stdin = subprocess.PIPE if interactive_stdin else subprocess.DEVNULL
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin)
-				__running_procs.add(proc)
-				# create a thread to handle stdout
-				stdout_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stdout,host.stdout, host,host.stdout_buffer), daemon=True)
-				stdout_thread.start()
-				# create a thread to handle stderr
-				#host.stderr = []
-				stderr_thread = threading.Thread(target=__handle_reading_stream, args=(proc.stderr,host.stderr, host,host.stderr_buffer), daemon=True)
-				stderr_thread.start()
-				# create a thread to handle stdin
+				# the threads handling stdout, stderr and stdin start before the command: when the system allows
+				# no more threads (ulimit -u, pids limit), the command has not run yet and can be tried again
+				stdout_thread, give_stdout = _start_waiting_thread(__handle_reading_stream)
+				give_streams.append(give_stdout)
+				stderr_thread, give_stderr = _start_waiting_thread(__handle_reading_stream)
+				give_streams.append(give_stderr)
 				stdin_stop_event = threading.Event()
 				stdin_thread = None
 				if interactive_stdin:
-					stdin_thread = threading.Thread(target=__handle_writing_stream, args=(proc.stdin,stdin_stop_event, host), daemon=True)
-					stdin_thread.start()
+					stdin_thread, give_stdin = _start_waiting_thread(__handle_writing_stream)
+					give_streams.append(give_stdin)
+				# a session of its own has no controlling terminal: ssh cannot ask there and fails with its reason
+				own_session = os.name == 'posix' and not host.use_terminal
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session)
+				__running_procs.add(proc)
+				# the readers read through _CommandPipe: one can be given up when a background process holds its pipe
+				stdout_pipe = _CommandPipe(proc.stdout)
+				stderr_pipe = _CommandPipe(proc.stderr)
+				give_stdout((stdout_pipe,host.stdout, host,host.stdout_buffer))
+				give_stderr((stderr_pipe,host.stderr, host,host.stderr_buffer))
+				if interactive_stdin:
+					give_stdin((proc.stdin,stdin_stop_event, host))
+				give_streams = []
 				# Monitor the subprocess and terminate it after the timeout
 				host.lastUpdateTime = time.monotonic()
 				timeoutLineAppended = False
 				sleep_interval = 1.0e-7 # 100 nanoseconds
 				timed_out = False
+				stopped_by_ctrl_c = False
 				while proc.poll() is None:  # while the process is still running
 					if timeout > 0:
 						if time.monotonic() - host.lastUpdateTime > timeout:
 							timed_out = True
 							host.stderr.append('Timeout!')
 							host.output.append('Timeout!')
+							# -t counts the time since the last output, not since the start
+							stopped = f'No output for {timeout} s, so {_stopped_command_note(formatedCMD)}.'
+							host.stderr.append(stopped)
+							host.output.append(stopped)
 							proc.send_signal(signal.SIGINT)
 							time.sleep(0.1)
 							proc.terminate()
@@ -2570,6 +4221,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 					if _emo:
 						host.stderr.append('Ctrl C detected, Emergency Stop!')
 						host.output.append('Ctrl C detected, Emergency Stop!')
+						stopped_by_ctrl_c = True
 						proc.send_signal(signal.SIGINT)
 						time.sleep(0.1)
 						proc.terminate()
@@ -2581,14 +4233,16 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 						sleep_interval *= 1.1
 				stdin_stop_event.set()
 				# Wait for output processing to complete
-				stdout_thread.join(timeout=1)
-				stderr_thread.join(timeout=1)
+				all_read = _wait_for_readers(host, [(stdout_thread, stdout_pipe, host.stdout, host.stdout_buffer),
+					(stderr_thread, stderr_pipe, host.stderr, host.stderr_buffer)])
 				if stdin_thread:
 					stdin_thread.join(timeout=1)
 				if proc.stdin is not None and proc.stdin.closed:
 					# communicate() would flush the closed pipe and raise
 					proc.stdin = None
-				if not _emo:
+				# communicate() reads the pipes too, only once no reader does: it closes them and collects
+				# the exit status, and finds output only when a reader failed
+				if not _emo and all_read:
 					stdout = None
 					stderr = None
 					try:
@@ -2602,22 +4256,57 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 						host.output.append('Trying to read the rest of the stderr...')
 						__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
 					# if the last line in host.stderr is Connection to * closed., we will remove it
-				host.returncode = proc.poll()
+				# the return code is set last: a host with one looks finished, and may be tried again before that
+				returncode = proc.poll()
 				if timed_out:
-					host.returncode = 124
-				elif host.returncode is None:
-					# process been killed via timeout or sigkill
-					if host.stderr and host.stderr[-1].strip().startswith('Ctrl C detected, Emergency Stop!'):
-						host.returncode = 137
-					else:
-						host.returncode = -1
-				host.output.append(f'Command finished with return code {host.returncode}')
+					returncode = 124
+				elif stopped_by_ctrl_c or _emo:
+					# Ctrl C. The terminal's reaches the command too, which may end before mssh stops it: ssh then
+					# says only "Killed by signal 2." (hidden), sshpass exits 0. Either way it did not finish
+					if not stopped_by_ctrl_c:
+						host.stderr.append('Ctrl C detected, Emergency Stop!')
+						host.output.append('Ctrl C detected, Emergency Stop!')
+					stopped = _stopped_command_note(formatedCMD) + '.'
+					host.stderr.append(stopped)
+					host.output.append(stopped)
+					returncode = 130
+				elif returncode is None:
+					# process been killed via sigkill
+					returncode = -1
+				host.output.append(f'Command finished with return code {returncode}')
+				# read before the ignored messages are filtered out, they may hold ssh's lines about the drop
+				login_drop = None
+				if tool and not timed_out and not _emo:
+					login_drop = _login_drop(returncode, host.stdout[run_stdout_start:], host.stderr[run_stderr_start:], tool)
+				if login_drop and login_drop_retries < _LOGIN_DROP_RETRIES and retry_limit > 0 and _login_drop_is_safe_to_retry(host, login_drop, tool):
+					retry_after_login_drop = True
+					if not __DEBUG_MODE:
+						# the next try's lines take their place
+						dropped_lines = host.stderr[run_stderr_start:]
+						del host.stderr[run_stderr_start:]
+				else:
+					host.dropped_before_login = _shows_dropped_login(login_drop)
 				if host.stderr:
-					# filter out the error messages that we want to ignore
-					host.stderr = [line for line in host.stderr if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
+					# filter out the error messages that we want to ignore, in the list itself: a reader still
+					# running (after Ctrl C, or where pipes cannot be polled) appends to it, and those lines stay
+					count = len(host.stderr)
+					host.stderr[:count] = [line for line in host.stderr[:count] if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line)]
+				if not retry_after_login_drop:
+					host.returncode = returncode
 			except OSError as e:
 				if e.errno == errno.EMFILE and proc is None:
-					retry_after_emfile = True
+					retry_reason = 'open files'
+					host.returncode = None
+				elif e.errno == errno.EAGAIN and proc is None:
+					# fork failed: the process limit is reached
+					retry_reason = 'processes or threads'
+					host.returncode = None
+				else:
+					_record_host_exception(host, e)
+			except RuntimeError as e:
+				if proc is None:
+					# a thread for the command's streams could not start
+					retry_reason = 'processes or threads'
 					host.returncode = None
 				else:
 					_record_host_exception(host, e)
@@ -2625,25 +4314,212 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit):
 				_record_host_exception(host, e)
 			finally:
 				__running_procs.discard(proc)
-		if not retry_after_emfile:
+				for give in give_streams:
+					# the command did not start: end the threads started for it
+					give(None)
+		if retry_after_login_drop:
+			login_drop_retries += 1
+			retry_limit -= 1
+			delay = _login_drop_backoff_seconds(login_drop_retries)
+			message = f'Warning: The server dropped the connection before login (sshd MaxStartups?), retrying in {delay:.1f} s...'
+			host.output.append(message)
+			if __DEBUG_MODE:
+				host.stderr.append(message)
+			time.sleep(delay)
+			if _emo:
+				# Ctrl-C while waiting: the host ends as the dropped try left it
+				host.stderr.extend(line for line in dropped_lines if not __ERROR_MESSAGES_TO_IGNORE_REGEX.search(line))
+				host.dropped_before_login = True
+				host.returncode = 255
+				return True, retry_limit, attempt_line_starts
+			continue
+		if not retry_reason:
 			break
-		if retry_limit <= 0:
-			host.output.append("Error: Retry limit reached after too many open files!")
-			host.stderr.append("Error: Retry limit reached after too many open files!")
+		waiting_for_others = retry_reason == 'processes or threads' and bool(__running_procs)
+		if retry_limit <= 0 and not waiting_for_others:
+			host.output.append(f"Error: Retry limit reached after too many {retry_reason}!")
+			host.stderr.append(f"Error: Retry limit reached after too many {retry_reason}!")
 			host.returncode = 1
 			return True, retry_limit, attempt_line_starts
-		host.output.append("Warning: Too many open files. retrying...")
+		if retry_reason == previous_reason == 'processes or threads':
+			# still waiting: one warning however long it takes
+			del host.output[lines_before[0]:]
+			del host.stderr[lines_before[1]:]
+		else:
+			host.output.append(f"Warning: Too many {retry_reason}. retrying...")
 		time.sleep(_emfile_backoff_seconds(emfile_attempt))
 		emfile_attempt += 1
-		retry_limit -= 1
+		if not waiting_for_others:
+			retry_limit -= 1
 	return False, retry_limit, attempt_line_starts
+
+# sshpass's own exit codes: 5 ssh asked for the password again, 6 ssh asked whether to trust a host key it
+# does not know, 7 ssh warned that the key known for the host's IP address differs and asked whether to go on
+_SSHPASS_EXIT_CODES = (5, 6, 7)
+# programs that never exit with those codes themselves (0, 1 or ssh's 255): the code is sshpass's
+_NEVER_EXIT_LIKE_SSHPASS = ('scp', 'ssh-copy-id')
+
+def _sshpass_program(formatedCMD):
+	'''
+	The name of the program formatedCMD runs under sshpass (ssh, scp, rsync, ssh-copy-id, ...), or None.
+
+	A shell host (--copy_id) runs sshpass inside its sh -c line.
+	'''
+	sshpass = _binPaths.get('sshpass')
+	words = [str(word) for word in formatedCMD or ()]
+	if sshpass and len(words) == 3 and words[0] == _binPaths.get('sh') and words[1] == '-c':
+		try:
+			words = shlex.split(words[2])
+		except ValueError:
+			return None
+	if not sshpass or len(words) < 4 or words[0] != sshpass or words[1] != '-p':
+		return None
+	return os.path.basename(words[3])
+
+def _may_go_through_a_proxy(host):
+	'''
+	Whether ssh may reach host through another host (ProxyJump, ProxyCommand), whose key mssh's host
+	key options do not cover. True when mssh cannot tell: no ssh -G, or -ea given (it may name one).
+	'''
+	if host.extraargs or 'ssh' not in _binPaths:
+		return True
+	config = _ssh_config_values(getattr(host, 'address', None) or host.name)
+	if config is None:
+		return True
+	return any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
+
+def _sshpass_failure(host, formatedCMD, line_starts=(0, 0, 0)):
+	'''
+	The lines saying why sshpass stopped host's command, or [] when it did not.
+
+	sshpass answers ssh's password prompt and no other question. When ssh asks for the password again
+	or asks about a host key, sshpass exits with its own code without a word: ssh asked on sshpass's
+	terminal, so the host showed only the code. ssh passes on the remote command's exit code and rsync
+	has codes 5 and 6 of its own: a host that printed on stdout got past ssh's questions, otherwise the
+	lines say that the code may be theirs. Without SSH_STRICT_HOST_KEY_CHECKING ssh does not check
+	the host's key, so 6 and 7 can only be about a host on the way. line_starts holds where the
+	attempt's lines begin in host.output, host.stdout and host.stderr.
+	'''
+	code = host.returncode
+	if code not in _SSHPASS_EXIT_CODES or host.stdout[line_starts[1]:]:
+		return []
+	program = _sshpass_program(formatedCMD)
+	if not program:
+		return []
+	if program in _NEVER_EXIT_LIKE_SSHPASS:
+		doubt = ''
+	elif code != 5 and not SSH_STRICT_HOST_KEY_CHECKING and not _may_go_through_a_proxy(host):
+		# no host key was checked: the code is the command's (curl -s exits 6 and 7, ...)
+		return []
+	elif program == 'ssh':
+		doubt = ', unless the command itself exited with {}'.format(code)
+	else:
+		doubt = ', unless {} itself exited with {}'.format(program, code)
+	address = getattr(host, 'address', None) or host.name
+	ip = host.ip or address
+	if code == 5:
+		return [f'sshpass: the password was not accepted, ssh asked for it again (exit code 5{doubt}). Check it, and that the host takes passwords for this user.']
+	if code == 6:
+		said = f'sshpass: ssh asked whether to trust a host key that is not in known_hosts, which sshpass does not answer (exit code 6{doubt}).'
+	else:
+		said = f"sshpass: ssh warned that known_hosts has a different key for the host's IP address and asked whether to go on, which sshpass does not answer (exit code 7{doubt})."
+	if not SSH_STRICT_HOST_KEY_CHECKING:
+		return [said, f"mssh does not check the key of {address} (SSH_STRICT_HOST_KEY_CHECKING is false), so the key is another host's, such as a ProxyJump host's: connect to that host once with ssh to {'accept its key' if code == 6 else 'see the warning'}."]
+	if code == 6:
+		return [said, f"SSH_STRICT_HOST_KEY_CHECKING is true, so ssh checks the key of {address} (and of any ProxyJump host): accept it by connecting once with ssh, or check it and add it with ssh-keyscan {address} >> ~/.ssh/known_hosts. StrictHostKeyChecking accept-new in ~/.ssh/config accepts new hosts' keys."]
+	return [said, f'If {address} is the host you expect (reinstalled, or {ip} belonged to another host before), remove the old key with ssh-keygen -R {ip}.']
+
+# the ssh options that take a value (ssh(1)): a word after one of them is its value, not an option
+_SSH_OPTIONS_WITH_VALUES = 'BbcDEeFIiJLlmOopQRSWw'
+
+def _copy_id_extra_args(extraargs):
+	'''
+	The words of -ea that every ssh-copy-id takes, read as ssh reads them: -o and -p, and ssh's -J as
+	-o ProxyJump=. ssh-copy-id's -i names the key to install, so ssh's -i (a key to log in with) is
+	left out, as is -F (the ssh-copy-id of OpenSSH 7.4 and 8.0 fails on it: "invalid option") and every word
+	ssh-copy-id has no option for (ssh's flags, rsync's options).
+	'''
+	if isinstance(extraargs, str):
+		try:
+			# as a shell splits them: -ea "-o ProxyCommand='ssh -W %h:%p bastion'" is two words
+			words = shlex.split(extraargs)
+		except ValueError:
+			words = extraargs.split()
+	else:
+		words = [str(word) for word in extraargs or ()]
+	taken = []
+	index = 0
+	while index < len(words):
+		word = words[index]
+		index += 1
+		if len(word) < 2 or word[0] != '-' or word[1] not in _SSH_OPTIONS_WITH_VALUES:
+			continue
+		# -p 2222 or -p2222
+		value = word[2:]
+		if not value and index < len(words):
+			value = words[index]
+			index += 1
+		if not value:
+			continue
+		if word[1] == 'J':
+			taken += ['-o', 'ProxyJump=' + value]
+		elif word[1] in 'op':
+			taken += ['-' + word[1], value]
+	return taken
+
+def _copy_id_command(host, identity_file=None, extraargs=None):
+	'''
+	The ssh-copy-id line (for sh) that installs the public key on host ([user@]host).
+
+	ssh-copy-id gets what mssh gives ssh, as far as it takes it: the host key options every ssh mssh runs
+	gets (none with SSH_STRICT_HOST_KEY_CHECKING), the key from -k as the key to install, and the words
+	of -ea it takes (_copy_id_extra_args). The ssh-copy-id of OpenSSH 7.4 (CentOS 7), 8.0 (EL8) and
+	later takes -o and -p, before the host.
+	'''
+	words = [_binPaths['ssh-copy-id']]
+	if identity_file:
+		words += ['-i', os.path.expanduser(identity_file)]
+	if not SSH_STRICT_HOST_KEY_CHECKING:
+		words += ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
+	# a host that does not answer must not hold up the others (without -p they run one by one); the
+	# operator's options are the ones ssh-copy-id gets (it drops -F)
+	extra = _copy_id_extra_args(extraargs)
+	words += _ssh_timeout_options(host, extra)
+	words += extra
+	words.append(host)
+	return ' '.join(shlex.quote(word) for word in words)
+
+def _wait_status_return_code(status):
+	'''os.system's wait status as Popen gives a return code: the exit status, or -N when signal N ended it.'''
+	if hasattr(os, 'WIFSIGNALED') and os.WIFSIGNALED(status):
+		return -os.WTERMSIG(status)
+	if hasattr(os, 'WIFEXITED') and os.WIFEXITED(status):
+		return os.WEXITSTATUS(status)
+	# Windows: os.system returns the exit status itself
+	return status
+
+def _count_failed_copies(copied):
+	'''
+	Count each host ssh-copy-id failed on (--copy_id with a command) once towards the exit code, as a
+	failed host. main() leaves the hosts counted here out when it counts the command's failures.
+	'''
+	global __mainReturnCode
+	global __failedHosts
+	for host in copied:
+		# as main() counts: a host still running (None) has not failed
+		if host.returncode and host.name not in __failedHosts:
+			__mainReturnCode += 1
+			__failedHosts.add(host.name)
 
 def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_definitions_list = ...):
 	'''
 	Run the command on the host. Main execution function.
 
 	Builds the command (_build_command), runs it (_execute_command) and retries on failure: the
-	next IPMI definition, or scp after rsync failed. Every retry uses up one of retry_limit.
+	next IPMI definition, rsync without -X when the destination cannot keep extended attributes, or
+	scp when rsync could not run on the host (see _rsync_failure_scp_reason). A gather copies again,
+	with --copy-links, the sources that came back as symbolic links to files. Every retry uses up one
+	of retry_limit.
 
 	Args:
 		host (Host): The host object
@@ -2657,20 +4533,54 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 	if retry_limit is ...:
 		# resolved at call time, the CLI and config files can add ipmi definitions after import
 		retry_limit = 7 + len(DEFAULT_IPMI_DEFINITIONS)
+	scp_like_rsync = False
+	rsync_xattrs = True
+	# the IPMI command lines run on this host: one again (the ssh fallback every failed definition
+	# adds, or two definitions that end up the same) would only repeat a failed login
+	ran = set()
+	gather_copies = None
+	gather_links = None
+	gather_link_copies = []
 	while True:
 		if retry_limit < 0:
 			host.output.append('Error: Retry limit reached!')
 			host.stderr.append('Error: Retry limit reached!')
 			host.returncode = 1
 			return
-		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list)
+		line_counts = (len(host.output), len(host.stdout), len(host.stderr))
+		action, formatedCMD, ipmi_definition, username, passwds, useScp, ipmi_definitions_list = _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync, rsync_xattrs, gather_links)
 		if action == 'stop':
 			return
+		if action == 'run' and gather_copies is None and host.files and host.gatherMode and not useScp:
+			# where rsync puts each source, worked out before it runs
+			gather_copies = _gather_copy_paths(host)
 		if action == 'rebuild':
 			retry_limit -= 1
 			continue
-		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit)
+		if host.ipmi:
+			attempt = tuple(str(arg) for arg in formatedCMD)
+			if attempt in ran:
+				# not run: drop what building it said, it was said when it ran
+				del host.output[line_counts[0]:]
+				del host.stdout[line_counts[1]:]
+				del host.stderr[line_counts[2]:]
+				continue
+			ran.add(attempt)
+		# mssh's own ssh, scp or rsync to the host: tried again when the server drops it before login
+		tool = None
+		if not host.shell and (not host.ipmi or ipmi_definition.get('ipmi_method') == 'ssh_ipmitool'):
+			tool = ('scp' if useScp else 'rsync') if host.files else 'ssh'
+		stop, retry_limit, attempt_line_starts = _execute_command(host, formatedCMD, sem, timeout, retry_limit, (passwds, ipmi_definition.get('password')), tool)
+		if gather_links:
+			# the links' second copy is the host's last attempt
+			_put_back_gathered_links(host, gather_link_copies)
 		if stop:
+			return
+		sshpass_failure = _sshpass_failure(host, formatedCMD, attempt_line_starts)
+		host.output.extend(sshpass_failure)
+		host.stderr.extend(sshpass_failure)
+		if sshpass_failure and not host.ipmi:
+			# ssh stopped at its question before the command ran: scp after rsync would stop there too
 			return
 		# If using ipmi, we will try again using next ipmi definition if ipmi connection is not successful
 		if host.ipmi and host.returncode != 0:
@@ -2712,20 +4622,88 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				ipmi_definitions_list.append(ipmi_definition)
 			retry_limit -= 1
 			continue
-		# If transfering files, we will try again using scp if rsync connection is not successful
-		elif host.files and not host.scp and not useScp and host.returncode != 0 and host.stderr:
+		# mssh asks rsync for extended attributes on its own: where the destination cannot keep them
+		# (NFSv3, vfat, ...), rsync copies the data and exits 23. Copying again without -X is a quick
+		# pass that ends with the result of the copy itself.
+		elif host.files and not useScp and rsync_xattrs and host.returncode == 23:
+			xattr_error = _rsync_xattr_error(host, attempt_line_starts)
+			if not xattr_error:
+				return
 			host.returncode = None
-			host.output.append('Rsync connection failed! Trying SCP connection...')
+			host.output.append('Rsync could not set extended attributes! Copying again without them...')
 			if __DEBUG_MODE:
-				host.stderr.append('Rsync connection failed! Trying SCP connection...')
+				host.stderr.append('Rsync could not set extended attributes! Copying again without them...')
+			else:
+				host.stderr = []
+			host.stderr.append(f'Warning: copied without extended attributes, rsync could not set them: {xattr_error}')
+			rsync_xattrs = False
+			retry_limit -= 1
+			continue
+		# rsync could not run on the host: try scp, if it can copy what rsync would have. Not after a
+		# gather copied links again: the destination may hold links rsync made, which scp writes through
+		elif host.files and not host.scp and not useScp and host.returncode != 0 and gather_links is None:
+			reason = _rsync_failure_scp_reason(host, attempt_line_starts)
+			if not reason:
+				return
+			problem = _scp_cannot_copy_like_rsync(host)
+			if problem:
+				host.output.append(f'{reason} Not trying scp: {problem}')
+				host.stderr.append(f'{reason} Not trying scp: {problem}')
+				return
+			host.returncode = None
+			host.output.append(f'{reason} Trying SCP connection...')
+			if __DEBUG_MODE:
+				host.stderr.append(f'{reason} Trying SCP connection...')
 			else:
 				host.stdout = []
 				host.stderr = []
 			host.scp = True
+			scp_like_rsync = True
+			retry_limit -= 1
+			continue
+		# rsync -l brought a gathered source back as the link it is on the host, which points into this
+		# machine, or nowhere: copy again what a link to a file points to. --no-recursive skips a link to
+		# a directory: --copy-links would follow every link inside it, and the next gather could not
+		# replace the directory with the link. The links are removed first, rsync --copy-links would
+		# follow them here as well, and put back if not replaced. No -X: no retry then follows, which
+		# would find the links put back (the base copied no attributes for these, only links).
+		elif host.files and host.gatherMode and not useScp and host.returncode == 0 and gather_links is None and gather_copies:
+			for source, copy in gather_copies:
+				try:
+					if os.path.islink(copy):
+						target = os.readlink(copy)
+						os.unlink(copy)
+						gather_link_copies.append((source, copy, target))
+				except OSError:
+					continue
+			gather_links = [source for source, _, _ in gather_link_copies]
+			if not gather_links:
+				return
+			rsync_xattrs = False
+			host.returncode = None
+			message = f'{", ".join(gather_links)}: a symbolic link on the host, copying what it points to...'
+			host.output.append(message)
+			if __DEBUG_MODE:
+				host.stderr.append(message)
+			else:
+				host.stdout = []
+				host.stderr = []
 			retry_limit -= 1
 			continue
 		return
 
+
+def _ssh_cannot_ask(host, passwds):
+	'''
+	True when the host's ssh runs without a terminal (see Host.use_terminal) and nothing answers its
+	password questions in its place: not sshpass (-p), not an askpass program the user asked for with
+	SSH_ASKPASS_REQUIRE. IPMI hosts are left alone: ssh_ipmitool takes its password later.
+	'''
+	if host.use_terminal or os.name != 'posix' or host.ipmi:
+		return False
+	if passwds and 'sshpass' in _binPaths:
+		return False
+	return os.environ.get('SSH_ASKPASS_REQUIRE', '').lower() not in ('force', 'prefer')
 
 #%% ------------ Start Threading Block ----------------
 def _run_command_thread(host, sem, timeout, passwds):
@@ -2747,6 +4725,11 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 	'''
 	Start running the command on the hosts. Wrapper function for run_command
 
+	Up to max_connections worker threads run the hosts in the given order (IPMI hosts: one each), so
+	the number of threads does not grow with the number of hosts: a process / thread limit (ulimit -u,
+	a container's pids limit) counts every thread. When the system allows fewer threads, the ones
+	started run all the hosts; when none can start, every host fails with a message saying why.
+
 	Args:
 		hosts (list): A list of Host objects
 		timeout (int, optional): The timeout for the command. Defaults to 60.
@@ -2754,20 +4737,132 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 		max_connections (int, optional): The maximum number of concurrent SSH sessions. Defaults to 4 * os.cpu_count().
 
 	Returns:
-		list: A list of threads that get started
+		list: The worker threads started, they end once no host is left to start. Hosts skipped as
+			unreachable are not started.
 	'''
 	global __thread_start_delay
+	hosts = [host for host in hosts if not host.skipped]
 	if len(hosts) == 0:
 		return []
 	sem = threading.Semaphore(max_connections)  # Limit concurrent SSH sessions
-	threads = [threading.Thread(target=_run_command_thread, args=(host, sem,timeout,password), daemon=True) for host in hosts]
-	for thread, host in zip(threads, hosts):
-		thread.start()
-		host.thread = thread
+	waiting = deque(hosts)
+	lock = threading.Lock()
+	# between two IPMI passwords a host waits out retry_lockout_time running nothing, outside the
+	# semaphore: IPMI hosts keep a thread each, as before, so their waits overlap
+	wanted = len(hosts) if any(host.ipmi for host in hosts) else min(max_connections, len(hosts))
+	# workers: how many may take hosts (lowered when no more threads can start), alive: how many run
+	pool = {'workers': max(1, wanted), 'alive': 0}
+	def worker():
+		while True:
+			with lock:
+				if not waiting or pool['alive'] > pool['workers']:
+					pool['alive'] -= 1
+					return
+				host = waiting.popleft()
+			host.thread = threading.current_thread()
+			try:
+				_run_command_thread(host, sem, timeout, password)
+			except BaseException:
+				# e.g. SystemExit: it would end this worker, and the hosts left could wait forever
+				pass
+	threads = []
+	back_offs = 0
+	while len(threads) < pool['workers']:
+		thread = threading.Thread(target=worker, daemon=True)
+		with lock:
+			pool['alive'] += 1
+		try:
+			thread.start()
+		except RuntimeError:
+			# no more threads allowed (ulimit -u, pids limit)
+			with lock:
+				pool['alive'] -= 1
+				if threads:
+					# the workers started took what was left, and each command they run needs more (ssh,
+					# the threads reading its output): half of them stop before taking another host
+					pool['workers'] = max(1, len(threads) // 2)
+			if threads or _emo or back_offs >= 6:
+				break
+			# none started yet: wait for processes to end, as for too many open files
+			time.sleep(_emfile_backoff_seconds(back_offs))
+			back_offs += 1
+			continue
+		threads.append(thread)
 		time.sleep(__thread_start_delay)
+	if not threads:
+		message = 'Error: No thread could be started to run the command, the system allows no more processes or threads (ulimit -u, pids limit)!'
+		for host in waiting:
+			host.output.append(message)
+			host.stderr.append(message)
+			host.returncode = 1
+	elif pool['workers'] < min(max_connections, len(hosts)) and not __global_suppress_printout:
+		eprint(f"Warning: The system allows no more threads (ulimit -u, pids limit), running the hosts at most {pool['workers']} at a time.")
 	return threads
 
 #%% ------------ Display Block ----------------
+# printable ASCII, one column per character: text that needs no closer look
+_NOT_PRINTABLE_ASCII = re.compile('[^ -~]')
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+@functools.lru_cache(maxsize=8192)
+def _char_columns(char):
+	'''
+	Terminal columns a printable character takes, as the C library's wcwidth() counts them (curses uses it).
+
+	East Asian wide and fullwidth characters (CJK, kana, hangul, most emoji) take 2. Combining marks,
+	format characters (zero width space, joiner) and the vowels and final consonants of conjoining
+	hangul take 0: they join the character before. Everything else takes 1, the East Asian ambiguous
+	width characters (box drawing, arrows, Greek, Cyrillic) too, as terminals count them outside CJK
+	locales: the display's own borders are made of them.
+	'''
+	if char < '\u0300':
+		return 1
+	category = unicodedata.category(char)
+	if category in ('Mn', 'Me', 'Cf') or '\u1160' <= char <= '\u11ff':
+		return 0
+	return 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+
+def _text_columns(text):
+	'''Columns text takes on a terminal (see _char_columns): color and other escape sequences take none.'''
+	if '\x1b' in text:
+		text = _ANSI_ESCAPE.sub('', text)
+	if not _NOT_PRINTABLE_ASCII.search(text):
+		return len(text)
+	return sum(map(_char_columns, text))
+
+def _curses_fit(text, columns, column = 0):
+	'''
+	text as curses should draw it in at most columns columns.
+
+	A character that does not fit whole is left out, with the rest of text: curses would wrap it onto
+	the next line, or scroll the window from its last line. A tab becomes spaces up to the next
+	multiple of 8 columns from the start of the line's text (column is where text starts in it), as
+	on the host's terminal: curses would count from the window's edge, and wrap a tab that passes its
+	side. Another control character becomes its ^X form, which curses would draw in two columns (or,
+	for a backspace, act on).
+
+	Returns:
+		(str, int, bool): the text to draw, the columns it takes, and whether all of text fits
+	'''
+	if columns <= 0:
+		return '', 0, not text
+	if not _NOT_PRINTABLE_ASCII.search(text):
+		return text[:columns], min(len(text), columns), len(text) <= columns
+	pieces = []
+	used = 0
+	for char in text:
+		if char < ' ' or char == '\x7f':
+			piece = ' ' * (8 - (column + used) % 8) if char == '\t' else '^' + chr(ord(char) ^ 0x40)
+			size = len(piece)
+		else:
+			piece = char
+			size = _char_columns(char)
+		if used + size > columns:
+			return ''.join(pieces), used, False
+		pieces.append(piece)
+		used += size
+	return ''.join(pieces), used, True
+
 def __approximate_color_8bit(color):
 	"""
 	Approximate an 8-bit color (0-255) to the nearest curses color.
@@ -2993,9 +5088,9 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		line: The line to add
 		y: Line position in the window. Use -1 to scroll the window up 1 line and add the line at the bottom
 		x: Column position in the window
-		number_of_char_to_write: Number of characters to write. -1 for all remaining space in line, 0 for no characters, and a positive integer for a specific number of characters.
+		number_of_char_to_write: Number of terminal columns to write. -1 for all remaining space in line, 0 for no characters, and a positive integer for a specific number of columns.
 		color_pair_list: List of [foreground, background, color_pair] curses color pair values
-		fill_char: Character to fill the remaining space in the line
+		fill_char: Character to fill the remaining space in the line, one column wide
 		parse_ansi_colors: Parse ASCII color codes
 		centered: Center the text in the window
 		lead_str: Leading string to add to the line
@@ -3032,44 +5127,81 @@ def _curses_add_string_to_window(window, line = '', y = 0, x = 0, number_of_char
 		window.move(keep_top_n_lines,0)
 		window.deleteln()
 		y = maxY - 1
-	line = line.replace('\n', ' ').replace('\r', ' ')
+	# curses draws the other control characters as ^A, ^[ ... but refuses a NUL (ValueError): show it as ^@
+	line = line.replace('\n', ' ').replace('\r', ' ').replace('\0', '^@')
 	if parse_ansi_colors:
 		segments = re.split(r"(\x1b\[[\d;]*m)", line)  # Split line by ANSI escape codes
 	else:
 		segments = [line]
-	charsWritten = 0
+	# Positions count terminal columns, not characters: a wide character (CJK, most emoji) takes two, a combining
+	# mark none. Each piece is cut to the columns left before it is drawn (_curses_fit): curses would wrap the rest
+	# onto the next line, or scroll the window when it is the last one
+	columnsWritten = 0
 	boxAttr = __parse_ansi_escape_sequence_to_curses_attr(box_ansi_color)
 	# first add the lead_str
-	if len(lead_str) > 0:
-		window.addnstr(y, x, lead_str, numChar, boxAttr)
-		charsWritten = min(len(lead_str), numChar)
+	if lead_str:
+		lead, columnsWritten, _ = _curses_fit(lead_str, numChar)
+		window.addnstr(y, x, lead, len(lead), boxAttr)
+	trail_columns = _curses_fit(trail_str, numChar)[1]
 	# process centering
 	if centered:
-		fill_length = numChar - len(lead_str) - len(trail_str) - sum([len(segment) for segment in segments if not segment.startswith("\x1b[")])
+		text_columns = 0
+		for segment in segments:
+			if segment and not (parse_ansi_colors and segment.startswith("\x1b[")):
+				text_columns += _curses_fit(segment, numChar, text_columns)[1]
+		fill_length = numChar - columnsWritten - trail_columns - text_columns
 		leading_fill_length = fill_length // 2
 		if leading_fill_length > 0:
-			window.addnstr(y, x + charsWritten, fill_char * (leading_fill_length // len(fill_char) + 1), leading_fill_length, boxAttr)
-			charsWritten += leading_fill_length
+			window.addnstr(y, x + columnsWritten, fill_char * (leading_fill_length // len(fill_char) + 1), leading_fill_length, boxAttr)
+			columnsWritten += leading_fill_length
 	# add the segments
+	text_columns = 0
+	text_cut = False
 	for segment in segments:
 		if not segment:
 			continue
 		if parse_ansi_colors and segment.startswith("\x1b["):
-			# Parse ANSI escape sequence
+			# Parse ANSI escape sequence, also after the text is cut: the color goes on to the next lines
 			_ = __parse_ansi_escape_sequence_to_curses_attr(segment,color_pair_list)
-		else:
-			# Add text with current color
-			if charsWritten < numChar and len(segment) > 0:
-				window.addnstr(y, x + charsWritten, segment, numChar - charsWritten, color_pair_list[2])
-				charsWritten += min(len(segment), numChar - charsWritten)
-	# if we have finished printing segments but we still have space, we will fill it with fill_char
-	trail_fill_length = numChar - charsWritten - len(trail_str)
+		elif not text_cut and columnsWritten < numChar:
+			# Add text with current color, as much as fits. Nothing after a cut: it would not follow what is shown
+			text, columns, text_fits = _curses_fit(segment, numChar - columnsWritten, text_columns)
+			if text:
+				window.addnstr(y, x + columnsWritten, text, len(text), color_pair_list[2])
+			columnsWritten += columns
+			text_columns += columns
+			text_cut = not text_fits
+	# if we have finished printing segments but we still have space, we will fill it with fill_char (one column wide)
+	trail_fill_length = numChar - columnsWritten - trail_columns
 	if trail_fill_length > 0 and fill_char:
-		window.addnstr(y, x + charsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length , boxAttr)
-		charsWritten += trail_fill_length
-	if len(trail_str) > 0 and charsWritten < numChar:
-		window.addnstr(y, x + charsWritten, trail_str, numChar - charsWritten, boxAttr)
-		charsWritten += min(len(trail_str), numChar - charsWritten)
+		window.addnstr(y, x + columnsWritten,fill_char * (trail_fill_length // len(fill_char) + 1), trail_fill_length , boxAttr)
+		columnsWritten += trail_fill_length
+	if trail_str and columnsWritten < numChar:
+		trail, columns, _ = _curses_fit(trail_str, numChar - columnsWritten)
+		window.addnstr(y, x + columnsWritten, trail, len(trail), boxAttr)
+		columnsWritten += columns
+
+# ssh's notices are short; a longer line is the command's output. Searching all of a line that can be
+# megabytes long, with patterns like "Connection to .* closed", could take minutes
+_TUI_NOTICE_MAX_LENGTH = 1024
+
+def _tui_leaves_out(line):
+	'''
+	Whether a host's window leaves line out: ssh's own notices, which the output at the end leaves out too
+	(ERROR_MESSAGES_TO_IGNORE). "Warning: Permanently added ..." comes with every connection (mssh keeps no
+	known hosts), and was all a quiet command's window showed.
+	'''
+	return len(line) <= _TUI_NOTICE_MAX_LENGTH and bool(__ERROR_MESSAGES_TO_IGNORE_REGEX.search(line))
+
+def _tui_first_shown_line(output, rows):
+	'''The index in output from which a window of rows rows shows the lines it does not leave out.'''
+	index = len(output)
+	shown = 0
+	while index > 0 and shown < rows:
+		index -= 1
+		if not _tui_leaves_out(output[index]):
+			shown += 1
+	return index
 
 def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexOffset = 0):
 	'''
@@ -3103,6 +5235,24 @@ def _get_hosts_to_display (hosts, max_num_hosts, hosts_to_display = None, indexO
 		if host not in hosts_to_display or i != hosts_to_display.index(host):
 			rearrangedHosts.add(host)
 	return new_hosts_to_display , {'running':len(running_hosts), 'failed':len(failed_hosts), 'finished':len(finished_hosts), 'waiting':len(waiting_hosts)}, rearrangedHosts
+
+def _tui_typed_keys(key, decoder):
+	'''
+	The key presses one getch() result completes, in the order they were typed.
+
+	getch() returns a character typed as several bytes (UTF-8 é is c3 a9) one byte at a time. Those
+	bytes go through decoder (incremental, errors='surrogateescape') and come back as one str once
+	the character is complete. Any other key comes back as its int code, after the bytes of a
+	sequence it cut short: those come back as surrogates, which _encode_typed_line sends unchanged.
+	'''
+	if key == -1:
+		return ()
+	if 128 <= key <= 255:
+		text = decoder.decode(bytes((key,)))
+		return (text,) if text else ()
+	cut_short = decoder.decode(b'', True)
+	decoder.reset()
+	return (cut_short, key) if cut_short else (key,)
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
 	global _encoding
@@ -3204,7 +5354,7 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		help_window.idlok(True)
 		help_window.box()
 		_curses_add_string_to_window(window=help_window,y=0,line='Help', color_pair_list=[-1,-1,1], centered=True, fill_char='─', lead_str='┌', box_ansi_color=box_ansi_color)
-		_curses_add_string_to_window(window=help_window,y=1,line='?       : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
+		_curses_add_string_to_window(window=help_window,y=1,line='? or F1 : Toggle Help Menu', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=2,line='_ or +  : Change window hight', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=3,line='{ or }  : Change window width', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
 		_curses_add_string_to_window(window=help_window,y=4,line='< or >  : Change host index', color_pair_list=[-1,-1,1], lead_str='│', box_ansi_color=box_ansi_color)
@@ -3220,10 +5370,11 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		help_panel.hide()
 		curses.panel.update_panels()
 		indexOffset = 0
+		# collects the bytes of a character typed in several bytes, see _tui_typed_keys
+		key_decoder = codecs.getincrementaldecoder(_encoding)(errors='surrogateescape')
 		while host_stats['running'] > 0 or host_stats['waiting'] > 0:
-			# Check for keypress
-			key = stdscr.getch()
-			if key != -1:  # -1 means no keypress
+			# Check for keypress: an int key code, or a str for a character typed in several bytes (UTF-8)
+			for key in _tui_typed_keys(stdscr.getch(), key_decoder):
 				# we store the keypresses in a list of lists.
 				# Each list is a list of characters to be sent to the stdin of the process at once.
 				# When we encounter a newline, we add a new list to the list of lists. ( a new line of input )
@@ -3290,8 +5441,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				elif key == curses.KEY_EXIT or (key == 27 and lineToDisplay == -1 and not __keyPressesIn[-1]): # 27 is the key code for ESC
 					# exit the display on KEY_EXIT, or on ESC when the input line is empty. ESC with input clears the line below
 					return
-				elif key == curses.KEY_HELP or key == 63 or key == curses.KEY_F1: # 63 is the key code for ?
-					# if the key is help, we will display the help message
+				elif key == curses.KEY_HELP or (key == 63 and not __keyPressesIn[-1]) or key == curses.KEY_F1: # 63 is the key code for ?
+					# if the key is help, we will display the help message. Like the other one-character keys, ? toggles
+					# it only on an empty input line: after text it is typed (a prompt's answer may need it). F1 always works
 					if not help_shown:
 						help_panel.show()
 						help_shown = True
@@ -3301,6 +5453,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						refresh_all = True
 						#return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Help closed')
 					curses.panel.update_panels()
+				elif not isinstance(key, str) and key > 255 and key not in (263, 330, curses.KEY_ENTER):
+					# a function key without a binding (F2, Insert, ...; 263 Backspace, 330 Delete and KEY_ENTER are handled below):
+					# chr() of its code would type an unrelated letter
+					pass
 			# We are left with these are keys that mofidy the current line.
 				else:
 					# This means the user have done scrolling and is committing to modify the current line.
@@ -3309,8 +5465,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						__keyPressesIn[-1] = __keyPressesIn[lineToDisplay][:-1]
 						lineToDisplay = -1
 					curserPosition = max(0, min(curserPosition, len(__keyPressesIn[lineToDisplay])))
-					if key == 10: # 10 is the key code for newline
-						__keyPressesIn[-1].append(chr(key))
+					if key == 10 or key == curses.KEY_ENTER: # 10 is the key code for newline, KEY_ENTER the keypad's Enter
+						__keyPressesIn[-1].append('\n')
 						__keyPressesIn.append([])
 						lineToDisplay = -1
 						curserPosition = 0
@@ -3328,9 +5484,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						if curserPosition < len(__keyPressesIn[lineToDisplay]):
 							__keyPressesIn[lineToDisplay].pop(curserPosition)
 					else:
-						# if the key is not a special key, we will add it
-						__keyPressesIn[lineToDisplay].insert(curserPosition, chr(key))
-						curserPosition += 1
+						# if the key is not a special key, we will add it, one list item per character
+						typed = key if isinstance(key, str) else chr(key)
+						__keyPressesIn[lineToDisplay][curserPosition:curserPosition] = list(typed)
+						curserPosition += len(typed)
 			# reconfigure when the terminal size changes
 			if org_dim != stdscr.getmaxyx():
 				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
@@ -3340,11 +5497,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} i:{indexOffset} "
 			else:
 				# we use the stat bar to display the key presses
-				encodedLine = ''.join(__keyPressesIn[lineToDisplay]).encode(encoding=_encoding,errors='backslashreplace').decode(encoding=_encoding,errors='backslashreplace').strip('\n') + ' '
+				encodedLine = _typed_line_for_display(__keyPressesIn[lineToDisplay]).strip('\n') + ' '
 				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
 				# format the stats line with chracter at curser position inverted using ansi escape sequence
 				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
-				displayCurserPosition = min(curserPosition,len(encodedLine) -1)
+				# it counts the shown text before the cursor: a byte outside the encoding shows as 4 characters (\xe9)
+				displayCurserPosition = min(len(_typed_line_for_display(__keyPressesIn[lineToDisplay][:curserPosition])),len(encodedLine) -1)
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
 			if stats != old_stat or refresh_all:
 				old_stat = stats
@@ -3395,22 +5553,22 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
 				# host.printedLines = len(host.output)
 				if host.lineNumToPrintSet:
-					try:
-						# visible range is from len(host.output) - host_window_height + 1 to len(host.output)
-						visibleLowerBound = max(0, len(host.output) - host_window_height + 1)
-						lineNumToPrintSet = host.lineNumToPrintSet.copy()
-						host.lineNumToPrintSet = set()
-						for lineNumToReprint in sorted(lineNumToPrintSet):
-							# if the line is visible, we will reprint it
-							if visibleLowerBound <= lineNumToReprint <= len(host.output):
+					# visible range: the last host_window_height - 1 lines the window does not leave out
+					visibleLowerBound = _tui_first_shown_line(host.output, host_window_height - 1)
+					lineNumToPrintSet = host.lineNumToPrintSet.copy()
+					host.lineNumToPrintSet = set()
+					for lineNumToReprint in sorted(lineNumToPrintSet):
+						# if the line is visible, we will reprint it
+						if visibleLowerBound <= lineNumToReprint < len(host.output):
+							if _tui_leaves_out(host.output[lineNumToReprint]):
+								continue
+							# each line on its own: one line curses cannot draw must not leave the lines after it blank
+							try:
 								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 								hostWindowUpdated = True
-					except Exception:
-						# import traceback
-						# print(str(e).strip())
-						# print(traceback.format_exc().strip())
-						if org_dim != stdscr.getmaxyx():
-							return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
+							except Exception:
+								if org_dim != stdscr.getmaxyx():
+									return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
 				if host.lastPrintedUpdateTime != host.lastUpdateTime and host.output_buffer.tell() > 0:
 					# this means there is still output in the buffer, we will print it
 					# we will print the output in the window
@@ -3508,12 +5666,19 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
 	if threshold > 0.5:
-		samples = itertools.islice(line_bag1, max(int(len(line_bag1) * (1 - threshold)),1))
-		if not line_bag2.intersection(samples):
+		# quick reject when none of a few items of the smaller bag is in the other. Taking one item more
+		# than the smaller bag may lack and still merge, the answer is always the count's below, whichever
+		# items the set yields first (an order that changes from run to run)
+		smaller, larger = (line_bag1, line_bag2) if len(line_bag1) <= len(line_bag2) else (line_bag2, line_bag1)
+		sample_count = len(smaller) - math.ceil(len(smaller) * threshold) + 1
+		if not larger.intersection(itertools.islice(smaller, sample_count)):
 			return False
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
 def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
+	# indexes keeps the hosts in natural order: min() below takes the first of the hosts furthest
+	# behind, so lines only some hosts printed come in host order, not in the random order of a set
+	merging_hostnames = sorted(merging_hostnames, key=_natural_sort_key)
 	indexes = Counter({hostname: 0 for hostname in merging_hostnames})
 	working_index_keys = set(merging_hostnames)
 	previousBuddies = set()
@@ -3551,7 +5716,10 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 		currentLines[outputs_by_hostname[hostname][0]].add(hostname)
 	while indexes:
 		defer = False
-		golden_hostname = min(working_index_keys, key=indexes.get)
+		if len(working_index_keys) == len(indexes):
+			golden_hostname = min(indexes, key=indexes.get)
+		else:
+			golden_hostname = min(filter(working_index_keys.__contains__, indexes), key=indexes.get)
 		golden_index = indexes[golden_hostname]
 		lineToAdd = outputs_by_hostname[golden_hostname][golden_index]
 		buddy = currentLines[lineToAdd].copy()
@@ -3562,7 +5730,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				working_index_keys -= buddy
 		if not defer:
 			if buddy != previousBuddies:
-				hostnameStr = ','.join(compact_hostnames(buddy))
+				hostnameStr = ','.join(compact_hostnames(buddy, hosts_only=True))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
@@ -3604,11 +5772,12 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 	output.append(color_line+'─'*(line_length)+color_reset)
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
-	for merging_hostnames in merge_groups:
+	# groups, then the hosts that merged with none, each in natural host order (node2 before node10)
+	for merging_hostnames in sorted(merge_groups, key=lambda group: min(map(_natural_sort_key, group))):
 		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
 		output.append(color_line+'─'*(line_length)+color_reset)
-	for hostname in remaining_hostnames:
-		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname])))
+	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
+		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname], hosts_only=True)))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
 		output.extend(hostnameLines)
@@ -3635,15 +5804,52 @@ def pre_merge_hosts(hosts):
 		identity = host.get_output_hash()
 		output_groups[identity].append(host)
 	for group in output_groups.values():
-		group[0].name = ','.join(compact_hostnames(host.name for host in group))
+		group[0].name = ','.join(compact_hostnames((host.name for host in group), hosts_only=True))
 		for i in range(1,len(group)):
 			hosts.remove(group[i])
 	return hosts
+
+_SSH_CONNECT_ERROR = re.compile(r'ssh: connect to host (\S+) port (\S+): (.+)')
+# ssh's reason: the summary the pretty output shows for it
+_SSH_CONNECT_ERROR_SUMMARIES = {
+	'Connection refused': 'SSH not reachable!',
+	'Connection timed out': 'SSH connection timed out!',
+	'No route to host': 'Cannot find host!',
+}
+
+def _ssh_connect_error(line):
+	'''
+	Split ssh's own "ssh: connect to host HOST port PORT: REASON" line into (host, port, reason).
+
+	Returns None for any other line, such as a remote program's error ending with the same reason.
+	'''
+	match = _SSH_CONNECT_ERROR.fullmatch(line.strip())
+	return match.groups() if match else None
+
+def _displayed_stderr(host):
+	'''
+	The stderr lines the pretty output shows for host.
+
+	When ssh could not connect (it exits 255 right after saying why), its line is shown as a summary
+	without the host name, so unreachable hosts merge into one block: "SSH connection timed out!
+	(port 22: Connection timed out)". host.stderr keeps ssh's line for JSON and greppable output.
+	'''
+	if host.returncode != 255 or not host.stderr:
+		return host.stderr
+	connect_error = _ssh_connect_error(host.stderr[-1])
+	if not connect_error or connect_error[2] not in _SSH_CONNECT_ERROR_SUMMARIES:
+		return host.stderr
+	_address, port, reason = connect_error
+	summary = '{} (port {}: {})'.format(_SSH_CONNECT_ERROR_SUMMARIES[reason], port, reason)
+	return host.stderr[:-1] + [summary]
 
 def get_host_raw_output(hosts, terminal_width):
 	outputs_by_hostname = {}
 	line_bag_by_hostname = {}
 	hostnames_by_line_bag_len = {}
+	# a narrower terminal gets a 20 column layout and wraps its lines itself: the headers ('█ EXECUTED COMMAND:')
+	# need 19, and textwrap fails below 2 columns and never returns at 2 (the '- ' host name indent of mergeOutputs)
+	terminal_width = max(terminal_width, 20)
 	text_wrapper = textwrap.TextWrapper(width=terminal_width - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
 									 initial_indent=' ', subsequent_indent='-')
 	max_length = 20
@@ -3676,7 +5882,8 @@ def get_host_raw_output(hosts, terminal_width):
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
 			hostPrintOut.extend(f" {line}" for line in host.stdout)
-			max_length = max(max_length, max(map(len, host.stdout)))
+			# in terminal columns: the dividers between host blocks are as wide as the widest line
+			max_length = max(max_length, max(map(_text_columns, host.stdout)))
 			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
@@ -3684,28 +5891,22 @@ def get_host_raw_output(hosts, terminal_width):
 				lineBag.update(zip(host.stdout, host.stdout[1:]))
 			lineBag.update(host.stdout)
 			prevLine = host.stdout[-1]
-		if host.stderr:
-			if host.stderr[0].strip().startswith('ssh: connect to host ') and host.stderr[0].strip().endswith('Connection refused'):
-				host.stderr[0] = 'SSH not reachable!'
-			elif host.stderr[-1].strip().endswith('Connection timed out'):
-				host.stderr[-1] = 'SSH connection timed out!'
-			elif host.stderr[-1].strip().endswith('No route to host'):
-				host.stderr[-1] = 'Cannot find host!'
-			if host.stderr:
-				hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
-				# for line in host.stderr:
-				# 	if len(line) < terminal_width - 2:
-				# 		hostPrintOut.append(f" {line}")
-				# 	else:
-				# 		hostPrintOut.extend(text_wrapper.wrap(line))
-				hostPrintOut.extend(f" {line}" for line in host.stderr)
-				max_length = max(max_length, max(map(len, host.stderr)))
-				lineBag.add((prevLine,2))
-				lineBag.add((2,host.stderr[0]))
-				lineBag.update(host.stderr)
-				if len(host.stderr) > 1:
-					lineBag.update(zip(host.stderr, host.stderr[1:]))
-				prevLine = host.stderr[-1]
+		stderr = _displayed_stderr(host)
+		if stderr:
+			hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
+			# for line in stderr:
+			# 	if len(line) < terminal_width - 2:
+			# 		hostPrintOut.append(f" {line}")
+			# 	else:
+			# 		hostPrintOut.extend(text_wrapper.wrap(line))
+			hostPrintOut.extend(f" {line}" for line in stderr)
+			max_length = max(max_length, max(map(_text_columns, stderr)))
+			lineBag.add((prevLine,2))
+			lineBag.add((2,stderr[0]))
+			lineBag.update(stderr)
+			if len(stderr) > 1:
+				lineBag.update(zip(stderr, stderr[1:]))
+			prevLine = stderr[-1]
 		if host.returncode != 0:
 			codeColor = red_str
 		else:
@@ -3721,7 +5922,8 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 	merge_groups = []
 	remaining_hostnames = set()
 	for lbl_i, line_bag_len in enumerate(sorted_hostnames_by_line_bag_len_keys):
-		for this_hostname in hostnames_by_line_bag_len.get(line_bag_len, set()).copy():
+		# in natural order, not a set's: which hosts form a group depends on the host it starts from
+		for this_hostname in sorted(hostnames_by_line_bag_len.get(line_bag_len, ()), key=_natural_sort_key):
 			# if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
 			# 	continue
 			try:
@@ -3804,7 +6006,14 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			if not hostAdded:
 				rtnList.append([host.name,f"rc: {host.returncode}",'N/A','<EMPTY>'])
 			rtnList.append(['','','',''])
-		rtnStr += pretty_format_table(rtnList)
+		# the table pads the first three columns only: padded to the longest output line, every other line
+		# and divider was written out to its length (seq 1 10000 and one 5000 character line: 50 MB of spaces)
+		table = pretty_format_table([rtnList[0]] + [row[:3] + [''] for row in rtnList[1:]]).split('\n')
+		tableLines = table[:2]
+		for line, row in zip(table[2:], rtnList[1:]):
+			# a divider row stays as it is
+			tableLines.append(line.rstrip(' ') + ' ' + row[3] if any(row) else line)
+		rtnStr += '\n'.join(tableLines) + '\n'
 		rtnStr += '*'*80+'\n'
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
@@ -3846,6 +6055,38 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			rtnStr = '\n'.join(outputs + [white_str + '─' * (line_length) + color_reset_str])
 	return rtnStr
 
+# ssh's own last word when no login method worked: "bob@node1: Permission denied (publickey,password)."
+# Remote output can hold any line: no part may match an '@' or the ':', so a long line of them costs linear
+# time (a user name with an '@' in it gets no note). Use it anchored (fullmatch / match): search() retries at
+# every start and rescans a long word each time, seconds for one 100 kB line
+_SSH_PERMISSION_DENIED = re.compile(r'([^\s@]+)@([^\s@:]+): Permission denied \(([^)]*)\)\.')
+
+def _note_unasked_passwords(hosts, password):
+	'''
+	After the output, say once which hosts' ssh wanted a password it had no terminal to ask for (see
+	Host.use_terminal), and what to do instead.
+
+	Only when ssh's line names the host itself: an ssh run by the command, or a jump host, is not the
+	one mssh started. Not with -p, where sshpass answered and the password was wrong.
+	'''
+	if os.name != 'posix' or (password and 'sshpass' in _binPaths):
+		return
+	names = []
+	for host in hosts:
+		if host.use_terminal or host.ipmi or host.shell or not host.returncode:
+			continue
+		target = host.name.rsplit('@', 1)[-1].lower()
+		for line in host.stderr:
+			denied = 'Permission denied (' in line and _SSH_PERMISSION_DENIED.fullmatch(line.strip())
+			if denied and denied.group(2).lower() == target and {'password', 'keyboard-interactive'} & set(denied.group(3).split(',')):
+				names.append(host.name)
+				break
+	if names:
+		# a key's passphrase it could not ask for leaves the same line: the key is skipped, password is next
+		eprint('Note: ssh could not ask for the password (or key passphrase) of {}: it may ask only when one command '
+			'runs at a time without the curses display. Use -p, an ssh key (ssh-agent), or -nw -m 1 to type each one.'.format(
+			','.join(compact_hostnames(names))))
+
 def print_output(hosts,usejson = False,quiet = False,greppable = False):
 	'''
 	Print / generate the output of the hosts to the terminal
@@ -3865,8 +6106,46 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		host.output.clear()
 	rtnStr = generate_output(hosts,usejson,greppable,encoding=_encoding,keyPressesIn=__keyPressesIn,errors_only=__global_suppress_printout)
 	if not quiet:
-		print(rtnStr)
+		try:
+			# flushed now: a reader that is gone fails here, not in the flush at exit
+			print(rtnStr, flush=True)
+		except BrokenPipeError:
+			_output_reader_gone()
 	return rtnStr
+
+def _output_reader_gone(exit_code=None):
+	'''
+	Stop quietly when whatever reads our output has gone (mssh ... | head, or q in less).
+
+	Like a program SIGPIPE ends: no traceback, and no more commands or repeats start. What ran
+	still counts towards the exit code, as after a Ctrl-C between runs. stdout, and stderr when
+	it is the same pipe (2>&1), are pointed at devnull as the Python docs suggest, so later
+	writes and the flush at exit do not fail again.
+
+	With exit_code, for output that comes before any run (-h, -V, a usage error): both stdout and
+	stderr go to devnull, either may be the one that broke, and the process exits with exit_code.
+	'''
+	global _emo
+	_emo = True
+	try:
+		stdout_fd = sys.stdout.fileno()
+		fds = [stdout_fd]
+		try:
+			if exit_code is not None or os.path.sameopenfile(stdout_fd, sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (an embedding program's stream): nothing to redirect
+		pass
+	if exit_code is not None:
+		sys.exit(exit_code)
 
 #%% ------------ Run / Process Hosts Block ----------------
 def _private_dir(path, create=True):
@@ -4061,6 +6340,90 @@ def _write_unavailable_hosts_file(path, unavailable_hosts, available_hosts=(), n
 	return clean
 
 
+# reasons in ssh's connect error that mean nothing answered (Connection refused: the host did)
+_SSH_UNREACHABLE_REASONS = ('No route to host', 'Connection timed out')
+# older OpenSSH's message when a ProxyJump host cannot reach the target
+_SSH_JUMP_UNREACHABLE = re.compile(r'channel \d+: open failed: connect failed: (?:No route to host|Connection timed out)')
+# OpenSSH 8.2+ when ssh's ConnectTimeout runs out after the host took the connection but before its
+# sshd said a word; the next line names the address (UNKNOWN through a ProxyJump)
+_SSH_BANNER_TIMEOUT = 'Connection timed out during banner exchange'
+_SSH_TIMED_OUT_ADDRESS = re.compile(r'Connection to (\S+) port \S+ timed out')
+
+def _last_run_stderr(host):
+	'''
+	The stderr lines the host's last command run printed.
+
+	With --debug, mssh writes its own lines to stderr too (Resolved name: ..., Running command: ...)
+	and keeps a failed attempt's lines before the retry's: the last "Running command: " line, written
+	just before the command starts, is where the last run's lines begin.
+	'''
+	if not __DEBUG_MODE:
+		return host.stderr
+	for index in range(len(host.stderr) - 1, -1, -1):
+		if host.stderr[index].startswith('Running command: '):
+			return host.stderr[index + 1:]
+	return host.stderr
+
+def _connect_error_names_host(host, connect_host):
+	'''
+	Whether connect_host, the host or address ssh's error names, is the one mssh had ssh connect to,
+	not another host the remote command tried with an ssh of its own (mssh hostA 'ssh backup ...').
+
+	ssh names, lowercased, the HostName it connects to: the address mssh gave it (or its FQDN when
+	ssh canonicalizes names), or the HostName the ssh config gives it. Only that last case asks
+	ssh -G, which is cached and was already asked for names that only the ssh config knows.
+	'''
+	connect_host = connect_host.lower()
+	address = (getattr(host, 'address', None) or host.name.rsplit('@', 1)[-1]).strip().lower()
+	if connect_host == address or connect_host.startswith(address + '.'):
+		return True
+	if host.ip and connect_host == str(host.ip).lower():
+		return True
+	if 'ssh' not in _binPaths or not address or address.startswith('-'):
+		return False
+	config = _ssh_config_values(address)
+	return bool(config) and config.get('hostname', '').lower() == connect_host
+
+def _found_unreachable(host):
+	'''
+	Whether a finished host's run shows it to be unreachable, so later runs skip it for a while.
+
+	ssh, and scp / rsync running it, exit with 255 and print the connect error first when the host
+	cannot be reached, or that its sshd never answered within ssh's ConnectTimeout (scp's legacy
+	protocol exits with 1); a remote command printing the same words (curl: ... No route to host)
+	did reach its host, and so did one whose own ssh could not reach another host, as ssh's error
+	names that host. A command stopped by the timeout (-t) counts too if nothing at all came
+	back before it: a host that never answers looks like that, but so does a command that was
+	quiet from the start, which mssh cannot tell apart. Output means the host answered.
+	'''
+	stderr = _last_run_stderr(host)
+	# scp's legacy protocol (the default before OpenSSH 9.0, and scp -O) exits with 1, not 255
+	ssh_failed = host.returncode == 255 or (bool(host.files) and host.returncode == 1)
+	if ssh_failed and stderr:
+		first_line = stderr[0].strip()
+		connect_error = _ssh_connect_error(first_line)
+		if connect_error and connect_error[2] in _SSH_UNREACHABLE_REASONS:
+			return _connect_error_names_host(host, connect_error[0])
+		if _SSH_JUMP_UNREACHABLE.fullmatch(first_line):
+			return True
+		if first_line == _SSH_BANNER_TIMEOUT and len(stderr) > 1:
+			timed_out = _SSH_TIMED_OUT_ADDRESS.fullmatch(stderr[1].strip())
+			if timed_out:
+				# a remote command's own ssh names the address it tried
+				return timed_out.group(1) == 'UNKNOWN' or _connect_error_names_host(host, timed_out.group(1))
+	if host.returncode != 124 or host.stdout or not stderr:
+		return False
+	# a stderr line before the timeout's means the host answered, lines after it come from stopping the command
+	return stderr[0].strip().startswith('Timeout!')
+
+def _stream_is_terminal(stream):
+	'''True when stream is an open terminal: False when it is redirected, closed, or None (its fd was closed at start).'''
+	try:
+		return bool(stream is not None and stream.isatty())
+	except (AttributeError, ValueError, OSError):
+		return False
+
+
 def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinished, no_watch, json, no_output, greppable,
 					  unavailableHosts:dict,will_update_unreachable_hosts,window_width = DEFAULT_WINDOW_WIDTH, 
 					  window_height = DEFAULT_WINDOW_HEIGHT,single_window = DEFAULT_SINGLE_WINDOW,
@@ -4068,9 +6431,19 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 	global __globalUnavailableHosts
 	global _no_env
 	sleep_interval =  1.0e-7 # 0.1 microseconds
-	use_tui = bool(__curses_available and not no_watch and not return_unfinished and sys.stdout.isatty() and os.get_terminal_size() and os.get_terminal_size().columns > 10)
+	# hosts skipped as unreachable are not run, only reported with the others
+	skipped_hosts = [host for host in hosts if host.skipped]
+	hosts = [host for host in hosts if not host.skipped]
+	# The TUI needs a screen and a keyboard. When stdin is not a terminal (< file, a pipe, a while-read loop,
+	# xargs) nobody can type: commands would wait forever on a stdin pipe, and curses would read what stdin
+	# holds (the loop's next lines) as key presses. Without the TUI, commands get /dev/null as stdin.
+	use_tui = bool(__curses_available and not no_watch and not return_unfinished and _stream_is_terminal(sys.stdout) and _stream_is_terminal(sys.stdin) and os.get_terminal_size() and os.get_terminal_size().columns > 10)
 	for host in hosts:
 		host.interactive_stdin = use_tui
+		# ssh asks for passwords, passphrases and new host keys on the terminal. With the TUI on it, or several
+		# commands asking at once, the questions hide behind the TUI or mix, and a typed password can echo.
+		# Only a command running alone without the TUI (one host, or -m 1) may ask; the others fail at once.
+		host.use_terminal = not use_tui and not return_unfinished and (len(hosts) == 1 or max_connections == 1)
 	global _commands_started
 	_commands_started = True
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
@@ -4089,7 +6462,12 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			if any([host.returncode is None for host in hosts]):
 				try:
 					curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
-				except Exception:
+				except Exception as error:
+					exiting = _exit_replaced_by(error)
+					if exiting is not None:
+						# mssh was exiting (SIGHUP, SIGTERM) and curses failed to restore the terminal, which
+						# hung up: exit as asked, drawing on it again would fail the same way
+						raise exiting
 					try:
 						os.environ['TERM'] = 'xterm-256color'
 						curses.wrapper(curses_print, hosts, threads, min_char_len = window_width, min_line_len = window_height, single_window = single_window)
@@ -4113,7 +6491,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		if will_update_unreachable_hosts:
 			availableHosts = set()
 			for host in hosts:
-				if host.stderr and ('No route to host' in host.stderr[0].strip() or 'Connection timed out' in host.stderr[0].strip() or (host.returncode == 124 and any(line.strip().startswith('Timeout!') for line in host.stderr))):
+				if _found_unreachable(host):
 					unavailableHosts[host.name] =  int(time.monotonic() + unavailable_host_expiry)
 					__globalUnavailableHosts[host.name] =  int(time.monotonic() + unavailable_host_expiry)
 				else:
@@ -4133,11 +6511,14 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			__globalUnavailableHosts.update(canonical_unavailable)
 			if __DEBUG_MODE:
 				print(f'Unreachable hosts: {unavailableHosts}')
-		if pre_merge:
+		hosts = skipped_hosts + hosts
+		if pre_merge and not json and not greppable:
+			# only the default output merges: json and greppable output name each host, scripts grep and parse them.
 			# merge copies, the caller's hosts must keep one entry per real host for failure counts
 			hosts = pre_merge_hosts([host.copy() for host in hosts])
 		if not no_output:
 			print_output(hosts,json,greppable=greppable)
+			_note_unasked_passwords(hosts, password)
 	else:
 		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
@@ -4243,96 +6624,110 @@ def _order_target_hosts(host_tokens, target_host_dic, username=None):
 	ordered.extend(sorted((host for host in target_host_dic if host not in seen), key=_natural_sort_key))
 	return ordered
 
-@cache_decorator
+# The CLI default of each option (dest -> value) of the parser process_args built, config files applied:
+# what a replayed command line gets for an option it leaves out. main() overwrites some DEFAULT_*
+# globals with the options given (set_global_with_args), so those cannot tell.
+__cli_option_defaults = {}
+
+def _parser_defaults(parser):
+	'''The default of each option of an argparse parser by dest: what a line without the option gets.'''
+	return {action.dest: parser.get_default(action.dest) for action in parser._actions}
+
+def _cli_option_defaults():
+	'''The CLI's option defaults: those of the parser this run's options were read with, else a new one's.'''
+	return __cli_option_defaults or _parser_defaults(get_parser())
+
 def __formCommandArgStr(shortend = False, **kwargs) -> str:
-	oneonone = kwargs.get('oneonone', DEFAULT_ONE_ON_ONE)
-	timeout = kwargs.get('timeout', DEFAULT_TIMEOUT)
-	password = kwargs.get('password', DEFAULT_PASSWORD)
-	no_watch = kwargs.get('no_watch', DEFAULT_NO_WATCH)
-	json = kwargs.get('json', DEFAULT_JSON_MODE)
-	max_connections = kwargs.get('max_connections', DEFAULT_MAX_CONNECTIONS)
-	file = kwargs.get('file', None)
-	ipmi = kwargs.get('ipmi', DEFAULT_IPMI)
-	interface_ip_prefix = kwargs.get('interface_ip_prefix', DEFAULT_INTERFACE_IP_PREFIX)
-	scp = kwargs.get('scp', DEFAULT_SCP)
-	gather_mode = kwargs.get('gather_mode', False)
-	username = kwargs.get('username', DEFAULT_USERNAME)
-	extraargs = kwargs.get('extraargs', DEFAULT_EXTRA_ARGS)
-	skip_unreachable = kwargs.get('skip_unreachable', DEFAULT_SKIP_UNREACHABLE)
-	no_env = kwargs.get('no_env', DEFAULT_NO_ENV)
-	greppable = kwargs.get('greppable', DEFAULT_GREPPABLE_MODE)
-	skip_hosts = kwargs.get('skip_hosts', DEFAULT_SKIP_HOSTS)
-	file_sync = kwargs.get('file_sync', False)
-	error_only = kwargs.get('error_only', DEFAULT_ERROR_ONLY)
-	identity_file = kwargs.get('identity_file', DEFAULT_IDENTITY_FILE)
-	copy_id = kwargs.get('copy_id', False)
-	unavailable_host_expiry = kwargs.get('unavailable_host_expiry', DEFAULT_UNAVAILABLE_HOST_EXPIRY)
-	no_history = kwargs.get('no_history', DEFAULT_NO_HISTORY)
-	history_file = kwargs.get('history_file', DEFAULT_HISTORY_FILE)
-	env_file = kwargs.get('env_file', '')
-	# only env files given explicitly: listing the defaults would make a replayed line trust them all
-	env_files = kwargs.get('env_files', ())
-	repeat = kwargs.get('repeat', DEFAULT_REPEAT)
-	interval = kwargs.get('interval', DEFAULT_INTERVAL)
+	'''
+	The options of a run as mssh command line options.
+
+	The "> mssh ..." echo and the history file show them, and both are replayed (the Ctrl-R picker,
+	mssh-complete): every option that changes what runs, where, or what is shown is listed, a flag
+	when it is on, a value when it is not the CLI's default (the parser's, config files applied: a
+	replay gets the same one). Values are attached with "=", so none is read as a host or command.
+
+	Not listed: -ip (an IPMI password is not spread further; -p is, by design: README) and, when it is
+	given, the other IPMI options, the options that do something besides the run (--generate_config_file, --store_config_file,
+	--add_control_master_config), and those main() folds into others: -T into -t, -uk and -k DIR into
+	-k FILE, --script into its options, -s PATH into -f PATH -fs.
+	'''
+	defaults = _cli_option_defaults()
 	argsList = []
-	if oneonone:
-		argsList.append('--oneonone' if not shortend else '-11')
-	if timeout and timeout != DEFAULT_TIMEOUT:
-		argsList.append(f'--timeout={timeout}' if not shortend else f'-t={timeout}')
-	if repeat and repeat != DEFAULT_REPEAT:
-		argsList.append(f'--repeat={repeat}' if not shortend else f'-r={repeat}')
-	if interval and interval != DEFAULT_INTERVAL:
-		argsList.append(f'--interval={interval}' if not shortend else f'-i={interval}')
-	if password and password != DEFAULT_PASSWORD:
-		argsList.append(f'--password={_shell_quote(password)}' if not shortend else f'-p={_shell_quote(password)}')
-	if identity_file and identity_file != DEFAULT_IDENTITY_FILE:
-		argsList.append(f'--key={_shell_quote(identity_file)}' if not shortend else f'-k={_shell_quote(identity_file)}')
-	if copy_id:
-		argsList.append('--copy_id' if not shortend else '-ci')
-	if no_watch:
-		argsList.append('--no_watch' if not shortend else '-q')
-	if json:
-		argsList.append('--json' if not shortend else '-j')
-	if max_connections and max_connections != DEFAULT_MAX_CONNECTIONS:
-		argsList.append(f'--max_connections={max_connections}' if not shortend else f'-m={max_connections}')
-	if file:
-		argsList.extend([f'--file={_shell_quote(file)}' for file in file] if not shortend else [f'-f={_shell_quote(file)}' for file in file])
-	if ipmi:
-		argsList.append('--ipmi')
-	if interface_ip_prefix and interface_ip_prefix != DEFAULT_INTERFACE_IP_PREFIX:
-		argsList.append(f'--interface_ip_prefix={_shell_quote(interface_ip_prefix)}' if not shortend else f'-pre={_shell_quote(interface_ip_prefix)}')
-	if scp:
-		argsList.append('--scp')
-	if gather_mode:
-		argsList.append('--gather_mode' if not shortend else '-gm')
-	if username and username != DEFAULT_USERNAME:
-		argsList.append(f'--username={_shell_quote(username)}' if not shortend else f'-u={_shell_quote(username)}')
-	if extraargs and extraargs != DEFAULT_EXTRA_ARGS:
-		argsList.append(f'--extraargs={_shell_quote(extraargs)}' if not shortend else f'-ea={_shell_quote(extraargs)}')
-	if skip_unreachable:
+	def flag(dest, long_name, short_name=None):
+		value = kwargs.get(dest)
+		# run_command_on_hosts' no_output is ... for "its default"
+		if value and value is not ...:
+			argsList.append(short_name if shortend and short_name else long_name)
+	def option(dest, long_name, short_name=None):
+		default = defaults.get(dest)
+		value = kwargs.get(dest, default)
+		# 0 and '' are values too: -t 0 means no timeout when the configured default is another
+		if value is not None and value != default:
+			argsList.append('{}={}'.format(short_name if shortend and short_name else long_name, _shell_quote(value)))
+	def options(dest, long_name, short_name=None):
+		for value in kwargs.get(dest) or ():
+			argsList.append('{}={}'.format(short_name if shortend and short_name else long_name, _shell_quote(value)))
+	flag('oneonone', '--oneonone', '-11')
+	option('timeout', '--timeout', '-t')
+	option('repeat', '--repeat', '-r')
+	option('interval', '--interval', '-i')
+	option('password', '--password', '-p')
+	option('identity_file', '--key', '-k')
+	flag('copy_id', '--copy_id', '-ci')
+	flag('no_watch', '--no_watch', '-q')
+	flag('json', '--json', '-j')
+	option('max_connections', '--max_connections', '-m')
+	options('file', '--file', '-f')
+	# -fs takes an optional path: listed last it would take the hosts that follow for one. -su / -nsu,
+	# always listed, comes after it
+	flag('file_sync', '--file_sync', '-fs')
+	flag('ipmi', '--ipmi')
+	if kwargs.get('ipmi_password', defaults.get('ipmi_password')) == defaults.get('ipmi_password'):
+		# with -ip, left out, these would make with the configured password a login nobody gave, tried
+		# first on every BMC: a failed login each, towards locking the account. A replay without them
+		# tries the configured logins, as a plain --ipmi run
+		option('ipmi_interface_ip_prefix', '--ipmi_interface_ip_prefix', '-mpre')
+		option('ipmi_username', '--ipmi_username', '-iu')
+		option('ipmi_args', '--ipmi_args', '-ia')
+		option('ipmi_method', '--ipmi_method', '-im')
+		option('ipmi_retry_lockout_time', '--ipmi_retry_lockout_time', '-irlt')
+	option('interface_ip_prefix', '--interface_ip_prefix', '-pre')
+	flag('scp', '--scp')
+	flag('gather_mode', '--gather_mode', '-gm')
+	option('username', '--username', '-u')
+	option('extraargs', '--extraargs', '-ea')
+	if kwargs.get('skip_unreachable', DEFAULT_SKIP_UNREACHABLE):
 		argsList.append('--skip_unreachable' if not shortend else '-su')
 	else:
 		argsList.append('--no_skip_unreachable' if not shortend else '-nsu')
-	if unavailable_host_expiry and unavailable_host_expiry != DEFAULT_UNAVAILABLE_HOST_EXPIRY:
-		argsList.append(f'--unavailable_host_expiry={unavailable_host_expiry}' if not shortend else f'-uhe={unavailable_host_expiry}')
-	if no_env:
-		argsList.append('--no_env')
-	if env_file:
-		argsList.append(f'--env_file={_shell_quote(env_file)}' if not shortend else f'-ef={_shell_quote(env_file)}')
-	if env_files:
-		argsList.extend([f'--env_files={_shell_quote(ef)}' for ef in env_files] if not shortend else [f'-efs={_shell_quote(ef)}' for ef in env_files])
-	if no_history:
-		argsList.append('--no_history' if not shortend else '-nh')
-	if history_file and history_file != DEFAULT_HISTORY_FILE:
-		argsList.append(f'--history_file={_shell_quote(history_file)}' if not shortend else f'-hf={_shell_quote(history_file)}')
-	if greppable:
-		argsList.append('--greppable' if not shortend else '-g')
-	if error_only:
-		argsList.append('--error_only' if not shortend else '-eo')
-	if skip_hosts and skip_hosts != DEFAULT_SKIP_HOSTS:
-		argsList.append(f'--skip_hosts={_shell_quote(skip_hosts)}' if not shortend else f'-sh={_shell_quote(skip_hosts)}')
-	if file_sync:
-		argsList.append('--file_sync' if not shortend else '-fs')
+	option('unavailable_host_expiry', '--unavailable_host_expiry', '-uhe')
+	flag('no_env', '--no_env')
+	option('env_file', '--env_file', '-ef')
+	# only env files given explicitly: listing the defaults would make a replayed line trust them all
+	options('env_files', '--env_files', '-efs')
+	host_file = kwargs.get('host_file')
+	if host_file is not None and host_file != defaults.get('host_file'):
+		# absolute (mssh does not expand ~ in it): a replay in another directory reads the same hosts
+		argsList.append('--host_file={}'.format(_shell_quote(os.path.abspath(host_file) if host_file else host_file)))
+	if kwargs.get('config_file'):
+		# a config file can set any global (even the ssh binary): a replay elsewhere must load this one,
+		# not one a relative path finds in the directory it runs in
+		argsList.append('--config_file={}'.format(_shell_quote(os.path.abspath(os.path.expanduser(kwargs['config_file'])))))
+	flag('no_history', '--no_history', '-nh')
+	option('history_file', '--history_file', '-hf')
+	flag('greppable', '--greppable', '-g')
+	flag('error_only', '--error_only', '-eo')
+	option('skip_hosts', '--skip_hosts', '-sh')
+	option('window_width', '--window_width', '-ww')
+	option('window_height', '--window_height', '-wh')
+	flag('single_window', '--single_window', '-sw')
+	flag('no_output', '--no_output', '-no')
+	flag('success_hosts', '--success_hosts', '-w')
+	flag('return_zero', '--return_zero', '-rz')
+	option('encoding', '--encoding', '-e')
+	option('diff_display_threshold', '--diff_display_threshold', '-dt')
+	flag('force_truecolor', '--force_truecolor')
+	flag('debug', '--debug')
 	return ' '.join(argsList)
 
 def _typed_host_str(hosts):
@@ -4362,11 +6757,17 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 	commandArgKwargs.pop('shortend', None)
 	commandArgKwargs.pop('tabSeperated', None)
 	commandArgKwargs.pop('typed_hosts', None)
-	if commandArgKwargs.get('file'):
-		commandArgKwargs['file'] = frozenset(commandArgKwargs['file'])
+	# run_command_on_hosts' deprecated files= adds to file=
+	if commandArgKwargs.get('files'):
+		commandArgKwargs['file'] = list(commandArgKwargs.get('file') or []) + list(commandArgKwargs['files'])
 	argsStr = __formCommandArgStr(shortend = shortend, **commandArgKwargs)
-	commandStr = ' '.join(_shell_quote(command) for command in format_commands(commands))
+	commands = format_commands(commands)
+	commandStr = ' '.join(_shell_quote(command) for command in commands)
 	hostStr = _shell_quote(hostStr)
+	if any(command.startswith('-') for command in commands):
+		# else read as an mssh option. After the hosts, where it is typed: every Python's argparse reads
+		# "HOSTS -- -x" so, while 3.11 and older read -x as an option in "-- HOSTS -x"
+		hostStr += ' --'
 	filePath = os.path.abspath(__file__)
 	programName = _shell_quote(filePath) if filePath else 'mssh'
 	if tabSeperated:
@@ -4432,6 +6833,93 @@ def _normalize_max_connections(max_connections):
 		normalized = safe_limit
 	return normalized
 
+def _why_names_no_hosts(token):
+	'''Why a host token names no host, for the error message, or None when that is not clear.'''
+	name = token.rsplit('@', 1)[-1].strip().strip('$')
+	if _IPV4_RANGE_RE.match(name):
+		for octet in name.split('.'):
+			start, _, end = octet.strip('[]').partition('-')
+			if start.isdigit() and end.isdigit() and int(start) > int(end):
+				return 'the range {}-{} counts down'.format(start, end)
+	else:
+		for group in re.findall(r'\[(.*?)]', name):
+			for part in group.split(','):
+				part = part.strip()
+				# expanded alone, so the range is read exactly as __expand_hostname reads it
+				if '-' in part and not __expand_hostname('[{}]'.format(part), validate=False):
+					return 'the range [{}] counts down'.format(part)
+	source = _local_hostname_source(name)
+	if source == 'env':
+		return 'the environment variable {} is {!r}'.format(name, os.environ.get(name))
+	if source == 'env_file':
+		return '{} is {!r} in the env files'.format(name, readEnvFromFile().get(name))
+	return None
+
+def _names_a_host(token):
+	'''
+	Whether a host token names at least one host, without DNS (like expand_hostnames_local).
+
+	Stops at the first member that is not an alias, and reuses the range expansions expanding
+	the hosts cached, so a large range costs next to nothing.
+	'''
+	name = token.rsplit('@', 1)[-1].strip()
+	if _IPV4_RANGE_RE.match(name):
+		return bool(__expandIPv4Address(frozenset([name])))
+	for member in __expand_hostname(name, validate=False):
+		member = member.strip().strip('$')
+		if not member:
+			continue
+		if _local_hostname_source(member) not in ('env', 'env_file') or expand_hostnames_local(member)[0]:
+			return True
+	return False
+
+def _report_tokens_naming_no_hosts(tokens):
+	'''
+	Report each host token that names no host at all, e.g. a range counting down or an empty alias.
+
+	Like a name that does not resolve, each counts once towards the exit code and is listed with
+	the failed hosts. Empty groups inside an alias are fine (README's env file example has them):
+	only the tokens given are checked.
+
+	Args:
+		tokens (list): The host tokens as given, from _host_tokens_in_order
+	'''
+	global __mainReturnCode
+	global __failedHosts
+	for token in tokens:
+		if token in __failedHosts or _names_a_host(token):
+			continue
+		reason = _why_names_no_hosts(token)
+		eprint('Error: {!r} names no hosts{}'.format(token, ': ' + reason if reason else ''))
+		__mainReturnCode += 1
+		__failedHosts.add(token)
+
+# what a host skipped as unreachable returns: ssh's code for a host it could not connect to
+_SKIPPED_HOST_RETURN_CODE = 255
+
+def _mark_skipped_unreachable(host, expiry, this_run_only=False):
+	'''
+	Mark host as not run because it was unreachable in a recent run, which counts as a failure.
+
+	Args:
+		host (Host): The host, not started
+		expiry (int): When the host stops being skipped, in time.monotonic() seconds
+		this_run_only (bool): Only this run's earlier commands are used (-a, --no_skip_unreachable)
+
+	Returns:
+		Host: host, finished with _SKIPPED_HOST_RETURN_CODE and a stderr line saying why
+	'''
+	if this_run_only:
+		message = 'Skipped: unreachable in an earlier command of this run'
+	else:
+		message = ('Skipped: unreachable in a recent run, not tried again for another {} s '
+			'(-a, --no_skip_unreachable tries it now)'.format(max(0, int(expiry - time.monotonic()))))
+	host.skipped = True
+	host.stderr.append(message)
+	host.output.append(message)
+	host.returncode = _SKIPPED_HOST_RETURN_CODE
+	return host
+
 
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
 						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
@@ -4450,7 +6938,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		hosts (str or iterable): Hosts to run the command on. Can be a string (comma/space-separated) or iterable. Default: DEFAULT_HOSTS.
 		commands (list or None): List of commands to run on the hosts. If files are used, defines the destination. Default: None.
 		oneonone (bool): If True, run each command on the corresponding host (1:1 mapping). Default: DEFAULT_ONE_ON_ONE.
-		timeout (int): Timeout for each command in seconds. Default: DEFAULT_TIMEOUT.
+		timeout (int): Idle timeout: stop a host's command after this many seconds without output. Default: DEFAULT_TIMEOUT.
 		password (str): Password for SSH/IPMI authentication. Default: DEFAULT_PASSWORD.
 		no_watch (bool): If True, do not use curses TUI; just print output. Default: DEFAULT_NO_WATCH.
 		json (bool): If True, output results in JSON format. Default: DEFAULT_JSON_MODE.
@@ -4465,7 +6953,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		gather_mode (bool): Gather files from hosts (pull mode). Default: False.
 		username (str or None): Username for SSH/IPMI. Default: DEFAULT_USERNAME.
 		extraargs (str or list or None): Extra args for SSH/SCP/rsync. Default: DEFAULT_EXTRA_ARGS.
-		skip_unreachable (bool): Skip hosts marked as unreachable. Default: DEFAULT_SKIP_UNREACHABLE.
+		skip_unreachable (bool): Skip hosts marked as unreachable (they fail with 255). Default: DEFAULT_SKIP_UNREACHABLE.
 		no_env (bool): Do not load environment variables from shell. Default: DEFAULT_NO_ENV.
 		greppable (bool): Output in greppable table format. Default: DEFAULT_GREPPABLE_MODE.
 		will_update_unreachable_hosts (bool): Update global unreachable hosts file. Default: _DEFAULT_UPDATE_UNREACHABLE_HOSTS.
@@ -4478,20 +6966,23 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		error_only (bool): Only print error output. Default: DEFAULT_ERROR_ONLY.
 		quiet (bool): Suppress all output (overrides other output options). Default: False.
 		identity_file (str or None): SSH identity file. Default: DEFAULT_IDENTITY_FILE.
-		copy_id (bool): Use ssh-copy-id to copy public key to hosts. Default: False.
+		copy_id (bool): Use ssh-copy-id to copy public key to hosts first. Without commands, the ssh-copy-id runs are returned as the hosts. Default: False.
 		unavailable_host_expiry (int): Seconds to keep hosts marked as unavailable. Default: DEFAULT_UNAVAILABLE_HOST_EXPIRY.
 		no_history (bool): Do not record command history. Default: True.
 		history_file (str): File to store command history. Default: DEFAULT_HISTORY_FILE.
-		pre_merge_hosts (bool): Pre-merge all hosts with identical outputs. Default: not called.
+		pre_merge_hosts (bool): In the printed default output, show hosts with identical outputs once (json and greppable output list every host). Default: not called.
 		no_output (bool): If True, do not print output after execution. Default: called.
 
 	Returns:
-		list: List of Host objects representing each host/command run.
+		list: List of Host objects representing each host/command run. A host skipped because it was
+			unreachable in a recent run is in the list too, not run: its skipped is True, its
+			returncode 255 and its stderr says why.
 	"""
 	global __globalUnavailableHosts
 	global __global_suppress_printout
 	global _no_env
 	global _emo
+	global _stopping
 	global __DEBUG_MODE
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
@@ -4499,6 +6990,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if called:
 		# a library call starts fresh; on the CLI a Ctrl-C (e.g. in an earlier --repeat run) stands
 		_emo = False
+		_stopping = False
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
@@ -4521,6 +7013,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		})
 	max_connections = _normalize_max_connections(max_connections)
 	commands = format_commands(commands)
+	this_run_only = False
 	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
@@ -4542,6 +7035,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		else:
 			unavailableHosts = dict()
 			skip_unreachable = True
+			# -a: only hosts found unreachable by this run's earlier commands are skipped
+			this_run_only = True
 	if pre_merge_hosts is ...:
 		pre_merge_hosts = not called
 	if no_output is ...:
@@ -4549,8 +7044,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
-	# one on one mode pairs commands with hosts in the order the hosts were given
-	hostTokens = _host_tokens_in_order(hosts) if oneonone else []
+	# the hosts as given: one on one mode pairs commands with them in this order
+	hostTokens = _host_tokens_in_order(hosts)
 	if isinstance(hosts, list):
 		hosts = frozenset(hosts)
 	elif isinstance(hosts, dict):
@@ -4585,35 +7080,65 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
-		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet))}\"")
+		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet, hosts_only=True))}\"")
+	if not called:
+		_report_tokens_naming_no_hosts(hostTokens)
+		if not targetHostDic:
+			# every host is a name that does not resolve or names no host: nothing would run
+			_abort(max(1, __mainReturnCode), 'no hosts to run on', called=called)
+		if all(host in skipHostSet or targetHostDic[host] in skipHostSet for host in targetHostDic):
+			eprint('Warning: -X, --skip_hosts leaves no hosts to run on')
+	if interface_ip_prefix and not __global_suppress_printout:
+		# said once here: run_command's own warning only reaches the TUI
+		unprefixed = [host for host, ip in targetHostDic.items()
+			if not _interface_prefix_applies(ip) and host not in skipHostSet and ip not in skipHostSet]
+		if unprefixed:
+			eprint(_interface_prefix_warning(interface_ip_prefix, unprefixed))
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
 			hosts = []
+			# the ssh-copy-id runs: their results are the hosts' results, a failed one is a failed host
+			copied = []
 			for host in targetHostDic:
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
 				# host already carries user@ when username is set, see hostStr above
-				command = f"{shlex.quote(_binPaths['ssh-copy-id'])} "
-				if identity_file:
-					command = f"{command}-i {shlex.quote(os.path.expanduser(identity_file))} "
-				command = f"{command}{shlex.quote(host)}"
+				command = _copy_id_command(host, identity_file, extraargs)
 				if password and 'sshpass' in _binPaths:
-					command = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(password)} {command}"
+					# _build_command puts sshpass in front: the password stays out of the command mssh shows
 					hosts.append(Host(host, command,identity_file=identity_file,shell=True,ip = targetHostDic[host]))
 				else:
+					# ssh-copy-id asks for the password on the terminal, one host after the other. Every word of
+					# command is quoted; os.system, not Popen, so a Ctrl-C reaches only ssh-copy-id (see below)
 					eprint(f"> {command}")
-					os.system(command)
+					typed = Host(host, command, identity_file=identity_file, shell=True, ip=targetHostDic[host])
+					typed.returncode = _wait_status_return_code(os.system(command))
+					copied.append(typed)
+					if typed.returncode == -signal.SIGINT:
+						# os.system ignores Ctrl-C, the ssh-copy-id it ran got it: stop, as a shell loop does
+						eprint('Ctrl C caught, not copying the id to the other hosts')
+						_emo = True
+						break
 			if hosts:
 				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
 					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
 					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
 					   window_width = window_width, window_height = window_height,
 					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
+				copied += hosts
+			if not commands:
+				# main() counts the hosts ssh-copy-id failed on, as for any command
+				return copied
+			if not called:
+				_count_failed_copies(copied)
+			if _emo:
+				_abort(1, 'Ctrl C caught, not starting the command', called=called)
 		else:
 			eprint(f"Warning: ssh-copy-id not found in {_binPaths} , skipping copy id to the hosts")
-		if not commands:
-			_abort(0, "Copy id finished, no commands to run", called=called)
+			if not commands:
+				# 127: the shell's code for a command it cannot find
+				_abort(127, "ssh-copy-id not found, no id copied", called=called)
 	if file and not commands:
 		# if files are specified but not target dir, we default to file sync mode
 		file_sync = True
@@ -4625,6 +7150,11 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		if not gather_mode:
 			pathSet = set()
 			for pattern in file:
+				# a path that exists is meant as written: the shell expanded the user's globs already,
+				# and glob would read report[1].txt as report1.txt
+				if os.path.lexists(pattern):
+					pathSet.add(pattern)
+					continue
 				try:
 					pathSet.update(glob.glob(pattern,include_hidden=True,recursive=True))
 				except Exception:
@@ -4639,8 +7169,16 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			file = []
 		else:
 			file = list(pathSet)
+		if not gather_mode and not __global_suppress_printout and 'rsync' in _binPaths and not (scp and 'scp' in _binPaths):
+			# -s copies each path on its own, -f all files together
+			for sources in ([[path] for path in commands] if file_sync else [file]):
+				for path, target, why in _rsync_link_sources(sources)[1]:
+					eprint('Warning: ' + _KEPT_LINK_WARNINGS[why].format(path=path, target=target))
 		if __DEBUG_MODE:
 			eprint(f"Files: {file!r}")
+	def recently_unreachable(host):
+		'''Whether host is skipped (not run, a failure) because it was unreachable in a recent run.'''
+		return not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic()
 	if oneonone:
 		hosts = []
 		# skipped hosts get no command, unreachable hosts keep their command slot and are skipped below
@@ -4655,14 +7193,15 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint('-'*80)
 			eprint("Running in one on one mode")
 		for host, command in zip(orderedHosts, commands):
-			if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
-				eprint(f"Skipping unavailable host: {host}")
-				continue
 			if file_sync:
-				hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host]))
+				new_host = Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host])
 			else:
-				hosts.append(Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
-			if not __global_suppress_printout: 
+				new_host = Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
+			hosts.append(new_host)
+			if recently_unreachable(host):
+				eprint(f"Skipping unavailable host: {host}")
+				_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
+			elif not __global_suppress_printout: 
 				eprint(f"Running command: {command!r} on host: {host!r}")
 		if not __global_suppress_printout:
 			eprint('-'*80)
@@ -4679,10 +7218,6 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			# run in interactive mode ssh mode
 			hosts = []
 			for host in targetHostDic:
-				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
-					if not __global_suppress_printout:
-						eprint(f"Skipping unavailable host: {host}")
-					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
 				if file_sync:
@@ -4691,7 +7226,12 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				elif file:
 					eprint("Error: files need to be specified with at least one path to sync")
 				else:
-					hosts.append(Host(host, '', files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host]))
+					new_host = Host(host, '', files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host])
+					hosts.append(new_host)
+					if recently_unreachable(host):
+						if not __global_suppress_printout:
+							eprint(f"Skipping unavailable host: {host}")
+						_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -4711,16 +7251,17 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				break
 			hosts = []
 			for host in targetHostDic:
-				if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
-					if not __global_suppress_printout:
-						eprint(f"Skipping unavailable host: {host}")
-					continue
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
 				if file_sync:
-					hosts.append(Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
+					new_host = Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
 				else:
-					hosts.append(Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host]))
+					new_host = Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
+				hosts.append(new_host)
+				if recently_unreachable(host):
+					if not __global_suppress_printout:
+						eprint(f"Skipping unavailable host: {host}")
+					_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -4760,6 +7301,9 @@ def generate_default_config(args):
 		'DEFAULT_FILE_SYNC': args.file_sync,
 		'DEFAULT_TIMEOUT': DEFAULT_TIMEOUT,
 		'DEFAULT_CLI_TIMEOUT': args.timeout,
+		'DEFAULT_SSH_CONNECT_TIMEOUT': DEFAULT_SSH_CONNECT_TIMEOUT,
+		'DEFAULT_SSH_SERVER_ALIVE_INTERVAL': DEFAULT_SSH_SERVER_ALIVE_INTERVAL,
+		'DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX': DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX,
 		'DEFAULT_UNAVAILABLE_HOST_EXPIRY': args.unavailable_host_expiry,
 		'DEFAULT_REPEAT': args.repeat,
 		'DEFAULT_INTERVAL': args.interval,
@@ -4771,7 +7315,7 @@ def generate_default_config(args):
 		'DEFAULT_IPMI_METHOD': args.ipmi_method,
 		'DEFAULT_IPMI_RETRY_LOCKOUT_TIME': args.ipmi_retry_lockout_time,
 		'DEFAULT_INTERFACE_IP_PREFIX': args.interface_ip_prefix,
-		'DEFAULT_IPMI_DEFINITIONS': DEFAULT_IPMI_DEFINITIONS,
+		'DEFAULT_IPMI_DEFINITIONS': _ipmi_definitions_to_store(args),
 		'DEFAULT_NO_WATCH': args.no_watch,
 		'DEFAULT_WINDOW_WIDTH': args.window_width,
 		'DEFAULT_WINDOW_HEIGHT': args.window_height,
@@ -4804,6 +7348,33 @@ def _is_system_config_path(path):
 		if os.path.isabs(entry)
 	)
 
+def _own_symlink(path):
+	'''Whether path is a symlink of our own (or root's), one write_default_config writes through.'''
+	if not os.path.islink(path):
+		return False
+	return not hasattr(os, 'getuid') or os.lstat(path).st_uid in (os.getuid(), 0)
+
+def _copy_to_backup(path, backup, mode):
+	'''Copy the file path leads to into a new file at backup (mode), replacing what is there, a symlink included.'''
+	with open(path, 'rb') as f:
+		content = f.read()
+	# a temporary file renamed over the backup: opening the backup itself would follow a link left there
+	temporary = '{}.{}.tmp'.format(backup, uuid4().hex)
+	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+	try:
+		with os.fdopen(fd, 'wb') as f:
+			if hasattr(os, 'fchmod'):
+				# O_CREAT's mode is reduced by the umask, set it exactly
+				os.fchmod(f.fileno(), mode)
+			f.write(content)
+		os.replace(temporary, backup)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
 	default_config = generate_default_config(args)
@@ -4816,7 +7387,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	if not force and os.path.exists(CONFIG_FILE):
 		eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
 		eprint("o:  Overwrite the file")
-		eprint(f"b:  Rename the current config file at {CONFIG_FILE!r}.bak forcefully and write the new config file (default)")
+		eprint(f"b:  Back up the current config file to {CONFIG_FILE + '.bak'!r} and write the new config file (default)")
 		eprint("n:  Do nothing")
 		inStr = input_with_timeout_and_countdown(10)
 		if (not inStr) or inStr.lower().strip().startswith('b'):
@@ -4831,7 +7402,11 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	except OSError:
 		previous_mode = None
 	try:
-		if backup and os.path.exists(CONFIG_FILE):
+		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
+			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
+			# link aside would leave the file it points to as it was, copy that file instead
+			_copy_to_backup(CONFIG_FILE, CONFIG_FILE+'.bak', 0o600 if previous_mode is None else previous_mode & 0o600)
+		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only
 			if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
@@ -4850,7 +7425,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
 		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
 		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
-		if os.path.islink(CONFIG_FILE) and hasattr(os, 'getuid') and os.lstat(CONFIG_FILE).st_uid not in (os.getuid(), 0):
+		if os.path.islink(CONFIG_FILE) and not _own_symlink(CONFIG_FILE):
 			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
 		target = os.path.realpath(CONFIG_FILE)
 		try:
@@ -4934,110 +7509,200 @@ OPTION_NO_EFFECT = (
 	('--ipmi_retry_lockout_time', 'without', _IPMI_OR_STORED, 'only used with --ipmi'),
 )
 
+def _plain_help(text):
+	'''
+	text as an argparse help string. argparse %-formats help (Python 3.14+ already when the option is
+	added), and the defaults written into mssh's help can hold a % (ssh's ControlPath=~/.ssh/cm-%r@%h:%p).
+	'''
+	return text.replace('%', '%%')
+
+def _password_shown(password):
+	'''What -h says about a default password: whether there is one, never the password.'''
+	return 'set, not shown' if password else 'none'
+
+REMOTE_OPTIONS_HINT = ("mssh reads words starting with '-' as its own options, also after the hosts. "
+	"To pass options to the remote command, quote the whole command: mssh web1 'ls -la'")
+
+class _MsshArgumentParser(argparse.ArgumentParser):
+	'''
+	argparse, taking option names in full only: a word is an mssh option by its name ('-u',
+	'--username', '-u=root'), or as a short option with its value or more short flags in the same
+	word ('-uroot', '-qj'), never as an abbreviation. mssh reads options among the remote command's
+	words too, where an abbreviation turned "bash -c" into -ci (ssh-copy-id) and "--user x" into
+	--username. allow_abbrev=False is no fix: before Python 3.12 it keeps single-dash abbreviations
+	("-c" still means -ci), and on 3.6 and 3.7 it also stops "-qj" from meaning "-q -j" (bpo-26967).
+	'''
+	def _get_option_tuples(self, option_string):
+		# argparse's readings of a word that is no option name, as (action, option string, ...):
+		# abbreviations alone do not count, and with a full-name reading argparse's answer stands
+		# ("-pr" is "-p r" or "-pre": ambiguous, an error as it always was)
+		readings = super(_MsshArgumentParser, self)._get_option_tuples(option_string)
+		name = option_string.partition('=')[0]
+		if any(reading[1] in (name, option_string[:2]) for reading in readings):
+			return readings
+		return []
+
+	def error(self, message):
+		super(_MsshArgumentParser, self).error('{}\n{}'.format(message, REMOTE_OPTIONS_HINT))
+
 def get_parser():
-	parser = argparse.ArgumentParser(
+	parser = _MsshArgumentParser(
 		description='Run a command on multiple hosts, Use #HOST# or #HOSTNAME# to replace the host name in the command.',
 		epilog=(
 			f"Terminal color capability: {get_terminal_color_capability()}\n"
 			f"Found bins: \n{pformat(set(_binPaths.values()))}\n"
 			f"Missing bins: \n{pformat(_binCalled - set(_binPaths.keys()))}\n"
 			f"Config file chain: \n{pformat(CONFIG_FILE_CHAIN)}\n"
-			f"Hosts Env files searched:\n{pformat(DEFAULT_ENV_FILES)}"
+			f"Hosts Env files searched:\n{pformat(DEFAULT_ENV_FILES)}\n\n"
+			f"{REMOTE_OPTIONS_HINT}"
 		),
 		formatter_class=argparse.RawTextHelpFormatter,
 	)
-	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})',default=DEFAULT_HOSTS)
+	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=_plain_help(f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})'),default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
-	parser.add_argument('-u','--username', type=str,help=f'The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})',default=DEFAULT_USERNAME)
-	parser.add_argument('-p', '--password', type=str,help=f'The password to use to connect to the hosts via ssh, (default: {DEFAULT_PASSWORD})',default=DEFAULT_PASSWORD)
-	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})',const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
-	parser.add_argument('-uk','--use_key', action='store_true', help=f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})', default=DEFAULT_USE_KEY)
-	parser.add_argument('-ea','--extraargs',type=str,help=f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})',default=DEFAULT_EXTRA_ARGS)
-	parser.add_argument("-11",'--oneonone', action='store_true', help=f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})", default=DEFAULT_ONE_ON_ONE)
+	parser.add_argument('-u','--username', type=str,help=_plain_help(f'The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})'),default=DEFAULT_USERNAME)
+	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, (default: {_password_shown(DEFAULT_PASSWORD)})'),default=DEFAULT_PASSWORD)
+	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=_plain_help(f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})'),const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
+	parser.add_argument('-uk','--use_key', action='store_true', help=_plain_help(f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})'), default=DEFAULT_USE_KEY)
+	parser.add_argument('-ea','--extraargs',type=str,help=_plain_help(f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})'),default=DEFAULT_EXTRA_ARGS)
+	parser.add_argument("-11",'--oneonone', action='store_true', help=_plain_help(f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})"), default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
-	parser.add_argument('-s','-fs','--file_sync',nargs='?', action='append', help=f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})',const=True, default=[DEFAULT_FILE_SYNC])
-	parser.add_argument('-W','--scp', action='store_true', help=f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})', default=DEFAULT_SCP)
+	parser.add_argument('-s','-fs','--file_sync',nargs='?', action='append', help=_plain_help(f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})'),const=True, default=[DEFAULT_FILE_SYNC])
+	parser.add_argument('-W','--scp', action='store_true', help=_plain_help(f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})'), default=DEFAULT_SCP)
 	parser.add_argument('-G','-gm','--gather_mode', action='store_true', help='Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
 	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
-	parser.add_argument("-t","--timeout", type=int, help=f"Timeout for each command in seconds. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})", default=DEFAULT_CLI_TIMEOUT)
-	parser.add_argument('-T','--use_script_timeout',action='store_true', help=f'Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: {DEFAULT_TIMEOUT})', default=False)
-	parser.add_argument("-r","--repeat", type=_positive_int, help=f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})", default=DEFAULT_REPEAT)
-	parser.add_argument("-i","--interval", type=int, help=f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})", default=DEFAULT_INTERVAL)
-	parser.add_argument('-M',"--ipmi", action='store_true', help=f"Use ipmitool to run the command. (default: {DEFAULT_IPMI})", default=DEFAULT_IPMI)
-	parser.add_argument("-mpre","--ipmi_interface_ip_prefix", type=str, help=f"The prefix of the IPMI interfaces (default: {DEFAULT_IPMI_INTERFACE_IP_PREFIX})", default=DEFAULT_IPMI_INTERFACE_IP_PREFIX)
-	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})", default=DEFAULT_INTERFACE_IP_PREFIX)
-	parser.add_argument('-iu','--ipmi_username', type=str,help=f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})',default=DEFAULT_IPMI_USERNAME)
-	parser.add_argument('-ip','--ipmi_password', type=str,help=f'The password to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_PASSWORD})',default=DEFAULT_IPMI_PASSWORD)
-	parser.add_argument('-ia','--ipmi_args',type=str,help=f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_ARGS})',default=DEFAULT_IPMI_ARGS)
-	parser.add_argument('-im','--ipmi_method', type=str,help=f'The method to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_METHOD})',default=DEFAULT_IPMI_METHOD)
-	parser.add_argument('-irlt','--ipmi_retry_lockout_time', type=int,help=f'The time in seconds to retry the lockout of the hosts via ipmi. (default: {DEFAULT_IPMI_RETRY_LOCKOUT_TIME})',default=DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
-	parser.add_argument('-S',"-q","-nw","--no_watch", action='store_true', help=f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})", default=DEFAULT_NO_WATCH)
-	parser.add_argument("-ww",'--window_width', type=int, help=f"The minimum character length of the curses window. (default: {DEFAULT_WINDOW_WIDTH})", default=DEFAULT_WINDOW_WIDTH)
-	parser.add_argument("-wh",'--window_height', type=int, help=f"The minimum line height of the curses window. (default: {DEFAULT_WINDOW_HEIGHT})", default=DEFAULT_WINDOW_HEIGHT)
-	parser.add_argument('-B','-sw','--single_window', action='store_true', help=f'Use a single window for all hosts. (default: {DEFAULT_SINGLE_WINDOW})', default=DEFAULT_SINGLE_WINDOW)
-	parser.add_argument('-R','-eo','--error_only', action='store_true', help=f'Only print the error output. (default: {DEFAULT_ERROR_ONLY})', default=DEFAULT_ERROR_ONLY)
-	parser.add_argument('-Q',"-no","--no_output","--quiet", action='store_true', help=f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})", default=DEFAULT_NO_OUTPUT)
-	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})", default=DEFAULT_RETURN_ZERO)
-	parser.add_argument('-C','--no_env', action='store_true', help=f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})', default=DEFAULT_NO_ENV)
+	parser.add_argument("-t","--timeout", type=int, help=_plain_help(f"Idle timeout in seconds: stop a host's command after this long without output. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})"), default=DEFAULT_CLI_TIMEOUT)
+	parser.add_argument('-T','--use_script_timeout',action='store_true', help=_plain_help(f'Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: {DEFAULT_TIMEOUT})'), default=False)
+	parser.add_argument("-r","--repeat", type=_positive_int, help=_plain_help(f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})"), default=DEFAULT_REPEAT)
+	parser.add_argument("-i","--interval", type=int, help=_plain_help(f"Interval between repeats in seconds (default: {DEFAULT_INTERVAL})"), default=DEFAULT_INTERVAL)
+	parser.add_argument('-M',"--ipmi", action='store_true', help=_plain_help(f"Use ipmitool to run the command. (default: {DEFAULT_IPMI})"), default=DEFAULT_IPMI)
+	parser.add_argument("-mpre","--ipmi_interface_ip_prefix", type=str, help=_plain_help(f"The prefix of the IPMI interfaces (default: {DEFAULT_IPMI_INTERFACE_IP_PREFIX})"), default=DEFAULT_IPMI_INTERFACE_IP_PREFIX)
+	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=_plain_help(f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})"), default=DEFAULT_INTERFACE_IP_PREFIX)
+	parser.add_argument('-iu','--ipmi_username', type=str,help=_plain_help(f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})'),default=DEFAULT_IPMI_USERNAME)
+	parser.add_argument('-ip','--ipmi_password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ipmi. (default: {_password_shown(DEFAULT_IPMI_PASSWORD)})'),default=DEFAULT_IPMI_PASSWORD)
+	parser.add_argument('-ia','--ipmi_args',type=str,help=_plain_help(f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_ARGS})'),default=DEFAULT_IPMI_ARGS)
+	parser.add_argument('-im','--ipmi_method', type=str,help=_plain_help(f'The method to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_METHOD})'),default=DEFAULT_IPMI_METHOD)
+	parser.add_argument('-irlt','--ipmi_retry_lockout_time', type=int,help=_plain_help(f'The time in seconds to retry the lockout of the hosts via ipmi. (default: {DEFAULT_IPMI_RETRY_LOCKOUT_TIME})'),default=DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
+	parser.add_argument('-S',"-q","-nw","--no_watch", action='store_true', help=_plain_help(f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})"), default=DEFAULT_NO_WATCH)
+	parser.add_argument("-ww",'--window_width', type=int, help=_plain_help(f"The minimum character length of the curses window. (default: {DEFAULT_WINDOW_WIDTH})"), default=DEFAULT_WINDOW_WIDTH)
+	parser.add_argument("-wh",'--window_height', type=int, help=_plain_help(f"The minimum line height of the curses window. (default: {DEFAULT_WINDOW_HEIGHT})"), default=DEFAULT_WINDOW_HEIGHT)
+	parser.add_argument('-B','-sw','--single_window', action='store_true', help=_plain_help(f'Use a single window for all hosts. (default: {DEFAULT_SINGLE_WINDOW})'), default=DEFAULT_SINGLE_WINDOW)
+	parser.add_argument('-R','-eo','--error_only', action='store_true', help=_plain_help(f'Only print the error output. (default: {DEFAULT_ERROR_ONLY})'), default=DEFAULT_ERROR_ONLY)
+	parser.add_argument('-Q',"-no","--no_output","--quiet", action='store_true', help=_plain_help(f"Do not print the output. (default: {DEFAULT_NO_OUTPUT})"), default=DEFAULT_NO_OUTPUT)
+	parser.add_argument('-Z','-rz','--return_zero', action='store_true', help=_plain_help(f"Return 0 even if there are errors. (default: {DEFAULT_RETURN_ZERO})"), default=DEFAULT_RETURN_ZERO)
+	parser.add_argument('-C','--no_env', action='store_true', help=_plain_help(f'Do not load the command line environment variables. (default: {DEFAULT_NO_ENV})'), default=DEFAULT_NO_ENV)
 	parser.add_argument('-ef',"--env_file", type=str, help="Replace the env file look up chain with this env_file. ( Still work with --no_env ) (default: None)", default='')
 	parser.add_argument('-efs',"--env_files", action='append', help="The files to load the mssh file based environment variables from. Can specify multiple. Load first to last. ( Still work with --no_env ) (default: [])", default=[])
 	parser.add_argument("-m","--max_connections", type=int, help="Max number of connections to use (default: 4 * cpu_count)", default=DEFAULT_MAX_CONNECTIONS)
-	parser.add_argument("-j","--json", action='store_true', help=F"Output in json format. (default: {DEFAULT_JSON_MODE})", default=DEFAULT_JSON_MODE)
-	parser.add_argument('-w',"--success_hosts", action='store_true', help=f"Output the hosts that succeeded in summary as well. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})", default=DEFAULT_PRINT_SUCCESS_HOSTS)
-	parser.add_argument('-P',"-g","--greppable",'--table', action='store_true', help=f"Output in greppable table. (default: {DEFAULT_GREPPABLE_MODE})", default=DEFAULT_GREPPABLE_MODE)
+	parser.add_argument("-j","--json", action='store_true', help=_plain_help(f"Output in json format. (default: {DEFAULT_JSON_MODE})"), default=DEFAULT_JSON_MODE)
+	parser.add_argument('-w',"--success_hosts", action='store_true', help=_plain_help(f"Output the hosts that succeeded in summary as well. (default: {DEFAULT_PRINT_SUCCESS_HOSTS})"), default=DEFAULT_PRINT_SUCCESS_HOSTS)
+	parser.add_argument('-P',"-g","--greppable",'--table', action='store_true', help=_plain_help(f"Output in greppable table. (default: {DEFAULT_GREPPABLE_MODE})"), default=DEFAULT_GREPPABLE_MODE)
 	su_group = parser.add_mutually_exclusive_group()
-	su_group.add_argument('-x',"-su","--skip_unreachable", action='store_true', help=f"Skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})", default=DEFAULT_SKIP_UNREACHABLE)
-	su_group.add_argument('-a',"-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=f"Do not skip unreachable hosts. Note: Timedout Hosts are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})", default=not DEFAULT_SKIP_UNREACHABLE)
-	parser.add_argument('-uhe','--unavailable_host_expiry', type=int, help=f"Time in seconds to expire the unavailable hosts (default: {DEFAULT_UNAVAILABLE_HOST_EXPIRY})", default=DEFAULT_UNAVAILABLE_HOST_EXPIRY)
-	parser.add_argument('-X',"-sh","--skip_hosts", type=str, help=f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})", default=DEFAULT_SKIP_HOSTS)
+	su_group.add_argument('-x',"-su","--skip_unreachable", action='store_true', help=_plain_help(f"Skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {DEFAULT_SKIP_UNREACHABLE})"), default=DEFAULT_SKIP_UNREACHABLE)
+	su_group.add_argument('-a',"-nsu","--no_skip_unreachable",dest = 'skip_unreachable', action='store_false', help=_plain_help(f"Do not skip unreachable hosts. Note: Hosts that time out before printing anything are considered unreachable. Note: multiple command sequence will still auto skip unreachable hosts. (default: {not DEFAULT_SKIP_UNREACHABLE})"), default=not DEFAULT_SKIP_UNREACHABLE)
+	parser.add_argument('-uhe','--unavailable_host_expiry', type=int, help=_plain_help(f"Time in seconds to expire the unavailable hosts (default: {DEFAULT_UNAVAILABLE_HOST_EXPIRY})"), default=DEFAULT_UNAVAILABLE_HOST_EXPIRY)
+	parser.add_argument('-X',"-sh","--skip_hosts", type=str, help=_plain_help(f"Skip the hosts in the list. (default: {DEFAULT_SKIP_HOSTS if DEFAULT_SKIP_HOSTS else 'None'})"), default=DEFAULT_SKIP_HOSTS)
 	parser.add_argument('--generate_config_file', action='store_true', help='Restore / generate using the build-in default configs with default config file chain and command line argument to write to --store_config_file / stdout')
 	parser.add_argument('--config_file', type=str,nargs='?', help='Load additional config file to apply, Warning: will over write CLI options. Use without a path will use multiSSH3.config.json',const='multiSSH3.config.json',default=None)
-	parser.add_argument('--store_config_file',type = str,nargs='?',help=f'Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: {__working_config_file}',const=...)
+	parser.add_argument('--store_config_file',type = str,nargs='?',help=_plain_help(f'Refresh / store the specified config file with new params and command line args into the config file. Defaults to the first config file found in search path: {__working_config_file}'),const=...)
 	parser.add_argument('--debug', action='store_true', help='Print debug information')
 	parser.add_argument('-ci','--copy_id', action='store_true', help='Copy the ssh id to the hosts')
-	parser.add_argument('-I','-nh','--no_history', action='store_true', help=f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}', default=DEFAULT_NO_HISTORY)
-	parser.add_argument('-hf','--history_file', type=str, help=f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})', default=DEFAULT_HISTORY_FILE)
+	parser.add_argument('-I','-nh','--no_history', action='store_true', help=_plain_help(f'Do not record the command to history. Default: {DEFAULT_NO_HISTORY}'), default=DEFAULT_NO_HISTORY)
+	parser.add_argument('-hf','--history_file', type=str, help=_plain_help(f'The file to store the history. (default: {DEFAULT_HISTORY_FILE})'), default=DEFAULT_HISTORY_FILE)
 	parser.add_argument('--script', action='store_true', help='Run the command in script mode, short for -SCRIPT or --no_watch --skip_unreachable --no_env --no_history --greppable --error_only')
-	parser.add_argument('-e','--encoding', type=str, help=f'The encoding to use for the output. (default: {DEFAULT_ENCODING})', default=DEFAULT_ENCODING)
-	parser.add_argument('-dt','--diff_display_threshold', type=float, help=f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})', default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
-	parser.add_argument('--force_truecolor', action='store_true', help=f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})', default=FORCE_TRUECOLOR)
+	parser.add_argument('-e','--encoding', type=_text_encoding, help=_plain_help(f'The encoding to use for the output. (default: {DEFAULT_ENCODING})'), default=DEFAULT_ENCODING)
+	parser.add_argument('-dt','--diff_display_threshold', type=float, help=_plain_help(f'The threshold of lines to display the diff when files differ. {{0-1}} Set to 0 to always display the diff. Set to 1 to disable diff. (Only merge same) (default: {DEFAULT_DIFF_DISPLAY_THRESHOLD})'), default=DEFAULT_DIFF_DISPLAY_THRESHOLD)
+	parser.add_argument('--force_truecolor', action='store_true', help=_plain_help(f'Force truecolor output even when not in a truecolor terminal. (default: {FORCE_TRUECOLOR})'), default=FORCE_TRUECOLOR)
 	parser.add_argument('--add_control_master_config', action='store_true', help='Add ControlMaster configuration to ~/.ssh/config to speed up multiple connections to the same host.')
-	parser.add_argument('--host_file', type=str,help=f'File containing list of hosts to run the command on, one host per line. Default:{DEFAULT_HOST_FILE}', default=DEFAULT_HOST_FILE)
+	parser.add_argument('--host_file', type=str,help=_plain_help(f'The hosts file mssh looks host names up in before DNS, in the format of {_SYSTEM_HOST_FILE} (an IP address, then names, per line). Not a list of hosts to run on. Default: {DEFAULT_HOST_FILE}'), default=DEFAULT_HOST_FILE)
 	parser.add_argument('--completion', nargs='+', metavar='ARG', help='Shell autocomplete: print the glue for bash, zsh or fish, or "install [SHELL] [editor]" / "uninstall [SHELL]" it for the current user ("editor": the plain-bash mssh line editor)')
 	parser.add_argument("-V","--version", action='version', version=f'%(prog)s {version} @ {COMMIT_DATE} with [ {", ".join(_binPaths.keys())} ] by {AUTHOR} ({AUTHOR_EMAIL})')
 	return parser
 
+def _parse_command_line(parser, argv = None):
+	'''Parse argv with mssh's parser as Python 3.12.8+ argparse does, on every Python.
+
+	Options and positionals mix freely. The first "--" ends the options: the word after it is the hosts
+	unless they came before it, and every later word is a command word, dash words and a later "--"
+	included. Older argparse read the options again after a "--" in front of the hosts ("mssh -- h -u y"
+	set the username) and dropped every "--"; Python 3.6 kept it in the commands after an option. So only
+	the words before the "--" go to argparse, and the words after it are placed here.
+	'''
+	argv = list(sys.argv[1:] if argv is None else argv)
+	after = None
+	if '--' in argv:
+		cut = argv.index('--')
+		argv, after = argv[:cut], argv[cut + 1:]
+		default_hosts = parser.get_default('hosts')
+		# tells "no hosts before the --" from hosts typed as the default's value
+		no_hosts = object()
+		parser.set_defaults(hosts=no_hosts)
+	try:
+		try:
+			namespace, leftovers = parser.parse_intermixed_args(argv), []
+		except Exception:
+			# Python 3.6 has no parse_intermixed_args: what parse_known_args cannot place becomes commands
+			namespace, leftovers = parser.parse_known_args(argv)
+	finally:
+		if after is not None:
+			parser.set_defaults(hosts=default_hosts)
+	commands = namespace.commands or []
+	if after is not None:
+		before = ([] if namespace.hosts is no_hosts else [namespace.hosts]) + commands
+		words = before + after
+		namespace.hosts = words[0] if words else default_hosts
+		commands = words[1:]
+		# leftovers come from before the "--", so they go in front of the words after it
+		at = max(len(before) - 1, 0)
+		commands[at:at] = leftovers
+	elif leftovers:
+		commands += leftovers
+	if leftovers:
+		eprint(f"Warning: Unknown arguments, treating all as commands: {leftovers!r}\n{REMOTE_OPTIONS_HINT}")
+	namespace.commands = commands
+	return namespace
+
+# the IPMI options: argparse dest -> IPMI definition key
+_IPMI_OPTIONS = (
+	('ipmi_interface_ip_prefix', 'interface_ip_prefix'),
+	('ipmi_username', 'username'),
+	('ipmi_password', 'password'),
+	('ipmi_args', 'args'),
+	('ipmi_method', 'ipmi_method'),
+	('ipmi_retry_lockout_time', 'retry_lockout_time'),
+)
+# the default of an option process_args needs to know was given
+_NOT_GIVEN = object()
+
 def process_args(args = None):
 	global __configs_from_file
-	cfp = 	parser = argparse.ArgumentParser(add_help=False)
+	global _ipmi_command_line
+	global __cli_option_defaults
+	cfp = 	parser = _MsshArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
 	try:
 		cfpa, args = cfp.parse_known_args(args)
 		if cfpa.config_file:
-			if os.path.exists(cfpa.config_file):
-				configs = load_config_file(os.path.expanduser(cfpa.config_file), check_trust=False)
-				apply_config_key_compat(configs)
-				globals().update(configs)
+			# expanded here: the shell leaves a ~ after --config_file= as it is
+			config_file = os.path.expanduser(cfpa.config_file)
+			if os.path.exists(config_file):
+				configs = load_config_file(config_file, check_trust=False)
 				__configs_from_file.update(configs)
+				_apply_config(configs)
+				# the program paths were looked up at import, before this file was read
+				_find_programs()
 			else:
 				eprint("Warning: Config file {!r} not found, ignoring it.".format(cfpa.config_file))
 	except Exception:
 		pass
 	parser = get_parser()
-	# We handle the signal
-	signal.signal(signal.SIGINT, signal_handler)
-	# We parse the arguments
-	# if python version is 3.7 or higher, use parse_intermixed_args
-	try:
-		args = parser.parse_intermixed_args(args)
-	except Exception :
-		#eprint(f"Error while parsing arguments: {e!r}")
-		# try to parse the arguments using parse_known_args
-		args, unknown = parser.parse_known_args(args)
-		# if there are unknown arguments, we will try to parse them again using parse_args
-		if unknown:
-			eprint(f"Warning: Unknown arguments, treating all as commands: {unknown!r}")
-			args.commands += unknown
+	# before main() sets globals from the options: what a replay of the echoed / recorded line gets
+	__cli_option_defaults = _parser_defaults(parser)
+	# the IPMI options the command line gives, also when they repeat a default: _ipmi_definitions_for_host
+	ipmi_option_defaults = {dest: parser.get_default(dest) for dest, _ in _IPMI_OPTIONS}
+	parser.set_defaults(**{dest: _NOT_GIVEN for dest in ipmi_option_defaults})
+	_install_signal_handlers()
+	args = _parse_command_line(parser, args)
 	try:
 		args.config_file = cfpa.config_file
 	except Exception:
@@ -5068,27 +7733,14 @@ def process_args(args = None):
 	if args.unavailable_host_expiry <= 0:
 		eprint(f"Warning: The unavailable host expiry time {args.unavailable_host_expiry} is less than 0, setting it to 10 seconds.")
 		args.unavailable_host_expiry = 10
-	default_ipmi_definition = get_default_ipmi_definition()
-	while DEFAULT_IPMI_DEFINITIONS:
-		last_definition = DEFAULT_IPMI_DEFINITIONS.pop()
-		if last_definition != default_ipmi_definition:
-			DEFAULT_IPMI_DEFINITIONS.append(last_definition)
-			break
-	fields = [
-		('interface_ip_prefix', args.ipmi_interface_ip_prefix),
-		('username', args.ipmi_username),
-		('password', args.ipmi_password),
-		('args', args.ipmi_args),
-		('ipmi_method', args.ipmi_method),
-		('retry_lockout_time', args.ipmi_retry_lockout_time),
-	]
-	modified = any(val != default_ipmi_definition[key] for key, val in fields)
-	for key, val in fields:
-		default_ipmi_definition[key] = val
-	if modified:
-		DEFAULT_IPMI_DEFINITIONS.insert(0, default_ipmi_definition)
-	else:
-		DEFAULT_IPMI_DEFINITIONS.append(default_ipmi_definition)
+	# DEFAULT_IPMI_DEFINITIONS stays as the config files set it (--store_config_file writes it back),
+	# each host's list is made from it when the host runs
+	_ipmi_command_line = {}
+	for dest, key in _IPMI_OPTIONS:
+		if getattr(args, dest) is _NOT_GIVEN:
+			setattr(args, dest, ipmi_option_defaults[dest])
+		else:
+			_ipmi_command_line[key] = getattr(args, dest)
 	return args
 
 def process_config_file(args):
@@ -5099,7 +7751,8 @@ def process_config_file(args):
 			if args.store_config_file is ...:
 				configFileToWriteTo = __working_config_file
 			else:
-				configFileToWriteTo = args.store_config_file
+				# the shell leaves a ~ after --store_config_file= as it is
+				configFileToWriteTo = os.path.expanduser(args.store_config_file)
 		else:
 			configFileToWriteTo = None
 		written = write_default_config(args,configFileToWriteTo,force=args.generate_config_file)
@@ -5137,32 +7790,162 @@ def process_keys(args):
 		else:
 			if os.path.isdir(os.path.expanduser(args.identity_file)):
 				args.identity_file = find_ssh_key_file(args.identity_file)
-			elif not os.path.exists(args.identity_file):
+			elif not os.path.exists(os.path.expanduser(args.identity_file)):
 				eprint(f"Warning: Identity file {args.identity_file!r} not found. Passing to ssh anyway. Proceed with caution.")
 	return args
 
+# The block --add_control_master_config keeps in ~/.ssh/config, for every ssh the user runs.
+# ssh exits with 255 and runs nothing when the directory of its ControlPath is missing, so each
+# place is used only when a Match exec check finds it usable: logind's /run/user/<uid> (gone
+# without a login session: su, sudo, cron, containers), else /dev/shm/multiSSH3-<uid>, steps 2 and
+# 3 of runtime_dir, made 0700 by the check when missing. That one must be ours and writable by us
+# alone: ssh trusts whatever listens where it looks for its master and hands it the terminal.
+# With neither, no ControlPath is set and ssh connects without sharing. Not ~/.ssh: unix sockets
+# may not work on an NFS, GPFS or Lustre home. The checks run in /bin/sh whatever the login shell
+# (csh, fish) and find the uid themselves: OpenSSH 7.4 (RHEL 7) has no %i in Match exec, and an
+# unknown token there stops every ssh. Ends in "Host *" so lines added after it stay global.
+_CONTROL_MASTER_BLOCK = '''# Added by multiSSH3.py to speed up subsequent connections (mssh --add_control_master_config).
+# ssh keeps one connection per host open for an hour after its last use and shares it. Its socket
+# goes in {run_user}/<uid> while you have a login session, else in {shm}/multiSSH3-<uid> when that
+# is a directory only you can write to (su, sudo, cron, containers); with neither, ssh does not share.
+Match exec "/bin/sh -c 'u=$(id -u) || exit 1; test -O {run_user}/$u -a -w {run_user}/$u'"
+  ControlPath {run_user}/%i/ssh_sockets_%C
+Match exec "/bin/sh -c 'u=$(id -u) || exit 1; test -O {run_user}/$u -a -w {run_user}/$u && exit 1; d={shm}/multiSSH3-$u; test -d $d || mkdir -m 700 $d 2>/dev/null; test -O $d || exit 1; case $(ls -ld $d) in drwx?-??-*) ;; *) exit 1;; esac'"
+  ControlPath {shm}/multiSSH3-%i/ssh_sockets_%C
+Host *
+  ControlMaster auto
+  ControlPersist 3600
+# End of the block added by multiSSH3.py
+'''
+# what --add_control_master_config wrote up to 6.31 (the comment only when it appended to a config)
+_OLD_CONTROL_MASTER_COMMENT = b'# Added by multiSSH3.py to speed up subsequent connections'
+_OLD_CONTROL_MASTER_LINES = [b'Host *', b'ControlMaster auto', b'ControlPath /run/user/%i/ssh_sockets_%C', b'ControlPersist 3600']
+
+def _control_master_block():
+	'''The ControlMaster block for ~/.ssh/config, its places those of runtime_dir.'''
+	return _CONTROL_MASTER_BLOCK.format(run_user=_RUN_USER_ROOT, shm=_SHM_DIR)
+
+def _find_lines(stripped, wanted, start=0):
+	'''Index of the first run of lines equal to wanted in stripped, from start, or -1.'''
+	for index in range(start, len(stripped) - len(wanted) + 1):
+		if stripped[index:index + len(wanted)] == wanted:
+			return index
+	return -1
+
+def _with_control_master_block(content):
+	'''
+	The ssh config content (bytes) with mssh's ControlMaster block in it.
+
+	The block mssh wrote up to 6.31 is replaced by the current one, a second copy dropped; without
+	it, the block is added at the end unless it is there already. Lines compare without the
+	whitespace around them, and every other byte stays as it was.
+
+	Returns:
+		tuple: (the new content, 'replaced', 'added' or 'unchanged')
+	'''
+	newline = b'\r\n' if b'\r\n' in content else b'\n'
+	block = newline.join(_control_master_block().encode().splitlines()) + newline
+	lines = content.splitlines(True)
+	stripped = [line.strip() for line in lines]
+	has_block = _find_lines(stripped, [line.strip() for line in block.splitlines()]) >= 0
+	spans = []
+	index = _find_lines(stripped, _OLD_CONTROL_MASTER_LINES)
+	while index >= 0:
+		start = index - 1 if index and stripped[index - 1] == _OLD_CONTROL_MASTER_COMMENT else index
+		spans.append((start, index + len(_OLD_CONTROL_MASTER_LINES)))
+		index = _find_lines(stripped, _OLD_CONTROL_MASTER_LINES, spans[-1][1])
+	if spans:
+		pieces = []
+		position = 0
+		for start, end in spans:
+			pieces.extend(lines[position:start])
+			if not has_block:
+				pieces.append(block)
+				has_block = True
+			position = end
+		pieces.extend(lines[position:])
+		return b''.join(pieces), 'replaced'
+	if has_block:
+		return content, 'unchanged'
+	if content and not content.endswith(b'\n'):
+		content += newline
+	if content:
+		# a blank line between the user's config and the block, as before
+		content += newline
+	return content + block, 'added'
+
+def _old_control_paths(content):
+	'''Line numbers of the old block's ControlPath left in content (a copy of it someone changed).'''
+	stripped = [line.strip() for line in content.splitlines()]
+	block_lines = [line.strip() for line in _control_master_block().encode().splitlines()]
+	# the current block's first Match has the same line, with the real /run/user
+	start = _find_lines(stripped, block_lines)
+	ours = range(start, start + len(block_lines)) if start >= 0 else ()
+	return [index + 1 for index, line in enumerate(stripped) if line == _OLD_CONTROL_MASTER_LINES[2] and index not in ours]
+
+def _write_ssh_config(path, content, new_mode=0o644):
+	'''
+	Write content to the ssh config at path, never leaving it half written.
+
+	A symlink (into a dotfiles repository) is written through. The file is replaced by a
+	temporary copy with its mode, owner and group, so a full disk or quota keeps the old one.
+	A config owned by another user (sudo keeping HOME) is only replaced if we can keep its
+	owner: ssh refuses a config that belongs to someone else.
+	'''
+	target = os.path.realpath(path)
+	try:
+		st = os.stat(target)
+	except FileNotFoundError:
+		st = None
+	mode = stat.S_IMODE(st.st_mode) if st is not None else new_mode
+	temporary = '{}.{}.tmp'.format(target, uuid4().hex)
+	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), mode)
+	try:
+		with os.fdopen(fd, 'wb') as f:
+			if hasattr(os, 'fchmod'):
+				# O_CREAT's mode is reduced by the umask, set it exactly
+				os.fchmod(f.fileno(), mode)
+			if st is not None and hasattr(os, 'chown'):
+				try:
+					os.chown(temporary, st.st_uid, st.st_gid)
+				except OSError:
+					if st.st_uid != os.getuid():
+						raise
+					# ours: only the group could not be kept
+			f.write(content)
+			f.flush()
+			os.fsync(f.fileno())
+		os.replace(temporary, target)
+	except BaseException:
+		try:
+			os.unlink(temporary)
+		except OSError:
+			pass
+		raise
+
 def process_control_master_config(args):
-	global __control_master_string
 	if args.add_control_master_config:
 		try:
 			if not os.path.exists(os.path.expanduser('~/.ssh')):
 				os.makedirs(os.path.expanduser('~/.ssh'),mode=0o700)
 			ssh_config_file = os.path.expanduser('~/.ssh/config')
-			if not os.path.exists(ssh_config_file):
-				with open(ssh_config_file,'w') as f:
-					f.write(__control_master_string)
-				os.chmod(ssh_config_file,0o644)
+			try:
+				with open(ssh_config_file,'rb') as f:
+					content = f.read()
+			except FileNotFoundError:
+				content = b''
+			new_content, change = _with_control_master_block(content)
+			if change == 'unchanged':
+				eprint("ControlMaster configuration already in ~/.ssh/config, nothing changed.")
 			else:
-				with open(ssh_config_file,'r') as f:
-					ssh_config_content = f.readlines()
-				if set(map(str.strip,ssh_config_content)).issuperset(set(map(str.strip,__control_master_string.splitlines()))):
-					eprint("ControlMaster configuration already exists in ~/.ssh/config, skipping adding:")
-					eprint(__control_master_string)
+				_write_ssh_config(ssh_config_file, new_content)
+				if change == 'replaced':
+					eprint("Replaced the ControlMaster configuration mssh added to ~/.ssh/config before (ssh failed without /run/user/<uid>) with:")
 				else:
-					with open(ssh_config_file,'a') as f:
-						f.write('\n# Added by multiSSH3.py to speed up subsequent connections\n')
-						f.write(__control_master_string)
-					eprint("ControlMaster configuration added to ~/.ssh/config.")
+					eprint("ControlMaster configuration added to ~/.ssh/config:")
+				eprint(_control_master_block())
+			for number in _old_control_paths(new_content):
+				eprint("Warning: ~/.ssh/config line {} still has mssh's old {!r}, in a block changed since mssh added it, so left alone: with it every ssh fails where /run/user/<uid> is missing (su, sudo, cron, containers). Remove that block; mssh's new one is in place.".format(number, _OLD_CONTROL_MASTER_LINES[2].decode()))
 		except Exception as e:
 			eprint(f"Error adding ControlMaster configuration: {e}")
 			import traceback
@@ -5173,6 +7956,7 @@ def process_control_master_config(args):
 
 def set_global_with_args(args):
 	global _emo
+	global _stopping
 	global _no_env
 	global _env_files
 	global _explicit_env_files
@@ -5183,6 +7967,7 @@ def set_global_with_args(args):
 	global FORCE_TRUECOLOR
 	global DEFAULT_HOST_FILE
 	_emo = False
+	_stopping = False
 	if args.env_file:
 		_env_files = [args.env_file]
 	else:
@@ -5219,17 +8004,126 @@ def _completion_command(values):
 			return 1
 	return mssh_complete.completion_command(values)
 
+def _summary_host_list(names):
+	'''
+	The hosts for a summary line, compacted into ranges without DNS.
+
+	Names are not validated again: names that did not resolve stay listed, and their errors are
+	not printed a second time. Host tokens that name no host (node[10-1]) are listed as given.
+	'''
+	names = set(names)
+	as_given = sorted((name for name in names if __expand_hostname(name, validate=False) != {name}), key=_natural_sort_key)
+	return ','.join(compact_hostnames_local(names.difference(as_given)) + as_given)
+
+def _escape_or_restore_bytes(error):
+	'''
+	Encoding error handler for our output: what came in as undecodable bytes (an argument or path read
+	with surrogateescape, as Python does in the C locale) goes out as those bytes, anything else the
+	encoding lacks as a backslash escape (\\u2713).
+	'''
+	try:
+		return codecs.lookup_error('surrogateescape')(error)
+	except UnicodeError:
+		return codecs.lookup_error('backslashreplace')(error)
+
+_OUTPUT_ERRORS = 'multissh3-escape'
+
+def _escape_unencodable_output():
+	'''
+	Make stdout and stderr print what their encoding lacks as escapes instead of failing.
+
+	With an ASCII stdout (the C locale on Python 3.6, e.g. cron on CentOS 7) or PYTHONIOENCODING=latin-1,
+	printing the results raised UnicodeEncodeError after the commands had run, and their output was lost.
+	Python's stderr already escapes; streams set to another lenient handler are left alone.
+	'''
+	codecs.register_error(_OUTPUT_ERRORS, _escape_or_restore_bytes)
+	for name in ('stdout', 'stderr'):
+		stream = getattr(sys, name, None)
+		if getattr(stream, 'errors', None) not in ('strict', 'surrogateescape'):
+			continue
+		try:
+			if hasattr(stream, 'reconfigure'):
+				stream.reconfigure(errors=_OUTPUT_ERRORS)
+			elif isinstance(stream, io.TextIOWrapper) and stream is getattr(sys, '__{}__'.format(name), None):
+				# Python 3.6 has no reconfigure: a new wrapper on the same buffer. The old one stays
+				# referenced as sys.__stdout__, so it is never collected (which would close the buffer)
+				stream.flush()
+				setattr(sys, name, io.TextIOWrapper(stream.buffer, encoding=stream.encoding, errors=_OUTPUT_ERRORS,
+					line_buffering=stream.line_buffering))
+		except (AttributeError, OSError, ValueError):
+			pass
+
+class _WatchedStream(object):
+	'''
+	Stands in for sys.stdout or sys.stderr and notes a write that failed because the reader has gone,
+	even when the caller swallows the error: newer argparse does, `mssh -h | head -1` then exited 0.
+	'''
+	def __init__(self, stream):
+		self.stream = stream
+		self.reader_gone = False
+
+	def write(self, text):
+		try:
+			return self.stream.write(text)
+		except BrokenPipeError:
+			self.reader_gone = True
+			raise
+
+	def flush(self):
+		try:
+			return self.stream.flush()
+		except BrokenPipeError:
+			self.reader_gone = True
+			raise
+
+	def __getattr__(self, name):
+		return getattr(self.stream, name)
+
+def _exit_if_output_closed(step, args):
+	'''
+	Run a step before the commands that may print and exit: -h, -V and usage errors (argparse),
+	--generate_config_file, the one word commands prompt, --add_control_master_config.
+
+	If whatever reads our output has gone, exit quietly with 141, the status of a program SIGPIPE
+	ends: nothing ran, there is no run status to report. Python exited 120, 1 with a traceback, or 0.
+	'''
+	watched = []
+	for name in ('stdout', 'stderr'):
+		if getattr(sys, name) is not None:
+			watched.append((name, _WatchedStream(getattr(sys, name))))
+			setattr(sys, name, watched[-1][1])
+	try:
+		try:
+			return step(args)
+		finally:
+			for name, stream in watched:
+				if getattr(sys, name) is stream:
+					setattr(sys, name, stream.stream)
+	except SystemExit:
+		# the step printed and exits: flush here, the flush at exit would fail with status 120
+		for _name, stream in watched:
+			try:
+				stream.flush()
+			except BrokenPipeError:
+				pass
+		if any(stream.reader_gone for _name, stream in watched):
+			_output_reader_gone(exit_code=141)
+		raise
+	except BrokenPipeError:
+		_output_reader_gone(exit_code=141)
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
-	args = process_args(args)
+	_escape_unencodable_output()
+	args = _exit_if_output_closed(process_args, args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))
-	args = process_config_file(args)
-	args = process_commands(args)
+	args = _exit_if_output_closed(process_config_file, args)
+	args = _exit_if_output_closed(process_commands, args)
 	args = process_keys(args)
-	args = process_control_master_config(args)
+	args = _exit_if_output_closed(process_control_master_config, args)
 	set_global_with_args(args)
 	
 	if args.use_script_timeout:
@@ -5240,6 +8134,10 @@ def main(args = None):
 	if args.no_output:
 		__global_suppress_printout = True
 	if not __global_suppress_printout:
+		# before the echo, whose host lookups may already fail because of it
+		host_file_warning = _host_file_warning()
+		if host_file_warning:
+			eprint(host_file_warning)
 		cmdStr = getStrCommand(**vars(args))
 		eprint('> ' + cmdStr)
 		# read from the current directory before 6.27
@@ -5252,6 +8150,10 @@ def main(args = None):
 	# between runs, a long --repeat loop must not hold every run's output
 	failedHostNames = set()
 	succeededHosts = set()
+	# hosts not run because they were unreachable in a recent run, they are failed hosts too
+	skippedHostNames = set()
+	# failed hosts whose server dropped the connection before login: they get a hint
+	droppedHostNames = set()
 	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
 	if not args.no_history:
 		record_command_history(vars(args))
@@ -5269,23 +8171,34 @@ def main(args = None):
 		for host in run_command_on_hosts(**runArgs,called=False):
 			if host.returncode and host.returncode != 0:
 				failedHostNames.add(host.name)
+				if host.skipped:
+					skippedHostNames.add(host.name)
+				if getattr(host, 'dropped_before_login', False):
+					droppedHostNames.add(host.name)
 			else:
 				succeededHosts.add(host.name)
-	# each failing host counts once, however many runs or commands it failed
-	__mainReturnCode += len(failedHostNames)
+	# each failing host counts once, however many runs or commands it failed (or its --copy_id)
+	__mainReturnCode += len(failedHostNames - __failedHosts)
 	__failedHosts |= failedHostNames
 	succeededHosts -= __failedHosts
 	# sort the failed hosts and succeeded hosts
 	if __mainReturnCode > 0:
 		if not __global_suppress_printout: 
 			eprint(f'Complete. Failed hosts (Return Code not 0) count: {__mainReturnCode}')
-			eprint(f'failed_hosts: {",".join(compact_hostnames(__failedHosts))}')
+			eprint(f'failed_hosts: {_summary_host_list(__failedHosts)}')
+			if skippedHostNames:
+				eprint('Skipped {} unreachable in a recent run, without trying {}: {}'.format(
+					'1 host' if len(skippedHostNames) == 1 else '{} hosts'.format(len(skippedHostNames)),
+					'it' if len(skippedHostNames) == 1 else 'them',
+					_summary_host_list(skippedHostNames)))
+			if droppedHostNames:
+				eprint(_dropped_login_hint(len(droppedHostNames), args.max_connections))
 	else:
 		if not __global_suppress_printout: 
 			eprint('Complete. All hosts returned 0.')
 	
 	if args.success_hosts and not __global_suppress_printout:
-		eprint(f'succeeded_hosts: {",".join(compact_hostnames(succeededHosts))}')
+		eprint(f'succeeded_hosts: {_summary_host_list(succeededHosts)}')
 
 	if threading.active_count() > 1 and not __global_suppress_printout: 
 		eprint(f'Remaining active thread: {threading.active_count()}')

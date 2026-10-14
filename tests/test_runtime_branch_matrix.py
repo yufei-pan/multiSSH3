@@ -38,7 +38,7 @@ def test_run_command_ssh_ipmitool_defaults_and_user(fake_host, monkeypatch):
 def test_run_command_rsync_failure_retries_with_scp(fake_host, monkeypatch):
 	host = fake_host("mock-a", "/dest", files=["/source"], scp=False)
 	calls = []
-	procs = iter([ImmediateProc(returncode=1, stderr=b"rsync failed\n"), ImmediateProc(returncode=0)])
+	procs = iter([ImmediateProc(returncode=12, stderr=b"bash: rsync: command not found\n"), ImmediateProc(returncode=0)])
 	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
 	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
 	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
@@ -103,11 +103,13 @@ def test_run_command_debug_ssh_ipmitool_preserves_auth_argv(fake_host, monkeypat
 
 	assert calls == [[
 		"sshpass", "-p", "bmc-pass", "ssh", "-i", "/tmp/id_ed25519",
+		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"--", "bmc-user@mock-a", "ipmitool power status",
 	]]
 	assert host.returncode == 0
 	assert any("SSH_USERNAME cli-user" in line for line in host.stderr)
-	assert any("SSH_PASSWORD  cli-pass" in line for line in host.stderr)
+	assert any("SSH_PASSWORD is provided" in line for line in host.stderr)
+	assert not [line for line in host.output + host.stderr if "cli-pass" in line or "bmc-pass" in line]
 	assert any("DEFAULT_IPMI_INTERFACE_IP_PREFIX" in line for line in host.stderr)
 
 
@@ -184,8 +186,9 @@ def test_generate_output_plain_formats_connection_refused(fake_host, monkeypatch
 
 	text = multiSSH3.generate_output([host], greppable=False, quiet=False)
 
-	assert " SSH not reachable!" in text
-	assert host.stderr == ["SSH not reachable!"]
+	assert " SSH not reachable! (port 22: Connection refused)" in text
+	# the summary is only shown: the host keeps ssh's line for JSON / greppable output
+	assert host.stderr == ["ssh: connect to host mock-a port 22: Connection refused"]
 
 
 def test_generate_output_greppable_marks_empty_host_and_user_input(fake_host):

@@ -1,6 +1,17 @@
+import io
+import json
+import os
+import select
+import struct
+import subprocess
+import sys
+import threading
+import time
+
 import pytest
 
 import multiSSH3
+from conftest import MULTISSH3_PY
 
 
 def test_main_runs_immediately_and_sleeps_only_between_repeats(fake_host, monkeypatch):
@@ -86,6 +97,91 @@ def test_signal_handler_second_interrupt_kills_only_own_children(monkeypatch):
 	assert commands == []
 
 
+def test_second_interrupt_starts_no_waiting_host(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_emo", True)
+	monkeypatch.setattr(multiSSH3, "_commands_started", True)
+	monkeypatch.setattr(multiSSH3, "__running_procs", set())
+
+	with pytest.raises(SystemExit):
+		multiSSH3.signal_handler(None, None)
+
+	assert multiSSH3._stopping is True  # hosts waiting for a connection slot see it and do not start
+
+
+def test_cli_arguments_can_be_processed_off_the_main_thread():
+	# Python sets signal handlers only on the main thread: an embedder parsing elsewhere must not fail
+	import threading
+
+	errors = []
+
+	def parse():
+		try:
+			multiSSH3.process_args(["127.0.0.1", "true"])
+		except Exception as error:
+			errors.append(error)
+
+	thread = threading.Thread(target=parse)
+	thread.start()
+	thread.join()
+
+	assert errors == []
+
+
+def test_signal_handlers_leave_an_ignored_sigterm_alone(monkeypatch):
+	import signal
+
+	installed = {}
+	current = {signal.SIGINT: signal.default_int_handler, signal.SIGTERM: signal.SIG_IGN}
+	for name in ("SIGHUP", "SIGQUIT"):
+		if hasattr(signal, name):
+			current[getattr(signal, name)] = signal.SIG_DFL
+	monkeypatch.setattr(multiSSH3.signal, "getsignal", lambda number: current[number])
+	monkeypatch.setattr(multiSSH3.signal, "signal", lambda number, handler: installed.update({number: handler}))
+
+	multiSSH3._install_signal_handlers()
+
+	assert installed[signal.SIGINT] is multiSSH3.signal_handler
+	assert signal.SIGTERM not in installed  # e.g. started by something that wants mssh to outlive it
+	if hasattr(signal, "SIGHUP"):
+		assert installed[signal.SIGHUP] is multiSSH3._stop_signal_handler
+
+
+@pytest.mark.parametrize("quit_handler, taken", [("default", True), ("ignored", False)])
+def test_signal_handlers_take_ctrl_backslash_unless_it_is_ignored(monkeypatch, quit_handler, taken):
+	# commands in sessions of their own (no-tty-prompts) do not get the terminal's SIGQUIT: mssh stops them
+	import signal
+
+	if not hasattr(signal, "SIGQUIT"):
+		pytest.skip("no SIGQUIT here")
+	installed = {}
+	current = {signal.SIGINT: signal.default_int_handler, signal.SIGTERM: signal.SIG_DFL,
+		signal.SIGQUIT: signal.SIG_DFL if quit_handler == "default" else signal.SIG_IGN}
+	if hasattr(signal, "SIGHUP"):
+		current[signal.SIGHUP] = signal.SIG_DFL
+	monkeypatch.setattr(multiSSH3.signal, "getsignal", lambda number: current[number])
+	monkeypatch.setattr(multiSSH3.signal, "signal", lambda number, handler: installed.update({number: handler}))
+
+	multiSSH3._install_signal_handlers()
+
+	assert (installed.get(signal.SIGQUIT) is multiSSH3._stop_signal_handler) == taken
+	assert taken or signal.SIGQUIT not in installed
+
+
+class _TerminalWithoutFileno:
+	"""A terminal stdin select() cannot wait on (e.g. IDLE's): the prompt reads it with a thread."""
+	def __init__(self, line=""):
+		self.line = line
+
+	def isatty(self):
+		return True
+
+	def fileno(self):
+		raise io.UnsupportedOperation("no file descriptor")
+
+	def readline(self):
+		return self.line
+
+
 def test_input_with_timeout_returns_inline_input(monkeypatch):
 	class InlineThread:
 		def __init__(self, target, daemon):
@@ -94,7 +190,7 @@ def test_input_with_timeout_returns_inline_input(monkeypatch):
 			self.target()
 
 	monkeypatch.setattr(multiSSH3.threading, "Thread", InlineThread)
-	monkeypatch.setattr(multiSSH3.sys.stdin, "readline", lambda: "multiple\n")
+	monkeypatch.setattr(sys, "stdin", _TerminalWithoutFileno("multiple\n"))
 
 	assert multiSSH3.input_with_timeout_and_countdown(3) == "multiple"
 
@@ -107,11 +203,194 @@ def test_input_with_timeout_returns_none(monkeypatch):
 			return None
 
 	ticks = iter([0.0, 2.0])
+	monkeypatch.setattr(sys, "stdin", _TerminalWithoutFileno())
 	monkeypatch.setattr(multiSSH3.threading, "Thread", IdleThread)
 	monkeypatch.setattr(multiSSH3.time, "monotonic", lambda: next(ticks, 2.0))
 	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
 
 	assert multiSSH3.input_with_timeout_and_countdown(1) is None
+
+
+@pytest.fixture
+def terminal_stdin(monkeypatch):
+	"""stdin on a fresh pty: returns (master, slave), what is written to master is what the user types."""
+	pty = pytest.importorskip("pty")
+	master, slave = pty.openpty()
+	monkeypatch.setattr(sys, "stdin", io.open(slave, "r", closefd=False))
+	yield master, slave
+	os.close(master)
+	os.close(slave)
+
+
+def _new_threads(before):
+	return [thread for thread in threading.enumerate() if thread not in before and thread.is_alive()]
+
+
+def _next_read(fd, settle=0.3):
+	"""What the next reader of the terminal gets, without blocking (a stray reader may take it first)."""
+	fcntl = pytest.importorskip("fcntl")
+	time.sleep(settle)
+	flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+	fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+	try:
+		return os.read(fd, 1024)
+	except BlockingIOError:
+		return b""
+	finally:
+		fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+
+
+def test_prompt_returns_the_line_typed_at_the_terminal(terminal_stdin):
+	master, slave = terminal_stdin
+	os.write(master, b" m \n")
+
+	assert multiSSH3.input_with_timeout_and_countdown(3) == "m"
+
+
+def test_prompt_leaves_no_reader_behind_when_time_is_up(terminal_stdin, capsys):
+	# the TUI starts right after the prompt: a reader left waiting on the terminal took its first line
+	master, slave = terminal_stdin
+	before = set(threading.enumerate())
+
+	assert multiSSH3.input_with_timeout_and_countdown(2) is None
+
+	assert _new_threads(before) == []
+	os.write(master, b"hi\n")
+	assert _next_read(slave) == b"hi\n"
+	err = capsys.readouterr().err
+	assert "Please enter your selection [2s]: " in err
+	assert "\rPlease enter your selection [1s]: " in err
+
+
+def test_prompt_drops_a_half_typed_answer_when_time_is_up(terminal_stdin):
+	# typed during the prompt, it was meant for the prompt: it must not end up in the next reader's line
+	master, slave = terminal_stdin
+	os.write(master, b"m")
+
+	assert multiSSH3.input_with_timeout_and_countdown(1) is None
+
+	os.write(master, b"\n")
+	assert _next_read(slave) == b"\n"
+
+
+def test_prompt_on_windows_reads_the_console_with_a_thread(monkeypatch):
+	# select() only waits on sockets there
+	def no_select(*args):
+		raise AssertionError("select() on a Windows console")
+	monkeypatch.setattr(select, "select", no_select)
+	stdin = _TerminalWithoutFileno("m\n")
+	stdin.fileno = lambda: 0
+	monkeypatch.setattr(sys, "stdin", stdin)
+	monkeypatch.setattr(multiSSH3.os, "name", "nt")
+
+	assert multiSSH3.input_with_timeout_and_countdown(3) == "m"
+
+
+def test_prompt_takes_the_default_at_once_when_stdin_is_not_a_terminal(monkeypatch, capsys):
+	# e.g. `while read host; do mssh $host ls pwd; done < hosts`: the pipe holds the loop's next hosts, not an answer
+	read_end, write_end = os.pipe()
+	os.write(write_end, b"zz-nohost-2.invalid\nzz-nohost-3.invalid\n")
+	os.close(write_end)
+	monkeypatch.setattr(sys, "stdin", io.open(read_end, "r", closefd=False))
+	start = time.monotonic()
+	try:
+		assert multiSSH3.input_with_timeout_and_countdown(3) is None
+		assert time.monotonic() - start < 1
+		assert os.read(read_end, 1024) == b"zz-nohost-2.invalid\nzz-nohost-3.invalid\n"
+	finally:
+		os.close(read_end)
+	assert "stdin is not a terminal" in capsys.readouterr().err
+
+
+_FAKE_SSH = '''#!{python}
+import os, select, sys, time
+if sys.argv[1:2] == ["-G"]:
+	print("hostname " + sys.argv[-1])
+	sys.exit(0)
+log = os.environ["FAKE_SSH_LOG"]
+with open(log, "a") as f:
+	f.write("START\\n")
+got = b""
+deadline = time.monotonic() + 8
+while b"\\n" not in got and time.monotonic() < deadline:
+	if select.select([0], [], [], 0.1)[0]:
+		data = os.read(0, 1024)
+		if not data:
+			break
+		got += data
+with open(log, "a") as f:
+	f.write("GOT " + repr(got) + "\\n")
+'''
+
+
+def test_tui_gets_the_first_line_typed_after_the_one_word_prompt(tmp_path):
+	# `mssh 127.0.0.1 sleep 9` asks whether `sleep 9` is one command; once the prompt timed out, the
+	# first line typed into the TUI must reach the command (a leftover prompt reader used to take it)
+	pty = pytest.importorskip("pty")
+	termios = pytest.importorskip("termios")
+	fcntl = pytest.importorskip("fcntl")
+	pytest.importorskip("curses")
+	fake_ssh = tmp_path / "fake_ssh"
+	fake_ssh.write_text(_FAKE_SSH.format(python=sys.executable))
+	fake_ssh.chmod(0o755)
+	# in HOME, not --config_file: the program paths are set from the config files read at import
+	config = tmp_path / ".multiSSH3.config.json"
+	config.write_text(json.dumps({"_sshPath": str(fake_ssh), "_scpPath": str(fake_ssh), "_rsyncPath": str(fake_ssh)}))
+	config.chmod(0o600)
+	hosts_file = tmp_path / "hosts"
+	hosts_file.write_text("")
+	runtime = tmp_path / "run"
+	runtime.mkdir(mode=0o700)
+	log = tmp_path / "fake_ssh.log"
+	env = dict(os.environ, HOME=str(tmp_path), XDG_RUNTIME_DIR=str(runtime), TERM="xterm-256color", FAKE_SSH_LOG=str(log))
+	for name in ("COLUMNS", "LINES"):
+		env.pop(name, None)
+	# never let a real ssh run: check the program mssh will call before running it
+	ssh_used = subprocess.run(
+		[sys.executable, "-c", "import multiSSH3; print(multiSSH3._binPaths['ssh'])"],
+		env=env, cwd=str(MULTISSH3_PY.parent), stdout=subprocess.PIPE, universal_newlines=True, timeout=60,
+	).stdout.strip()
+	assert ssh_used == str(fake_ssh)
+	master, slave = pty.openpty()
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+	proc = subprocess.Popen(
+		[sys.executable, str(MULTISSH3_PY), "-ef", "/dev/null", "--host_file", str(hosts_file), "--no_history",
+		 "127.0.0.1", "sleep", "9"],
+		stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(tmp_path), start_new_session=True,
+	)
+	os.close(slave)
+	screen = bytearray()
+
+	def read_until(done, timeout):
+		end = time.monotonic() + timeout
+		while not done() and time.monotonic() < end:
+			if select.select([master], [], [], 0.05)[0]:
+				try:
+					data = os.read(master, 65536)
+				except OSError:
+					break
+				if not data:
+					break
+				screen.extend(data)
+		return done()
+
+	def logged(text):
+		return log.exists() and text in log.read_text()
+
+	try:
+		assert read_until(lambda: b"Multiple one word command" in screen, 15), bytes(screen)
+		# the prompt times out (3 s), the command starts, then curses takes the terminal (alternate screen)
+		assert read_until(lambda: logged("START") and b"\x1b[?1049h" in screen, 15), bytes(screen)
+		read_until(lambda: False, 0.5)
+		os.write(master, b"hi\r")
+		assert read_until(lambda: logged("GOT"), 15), bytes(screen)
+		assert "GOT b'hi\\n'" in log.read_text()
+		read_until(lambda: proc.poll() is not None, 10)
+	finally:
+		if proc.poll() is None:
+			proc.kill()
+		proc.wait(timeout=10)
+		os.close(master)
 
 
 def test_process_config_file_generates_and_exits_without_work(monkeypatch):
@@ -378,3 +657,473 @@ def test_ctrl_c_during_the_first_command_skips_the_next(monkeypatch):
 		no_history=True, called=False, will_update_unreachable_hosts=False)
 
 	assert ran == ["first"]
+
+
+def _main_with_unreachable_cached(monkeypatch, tmp_path, unreachable, argv):
+	'''Run main(argv) with unreachable cached as recently unreachable; returns (exit code, hosts run on).'''
+	path = tmp_path / "unavailable.csv"
+	expiry = int(multiSSH3.time.monotonic() + 300)
+	path.write_text("#boot_id,boot-a\n" + "".join("{},{}\n".format(name, expiry) for name in unreachable))
+	monkeypatch.setattr(multiSSH3, "_get_boot_id", lambda: "boot-a")
+	monkeypatch.setattr(multiSSH3, "__globalUnavailableHosts", {})
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(path))
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname.split("@")[-1])
+	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
+	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
+	ran = []
+
+	def succeed(host, sem, timeout=60, passwds=None, **kwargs):
+		ran.append(host.name)
+		host.stdout.append("ok")
+		host.returncode = 0
+
+	monkeypatch.setattr(multiSSH3, "run_command", succeed)
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(argv + ["--no_watch", "--no_history", "-ef", str(tmp_path / "none.env")])
+	return exc_info.value.code, ran
+
+
+def test_main_fails_when_a_host_is_skipped_as_unreachable(monkeypatch, tmp_path, capsys):
+	code, ran = _main_with_unreachable_cached(monkeypatch, tmp_path, ["web1"], ["web1,app1", "systemctl restart x"])
+
+	err = capsys.readouterr().err
+	assert ran == ["app1"]
+	assert code == 1
+	assert "All hosts returned 0" not in err
+	assert "failed_hosts: web1" in err
+	assert "Skipped 1 host unreachable in a recent run, without trying it: web1" in err
+
+
+def test_script_mode_does_not_report_success_when_hosts_were_skipped(monkeypatch, tmp_path, capsys):
+	code, ran = _main_with_unreachable_cached(monkeypatch, tmp_path, ["web1", "app1"], ["--script", "web1,app1", "deploy --now"])
+
+	out = capsys.readouterr().out
+	assert ran == []
+	assert code == 2
+	assert "Success" not in out
+	assert "rc: 255" in out and "unreachable" in out
+
+
+def _main_recording_runs(monkeypatch, tmp_path, argv):
+	'''Run main(argv) with names unresolvable and commands succeeding; returns (exit code, hosts run on).'''
+	monkeypatch.setattr(multiSSH3, "getIP", _names_only_resolve_ips)
+	monkeypatch.setattr(multiSSH3, "_ssh_config_target", lambda hostname: None)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: str(tmp_path / "unavailable.csv"))
+	monkeypatch.setattr(multiSSH3, "__mainReturnCode", 0)
+	monkeypatch.setattr(multiSSH3, "__failedHosts", set())
+	ran = []
+
+	def succeed(host, sem, timeout=60, passwds=None, **kwargs):
+		ran.append(host.name)
+		host.returncode = 0
+
+	monkeypatch.setattr(multiSSH3, "run_command", succeed)
+	with pytest.raises(SystemExit) as exc_info:
+		multiSSH3.main(argv + ["--no_watch", "--no_history", "-ef", str(tmp_path / "none.env")])
+	return exc_info.value.code, ran
+
+
+@pytest.mark.parametrize("target, reason", [
+	("node[10-1]", "the range [10-1] counts down"),
+	("root@node[3-1]", "the range [3-1] counts down"),
+	("10.0.0.20-10", "the range 20-10 counts down"),
+])
+def test_target_naming_no_hosts_stops_with_an_error(monkeypatch, tmp_path, capsys, target, reason):
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, [target, "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == []
+	assert code == 1
+	assert "Error: {!r} names no hosts: {}".format(target, reason) in err
+	assert "Exiting: no hosts to run on" in err
+	assert "All hosts returned 0" not in err
+
+
+def test_empty_alias_as_target_stops_with_an_error(monkeypatch, tmp_path, capsys):
+	monkeypatch.setenv("MSSH_TEST_EMPTY_GROUP", "")
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["MSSH_TEST_EMPTY_GROUP", "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == []
+	assert code == 1
+	assert "Error: 'MSSH_TEST_EMPTY_GROUP' names no hosts: the environment variable MSSH_TEST_EMPTY_GROUP is ''" in err
+
+
+def test_empty_group_inside_an_alias_is_not_an_error(monkeypatch, tmp_path, capsys):
+	# the README's env file example keeps empty groups (eu='') inside bigger ones
+	monkeypatch.setenv("MSSH_TEST_EMPTY_GROUP", "")
+	monkeypatch.setenv("MSSH_TEST_ALL", "127.0.0.1,MSSH_TEST_EMPTY_GROUP")
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["MSSH_TEST_ALL", "uptime"])
+
+	assert ran == ["127.0.0.1"]
+	assert code == 0
+	assert "names no hosts" not in capsys.readouterr().err
+
+
+def test_a_host_token_naming_no_hosts_fails_the_run_but_the_rest_runs(monkeypatch, tmp_path, capsys):
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["node[10-1],127.0.0.1", "uptime", "--repeat", "2"])
+
+	err = capsys.readouterr().err
+	assert ran == ["127.0.0.1", "127.0.0.1"]
+	assert code == 1  # counted once, like a host name that does not resolve
+	assert err.count("Error: 'node[10-1]' names no hosts: the range [10-1] counts down") == 1
+	assert "failed_hosts: node[10-1]" in err
+
+
+def test_target_of_invalid_names_only_stops_with_their_count(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["nosuch-a,nosuch-b", "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == []
+	assert code == 2
+	assert "Exiting: no hosts to run on" in err
+
+
+def test_skip_hosts_excluding_every_host_warns(monkeypatch, tmp_path, capsys):
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["127.0.0.1", "uptime", "-X", "127.0.0.1"])
+
+	assert ran == []
+	assert code == 0
+	assert "Warning: -X, --skip_hosts leaves no hosts to run on" in capsys.readouterr().err
+
+
+def test_library_call_on_a_target_naming_no_hosts_returns_nothing(monkeypatch, capsys):
+	hosts = multiSSH3.run_command_on_hosts(hosts="node[10-1]", commands=["true"], no_watch=True, quiet=True,
+		no_history=True, called=True, will_update_unreachable_hosts=False)
+
+	assert hosts == []
+	assert "names no hosts" not in capsys.readouterr().err
+
+
+def test_failed_hosts_lists_names_that_do_not_resolve(monkeypatch, tmp_path, capsys):
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["nosuch-a,127.0.0.1", "uptime", "--success_hosts"])
+
+	err = capsys.readouterr().err
+	assert ran == ["127.0.0.1"]
+	assert code == 1
+	assert "failed_hosts: nosuch-a\n" in err
+	assert "succeeded_hosts: 127.0.0.1\n" in err
+
+
+def test_summary_does_not_repeat_host_name_errors(monkeypatch, tmp_path, capsys):
+	# an alias naming $nosuch_a validates "$nosuch_a"; the summary must not validate "nosuch_a" again
+	monkeypatch.setattr(multiSSH3, "_resolve_dns", lambda hostname: None)
+	monkeypatch.setenv("MSSH_TEST_GROUP", "127.0.0.1,$nosuch_a")
+
+	code, ran = _main_recording_runs(monkeypatch, tmp_path, ["MSSH_TEST_GROUP", "uptime"])
+
+	err = capsys.readouterr().err
+	assert ran == ["127.0.0.1"]
+	assert code == 1
+	assert err.count("Error: 'nosuch_a' is not a valid hostname or IP address!") == 1
+	assert "failed_hosts: nosuch_a\n" in err
+
+
+# ssh stand-in for the signal tests: runs the command locally. `exec` keeps the pid the command records
+# the pid of mssh's child, the process that must not outlive mssh.
+_SIGNAL_FAKE_SSH = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break;;
+    -G) shift; echo "hostname $1"; exit 0;;
+    -i|-o|-p|-l) shift; shift;;
+    *) shift;;
+  esac
+done
+shift
+exec sh -c "$*"
+"""
+
+
+def _cli_with_fake_ssh(tmp_path):
+	'''Environment running mssh with a local ssh stand-in, in a scratch home and runtime dir.'''
+	import json
+	bin_dir = tmp_path / "bin"
+	bin_dir.mkdir()
+	ssh = bin_dir / "ssh"
+	ssh.write_text(_SIGNAL_FAKE_SSH)
+	ssh.chmod(0o755)
+	config_dir = tmp_path / "home" / ".config" / "multiSSH3"
+	config_dir.mkdir(parents=True)
+	config = config_dir / "multiSSH3.config.json"
+	config.write_text(json.dumps({"_{}Path".format(name): str(ssh) for name in ("ssh", "scp", "rsync", "sshpass", "ipmitool", "redfishtool", "ssh-copy-id")}))
+	config.chmod(0o600)
+	(tmp_path / "run").mkdir(mode=0o700)
+	env = dict(os.environ, HOME=str(tmp_path / "home"), XDG_RUNTIME_DIR=str(tmp_path / "run"),
+		PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1")
+	return env
+
+
+def _hermetic_args(tmp_path):
+	'''Arguments keeping a CLI run off the machine's env files, hosts file and history.'''
+	hosts = tmp_path / "hosts"
+	if not hosts.exists():
+		hosts.write_text("")
+	return ["--no_history", "--no_skip_unreachable", "-ef", "/dev/null", "--host_file", str(hosts)]
+
+
+def _process_running(pid):
+	'''True while the process exists and is not a zombie: a killed child is reaped only after mssh exits.'''
+	try:
+		with open("/proc/{}/stat".format(pid)) as stat:
+			return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+	except OSError:
+		return False
+
+
+def _parent_pid(pid):
+	with open("/proc/{}/stat".format(pid)) as stat:
+		return int(stat.read().rsplit(")", 1)[1].split()[1])
+
+
+def _wait_for_lines(path, count, timeout=15):
+	import time
+	deadline = time.monotonic() + timeout
+	while time.monotonic() < deadline:
+		if path.exists():
+			lines = path.read_text().split()
+			if len(lines) >= count:
+				return [int(line) for line in lines]
+		time.sleep(0.05)
+	raise AssertionError("{} never had {} lines".format(path, count))
+
+
+def _wait_until_gone(pids, timeout=5):
+	import time
+	deadline = time.monotonic() + timeout
+	while time.monotonic() < deadline and any(_process_running(pid) for pid in pids):
+		time.sleep(0.05)
+	return [pid for pid in pids if _process_running(pid)]
+
+
+def _kill_leftovers(pids):
+	'''Kill the test commands mssh left running, and only them: a pid may have been reused since.'''
+	import signal
+	for pid in pids:
+		try:
+			with open("/proc/{}/cmdline".format(pid), "rb") as cmdline:
+				if cmdline.read().split(b"\0")[:2] != [b"sleep", b"60"]:
+					continue
+			os.kill(pid, signal.SIGKILL)
+		except OSError:
+			pass
+
+
+_needs_proc = pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="reads /proc")
+
+
+@_needs_proc
+@pytest.mark.parametrize("signal_name, exit_code", [("SIGTERM", 143), ("SIGHUP", 129), ("SIGQUIT", 131)])
+def test_sigterm_and_sighup_kill_the_running_commands(tmp_path, signal_name, exit_code):
+	# kill, batch schedulers and service managers stop mssh with SIGTERM: the ssh children must not outlive it.
+	# Ctrl-\\ (SIGQUIT) too: commands in sessions of their own (no-tty-prompts) no longer get the terminal's
+	import signal
+	import subprocess
+	import sys
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	proc = subprocess.Popen([sys.executable, multiSSH3.__file__] + _hermetic_args(tmp_path) + [
+		"127.0.0.[1-3]", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 3)
+		assert all(_parent_pid(pid) == proc.pid for pid in children)
+		proc.send_signal(getattr(signal, signal_name))
+		proc.communicate(timeout=15)
+		assert (proc.returncode, _wait_until_gone(children)) == (exit_code, [])
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_sigterm_starts_none_of_the_waiting_hosts(tmp_path):
+	# hosts waiting for a free connection slot must not start once mssh is being stopped
+	import signal
+	import subprocess
+	import sys
+	from pathlib import Path
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	started = tmp_path / "started"
+	script = tmp_path / "mssh_logging_starts.py"
+	# log each command as it starts: one killed at once never gets to record its own pid
+	script.write_text(
+		"import subprocess, sys\n"
+		"sys.path.insert(0, {root!r})\n"
+		"import multiSSH3\n"
+		"popen = subprocess.Popen\n"
+		"def logged(argv, **kwargs):\n"
+		"    if '--' in argv:\n"
+		"        with open({started!r}, 'a') as log:\n"
+		"            log.write(argv[argv.index('--') + 1] + '\\n')\n"
+		"    return popen(argv, **kwargs)\n"
+		"multiSSH3.subprocess.Popen = logged\n"
+		"multiSSH3.main(sys.argv[1:])\n".format(root=str(Path(multiSSH3.__file__).resolve().parent), started=str(started)))
+	proc = subprocess.Popen([sys.executable, str(script)] + _hermetic_args(tmp_path) + ["-m", "2",
+		"127.0.0.[1-8]", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 2)
+		proc.send_signal(signal.SIGTERM)
+		proc.communicate(timeout=15)
+		assert (proc.returncode, sorted(started.read_text().split())) == (143, ["127.0.0.1", "127.0.0.2"])
+		assert _wait_until_gone(children) == []
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_first_interrupt_starts_none_of_the_waiting_hosts(tmp_path):
+	# the first Ctrl C stops the running commands; hosts still waiting for a connection slot must not
+	# start (each would be one more login attempt on its host)
+	import signal
+	import subprocess
+	import sys
+	from pathlib import Path
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	started = tmp_path / "started"
+	script = tmp_path / "mssh_logging_starts.py"
+	script.write_text(
+		"import subprocess, sys\n"
+		"sys.path.insert(0, {root!r})\n"
+		"import multiSSH3\n"
+		"popen = subprocess.Popen\n"
+		"def logged(argv, **kwargs):\n"
+		"    if '--' in argv:\n"
+		"        with open({started!r}, 'a') as log:\n"
+		"            log.write(argv[argv.index('--') + 1] + '\\n')\n"
+		"    return popen(argv, **kwargs)\n"
+		"multiSSH3.subprocess.Popen = logged\n"
+		"multiSSH3.main(sys.argv[1:])\n".format(root=str(Path(multiSSH3.__file__).resolve().parent), started=str(started)))
+	proc = subprocess.Popen([sys.executable, str(script)] + _hermetic_args(tmp_path) + ["-m", "2",
+		"127.0.0.[1-8]", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 2)
+		proc.send_signal(signal.SIGINT)
+		output, _ = proc.communicate(timeout=15)
+		assert sorted(started.read_text().split()) == ["127.0.0.1", "127.0.0.2"]
+		# the hosts that never started say so, in one block (same output, merged)
+		block = output.decode().split("■ 127.0.0.[3-8]")[1].split("───")[0]
+		assert "Not started: Ctrl C" in block and "RETURN CODE: 130" in block
+		assert proc.returncode == 8  # every host failed: stopped, or never started
+		assert _wait_until_gone(children) == []
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_sighup_stays_ignored_under_nohup(tmp_path):
+	# `nohup mssh ...` must keep running when the terminal goes away
+	import signal
+	import subprocess
+	import sys
+	import time
+
+	env = _cli_with_fake_ssh(tmp_path)
+	pids = tmp_path / "pids"
+	proc = subprocess.Popen([sys.executable, multiSSH3.__file__] + _hermetic_args(tmp_path) + [
+		"127.0.0.1", "echo $$ >> {}; exec sleep 60".format(pids)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path),
+		preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN))
+	children = []
+	try:
+		children = _wait_for_lines(pids, 1)
+		proc.send_signal(signal.SIGHUP)
+		time.sleep(0.5)
+		assert proc.poll() is None
+		assert all(_process_running(pid) for pid in children)
+		proc.send_signal(signal.SIGTERM)
+		proc.communicate(timeout=15)
+		assert proc.returncode == 143
+	finally:
+		proc.kill()
+		_kill_leftovers(children)
+
+
+@_needs_proc
+def test_sigterm_with_the_tui_up_kills_the_commands_and_restores_the_terminal(tmp_path):
+	# curses' own SIGTERM handler restored the terminal but exited 1, leaving the commands running
+	import re
+	import shlex
+	import signal
+	import subprocess
+	import sys
+	import threading
+	import time
+
+	pytest.importorskip("curses")
+	pty = pytest.importorskip("pty")
+	import fcntl
+	import struct
+	import termios
+	if not hasattr(termios, "TIOCSCTTY"):
+		pytest.skip("needs TIOCSCTTY")
+
+	env = dict(_cli_with_fake_ssh(tmp_path), TERM="xterm")
+	pids = tmp_path / "pids"
+	mssh = [sys.executable, multiSSH3.__file__] + _hermetic_args(tmp_path) + [
+		"127.0.0.[1-3]", "echo $$ >> {}; exec sleep 60".format(pids)]
+	master, slave = pty.openpty()
+	fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+	terminal_before = termios.tcgetattr(slave)
+
+	def controlling_terminal():
+		os.setsid()
+		fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+	# a shell leads the session as in a terminal window: were mssh the leader, its exit would hang up its children
+	shell = subprocess.Popen(["sh", "-c", " ".join(shlex.quote(arg) for arg in mssh) + "; echo mssh-exited-$?; sleep 30"],
+		stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(tmp_path), preexec_fn=controlling_terminal)
+	screen = bytearray()
+
+	def read_screen():
+		while True:
+			try:
+				data = os.read(master, 65536)
+			except OSError:
+				return
+			if not data:
+				return
+			screen.extend(data)
+
+	threading.Thread(target=read_screen, daemon=True).start()
+	children = []
+	try:
+		children = _wait_for_lines(pids, 3)
+		mssh_pid = _parent_pid(children[0])
+		deadline = time.monotonic() + 10
+		while termios.tcgetattr(slave)[3] & termios.ICANON and time.monotonic() < deadline:
+			time.sleep(0.05)  # curses switches the terminal out of line mode
+		if termios.tcgetattr(slave)[3] & termios.ICANON:
+			pytest.skip("the TUI did not start: {!r}".format(bytes(screen[-300:])))
+		time.sleep(0.3)
+		os.kill(mssh_pid, signal.SIGTERM)
+		deadline = time.monotonic() + 15
+		while not re.search(rb"mssh-exited-\d+\r?\n", bytes(screen)) and time.monotonic() < deadline:
+			time.sleep(0.05)
+		exited = re.search(rb"mssh-exited-(\d+)", bytes(screen))
+		assert (exited and exited.group(1), _wait_until_gone(children)) == (b"143", [])
+		assert termios.tcgetattr(slave) == terminal_before
+	finally:
+		_kill_leftovers(children)
+		os.killpg(shell.pid, signal.SIGKILL)  # the shell leads its own process group
+		shell.wait()
+		os.close(slave)
+		os.close(master)

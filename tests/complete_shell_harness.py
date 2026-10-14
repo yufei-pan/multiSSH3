@@ -1,5 +1,6 @@
 '''Drive real shells for the autocomplete tests: a pseudo-terminal session, or a direct call.'''
 import fcntl
+import json
 import os
 import pty
 import select
@@ -32,8 +33,10 @@ def make_home(tmp_path, history_lines=()):
 	A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).
 
 	The prober's lock is taken, so no prober runs (no DNS, no ping): tests that want answers about
-	hosts write host-state.tsv themselves.
+	hosts write host-state.tsv themselves. An mssh config in HOME keeps this machine's /etc/hosts and
+	/etc/profile.d/hosts.sh out of the host names the engine offers.
 	'''
+	import multiSSH3
 	home = tmp_path / 'home'
 	runtime = tmp_path / 'runtime'
 	home.mkdir()
@@ -41,15 +44,35 @@ def make_home(tmp_path, history_lines=()):
 	(runtime / 'multiSSH3').mkdir(mode=0o700)
 	(runtime / 'multiSSH3' / 'probe.lock').write_text('')
 	(home / '.mssh_history').write_text(''.join(line + '\n' for line in history_lines))
+	(home / '.multiSSH3.config.json').write_text(json.dumps({'DEFAULT_HOST_FILE': str(home / 'hosts'),
+		'DEFAULT_ENV_FILES': [path for path in multiSSH3.DEFAULT_ENV_FILES if path.startswith('~')]}))
 	env = {
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
 		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '5',
+		'MSSH_COMPLETE_START_TIMEOUT': '10',
 	}
 	return env, home
 
 def build_index(env):
 	'''Build the index the engine will use for env, so a test does not wait for the first build.'''
 	subprocess.run(ENGINE + ['rebuild'], env=env, stdout=subprocess.DEVNULL, check=True, timeout=60)
+
+def without_command(env, name, directory):
+	'''
+	env with a PATH that finds every command env's PATH finds except name (macOS has no coreutils
+	timeout, for one): a new directory of links to them.
+	'''
+	directory.mkdir()
+	for folder in env['PATH'].split(os.pathsep):
+		if not os.path.isdir(folder):
+			continue
+		for entry in os.listdir(folder):
+			path = os.path.join(folder, entry)
+			link = directory / entry
+			if entry == name or os.path.lexists(str(link)) or not (os.path.isfile(path) and os.access(path, os.X_OK)):
+				continue
+			os.symlink(path, str(link))
+	return dict(env, PATH=str(directory))
 
 class Session(object):
 	'''An interactive shell on a pseudo-terminal. print_key makes the shell print its command line.'''
@@ -63,6 +86,8 @@ class Session(object):
 				os.chdir(str(cwd))
 			os.execvpe(argv[0], argv, env)
 		self.output = b''
+		# (where in output, rows, columns) for each resize
+		self.resizes = []
 
 	def read_until(self, marker, timeout=10.0):
 		'''Read until marker (bytes) shows up after what was read so far; return the new output.'''
@@ -79,6 +104,12 @@ class Session(object):
 					break
 				self.output += chunk
 		return self.output[start:].decode('utf-8', 'replace')
+
+	def resize(self, rows, columns):
+		'''Change the terminal's size: the kernel sends SIGWINCH to what runs in it. Read what was drawn first.'''
+		self.read_until(b'@@never@@', 0.3)
+		self.resizes.append((len(self.output), rows, columns))
+		fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
 
 	def send(self, data):
 		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)
@@ -119,17 +150,18 @@ complete -F _fakefile fakefile
 
 ZSH_TEST_RC = r'''
 PS1='@@READY@@ '
-autoload -Uz compinit && compinit -u -D
+{compinit}
 {pre}
 _mssh_test_print() {{ print -r -- "@@LINE[$BUFFER]@@" }}
 zle -N _mssh_test_print
 bindkey '^X^P' _mssh_test_print
 # a command with its own completion, for delegation tests
 _fakecmd() {{ compadd alpha beta }}
-compdef _fakecmd fakecmd
+(( $+functions[compdef] )) && compdef _fakecmd fakecmd
 [[ -r {glue} ]] && source {glue} 2>/dev/null
 {extra}
 '''
+ZSH_COMPINIT = 'autoload -Uz compinit && compinit -u -D'
 
 def require_blesh():
 	'''The ble.sh script named by MSSH_TEST_BLESH; skip without it, unless MSSH_REQUIRE_SHELLS lists blesh.'''
@@ -147,17 +179,22 @@ PS1='@@READY@@ '
 bind -x '"\C-t": printf "@@LINE[%s]@@\n" "$READLINE_LINE"'
 _fakecmd() {{ COMPREPLY=($(compgen -W "alpha beta" -- "$2")); }}
 complete -F _fakecmd fakecmd
+{pre}
 {glue_line}
+{extra}
 [[ ${{BLE_VERSION-}} ]] && ble-attach
 '''
 
-def blesh_session(home, env, glue=None):
-	'''An interactive bash running ble.sh, with the glue unless glue is None (ble.sh caches warmed first).'''
+def blesh_session(home, env, glue=None, pre='', extra=''):
+	'''
+	An interactive bash running ble.sh, with the glue unless glue is None (ble.sh caches warmed first);
+	pre runs before the glue loads, extra after.
+	'''
 	blesh = require_blesh()
 	require_shell('bash')
 	rc = home / 'blesh.bashrc'
 	glue_line = '[ -r {0} ] && . {0} 2>/dev/null'.format(glue) if glue else ''
-	rc.write_text(BLESH_TEST_RC.format(blesh=blesh, glue_line=glue_line))
+	rc.write_text(BLESH_TEST_RC.format(blesh=blesh, glue_line=glue_line, pre=pre, extra=extra))
 	env = dict(env, USER=env.get('USER') or 'mssh-test')
 	argv = ['bash', '--noprofile', '--rcfile', str(rc), '-i']
 	if not (home / '.cache' / 'blesh').exists():
@@ -178,19 +215,21 @@ def bash_session(home, env, glue, bash_completion=True, extra='', pre=''):
 	session.read_until(b'@@READY@@')
 	return session
 
-def zsh_session(home, env, glue, pre='', extra=''):
-	'''An interactive zsh with the glue; pre runs before the glue loads, extra after.'''
-	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue, pre=pre, extra=extra))
+def zsh_session(home, env, glue, pre='', extra='', compinit=ZSH_COMPINIT):
+	'''An interactive zsh with the glue; compinit (zsh's completion system) and pre run before the glue loads, extra after.'''
+	(home / '.zshrc').write_text(ZSH_TEST_RC.format(glue=glue, pre=pre, extra=extra, compinit=compinit))
 	session = Session([require_shell('zsh'), '-i'], dict(env, ZDOTDIR=str(home)), cwd=home)
 	session.read_until(b'@@READY@@')
 	return session
 
-def fish_complete(env, glue, line):
-	'''Completions fish offers for line (complete -C), as (text, description) pairs.'''
+def fish_complete(env, glue, line, cwd=None):
+	'''Completions fish offers for line (complete -C) in cwd, as (text, description) pairs. fish must print nothing else.'''
 	fish = require_shell('fish')
 	# fakecmd: a command with its own completion, for delegation tests
 	script = 'complete -c fakecmd -f -a "alpha beta"; source {}; complete -C{}'.format(glue, _fish_quote(line))
-	output = subprocess.run([fish, '--no-config', '-c', script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	output = subprocess.run([fish, '--no-config', '-c', script], env=env, cwd=None if cwd is None else str(cwd),
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stderr == b'', 'fish printed: ' + output.stderr.decode('utf-8', 'replace')
 	pairs = []
 	for row in output.stdout.decode('utf-8', 'replace').splitlines():
 		text, _, description = row.partition('\t')

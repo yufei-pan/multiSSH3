@@ -1,9 +1,11 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
+import time
+
 import pytest
 
 import multiSSH3
 import mssh_complete as mc
-from vt_grid import FakeTerminal, Grid
+from vt_grid import FakeTerminal, Grid, Resize
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 NOW = 1790000000
@@ -145,8 +147,157 @@ def test_run_on_a_wrapped_line_opens_below_all_of_it():
 	assert grid.cursor == (0, 0)
 
 
+@pytest.mark.parametrize('burst', ['\x1b', '\x1b\x1b', '\x1b[27u', '\x1b[27;1u', '\x1b[27;1;27~', '\x1b[27;3u'])
+def test_run_cancels_on_esc_however_the_terminal_sends_it(burst):
+	# a lone Esc; two at once (a double press over ssh or mosh, Alt+Esc); the kitty keyboard
+	# protocol's CSI u; xterm's modifyOtherKeys
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(FakeTerminal([burst])) == 'cancel'
+
+
+def test_run_takes_keys_sent_as_csi_u():
+	picker = mc.Picker(items('gpu01', 'gpu02', 'gpu03'), items('mssh x y'), 'hosts')
+	# Ctrl-R and Ctrl-N move down, Ctrl-P up, Enter chooses (the kitty protocol, flags 1 and 8)
+	assert picker.run(FakeTerminal(['\x1b[114;5u', '\x1b[110;5u', '\x1b[112;5u', '\x1b[13u'])) == 'choose'
+	assert picker.chosen().text == 'gpu02'
+	# Tab switches, typing filters, Backspace edits the filter, Ctrl-G cancels
+	picker = mc.Picker(items('gpu01'), items('mssh x y', 'mssh z'), 'hosts')
+	assert picker.run(FakeTerminal(['\x1b[9u', '\x1b[122u', '\x1b[120u', '\x1b[127u', '\x1b[103;5u'])) == 'cancel'
+	assert (picker.tab, picker.query) == ('history', 'z')
+	assert picker.run(FakeTerminal(['\x1b[99;5u'])) == 'cancel'
+
+
+def test_run_on_a_wrapped_line_draws_again_below_all_of_it():
+	# between draws the cursor is in the line, on its first row here: the next draw starts below the line
+	grid = Grid(24, 20)
+	seen = []
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append(grid.lines())
+			return FakeTerminal.read_key(self, timeout)
+
+	line = '$ mssh gpu[01-16] nvidia-smi -q'
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
+	shown = seen[1]
+	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
+	assert ' 2/2 ' in shown[2] and '> gpu02' in shown[4] and shown[2 + 1 + 10].startswith('└') and shown[2 + 1 + 10 + 1] == ''
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_run_opens_again_at_the_new_size(shell):
+	# bash cleared the line, so the picker draws it; zsh left it on screen, the cursor in it
+	grid = Grid(24, 80)
+	seen = []
+
+	class Watching(FakeTerminal):
+		def read_key(self, timeout=None):
+			seen.append((grid.lines(), grid.cursor))
+			return FakeTerminal.read_key(self, timeout)
+
+	picker = mc.Picker(items('gpu01', 'gpu02'), [], 'hosts', unicode=True)
+	term = Watching([Resize(24, 30), '\x1b'], grid=grid)
+	if shell == 'bash':
+		assert picker.run(term, '$ mssh gp x', '$ mssh gp') == 'cancel'
+	else:
+		grid.feed('$ mssh gp x\x1b[2D')
+		assert picker.run(term) == 'cancel'
+	shown, cursor = seen[1]
+	assert shown[0] == '$ mssh gp x' and cursor == (0, 9)
+	box = shown[1:13]
+	assert box[0].startswith('┌ hosts ') and box[0].endswith('┐') and box[-1].startswith('└') and box[-1].endswith('┘')
+	assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 30 and '> gpu01' in box[1]
+	assert shown[13:] == [''] * 11
+	# closed: the line alone, and the cursor where the shell redraws it
+	assert grid.lines() == ['$ mssh gp x'] + [''] * 23
+	assert grid.cursor == ((0, 0) if shell == 'bash' else (0, 9))
+
+
+def test_run_cancels_when_the_terminal_gets_too_small():
+	grid = Grid(24, 80)
+	assert mc.Picker(items('gpu01'), [], 'hosts').run(FakeTerminal([Resize(24, 15)], grid=grid), '$ mssh gp', '$ mssh gp') == 'cancel'
+	assert grid.lines() == ['$ mssh gp'] + [''] * 23 and grid.cursor == (0, 0)
+
+
 def test_run_is_unavailable_on_a_tiny_terminal():
 	assert mc.Picker(items('a'), []).run(FakeTerminal([], rows=4)) == 'unavailable'
+
+
+# A line break that chooses in the middle of a paste leaves the rest of the paste to the shell, which
+# runs it (its own line breaks are Enter there): a paste only ever filters.
+
+def test_a_paste_filters_and_never_chooses():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	term = FakeTerminal(['\x1b[200~stor\r\necho INJECTED\n\x1b[201~', '\x1b'])
+	assert picker.run(term) == 'cancel'
+	# line breaks and runs of white space are one space: words for the filter
+	assert picker.query == 'stor echo INJECTED '
+
+
+def test_a_pasted_line_with_its_line_break_waits_for_enter():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	term = FakeTerminal(['\x1b[200~stor\n\x1b[201~', '\r'])
+	assert picker.run(term) == 'choose'
+	assert picker.query == 'stor ' and picker.chosen().text == 'storage1'
+
+
+def test_a_paste_adds_to_the_filter_without_control_characters():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal(['gp', '\x1b[200~u\x1b[A\x03\t01\x1b[201~', '\x1b'])) == 'cancel'
+	assert picker.query == 'gpu 01'
+
+
+def test_a_long_paste_is_cut_for_the_filter():
+	# the filter is matched against every row at every key: a whole file pasted would freeze it
+	picker = mc.Picker(items('gpu01'), [], 'hosts')
+	assert picker.run(FakeTerminal(['\x1b[200~' + 'gpu ' * 5000 + '\x1b[201~', '\x1b'])) == 'cancel'
+	assert len(picker.query) == mc.PICKER_FILTER_LIMIT
+
+
+@pytest.mark.parametrize('paste', ['stor\recho INJECTED\r', 'stor\r\r', '\recho INJECTED\r', 'stor\r\necho INJECTED\r\n'])
+def test_a_paste_the_terminal_does_not_mark_never_chooses(paste):
+	# bracketed paste off (bash before 5.1; fish 4 and ble.sh turn it off while the picker runs): a line
+	# break with another one in the keys right behind it is in a paste, and all of them filter
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal([paste, '\x1b'])) == 'cancel'
+	assert picker.query.split() == paste.split()
+
+
+@pytest.mark.parametrize('enter', ['\r', '\r\n', '\r\x00'])
+def test_enter_chooses_however_the_terminal_sends_it(enter):
+	# CR LF (newline mode, serial consoles set to send it) and CR NUL (telnet) are one Enter: the LF
+	# is not left for the shell, where it would run the line
+	term = FakeTerminal(['st', enter])
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(term) == 'choose'
+	assert picker.chosen().text == 'storage1' and picker.typed_after == '' and term.queue == []
+
+
+def test_keys_typed_right_after_enter_follow_the_choice():
+	# a fast typist's next keys, or keys a slow link brought with the Enter: no line break among them,
+	# so no paste. Their text goes after the choice, where the shell would have put it
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal(['st', '\r-x\x1b[A'])) == 'choose'
+	assert picker.chosen().text == 'storage1' and picker.typed_after == '-x'
+
+
+def test_enter_typed_alone_chooses():
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal(['s', 't', '\r'])) == 'choose'
+	assert picker.chosen().text == 'storage1'
+
+
+def test_enter_typed_ahead_after_the_filter_chooses():
+	# typed before the picker was ready: nothing comes after the line break
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(FakeTerminal([], typed_ahead='st\r')) == 'choose'
+	assert picker.chosen().text == 'storage1'
+
+
+def test_enter_typed_ahead_first_chooses_and_leaves_the_keys_after_it():
+	term = FakeTerminal([], typed_ahead='\rXY')
+	picker = mc.Picker(items('gpu01', 'storage1'), [], 'hosts')
+	assert picker.run(term) == 'choose'
+	assert picker.chosen().text == 'gpu01' and [name for name, _ in term.queue] == ['X', 'Y']
 
 
 def request(before, after='', history=()):
@@ -162,12 +313,30 @@ def test_slot_tab_offers_the_slot_and_a_choice_replaces_the_word():
 	assert mc.apply_pick(req, picker, word, mc.parse_context(req.before, req.after, SPEC)) == ('mssh gpu[01-16] nvidia-smi ', 27)
 
 
+def test_keys_typed_right_after_the_choice_are_in_the_new_line():
+	req = request('mssh gpu[01-16] nv')
+	slot, title, history, word = mc.picker_items(req, engine(), HISTORY, NOW)
+	picker = mc.Picker(slot, history, title)
+	picker.typed_after = '-q'
+	assert mc.apply_pick(req, picker, word, mc.parse_context(req.before, req.after, SPEC)) == ('mssh gpu[01-16] nvidia-smi -q', 29)
+
+
 def test_a_choice_inside_an_open_quote_closes_it():
 	req = request('mssh gpu[01-16] "nv')
 	slot, title, history, word = mc.picker_items(req, engine(), HISTORY, NOW)
 	picker = mc.Picker(slot, history, title)
 	line, cursor = mc.apply_pick(req, picker, word, mc.parse_context(req.before, req.after, SPEC))
 	assert line == 'mssh gpu[01-16] "nvidia-smi" ' and cursor == len(line)
+
+
+def test_a_choice_inside_an_ansi_c_quote_keeps_the_command():
+	# in $'...' a backslash starts an escape: printf "%s\n" x would become printf "%s<newline>" x
+	history = [line(NOW - number, '-su', 'node1', '\'printf "%s\\n" x\'') for number in range(3)] + [line(NOW - 10, '-su', 'node1', '"printf ok"')]
+	req = request("mssh node1 $'pri")
+	slot, title, items, word = mc.picker_items(req, engine(history), history, NOW)
+	assert [item.text for item in slot] == ['printf ok']
+	line_after, _ = mc.apply_pick(req, mc.Picker(slot, items, title), word, mc.parse_context(req.before, req.after, SPEC))
+	assert line_after == "mssh node1 $'printf ok' "
 
 
 def test_history_tab_never_offers_passwords():
@@ -177,6 +346,18 @@ def test_history_tab_never_offers_passwords():
 	texts = [item.text for item in offered]
 	assert 'mssh storage1 df' in texts
 	assert not [text for text in texts if 'hunter2' in text or 's3cret' in text]
+
+
+def test_options_slot_never_shows_a_configured_password(monkeypatch):
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_PASSWORD', "Hunter2 pa%ss it's")
+	monkeypatch.setattr(multiSSH3, 'DEFAULT_IPMI_PASSWORD', 'Bmc 100% s3cret')
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	for before in ('mssh -', 'mssh -p', 'mssh --ipmi_p'):
+		slot, title, history, _ = mc.picker_items(request(before), mc.Engine(spec, []), [], NOW)
+		assert title == 'options' and slot
+		shown = [item.text + ' ' + item.description for item in slot]
+		shown += mc.Picker(slot, history, title, now=NOW, unicode=True).render(200, len(slot))
+		assert not [text for text in shown if 'Hunter2' in text or 's3cret' in text], before
 
 
 def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
@@ -190,6 +371,173 @@ def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	assert len(texts) == len(set(texts))
 	picker = mc.Picker([], history)
 	assert mc.apply_pick(req, picker, None, None) == (texts[0], len(texts[0]))
+
+
+FLAGS = mc.flag_settings(multiSSH3.get_parser())
+
+
+def shell_engine(history, shell, defaults=None):
+	'''An engine as the shells get one: mssh's history, the shell's lines of the request, mssh's flags.'''
+	memory = mc.MemoryKnowledge()
+	memory.add_history(history, SPEC, NOW)
+	built = mc.Engine(SPEC, [memory, mc.shell_history_knowledge(shell, SPEC)])
+	built.flag_sets, built.flag_defaults = FLAGS[0], dict(FLAGS[1], **(defaults or {}))
+	return built
+
+
+def offered(history, shell, before='mssh ', defaults=None):
+	'''The picker's slot rows and history rows as (text, uses).'''
+	built = shell_engine(history, shell, defaults)
+	slot, _, rows, _ = mc.picker_items(request(before, history=shell), built, history, NOW)
+	return [(item.text, item.uses) for item in slot], [(item.text, item.uses) for item in rows]
+
+
+def runs(count, options, hosts, command):
+	'''count runs as mssh records them, a minute apart, the newest last.'''
+	return [line(NOW - 60 * (count - number), options, hosts, command) for number in range(count)]
+
+
+def test_a_run_in_both_histories_is_used_once():
+	# mssh records `mssh gpu[01-16] nvidia-smi` its own way (short options, -su always, its quoting);
+	# the shell keeps the line as typed: one run all the same
+	assert offered(runs(1, '-su', "'gpu[01-16]'", 'nvidia-smi'), ['mssh gpu[01-16] nvidia-smi']) == (
+		[('gpu[01-16]', 1)], [("mssh -su 'gpu[01-16]' nvidia-smi", 1)])
+
+
+def test_each_run_is_counted_once():
+	history = runs(3, '-su', "'gpu[01-16]'", 'nvidia-smi')
+	expected = ([('gpu[01-16]', 3)], [("mssh -su 'gpu[01-16]' nvidia-smi", 3)])
+	assert offered(history, ['mssh gpu[01-16] nvidia-smi'] * 3) == expected
+	# the shell may keep fewer of them (ignoredups, its tail), or more: runs mssh's history no longer holds
+	assert offered(history, ['mssh gpu[01-16] nvidia-smi']) == expected
+	assert offered(history[-1:], ['mssh gpu[01-16] nvidia-smi'] * 3) == expected
+
+
+def test_a_line_mssh_did_not_record_counts_each_time():
+	# mssh records no -I run: the shell's history is all there is
+	assert offered([], ['mssh -I login1 w'] * 2) == ([('login1', 2)], [('mssh -I login1 w', 2)])
+
+
+def test_runs_only_the_shell_holds_count_with_the_history_tab_full(monkeypatch):
+	# HISTORY_LIMIT bounds the rows, not the uses
+	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 2)
+	history = runs(1, '-su', 'node1', 'uptime') + runs(1, '-su', 'node2', 'uptime') + runs(1, '-su', 'node1', 'df')
+	slot, rows = offered(history, ['mssh -I login1 w'] * 2 + ['mssh node1 df'])
+	assert ('login1', 2) in slot and ('node1', 2) in slot
+	assert rows == [('mssh -su node1 df', 1), ('mssh -su node2 uptime', 1)]
+
+
+def test_runs_past_the_history_tab_are_not_counted_twice(monkeypatch):
+	# mssh's history past HISTORY_LIMIT is not read, but its index counts the runs there: only a line
+	# mssh never records here (-I, --script, another history file) is a run of its own
+	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 2)
+	history = runs(1, '-su', 'node1', 'uptime') + runs(1, '-su', 'node2', 'uptime') + runs(1, '-su', 'node3', 'df')
+	shell = ['mssh node1 uptime', 'mssh --script node1 w', 'mssh -hf /tmp/h node1 w', 'mssh node3 df']
+	assert offered(history, shell)[0] == [('node1', 3), ('node3', 1), ('node2', 1)]
+
+
+def test_spellings_of_one_run_are_one_row():
+	# the program's name and path, option spellings, their order and quoting
+	shell = ['mssh3 -u root -t 5 storage1 "df -h /data"', "multissh storage1 --timeout=5 --username root 'df -h /data'",
+		'/usr/local/bin/mssh -t5 -u=root storage1 df\\ -h\\ /data']
+	assert offered(runs(3, '-u=root -t=5 -su', 'storage1', "'df -h /data'"), shell) == (
+		[('storage1', 3)], [("mssh -u=root -t=5 -su storage1 'df -h /data'", 3)])
+	# mssh runs unquoted words as one command
+	assert offered(runs(1, '-su', 'node1', "'df /data'"), ['mssh node1 df /data'])[1] == [("mssh -su node1 'df /data'", 1)]
+
+
+def test_runs_that_differ_stay_apart():
+	history = runs(1, '-nsu', 'node1', 'uptime') + runs(1, '-su', 'node1', 'uptime')
+	slot, rows = offered(history, ['mssh -nsu node1 uptime', 'mssh node1 uptime', 'mssh -q node1 uptime'])
+	assert slot == [('node1', 3)]
+	assert rows == [('mssh -su node1 uptime', 1), ('mssh -nsu node1 uptime', 1), ('mssh -q node1 uptime', 1)]
+	# with -nsu the default of mssh's config, mssh records it on every line
+	assert offered(runs(1, '-nsu', 'node1', 'uptime'), ['mssh node1 uptime'], defaults={'skip_unreachable': False})[1] == [
+		('mssh -nsu node1 uptime', 1)]
+
+
+# runs as typed, then as mssh 6.31 and as later versions record them (main() up to the history line):
+# 6.31 left many options out; both fold -uk and -k DIR into the key found, -s PATH into -f PATH -fs;
+# later versions record -T as -t=50 and --config_file absolute
+FOLDED_RUNS = [
+	('mssh -T node1 uptime', '-su', '-t=50 -su', 'uptime'),
+	('mssh -uk node1 uptime', "-k='~/.ssh/id_ed25519' -su", "-k='~/.ssh/id_ed25519' -su", 'uptime'),
+	('mssh --host_file hosts.txt node1 uptime', '-su', '-su --host_file=hosts.txt', 'uptime'),
+	('mssh -w node1 uptime', '-su', '-su -w', 'uptime'),
+	('mssh --config_file c.json node1 uptime', '-su', '-su --config_file=/home/u/c.json', 'uptime'),
+	('mssh -s /tmp/x node1', '-f=/tmp/x -su -fs', '-f=/tmp/x -fs -su', ''),
+	('mssh -k ~/.ssh/ node1 uptime', "-k='~/.ssh/id_ed25519' -su", "-k='~/.ssh/id_ed25519' -su", 'uptime'),
+	('mssh -t 50 node1 uptime', '-su', '-t=50 -su', 'uptime'),
+	('mssh -m 0 node1 uptime', '-su', '-m=0 -su', 'uptime'),
+]
+
+
+@pytest.mark.parametrize('version', [1, 2], ids=['6.31', 'later'])
+def test_runs_mssh_records_in_another_form_are_used_once(version):
+	history = [line(NOW - 60 * (len(FOLDED_RUNS) - number), run[version], 'node1', run[3]) for number, run in enumerate(FOLDED_RUNS)]
+	slot, rows = offered(history, [run[0] for run in FOLDED_RUNS])
+	assert slot == [('node1', len(FOLDED_RUNS))]
+	recorded = {}
+	for run in FOLDED_RUNS:
+		text = ' '.join(part for part in ('mssh', run[version], 'node1', run[3]) if part)
+		recorded[text] = recorded.get(text, 0) + 1
+	assert sorted(rows) == sorted(recorded.items())
+
+
+def test_a_line_counts_towards_its_own_record_first():
+	# mssh may record a timeout differently (6.31 left -t 50 out), but a record of this one is this run
+	history = [line(NOW - 120, '-t=5 -su', 'node1', 'uptime'), line(NOW - 60, '-t=10 -su', 'node1', 'uptime')]
+	assert offered(history, ['mssh -t 5 node1 uptime'] * 3)[1] == [('mssh -t=10 -su node1 uptime', 1), ('mssh -t=5 -su node1 uptime', 3)]
+	# runs only the shell's history holds stay apart however little they differ
+	_, rows = offered([], ['mssh -I -t 5 node1 uptime', 'mssh -I -t 10 node1 uptime', 'mssh -I -k /k/a node1 uptime', 'mssh -I --host_file a node1 uptime'])
+	assert len(rows) == 4
+
+
+def test_local_commands_are_not_mssh_uses():
+	slot, _ = offered(runs(1, '-su', 'node1', 'uptime'), ['uptime', 'uptime', 'mssh node1 uptime'], 'mssh node1 up')
+	assert slot == [('uptime', 1)]
+
+
+def test_a_line_typed_many_times_is_read_once(monkeypatch):
+	lex = mc.lex
+	parsed = []
+	monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))
+	mc.picker_items(request('mssh ', history=['mssh node1 uptime', 'ls -la /tmp'] * 500), engine(), [], NOW)
+	assert parsed.count('mssh node1 uptime') == 1
+	# a line that cannot run mssh is not read at all
+	assert 'ls -la /tmp' not in parsed
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
+def test_history_tab_takes_a_bang_out_of_double_quotes(shell):
+	# mssh 6.26 and older recorded commands in double quotes, where bash and zsh expand ! when the line runs
+	history = [line(NOW, '-su', 'web1', '"grep !important /etc/x"')]
+	req = mc.Request(shell, 'mssh ', '', '')
+	_, _, offered, _ = mc.picker_items(req, engine(history), history, NOW)
+	recorded = 'mssh -su web1 "grep !important /etc/x"'
+	assert [item.text for item in offered] == [recorded]
+	inserted = recorded if shell == 'fish' else 'mssh -su web1 "grep "\\!"important /etc/x"'
+	assert mc.apply_pick(req, mc.Picker([], offered), None, None) == (inserted, len(inserted))
+
+
+@pytest.mark.parametrize('text, moved', [
+	('mssh h "grep !x f"', 'mssh h "grep "\\!"x f"'),
+	('mssh h "echo done!"', 'mssh h "echo done"\\!'),
+	('mssh h "!x" "a!!b"', 'mssh h \\!"x" "a"\\!\\!"b"'),
+	('mssh h "a\\"!b"', 'mssh h "a\\""\\!"b"'),
+	# bash reads $"..." as "..." (translated), zsh as $ and "...": the quote after $ is never taken back
+	('mssh h $"!x"', 'mssh h $""\\!"x"'),
+	# never expanded: in single quotes, in $'...', escaped, before a blank or =, and $!
+	("mssh h 'a!b' $'c!d' e\\!f", None),
+	('mssh h "a != b" "a!=b" "$!"', None),
+	# expansions read the quotes inside them again
+	('mssh h "${!name}" "${x:-a!b}" "$(echo a!b)" "`echo a!b`"', None),
+])
+def test_bangs_out_of_double_quotes(text, moved):
+	moved = text if moved is None else moved
+	assert mc.bangs_out_of_double_quotes(text) == moved
+	# the words are what they were
+	assert [token.text for token in mc.lex(moved)] == [token.text for token in mc.lex(text)]
 
 
 def run_engine(args, data, env):
@@ -210,6 +558,86 @@ def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
 	for history in (b'', b'ls\n\xff\xfe\n'):
 		edit = run_engine(['edit', 'mssh '], history, env)
 		assert (edit.returncode, edit.stdout, edit.stderr) == (3, b'', b'')
+
+
+def start_on_a_terminal(args, data, env, listening):
+	'''
+	Start the engine with a pseudo-terminal as its controlling terminal, the request on stdin and
+	stdout a pipe; listening False: nobody reads that pipe any more (the shell stopped waiting).
+	Returns (process, the terminal's master side, the pipe's read end or None).
+	'''
+	import os
+	import pty
+	import subprocess
+	from complete_shell_harness import ENGINE
+	master, slave = pty.openpty()
+	name = os.ttyname(slave)
+	read_end, write_end = os.pipe()
+	# a new session that opens the terminal gets it as its controlling terminal
+	process = subprocess.Popen(ENGINE + args, stdin=subprocess.PIPE, stdout=write_end, stderr=subprocess.DEVNULL, env=env,
+		start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
+	os.close(write_end)
+	os.close(slave)
+	if not listening:
+		os.close(read_end)
+		read_end = None
+	process.stdin.write(data)
+	process.stdin.close()
+	return process, master, read_end
+
+
+def terminal_output(fd, seconds, until=None):
+	'''What the program wrote to fd (the terminal, or a pipe) in that many seconds, or until it wrote until.'''
+	import os
+	import select
+	out = b''
+	end = time.monotonic() + seconds
+	while time.monotonic() < end and not (until and until in out):
+		if select.select([fd], [], [], 0.05)[0]:
+			try:
+				chunk = os.read(fd, 1 if until else 65536)
+			except OSError:
+				break
+			if not chunk:
+				break
+			out += chunk
+	return out
+
+
+READY_PICK = b'\0'.join([b'MSSHC1', b'bash', b'5.2', b'pick=1 ready=1 redraw=1 expand=0 term=xterm', b'mssh gpu[01-16] ', b'', b'', b''])
+
+
+@pytest.mark.parametrize('args, data', [(['pick'], READY_PICK), (['edit', '--ready', '--', 'mssh '], b'')], ids=['pick', 'edit'])
+def test_pick_and_edit_say_ready_before_they_take_the_terminal(tmp_path, args, data):
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	process, master, read_end = start_on_a_terminal(args, data, env, listening=True)
+	try:
+		first = terminal_output(read_end, 5.0, until=b'\n')
+		drawn = terminal_output(master, 1.0)
+		assert first == b'ready\n' and (b'type to filter' if args[0] == 'pick' else b'mssh ') in drawn
+		os.write(master, b'\x1b' if args[0] == 'pick' else b'\r')
+		assert process.wait(10) in (0, 1)
+	finally:
+		process.kill()
+		os.close(master)
+		os.close(read_end)
+
+
+@pytest.mark.parametrize('args, data, status', [(['pick'], READY_PICK, 2), (['edit', '--ready', '--', 'mssh '], b'', 3)], ids=['pick', 'edit'])
+def test_pick_and_edit_leave_the_terminal_alone_when_nobody_waits_any_more(tmp_path, args, data, status):
+	# the shell gave up on an engine slow to start: drawing now would fight readline for the terminal
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	process, master, _ = start_on_a_terminal(args, data, env, listening=False)
+	try:
+		assert process.wait(10) == status
+		assert terminal_output(master, 0.3) == b''
+	finally:
+		process.kill()
+		os.close(master)
 
 
 @pytest.mark.parametrize('shell', ['zsh', 'fish'])
@@ -270,13 +698,14 @@ def test_picker_warnings_come_from_the_line(tmp_path, monkeypatch):
 
 
 def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
-	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed
+	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed.
+	# The shell's lines are all read (they count as uses): the shell sends a bounded tail
 	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 10)
 	lex = mc.lex
+	shell = ['mssh -su host{} date'.format(number) for number in range(20)]
 
 	def parses(count):
 		history = [line(NOW - number, '-su', 'node{}'.format(number), 'uptime') for number in range(count)]
-		shell = ['mssh -su host{} date'.format(number) for number in range(count)]
 		built = engine()
 		parsed = []
 		monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))

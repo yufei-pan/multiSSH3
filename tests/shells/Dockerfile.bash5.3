@@ -1,0 +1,7 @@
+# Shell matrix image: bash 5.3 alone (the newest), the official bash image, pinned.
+# 5.3 prints bind -X without the colon of earlier versions
+FROM bash:5.3.20-alpine3.24@sha256:61962062d969cb46dfc2bad061d36342406fa485f64f246aa7e95693ca07df1f
+# Alpine's bash-completion brings Alpine's own bash as /bin/bash: the bash on PATH stays the pinned one
+RUN apk add --no-cache 'python3~3.14' 'py3-pytest~9.0' bash-completion \
+ && [ "$(command -v bash)" = /usr/local/bin/bash ]
+ENV LANG=C.UTF-8

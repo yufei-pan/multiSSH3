@@ -2,7 +2,7 @@
 A small in-memory terminal for the drawing tests: the VT100 subset the picker and the editor use.
 
 Printable text (wide characters take two cells, the last column wraps on the next character),
-CR, LF (raw mode: no carriage return), BS, CSI A B C D G H J K P m, ESC 7 / ESC 8. Other
+CR, LF (raw mode: no carriage return), BS, CSI @ A B C D G H J K P m, ESC 7 / ESC 8. Other
 sequences are read and ignored. Each cell remembers the SGR parameters it was written with.
 '''
 import re
@@ -81,6 +81,12 @@ class Grid(object):
 					self.cells[row] = [(' ', '') for _ in range(self.columns)]
 			elif mode == 2:
 				self.cells = [[(' ', '') for _ in range(self.columns)] for _ in range(self.rows)]
+		elif final == '@':
+			# insert blanks at the cursor: the rest of the row moves right, what passes the last column is lost
+			line = self.cells[self.row]
+			column = min(self.column, self.columns - 1)
+			line[column:column] = [(' ', '')] * first
+			del line[self.columns:]
 		elif final == 'P':
 			line = self.cells[self.row]
 			column = min(self.column, self.columns - 1)
@@ -122,6 +128,22 @@ class Grid(object):
 				self._put(char)
 			index += 1
 
+	def resize(self, rows, columns):
+		'''
+		The window changed size, as xterm takes it: nothing reflows. Rows are cut or padded on the right;
+		with fewer rows, rows leave at the top while the cursor's row would fall off the bottom.
+		'''
+		cells = [row[:columns] + [(' ', '')] * (columns - len(row)) for row in self.cells]
+		if rows < self.rows and self.row >= rows:
+			gone = self.row - rows + 1
+			cells = cells[gone:]
+			self.row -= gone
+			self.saved = (max(self.saved[0] - gone, 0), self.saved[1])
+		cells = cells[:rows] + [[(' ', '')] * columns for _ in range(rows - len(cells))]
+		self.cells, self.rows, self.columns = cells, rows, columns
+		self.column = min(self.column, columns)
+		self.saved = (min(self.saved[0], rows - 1), min(self.saved[1], columns - 1))
+
 	def line(self, row):
 		return ''.join(char for char, _ in self.cells[row]).rstrip()
 
@@ -137,16 +159,26 @@ class Grid(object):
 		return self.row, min(self.column, self.columns - 1)
 
 
+class Resize(object):
+	'''A FakeTerminal burst: the terminal window changes to rows x columns.'''
+	def __init__(self, rows, columns):
+		self.rows = rows
+		self.columns = columns
+
+
 class FakeTerminal(object):
 	'''
 	What the picker and the editor need from a Terminal, drawing into a Grid. Keys come in scripted
 	bursts (what the operator typed at once), one key per read; queue holds the burst's unread keys.
 	A burst of None is the operator waiting: a read with a timeout returns None (timeouts records them).
+	typed_ahead: a burst already there when the program starts reading (typed before it was ready).
+	A Resize burst changes the grid's size and reads as the key 'resize', as Terminal reports one.
 	'''
-	def __init__(self, bursts, rows=24, columns=80, grid=None):
+	def __init__(self, bursts, rows=24, columns=80, grid=None, typed_ahead=None):
+		import mssh_complete as mc
 		self.grid = grid or Grid(rows, columns)
 		self.bursts = list(bursts)
-		self.queue = []
+		self.queue = mc.decode_keys(typed_ahead.encode('utf-8')) if typed_ahead else []
 		self.timeouts = []
 
 	def size(self):
@@ -161,6 +193,9 @@ class FakeTerminal(object):
 			if not self.bursts:
 				raise AssertionError('the program read more keys than the test scripted')
 			burst = self.bursts.pop(0)
+			if isinstance(burst, Resize):
+				self.grid.resize(burst.rows, burst.columns)
+				return 'resize', b''
 			if burst is None:
 				if timeout is None:
 					raise AssertionError('the program waits for a key with no timeout while the test waits')
@@ -169,5 +204,16 @@ class FakeTerminal(object):
 			self.queue = mc.decode_keys(burst.encode('utf-8') if isinstance(burst, str) else burst)
 		return self.queue.pop(0)
 
-	def has_input(self):
+	def has_input(self, timeout=0):
+		# the next burst comes after a pause longer than any wait for more of this one
 		return bool(self.queue)
+
+	def read_paste(self, limit=65536):
+		'''After the paste key: the burst's text up to the end of the paste (all of it when the end is missing).'''
+		data = b''
+		while self.queue:
+			name, raw = self.queue.pop(0)
+			if name == 'paste-end':
+				break
+			data += raw
+		return data[:limit].decode('utf-8', 'replace')

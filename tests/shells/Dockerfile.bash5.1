@@ -1,0 +1,7 @@
+# Shell matrix image: bash 5.1 alone (the bash of Ubuntu 22.04, Debian 11 and RHEL 9), the official bash image, pinned.
+# When a plain bind replaces a bind -x key, 5.1 drops the command of another bind -x key (fzf's Ctrl-R)
+FROM bash:5.1.16-alpine3.22@sha256:c45d9d71eef283d5588964abb6294cfacf13e5eaa56c599dc96dfbd5bcd15ee5
+# Alpine's bash-completion brings Alpine's own bash as /bin/bash: the bash on PATH stays the pinned one
+RUN apk add --no-cache 'python3~3.12' 'py3-pytest~8.3' bash-completion \
+ && [ "$(command -v bash)" = /usr/local/bin/bash ]
+ENV LANG=C.UTF-8
