@@ -3449,7 +3449,10 @@ class Engine(object):
 				if split is not None:
 					found.append(split)
 		found.extend(self._option_diagnostics(options))
-		found.extend(self._command_diagnostics(_mssh_argv(line, tokens, start), typing))
+		def ends_line(token):
+			# the cursor at the end of the line's last word: Enter would run the line as it stands
+			return token.start + len(token.raw) == cursor and not line[cursor:].strip()
+		found.extend(self._command_diagnostics(_mssh_argv(line, tokens, start), typing, ends_line))
 		wanted = [host for host in _unique(wanted) if _queueable(host)]
 		# pending only once the hosts wait in the queue: then a prober takes them, the one running or
 		# one a later query starts (asking again is such a query)
@@ -3600,13 +3603,17 @@ class Engine(object):
 					found.append(Diagnostic(span[0], span[1], 'options', '{} does nothing: {}'.format(name, why)))
 		return found
 
-	def _command_diagnostics(self, argv, typing):
+	def _command_diagnostics(self, argv, typing, ends_line=lambda token: False):
 		'''
 		Words of a remote command typed unquoted that mssh reads as its own options: mssh parses its
 		options among its positionals, so in `mssh web1 journalctl -u slurmd` -u is its --username, and
 		a word starting with '-' that names none stops it with an error. After an unquoted command word,
 		such words are the remote command's, as the completer takes them; with -f, -s or -G before them
 		the command words are paths, and nothing is said. argv: mssh's words (_mssh_argv).
+
+		A word being typed is left alone, except the line's last word when it already is an mssh
+		option (ends_line): a remote command's option is often its last word (`mssh all df -h`), and
+		Enter would run the line as it stands.
 		'''
 		abbreviations = _takes_abbreviations(self.spec)
 		have_hosts = False
@@ -3651,7 +3658,9 @@ class Engine(object):
 		dash, _ = _punctuation()
 		found = []
 		for token, verdict, readings in read:
-			if typing(token) or verdict == 'unsure' or (verdict == 'unknown' and sys.version_info < (3, 7)):
+			if typing(token) and not (verdict == 'options' and ends_line(token)):
+				continue
+			if verdict == 'unsure' or (verdict == 'unknown' and sys.version_info < (3, 7)):
 				continue
 			text = token.text
 			if verdict == 'options':
