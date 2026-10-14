@@ -374,3 +374,14 @@ def test_grid_resizes_like_xterm():
 	assert grid.lines() == ['ab', 'cd', 'ef'] and grid.cursor == (2, 0)
 	grid.resize(3, 8)
 	assert grid.lines() == ['ab', 'cd', 'ef'] and (grid.rows, grid.columns) == (3, 8)
+
+
+def test_grid_inserts_blank_characters():
+	# what bash 5.3 sends while Ctrl-R searches for "aa": CSI @ moves the rest of the row right
+	grid = Grid(2, 80)
+	grid.feed("\r(reverse-i-search)`': " + "\x08\x08\x08a': echo a\x1b[7ma\x1b[27m2\x08\x08" + '\x08' * 9 + "\x1b[1@a': echo \x1b[7ma\x1b[27m\x08")
+	assert grid.lines()[0] == "(reverse-i-search)`aa': echo aa2"
+	# what is pushed past the last column is lost
+	grid = Grid(1, 6)
+	grid.feed('abcdef\x1b[1G\x1b[2@')
+	assert grid.lines() == ['  abcd']

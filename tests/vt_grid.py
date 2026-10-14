@@ -2,7 +2,7 @@
 A small in-memory terminal for the drawing tests: the VT100 subset the picker and the editor use.
 
 Printable text (wide characters take two cells, the last column wraps on the next character),
-CR, LF (raw mode: no carriage return), BS, CSI A B C D G H J K P m, ESC 7 / ESC 8. Other
+CR, LF (raw mode: no carriage return), BS, CSI @ A B C D G H J K P m, ESC 7 / ESC 8. Other
 sequences are read and ignored. Each cell remembers the SGR parameters it was written with.
 '''
 import re
@@ -81,6 +81,12 @@ class Grid(object):
 					self.cells[row] = [(' ', '') for _ in range(self.columns)]
 			elif mode == 2:
 				self.cells = [[(' ', '') for _ in range(self.columns)] for _ in range(self.rows)]
+		elif final == '@':
+			# insert blanks at the cursor: the rest of the row moves right, what passes the last column is lost
+			line = self.cells[self.row]
+			column = min(self.column, self.columns - 1)
+			line[column:column] = [(' ', '')] * first
+			del line[self.columns:]
 		elif final == 'P':
 			line = self.cells[self.row]
 			column = min(self.column, self.columns - 1)
