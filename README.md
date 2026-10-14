@@ -513,6 +513,7 @@ While you type an mssh line, words already typed that mssh would trip over are m
 - **Range surprises:** a range or alias with members mssh would reject: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …) — did you mean node[01-16]?`. Braces the shell expands make several words of the hosts, and mssh runs the second as the command: `node{1,2}: the shell makes 2 words of this; mssh would run node2 as the command — did you mean node1,node2?`
 - **Unreachable host:** one that failed in your recent mssh runs (`will be skipped` with `-su`), or that answered ping recently and stopped. Like mssh, the warning tells `root@node05` (typed so, or with `-u root`) apart from `node05`.
 - **Conflicting options:** two options mssh refuses together, an option given twice, or one that does nothing on this line (`-iu does nothing: only used with --ipmi`).
+- **Options inside an unquoted remote command:** mssh reads its options anywhere on the line, so a word of an unquoted remote command that names an mssh option is that option, and any other word starting with `-` stops mssh with an error: `-u is mssh's --username here — quote the command: 'journalctl -u slurmd'`. Options after a quoted command (`mssh web1 'uptime' -q`) are mssh's, as meant, and are not marked.
 
 Hosts the shell rewrites before mssh runs (`$NODES`, `$(cat hosts.txt)`, `` `...` ``, `~`, `!$`) are not checked: mssh gets what the shell makes of them. In single quotes or after a backslash they reach mssh as typed and are checked as mssh reads them.
 
