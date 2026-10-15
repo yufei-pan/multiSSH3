@@ -8320,10 +8320,24 @@ def _exit_if_output_closed(step, args):
 	except BrokenPipeError:
 		_output_reader_gone(exit_code=141)
 
+def _closed_output_to_devnull():
+	'''
+	mssh started with stdout or stderr closed (>&-): Python gives None for the stream. What mssh would
+	write there goes nowhere, as print does with None, without failing where a stream is asked
+	whether it is a terminal, or print sending stderr's lines to stdout.
+	'''
+	for name in ('stdout', 'stderr'):
+		if getattr(sys, name) is None:
+			try:
+				setattr(sys, name, open(os.devnull, 'w'))
+			except OSError:
+				pass
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
+	_closed_output_to_devnull()
 	_escape_unencodable_output()
 	try:
 		# before the parse: -h there prints mssh's help and exits
