@@ -40,14 +40,18 @@ def glue_file(home, shell, name=None, command=ENGINE):
 	return path
 
 
-def slow_engine(home, delay, deaf=False):
+def slow_engine(home, delay, deaf=False, only=None):
 	'''
 	The engine, delay seconds slow to start (an NFS home, a loaded machine); deaf: Ctrl-C does not stop
-	it either, as when it waits on a hung file system.
+	it either, as when it waits on a hung file system; only: slow for that command alone (pick), not
+	for the queries typing makes.
 	'''
 	import shlex
 	path = home / 'slow-engine'
-	path.write_text('#!/bin/sh\n{}sleep {}\nexec {} "$@"\n'.format("trap '' INT\n" if deaf else '', delay, ' '.join(shlex.quote(part) for part in ENGINE)))
+	slow = '{}sleep {}\n'.format("trap '' INT\n" if deaf else '', delay)
+	if only:
+		slow = 'if [ "$1" = {} ]; then\n{}fi\n'.format(only, slow)
+	path.write_text('#!/bin/sh\n{}exec {} "$@"\n'.format(slow, ' '.join(shlex.quote(part) for part in ENGINE)))
 	path.chmod(0o755)
 	return [str(path)]
 
@@ -854,10 +858,11 @@ ZAS = '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'
 ZSH_SH = '/opt/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh'
 
 
-def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, extra='', rc_before='', rc_after='', **options):
+def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_HISTORY, extra='', rc_before='', rc_after='', command=ENGINE, **options):
 	'''
 	zsh with the glue; zsh-autosuggestions loaded before it, after it (after), or at the first prompt (late);
-	rc_before and rc_after: the operator's own rc lines before and after the glue; extra runs last.
+	rc_before and rc_after: the operator's own rc lines before and after the glue; extra runs last;
+	command: the engine the glue runs.
 	'''
 	pre = ''
 	if zas:
@@ -872,7 +877,7 @@ def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_
 			pre, after = '_mssh_test_late() {{ add-zsh-hook -d precmd _mssh_test_late; {} }}\nadd-zsh-hook precmd _mssh_test_late'.format(pre), True
 	(home / '.zsh_history').write_text(shell_history)
 	history = 'HISTFILE=~/.zsh_history; SAVEHIST=100; HISTSIZE=100; fc -R'
-	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh'),
+	return zsh_session(home, dict(env, HISTFILE=str(home / '.zsh_history')), glue_file(home, 'zsh', command=command),
 		pre=(history if after else pre + '\n' + history) + '\n' + rc_before,
 		extra=(pre if after else '') + '\n' + rc_after + '\n' + extra, **options)
 
@@ -1363,6 +1368,77 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15')
 		assert printed(session, 'ls\x12') == 'FISHPREV'
+	finally:
+		session.close()
+
+
+def slow_start_session(shell, env, home, delay, deaf=False, **env_options):
+	'''zsh or fish (Ctrl-R bound to FISHPREV before the glue) whose engine is delay seconds slow to start.'''
+	env = dict(env, **env_options)
+	command = slow_engine(home, delay, deaf=deaf, only='pick')
+	if shell == 'zsh':
+		return zsh_with(env, home, command=command)
+	return fish_session(home, env, mc.render_glue('fish-keys', command), pre="bind \\cr 'commandline -r FISHPREV'")
+
+
+@pytest.mark.parametrize('shell', ['zsh', 'fish'])
+def test_ctrl_r_goes_on_without_an_engine_slow_to_start(home, shell):
+	# zsh and fish froze until it started. Past MSSH_COMPLETE_START_TIMEOUT Ctrl-R does what it did
+	# before (zsh's incremental search, with the keys typed meanwhile); the picker never draws
+	env, home = home
+	delay = 1.5
+	session = slow_start_session(shell, env, home, delay, MSSH_COMPLETE_START_TIMEOUT='0.3')
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		started = time.monotonic()
+		if shell == 'zsh':
+			session.send('\x12aa\r')
+			assert re.search(r'[\r\n]aa2\r\n', session.read_until(b'aa2\r\n', 10))
+		else:
+			session.send('\x12')
+			assert printed(session, '') == 'FISHPREV'
+		assert time.monotonic() - started < delay
+		# the engine would be ready by now
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['zsh', 'fish'])
+def test_ctrl_c_while_the_picker_starts_keeps_the_line(home, shell):
+	# at once, even when Ctrl-C does not stop the engine (a hung file system): it never draws
+	env, home = home
+	delay = 1.5
+	session = slow_start_session(shell, env, home, delay, deaf=True)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		started = time.monotonic()
+		session.send('\x12')
+		time.sleep(0.3)
+		session.send('\x03')
+		assert printed(session, '', wait=0.3) == 'mssh gpu[01-16] '
+		assert time.monotonic() - started < delay
+		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		assert printed(session, 'x') == 'mssh gpu[01-16] x'
+		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['zsh', 'fish'])
+def test_a_picker_quick_enough_opens_after_its_start(home, shell):
+	# slower than usual but within MSSH_COMPLETE_START_TIMEOUT: the picker opens, the choice is made
+	env, home = home
+	session = slow_start_session(shell, env, home, 0.5, MSSH_COMPLETE_START_TIMEOUT='3')
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert words(printed(session, '\r')) == PICKED
 	finally:
 		session.close()
 

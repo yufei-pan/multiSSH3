@@ -12,6 +12,9 @@
    ]
   ],
   "command": "echo 10.0.0.7 192.168.1.7",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- 192.168.1.7 echo 10.0.0.7 192.168.1.7",
@@ -32,6 +35,7 @@
   "address": "node1",
   "argvs": [],
   "command": "power status",
+  "envs": [],
   "name": "node1",
   "output": [
    "IPMI method bogus not supported!"
@@ -52,7 +56,7 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H node1 -U admin -P admin  power status"
+    "ipmitool -H node1 -U admin -E  power status"
    ],
    [
     "/bin/ssh",
@@ -64,9 +68,16 @@
    ]
   ],
   "command": "ipmitool power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "admin",
+    "IPMI_PASSWORD": "admin"
+   },
+   {}
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -94,7 +105,7 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H node1 -U admin -P admin  power status"
+    "ipmitool -H node1 -U admin -E  power status"
    ],
    [
     "/bin/ssh",
@@ -106,9 +117,16 @@
    ]
   ],
   "command": "ipmitool power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "admin",
+    "IPMI_PASSWORD": "admin"
+   },
+   {}
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -135,16 +153,22 @@
     "/bin/ipmitool",
     "-H node1",
     "-U admin",
-    "-P admin",
+    "-E",
     "-I lanplus ",
     "-L ADMINISTRATOR",
     "power status"
    ]
   ],
   "command": "power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "admin",
+    "IPMI_PASSWORD": "admin"
+   }
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/ipmitool -H node1 -U admin -P *** -I lanplus  -L ADMINISTRATOR power status",
+   "Running command: /bin/ipmitool -H node1 -U admin -E -I lanplus  -L ADMINISTRATOR power status",
    "ok",
    "Command finished with return code 0"
   ],
@@ -164,13 +188,19 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H 10.99.0.7 -U admin -P admin  power status"
+    "ipmitool -H 10.99.0.7 -U admin -E  power status"
    ]
   ],
   "command": "power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "admin",
+    "IPMI_PASSWORD": "admin"
+   }
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H 10.99.0.7 -U admin -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H 10.99.0.7 -U admin -E  power status",
    "ok",
    "Command finished with return code 0"
   ],
@@ -189,8 +219,7 @@
   "argvs": [
    [
     "/bin/sshpass",
-    "-p",
-    "pw",
+    "-e",
     "/bin/ssh",
     "-o StrictHostKeyChecking=no",
     "-o UserKnownHostsFile=/dev/null",
@@ -200,12 +229,17 @@
    ]
   ],
   "command": "ipmitool power on",
+  "envs": [
+   {
+    "SSHPASS": "pw"
+   }
+  ],
   "name": "bob@node1",
   "output": [
    "Ipmitool not found on the local machine! Trying ipmitool on the remote machine...",
    "Warning:-u SSH_USERNAME bob is provided in the host name! Using the username from the ipmi definition if provided: bob",
    "Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.",
-   "Running command: /bin/sshpass -p *** /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bob@node1 ipmitool power on",
+   "Running command: /bin/sshpass -e /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bob@node1 ipmitool power on",
    "ok",
    "Command finished with return code 0"
   ],
@@ -225,7 +259,7 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H node1 -U admin -P admin  power status"
+    "ipmitool -H node1 -U admin -E  power status"
    ],
    [
     "/bin/ssh",
@@ -237,9 +271,16 @@
    ]
   ],
   "command": "ipmitool power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "admin",
+    "IPMI_PASSWORD": "admin"
+   },
+   {}
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "no route to host",
    "Command finished with return code 1",
@@ -265,13 +306,19 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H node1 -U admin -P 'p w' -I lanplus chassis status"
+    "ipmitool -H node1 -U admin -E -I lanplus chassis status"
    ]
   ],
   "command": "chassis status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "p w",
+    "IPMI_PASSWORD": "p w"
+   }
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H node1 -U admin -P *** -I lanplus chassis status",
+   "Running command: /bin/sh -c ipmitool -H node1 -U admin -E -I lanplus chassis status",
    "System Power : on",
    "Command finished with return code 0"
   ],
@@ -295,6 +342,9 @@
    ]
   ],
   "command": "echo localhost",
+  "envs": [
+   {}
+  ],
   "name": "localhost",
   "output": [
    "Running command in shell mode, ignoring the hosts...",
@@ -325,6 +375,9 @@
    ]
   ],
   "command": "echo hi",
+  "envs": [
+   {}
+  ],
   "name": "localhost",
   "output": [
    "shell not found on the local machine! Using ssh localhost instead...",
@@ -346,6 +399,7 @@
   "address": "node1",
   "argvs": [],
   "command": "/dest/",
+  "envs": [],
   "name": "node1",
   "output": [
    "rsync not found on the local machine! Please install rsync or scp to use file sync mode."
@@ -364,6 +418,7 @@
   "address": "node1",
   "argvs": [],
   "command": "/dest/",
+  "envs": [],
   "name": "node1",
   "output": [
    "scp not found on the local machine! Please install scp or rsync to use file sync mode."
@@ -391,6 +446,9 @@
    ]
   ],
   "command": "true",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
@@ -431,6 +489,9 @@
    ]
   ],
   "command": "Systems",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/redfishtool -S Always -a -r node1 -u admin -p *** -T 30 Systems",
@@ -457,6 +518,9 @@
    ]
   ],
   "command": "Systems",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/sh -c redfishtool -S Always -a -r node1 -u admin -p ***  Systems",
@@ -477,6 +541,7 @@
   "address": null,
   "argvs": [],
   "command": "true",
+  "envs": [],
   "name": "node1",
   "output": [
    "Error: Retry limit reached!"
@@ -507,6 +572,9 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
@@ -548,6 +616,10 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {},
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
@@ -594,6 +666,10 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {},
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
@@ -639,6 +715,9 @@
    ]
   ],
   "command": "/local/",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- node1:/remote/a /local/",
@@ -669,6 +748,9 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "rsync not found on the local machine! Trying to use scp...",
@@ -704,6 +786,9 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' --delete -- /src/a /src/b node1:/dest/",
@@ -725,8 +810,7 @@
   "argvs": [
    [
     "/bin/sshpass",
-    "-p",
-    "pw",
+    "-e",
     "/bin/scp",
     "-rp",
     "-o StrictHostKeyChecking=no",
@@ -737,9 +821,14 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {
+    "SSHPASS": "pw"
+   }
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sshpass -p *** /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
+   "Running command: /bin/sshpass -e /bin/scp -rp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- /src/a node1:/dest/",
    "ok",
    "Command finished with return code 0"
   ],
@@ -769,6 +858,9 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "scp not found on the local machine! Trying to use rsync...",
@@ -801,6 +893,9 @@
    ]
   ],
   "command": "whoami tester",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o 5 -- node1 whoami tester",
@@ -830,6 +925,9 @@
    ]
   ],
   "command": "false",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 false",
@@ -852,8 +950,7 @@
   "argvs": [
    [
     "/bin/sshpass",
-    "-p",
-    "bmcpw",
+    "-e",
     "/bin/ssh",
     "-o StrictHostKeyChecking=no",
     "-o UserKnownHostsFile=/dev/null",
@@ -863,11 +960,16 @@
    ]
   ],
   "command": "ipmitool power status",
+  "envs": [
+   {
+    "SSHPASS": "bmcpw"
+   }
+  ],
   "name": "alice@node1",
   "output": [
    "Warning:-u SSH_USERNAME alice is provided in the host name! Using the username from the ipmi definition if provided: bmcuser",
    "Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.",
-   "Running command: /bin/sshpass -p *** /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bmcuser@node1 ipmitool power status",
+   "Running command: /bin/sshpass -e /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- bmcuser@node1 ipmitool power status",
    "ok",
    "Command finished with return code 0"
   ],
@@ -898,6 +1000,9 @@
    ]
   ],
   "command": "echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
+  "envs": [
+   {}
+  ],
   "name": "alice@node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/tester/.ssh/id_x -p 2222 -- alice@node1 echo node1 alice 7 uuid-7 10.0.0.7 alice@node1",
@@ -919,8 +1024,7 @@
   "argvs": [
    [
     "/bin/sshpass",
-    "-p",
-    "pw",
+    "-e",
     "/bin/ssh",
     "-o StrictHostKeyChecking=no",
     "-o UserKnownHostsFile=/dev/null",
@@ -930,9 +1034,14 @@
    ]
   ],
   "command": "uptime",
+  "envs": [
+   {
+    "SSHPASS": "pw"
+   }
+  ],
   "name": "node1",
   "output": [
-   "Running command: /bin/sshpass -p *** /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
+   "Running command: /bin/sshpass -e /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 uptime",
    "ok",
    "Command finished with return code 0"
   ],
@@ -959,6 +1068,9 @@
    ]
   ],
   "command": "uptime",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Warning: sshpass is not available. Please install sshpass to use password authentication.",
@@ -990,6 +1102,9 @@
    ]
   ],
   "command": "uptime",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Warning: sshpass is not available. Please install sshpass to use password authentication.",
@@ -1023,6 +1138,9 @@
    ]
   ],
   "command": "true",
+  "envs": [
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -- node1 true",
@@ -1068,6 +1186,11 @@
    ]
   ],
   "command": "true",
+  "envs": [
+   {},
+   {},
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
@@ -1119,6 +1242,11 @@
    ]
   ],
   "command": "true",
+  "envs": [
+   {},
+   {},
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -- node1 true",
@@ -1178,6 +1306,11 @@
    ]
   ],
   "command": "/dest/",
+  "envs": [
+   {},
+   {},
+   {}
+  ],
   "name": "node1",
   "output": [
    "Running command: /bin/rsync -ahlX --partial-dir=.rsync-partial --info=name --rsh /bin/ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null' -- /src/a node1:/dest/",
@@ -1207,12 +1340,12 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H nodeA1 -U u1 -P p1  power status"
+    "ipmitool -H nodeA1 -U u1 -E  power status"
    ],
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H nodeA1 -U u2 -P p2  power status"
+    "ipmitool -H nodeA1 -U u2 -E  power status"
    ],
    [
     "/bin/ssh",
@@ -1224,14 +1357,25 @@
    ]
   ],
   "command": "ipmitool power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "p1",
+    "IPMI_PASSWORD": "p1"
+   },
+   {
+    "IPMITOOL_PASSWORD": "p2",
+    "IPMI_PASSWORD": "p2"
+   },
+   {}
+  ],
   "name": "nodeA1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
    "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -1259,12 +1403,12 @@
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H nodeA1 -U u1 -P p1  power status"
+    "ipmitool -H nodeA1 -U u1 -E  power status"
    ],
    [
     "/bin/sh",
     "-c",
-    "ipmitool -H nodeA1 -U u2 -P p2  power status"
+    "ipmitool -H nodeA1 -U u2 -E  power status"
    ],
    [
     "/bin/ssh",
@@ -1276,14 +1420,25 @@
    ]
   ],
   "command": "ipmitool power status",
+  "envs": [
+   {
+    "IPMITOOL_PASSWORD": "p1",
+    "IPMI_PASSWORD": "p1"
+   },
+   {
+    "IPMITOOL_PASSWORD": "p2",
+    "IPMI_PASSWORD": "p2"
+   },
+   {}
+  ],
   "name": "nodeA1",
   "output": [
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
    "IPMI connection failed! Trying next ipmi definition...",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "Command finished with return code 1",
@@ -1302,12 +1457,12 @@
   "sleeps": [],
   "stderr": [
    "Resolved name: nodeA1",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u1 -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "IPMI connection failed! Trying next ipmi definition...",
    "Resolved name: nodeA1",
-   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -P ***  power status",
+   "Running command: /bin/sh -c ipmitool -H nodeA1 -U u2 -E  power status",
    "Error: Unable to establish IPMI v2 / RMCP+ session",
    "unauthorized name",
    "IPMI connection failed! Trying next ipmi definition...",

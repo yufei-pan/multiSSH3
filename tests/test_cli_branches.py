@@ -9,7 +9,7 @@ import multiSSH3
 	"kwargs,needle",
 	[
 		({"username": "alice"}, "--username=alice"),
-		({"password": "secret"}, "--password=secret"),
+		({"password": "secret"}, "--password=-"),
 		({"identity_file": "/tmp/id"}, "--key=/tmp/id"),
 		({"copy_id": True}, "--copy_id"),
 		({"skip_unreachable": False}, "--no_skip_unreachable"),

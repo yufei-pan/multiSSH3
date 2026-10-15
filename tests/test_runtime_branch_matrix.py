@@ -102,7 +102,7 @@ def test_run_command_debug_ssh_ipmitool_preserves_auth_argv(fake_host, monkeypat
 	)
 
 	assert calls == [[
-		"sshpass", "-p", "bmc-pass", "ssh", "-i", "/tmp/id_ed25519",
+		"sshpass", "-e", "ssh", "-i", "/tmp/id_ed25519",
 		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"--", "bmc-user@mock-a", "ipmitool power status",
 	]]
@@ -140,8 +140,9 @@ def test_run_command_local_ipmitool_normalizes_command_argv(
 	)
 
 	assert calls == [[
-		"/opt/ipmitool", "-H mock-a", "-U bmc-user", "-P bmc-pass", expected_command,
+		"/opt/ipmitool", "-H mock-a", "-U bmc-user", "-E", expected_command,
 	]]
+	assert calls[0].env == {"IPMI_PASSWORD": "bmc-pass", "IPMITOOL_PASSWORD": "bmc-pass"}
 	assert host.command == expected_command
 	assert host.returncode == 0
 

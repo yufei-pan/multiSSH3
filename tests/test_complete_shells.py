@@ -1208,3 +1208,42 @@ def test_bash_with_blesh_loaded_but_not_attached_gets_escaped_words(tmp_path):
 		assert words(session.line_after('mssh web1 nosuchcmd status ')) == ['mssh', 'web1', 'nosuchcmd', 'status', "'ssh*'"]
 	finally:
 		session.close()
+
+
+DUMP_WITH_MSSH = "#files: 812\t#version: 5.9\n_comps=(\n'git' '_git'\n'mssh' '_mssh'\n'mssh3' '_mssh'\n)\n"
+
+
+@pytest.mark.parametrize('dump_dir, name', [('home', '.zcompdump'), ('home', '.zcompdump-node1-5.9'),
+	('zdotdir', '.zcompdump'), ('elsewhere', 'zcompdump-5.9')])
+def test_uninstall_zsh_says_to_remove_a_dump_that_still_maps_mssh(tmp_path, dump_dir, name):
+	# zsh's dump keeps mssh=_mssh after the glue is gone: the next TAB said "command not found: _mssh"
+	env, home = make_home(tmp_path)
+	zdotdir = tmp_path / 'zdot'
+	zdotdir.mkdir()
+	env = dict(env, ZDOTDIR=str(zdotdir))
+	directory = {'home': home, 'zdotdir': zdotdir, 'elsewhere': tmp_path / 'cache'}[dump_dir]
+	directory.mkdir(exist_ok=True)
+	dump = directory / name
+	dump.write_text(DUMP_WITH_MSSH)
+	if dump_dir == 'elsewhere':
+		env['ZSH_COMPDUMP'] = str(dump)
+	assert mc.install('zsh', home=str(home), environ=env)[0] == 0
+
+	status, messages = mc.uninstall('zsh', home=str(home), environ=env)
+
+	assert status == 0
+	assert messages[-1] == ("zsh's completion dump {0} still maps mssh to _mssh, which is gone: "
+		"remove it (rm {0}) and zsh makes a new one".format(dump))
+	# mssh leaves zsh's own file alone
+	assert dump.read_text() == DUMP_WITH_MSSH
+
+
+@pytest.mark.parametrize('shell, dump', [('zsh', "_comps=(\n'git' '_git'\n)\n"), ('bash', DUMP_WITH_MSSH)])
+def test_uninstall_says_nothing_of_a_dump_without_mssh(tmp_path, shell, dump):
+	env, home = make_home(tmp_path)
+	(home / '.zcompdump').write_text(dump)
+	assert mc.install(shell, home=str(home), environ=env)[0] == 0
+
+	_, messages = mc.uninstall(shell, home=str(home), environ=env)
+
+	assert not [message for message in messages if 'zcompdump' in message]

@@ -180,9 +180,13 @@ def run_scenario(monkeypatch, scenario):
 	monkeypatch.setattr(multiSSH3.time, "sleep", sleeps.append)
 	results = list(scenario["results"])
 	argvs = []
+	# the variables each command's environment got on top of mssh's: the passwords sshpass and ipmitool read
+	envs = []
 
 	def popen(argv, **kwargs):
 		argvs.append(list(argv))
+		env = kwargs.get("env") or {}
+		envs.append({name: value for name, value in env.items() if os.environ.get(name) != value})
 		result = results.pop(0)
 		if isinstance(result, Exception):
 			raise result
@@ -196,7 +200,7 @@ def run_scenario(monkeypatch, scenario):
 
 	multiSSH3.run_command(host, threading.Semaphore(1), 30, scenario.get("passwds"), **kwargs)
 
-	return {"argvs": argvs, "returncode": host.returncode, "output": _without_traceback_frames(host.output),
+	return {"argvs": argvs, "envs": envs, "returncode": host.returncode, "output": _without_traceback_frames(host.output),
 		"stdout": host.stdout, "stderr": _without_traceback_frames(host.stderr), "sleeps": sleeps, "command": host.command, "address": getattr(host, "address", None),
 		"resolvedName": host.resolvedName, "name": host.name, "scp": host.scp, "shell": host.shell}
 
@@ -238,13 +242,13 @@ BMC_SECRET = "Bmc s3cret's 5%"
 
 PASSWORD_SCENARIOS = {
 	"sshpass": dict(host=dict(name="node1", command="uptime"), passwds=SSH_SECRET, bins=bins("ssh", "sshpass"), debug=True,
-		results=[OK], shown="Running command: /bin/sshpass -p *** /bin/ssh"),
+		results=[OK], shown="Running command: /bin/sshpass -e /bin/ssh"),
 	"sshpass_scp": dict(host=dict(name="node1", command="/dest/", files=["/src/a"], scp=True), passwds=SSH_SECRET,
-		bins=bins("ssh", "scp", "sshpass"), results=[OK], shown="Running command: /bin/sshpass -p *** /bin/scp"),
+		bins=bins("ssh", "scp", "sshpass"), results=[OK], shown="Running command: /bin/sshpass -e /bin/scp"),
 	"ipmitool_via_sh": dict(host=dict(name="node1", command="power status", ipmi=True), ipmi=[ipmi(password=BMC_SECRET)],
-		bins=bins("sh", "ipmitool", "ssh"), debug=True, results=[OK], shown="Running command: /bin/sh -c ipmitool -H node1 -U admin -P *** "),
+		bins=bins("sh", "ipmitool", "ssh"), debug=True, results=[OK], shown="Running command: /bin/sh -c ipmitool -H node1 -U admin -E "),
 	"ipmitool_direct": dict(host=dict(name="node1", command="power status", ipmi=True), ipmi=[ipmi(password=BMC_SECRET)],
-		bins=bins("ipmitool", "ssh"), results=[OK], shown="Running command: /bin/ipmitool -H node1 -U admin -P *** "),
+		bins=bins("ipmitool", "ssh"), results=[OK], shown="Running command: /bin/ipmitool -H node1 -U admin -E "),
 	"redfish_via_sh": dict(host=dict(name="node1", command="Systems", ipmi=True), ipmi=[ipmi(ipmi_method="redfish", password=BMC_SECRET)],
 		bins=bins("sh", "redfishtool", "ssh"), results=[OK], shown="-r node1 -u admin -p *** "),
 	"redfish_direct": dict(host=dict(name="node1", command="Systems", ipmi=True), ipmi=[ipmi(ipmi_method="redfish", password=BMC_SECRET)],
@@ -254,7 +258,7 @@ PASSWORD_SCENARIOS = {
 		results=[OK], shown="Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided."),
 	"ipmitool_missing_locally": dict(host=dict(name="node1", command="power on", ipmi=True), passwds=SSH_SECRET,
 		ipmi=[ipmi(password=BMC_SECRET)], bins=bins("sh", "ssh", "sshpass"), debug=True, results=[OK],
-		shown="Running command: /bin/sshpass -p *** /bin/ssh"),
+		shown="Running command: /bin/sshpass -e /bin/ssh"),
 }
 
 
@@ -265,8 +269,10 @@ def test_tui_and_debug_lines_never_show_a_password(monkeypatch, name):
 	shown = got["output"] + got["stderr"]
 	assert not [line for line in shown if "Hunter2" in line or "s3cret" in line]
 	assert [line for line in shown if scenario["shown"] in line]
-	# the command run is unchanged: it still gets the password
-	assert [arg for argv in got["argvs"] for arg in argv if SSH_SECRET in arg or BMC_SECRET in arg or shlex.quote(BMC_SECRET) in arg]
+	# the command run still gets the password: redfishtool on its command line, sshpass and ipmitool
+	# from their environment
+	given = [arg for argv in got["argvs"] for arg in argv] + [value for env in got["envs"] for value in env.values()]
+	assert [arg for arg in given if SSH_SECRET in arg or BMC_SECRET in arg or shlex.quote(BMC_SECRET) in arg]
 
 
 def test_a_configured_password_is_hidden_after_any_dash_p(monkeypatch):

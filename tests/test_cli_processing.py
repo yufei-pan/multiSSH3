@@ -199,4 +199,5 @@ def test_echoed_command_round_trips_through_bash(monkeypatch, tmp_path):
 
 	assert args.hosts == "node[1-3]"
 	assert args.commands == commands
-	assert args.password == "p$w'd"
+	# the password is not echoed: -p - asks for it
+	assert args.password == "-" and "p$w" not in line

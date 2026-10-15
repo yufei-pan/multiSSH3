@@ -324,7 +324,8 @@ def test_copy_id_with_sshpass_quotes_password(monkeypatch, tmp_path):
 	assert [h.command for h in started] == ["ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
 	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
 	attempt = multiSSH3._build_command(started[0], "p@ss word;", ...)
-	assert attempt.argv == ["/bin/sh", "-c", "sshpass -p 'p@ss word;' ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
+	assert attempt.argv.env == {"SSHPASS": "p@ss word;"}
+	assert attempt.argv == ["/bin/sh", "-c", "sshpass -e ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 bob@mock-a"]
 
 
 class _FakeProc:
@@ -348,7 +349,8 @@ def test_copy_id_never_shows_the_password(monkeypatch, tmp_path, capsys, json):
 	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", True)
 	monkeypatch.setattr(multiSSH3, "__global_suppress_printout", False)
 	argvs = []
-	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: argvs.append(argv) or _FakeProc(argv))
+	envs = []
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: argvs.append(argv) or envs.append(kwargs.get("env")) or _FakeProc(argv))
 
 	# as on the command line: the output of every host, its command included
 	multiSSH3.run_command_on_hosts(hosts="mock-a", copy_id=True, password=secret, json=json, no_watch=True,
@@ -358,8 +360,9 @@ def test_copy_id_never_shows_the_password(monkeypatch, tmp_path, capsys, json):
 	assert "Hunter2" not in out.out + out.err
 	assert "/bin/ssh-copy-id -o StrictHostKeyChecking=no" in out.out
 	# run with the password as it is: no magic string replaced in it
-	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -p {} /bin/ssh-copy-id -o StrictHostKeyChecking=no "
-		"-o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 mock-a".format(shlex.quote(secret))]]
+	assert argvs == [["/bin/sh", "-c", "/bin/sshpass -e /bin/ssh-copy-id -o StrictHostKeyChecking=no "
+		"-o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 mock-a"]]
+	assert envs[0]["SSHPASS"] == secret
 
 
 def test_missing_globs_error_names_every_pattern(monkeypatch, tmp_path):

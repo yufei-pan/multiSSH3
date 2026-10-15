@@ -974,12 +974,11 @@ def _check_config_value(name, value):
 		return ','.join(value), None
 	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
 		return value, None
-	if value is None and (kind is type(None) or name in ('DEFAULT_MAX_CONNECTIONS', 'DEFAULT_HOSTS')):
-		# --store_config_file writes null for the built-in max_connections; null hosts runs a command
-		# typed without hosts on none (not on the built-in "all"), as it always did
+	if value is None and (kind is type(None) or name == 'DEFAULT_MAX_CONNECTIONS'):
+		# --store_config_file writes null for the built-in max_connections
 		return None, None
 	if value is None and kind is str:
-		# a string setting mssh ran with as null before values were checked: null reads as "not set"
+		# null reads as "not set": DEFAULT_HOSTS null is the built-in "all" (None crashed a bare mssh)
 		return _BUILTIN_SETTINGS[name], None
 	if kind is bool:
 		if isinstance(value, bool):
@@ -3327,8 +3326,9 @@ def _stopped_command_note(formatedCMD):
 	runs on until it ends, or until it writes to the closed connection.
 	'''
 	program = formatedCMD[0] if formatedCMD else ''
-	if program == _binPaths.get('sshpass') and len(formatedCMD) > 3:
-		program = formatedCMD[3]
+	if program == _binPaths.get('sshpass') and len(formatedCMD) > 2:
+		# sshpass -e program, or sshpass -p password program
+		program = formatedCMD[2] if formatedCMD[1] == '-e' else formatedCMD[3] if len(formatedCMD) > 3 else program
 	if program == _binPaths.get('ssh'):
 		return 'ssh was stopped: the command may still run on the host'
 	name = os.path.basename(str(program))
@@ -3757,6 +3757,25 @@ def _ipmi_definitions_to_store(args):
 			definitions.append(stored)
 	return definitions
 
+class _CommandLine(list):
+	'''
+	A command's argv, with env: the variables its process gets on top of mssh's environment.
+
+	They carry the passwords sshpass -e and ipmitool -E read: ps shows every process's command line
+	to every user of the machine, its environment only to the same user and root.
+	'''
+	def __init__(self, argv, env=None):
+		super().__init__(argv)
+		self.env = dict(env or {})
+
+def _sshpass_command(argv, password):
+	'''argv run under sshpass, which reads the password from SSHPASS.'''
+	return _CommandLine([_binPaths['sshpass'], '-e'] + list(argv), {'SSHPASS': str(password)})
+
+def _ipmitool_password_env(password):
+	'''The environment that gives ipmitool -E the password: 1.8.19 and later read IPMITOOL_PASSWORD first.'''
+	return {'IPMI_PASSWORD': str(password), 'IPMITOOL_PASSWORD': str(password)}
+
 _CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
 _CommandAttempt.__doc__ = '''
 What _build_command decided for one attempt.
@@ -3922,9 +3941,11 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				ipmi_args = ipmi_definition.get('args','')
 				if 'sh' in _binPaths:
 					# quote the credentials so the shell does not split or expand them, ipmi_args and the command stay raw on purpose
-					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {shlex.quote(str(host.address))} -U {shlex.quote(str(ipmi_definition.get("username",username)))} -P {shlex.quote(str(ipmi_definition.get("password",passwds)))} {ipmi_args} {host.command}']
+					formatedCMD = _CommandLine([_binPaths['sh'],'-c',f'ipmitool -H {shlex.quote(str(host.address))} -U {shlex.quote(str(ipmi_definition.get("username",username)))} -E {ipmi_args} {host.command}'],
+						_ipmitool_password_env(ipmi_definition.get("password",passwds)))
 				else:
-					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}',f'-P {ipmi_definition.get("password",passwds)}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
+					formatedCMD = _CommandLine([_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}','-E'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command],
+						_ipmitool_password_env(ipmi_definition.get("password",passwds)))
 			elif ipmi_definition.get('ipmi_method') == 'redfish':
 				if 'redfishtool' not in _binPaths:
 					# this definition cannot run on this machine: the next one may
@@ -3962,8 +3983,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				if passwds and 'sshpass' in _binPaths:
 					# for the password prompts of the command (ssh-copy-id). Not in host.command: mssh shows that,
 					# and replaces the magic strings in it
-					shellCommand = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(str(passwds))} {shellCommand}"
-				formatedCMD = [_binPaths['sh'],'-c',shellCommand]
+					shellCommand = f"{shlex.quote(_binPaths['sshpass'])} -e {shellCommand}"
+					formatedCMD = _CommandLine([_binPaths['sh'],'-c',shellCommand], {'SSHPASS': str(passwds)})
+				else:
+					formatedCMD = [_binPaths['sh'],'-c',shellCommand]
 			else:
 				host.output.append('shell not found on the local machine! Using ssh localhost instead...')
 				if __DEBUG_MODE:
@@ -4049,7 +4072,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
-				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
+				formatedCMD = _sshpass_command(formatedCMD, passwds)
 			elif passwds:
 				host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
 				if __DEBUG_MODE:
@@ -4174,7 +4197,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					give_streams.append(give_stdin)
 				# a session of its own has no controlling terminal: ssh cannot ask there and fails with its reason
 				own_session = os.name == 'posix' and not host.use_terminal
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session)
+				# the passwords sshpass and ipmitool read (see _CommandLine)
+				env = dict(os.environ, **formatedCMD.env) if getattr(formatedCMD, 'env', None) else None
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session,env=env)
 				__running_procs.add(proc)
 				# the readers read through _CommandPipe: one can be given up when a background process holds its pipe
 				stdout_pipe = _CommandPipe(proc.stdout)
@@ -4372,9 +4397,14 @@ def _sshpass_program(formatedCMD):
 			words = shlex.split(words[2])
 		except ValueError:
 			return None
-	if not sshpass or len(words) < 4 or words[0] != sshpass or words[1] != '-p':
+	if not sshpass or len(words) < 3 or words[0] != sshpass:
 		return None
-	return os.path.basename(words[3])
+	# sshpass -e program, or sshpass -p password program
+	if words[1] == '-e':
+		return os.path.basename(words[2])
+	if words[1] == '-p' and len(words) >= 4:
+		return os.path.basename(words[3])
+	return None
 
 def _may_go_through_a_proxy(host):
 	'''
@@ -4558,7 +4588,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			retry_limit -= 1
 			continue
 		if host.ipmi:
-			attempt = tuple(str(arg) for arg in formatedCMD)
+			# the password is in the environment, not the command line
+			attempt = (tuple(str(arg) for arg in formatedCMD), tuple(sorted(getattr(formatedCMD, 'env', {}).items())))
 			if attempt in ran:
 				# not run: drop what building it said, it was said when it ran
 				del host.output[line_counts[0]:]
@@ -4829,6 +4860,45 @@ def _text_columns(text):
 	if not _NOT_PRINTABLE_ASCII.search(text):
 		return len(text)
 	return sum(map(_char_columns, text))
+
+def _wrap_columns(text, width, tabsize = 4, initial_indent = '', subsequent_indent = '', **options):
+	'''
+	textwrap.wrap(text, width, ...) with the width in terminal columns (see _text_columns).
+
+	Text holding no wide or zero width character is wrapped by textwrap itself. Other text is wrapped
+	as mssh's wrappers do it (drop_whitespace and replace_whitespace False, no breaking on hyphens):
+	whole words while they fit, then a word wider than a line split where the line ends. A wide
+	character never straddles two lines; one wider than the whole width gets a line of its own.
+	'''
+	text = text.expandtabs(tabsize)
+	if _text_columns(text) == len(text):
+		return textwrap.wrap(text, width, tabsize=tabsize, initial_indent=initial_indent,
+			subsequent_indent=subsequent_indent, **options)
+	lines = []
+	# words and the whitespace between them, as textwrap splits them without hyphens
+	chunks = [chunk for chunk in re.split(r'(\s+)', text) if chunk]
+	chunks.reverse()
+	while chunks:
+		indent = subsequent_indent if lines else initial_indent
+		room = width - _text_columns(indent)
+		line, used = [], 0
+		while chunks and used + _text_columns(chunks[-1]) <= room:
+			used += _text_columns(chunks[-1])
+			line.append(chunks.pop())
+		if chunks and _text_columns(chunks[-1]) > room:
+			# a word wider than a line: as much of it as fits here, at least a character
+			word = chunks.pop()
+			cut = 0
+			while cut < len(word) and used + _char_columns(word[cut]) <= room:
+				used += _char_columns(word[cut])
+				cut += 1
+			if not cut and not line:
+				cut = 1
+			line.append(word[:cut])
+			if word[cut:]:
+				chunks.append(word[cut:])
+		lines.append(indent + ''.join(line))
+	return lines
 
 def _curses_fit(text, columns, column = 0):
 	'''
@@ -5659,9 +5729,54 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 			stdscr.refresh()
 		except Exception:
 			pass
+		reason = params[6]
 		params = params[:6] + ('new config',)
-		time.sleep(0.01)
+		if reason in _TUI_NO_ROOM_REASONS:
+			# nothing to show until the terminal grows: wait for it (or a key) instead of redrawing
+			if not _tui_wait_for_room(stdscr, hosts):
+				break
+		else:
+			time.sleep(0.01)
 		#time.sleep(0.25)
+
+# what __generate_display returns, before it reads any key, when the terminal has no room for the display
+_TUI_NO_ROOM_REASONS = frozenset(('Terminal too small', 'Minimum character or line length too small',
+	'Terminal too small to display any hosts', 'Host window too small'))
+
+def _tui_wait_for_room(stdscr, hosts):
+	'''
+	Wait, while the terminal is too small for the display, for a resize or for the hosts to finish.
+
+	Esc on an empty input line leaves the display, as it does when the hosts are shown. Other keys typed
+	meanwhile are put back, in their order, for the display to read once it is shown again.
+
+	Returns:
+		bool: False to leave the display: Esc, or no host is running any more
+	'''
+	size = stdscr.getmaxyx()
+	typed = []
+	stdscr.timeout(250)
+	try:
+		while any(host.returncode is None for host in hosts):
+			key = stdscr.getch()
+			if key == -1:
+				if stdscr.getmaxyx() != size:
+					break
+				continue
+			if key == curses.KEY_RESIZE:
+				break
+			if key == curses.KEY_EXIT or (key == 27 and not __keyPressesIn[-1] and not typed):
+				return False
+			typed.append(key)
+	finally:
+		stdscr.nodelay(True)
+		# ungetch puts a key in front of the others
+		for key in reversed(typed):
+			try:
+				curses.ungetch(key)
+			except Exception:
+				pass
+	return any(host.returncode is None for host in hosts)
 
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
@@ -5850,8 +5965,8 @@ def get_host_raw_output(hosts, terminal_width):
 	# a narrower terminal gets a 20 column layout and wraps its lines itself: the headers ('█ EXECUTED COMMAND:')
 	# need 19, and textwrap fails below 2 columns and never returns at 2 (the '- ' host name indent of mergeOutputs)
 	terminal_width = max(terminal_width, 20)
-	text_wrapper = textwrap.TextWrapper(width=terminal_width - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
-									 initial_indent=' ', subsequent_indent='-')
+	wrap = functools.partial(_wrap_columns, width=terminal_width - 1, tabsize=4, replace_whitespace=False,
+		drop_whitespace=False, initial_indent=' ', subsequent_indent='-')
 	max_length = 20
 	color_cap = get_terminal_color_capability()
 	if color_cap == 'None':
@@ -5870,7 +5985,7 @@ def get_host_raw_output(hosts, terminal_width):
 		max_length = max(max_length, len(max(host.name.split(','), key=len)) + 3)
 		hostPrintOut = [f"{cyan_str}█{color_reset_str} EXECUTED COMMAND:"]
 		for line in host.command.splitlines():
-			hostPrintOut.extend(text_wrapper.wrap(line))
+			hostPrintOut.extend(wrap(line))
 		# hostPrintOut.extend(itertools.chain.from_iterable(text_wrapper.wrap(line) for line in host['command'].splitlines()))
 		lineBag = {(0,host.command)}
 		prevLine = host.command
@@ -6039,7 +6154,7 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			outputs.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
 			cmdOut = []
 			for line in CMDsOut:
-				cmdOut.extend(textwrap.wrap(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
+				cmdOut.extend(_wrap_columns(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False,
 									 initial_indent=' ', subsequent_indent='-'))
 			outputs.extend(cmdOut)
 			keyPressesIn[-1].clear()
@@ -6646,8 +6761,10 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	when it is on, a value when it is not the CLI's default (the parser's, config files applied: a
 	replay gets the same one). Values are attached with "=", so none is read as a host or command.
 
-	Not listed: -ip (an IPMI password is not spread further; -p is, by design: README) and, when it is
-	given, the other IPMI options, the options that do something besides the run (--generate_config_file, --store_config_file,
+	A -p password other than the default (MSSH_PASSWORD, else DEFAULT_PASSWORD) is listed as -p -,
+	never itself: a replay asks for it (a placeholder replayed as the password would fail a login on
+	every host).
+	Not listed: -ip (an IPMI password is not spread further) and, when it is given, the other IPMI options, the options that do something besides the run (--generate_config_file, --store_config_file,
 	--add_control_master_config), and those main() folds into others: -T into -t, -uk and -k DIR into
 	-k FILE, --script into its options, -s PATH into -f PATH -fs.
 	'''
@@ -6671,7 +6788,10 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	option('timeout', '--timeout', '-t')
 	option('repeat', '--repeat', '-r')
 	option('interval', '--interval', '-i')
-	option('password', '--password', '-p')
+	password = kwargs.get('password', defaults.get('password'))
+	if password is not None and password != defaults.get('password'):
+		# '' is no password, not a secret
+		argsList.append('{}={}'.format('-p' if shortend else '--password', '-' if password else "''"))
 	option('identity_file', '--key', '-k')
 	flag('copy_id', '--copy_id', '-ci')
 	flag('no_watch', '--no_watch', '-q')
@@ -6797,7 +6917,7 @@ def record_command_history(kwargs):
 		historyKwargs['typed_hosts'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
 		strCommand = getStrCommand(**historyKwargs)
-		# history can hold -p passwords, create it readable by the owner only
+		# the commands run can be private too: readable by the owner only
 		with os.fdopen(os.open(history_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a') as f:
 			# it follows <timestamp>\t<strCommand>\n
 			f.write(f'{int(time.time())}\t{strCommand}\n')
@@ -6922,10 +7042,10 @@ def _mark_skipped_unreachable(host, expiry, this_run_only=False):
 
 
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
+						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = ...,max_connections=DEFAULT_MAX_CONNECTIONS,
+						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = ...,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
+						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=...,no_start=...,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
@@ -6987,6 +7107,16 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
 	global __keyPressesIn
+	# the _DEFAULT_ settings as they are now: a config file read after the import (--config_file), or a
+	# script, may have changed them
+	if called is ...:
+		called = _DEFAULT_CALLED
+	if return_unfinished is ...:
+		return_unfinished = _DEFAULT_RETURN_UNFINISHED
+	if will_update_unreachable_hosts is ...:
+		will_update_unreachable_hosts = _DEFAULT_UPDATE_UNREACHABLE_HOSTS
+	if no_start is ...:
+		no_start = _DEFAULT_NO_START
 	if called:
 		# a library call starts fresh; on the CLI a Ctrl-C (e.g. in an earlier --repeat run) stands
 		_emo = False
@@ -7044,20 +7174,24 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
+	if hosts is None:
+		# the default hosts as a config file set them, not as they were when mssh was imported
+		hosts = DEFAULT_HOSTS
 	# the hosts as given: one on one mode pairs commands with them in this order
 	hostTokens = _host_tokens_in_order(hosts)
 	if isinstance(hosts, list):
 		hosts = frozenset(hosts)
 	elif isinstance(hosts, dict):
 		hosts = frozenset(hosts.keys())
-	hostStr = formHostStr(hosts)
+	# no hosts: none to look up (formHostStr's EMPTY_HOSTS is a name for the echoed command only)
+	hostStr = formHostStr(hosts) if hostTokens else ''
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
 	if files:
 		if not file:
 			file = files
 		else:
 			file = list(file) + list(files)
-	if username:
+	if username and hostStr:
 		userStr = f'{username.strip()}@'
 		# we also append this userStr to all hostStr which does not have username already defined
 		hostStr = hostStr.split(',')
@@ -7071,7 +7205,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if '@' not in host:
 					skipHostStr[i] = userStr + host
 			skipHostStr = ','.join(skipHostStr)
-	targetHostDic = expand_hostnames(hostStr.split(','))
+	targetHostDic = expand_hostnames(hostStr.split(',')) if hostStr else {}
 	if __DEBUG_MODE:
 		eprint(f"Target hosts: {targetHostDic!r}")
 	skipHostsDic = expand_hostnames(skipHostStr.split(','))
@@ -7291,7 +7425,8 @@ def generate_default_config(args):
 		'AUTHOR_EMAIL': AUTHOR_EMAIL,
 		'DEFAULT_HOSTS': args.hosts,
 		'DEFAULT_USERNAME': args.username,
-		'DEFAULT_PASSWORD': args.password,
+		# MSSH_PASSWORD stays in the environment it was set in
+		'DEFAULT_PASSWORD': DEFAULT_PASSWORD if os.environ.get('MSSH_PASSWORD') and args.password == os.environ.get('MSSH_PASSWORD') else args.password,
 		'DEFAULT_IDENTITY_FILE': args.identity_file if args.identity_file and not os.path.isdir(args.identity_file) else DEFAULT_IDENTITY_FILE,
 		'DEFAULT_SSH_KEY_SEARCH_PATH': args.identity_file if args.identity_file and os.path.isdir(args.identity_file) else DEFAULT_SSH_KEY_SEARCH_PATH,
 		'DEFAULT_USE_KEY': args.use_key,
@@ -7516,6 +7651,10 @@ def _plain_help(text):
 	'''
 	return text.replace('%', '%%')
 
+def _default_password():
+	'''What -p defaults to: MSSH_PASSWORD, a password kept off the command line (ps, shell history), else DEFAULT_PASSWORD.'''
+	return os.environ.get('MSSH_PASSWORD') or DEFAULT_PASSWORD
+
 def _password_shown(password):
 	'''What -h says about a default password: whether there is one, never the password.'''
 	return 'set, not shown' if password else 'none'
@@ -7561,7 +7700,7 @@ def get_parser():
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=_plain_help(f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})'),default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=_plain_help(f'The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})'),default=DEFAULT_USERNAME)
-	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, (default: {_password_shown(DEFAULT_PASSWORD)})'),default=DEFAULT_PASSWORD)
+	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, "-p -" to be asked for it, or set MSSH_PASSWORD. (default: {_password_shown(_default_password())})'),default=_default_password())
 	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=_plain_help(f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})'),const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=_plain_help(f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})'), default=DEFAULT_USE_KEY)
 	parser.add_argument('-ea','--extraargs',type=str,help=_plain_help(f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})'),default=DEFAULT_EXTRA_ARGS)
@@ -8223,10 +8362,62 @@ def _exit_if_output_closed(step, args):
 	except BrokenPipeError:
 		_output_reader_gone(exit_code=141)
 
+def _terminal_to_ask_on():
+	'''Whether there is a terminal to ask for a password on: getpass asks on /dev/tty.'''
+	try:
+		with open('/dev/tty'):
+			return True
+	except OSError:
+		return False
+
+def _ask_for_password(args):
+	'''
+	-p -: ask for the ssh password on the terminal, nothing echoed, before anything runs.
+
+	Without a terminal, or without an answer, nothing runs: an empty password would be a failed login
+	on every host (fail2ban).
+	'''
+	if args.password != '-':
+		return args
+	if not _terminal_to_ask_on():
+		_exit_with_code(2, '-p - asks for the password on the terminal, and there is none: set MSSH_PASSWORD, or DEFAULT_PASSWORD in a config file')
+	# Ctrl C stops mssh here: its own handler would wait for the hosts, and none has started
+	handler = signal.getsignal(signal.SIGINT)
+	try:
+		signal.signal(signal.SIGINT, signal.default_int_handler)
+		password = getpass.getpass('ssh password for mssh: ')
+	except KeyboardInterrupt:
+		eprint('')
+		_exit_with_code(130, 'no password given: nothing was run')
+	except EOFError:
+		eprint('')
+		password = ''
+	finally:
+		if handler is not None:
+			signal.signal(signal.SIGINT, handler)
+	if not password:
+		_exit_with_code(1, 'no password given: nothing was run')
+	args.password = password
+	return args
+
+def _closed_output_to_devnull():
+	'''
+	mssh started with stdout or stderr closed (>&-): Python gives None for the stream. What mssh would
+	write there goes nowhere, as print does with None, without failing where a stream is asked
+	whether it is a terminal, or print sending stderr's lines to stdout.
+	'''
+	for name in ('stdout', 'stderr'):
+		if getattr(sys, name) is None:
+			try:
+				setattr(sys, name, open(os.devnull, 'w'))
+			except OSError:
+				pass
+
 def main(args = None):
 	global __global_suppress_printout
 	global __mainReturnCode
 	global __failedHosts
+	_closed_output_to_devnull()
 	_escape_unencodable_output()
 	try:
 		# before the parse: -h there prints mssh's help and exits
@@ -8240,6 +8431,7 @@ def main(args = None):
 	args = _exit_if_output_closed(process_args, args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))
+	args = _ask_for_password(args)
 	args = _exit_if_output_closed(process_config_file, args)
 	args = _exit_if_output_closed(process_commands, args)
 	args = process_keys(args)
@@ -8277,7 +8469,8 @@ def main(args = None):
 	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
 	if not args.no_history:
 		record_command_history(vars(args))
-	runArgs = dict(vars(args), no_history=True)
+	# the command line runs its hosts and waits for them, whatever a config file sets for scripts
+	runArgs = dict(vars(args), no_history=True, return_unfinished=False, no_start=False)
 	for i in range(args.repeat):
 		if _emo:
 			# Ctrl-C during an earlier run: no more repeats

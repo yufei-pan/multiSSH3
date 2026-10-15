@@ -156,7 +156,7 @@ Defaults are read from the following chain map stored as json files, top ones ov
 >
 > A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link.
 >
-> Each value is checked against the type of the setting's default. Values whose meaning is clear are converted (`"true"` / `"false"`, `"yes"` / `"no"` for true / false settings, numbers written as strings, a list of host names for `DEFAULT_HOSTS`); anything else, such as `"DEFAULT_TIMEOUT": "fifty"` or an encoding Python does not know, is ignored with a warning naming the file and the key, and the setting keeps its value from the rest of the chain (no warning when a more specific file sets that key anyway). `null` for a string setting means its default (`DEFAULT_HOSTS: null`: no default hosts). A file that is not a JSON object is skipped the same way. `--config_file` applies a file exactly as the chain does, `_sshPath`, `DEFAULT_ENV_FILE` and `ERROR_MESSAGES_TO_IGNORE` included.
+> Each value is checked against the type of the setting's default. Values whose meaning is clear are converted (`"true"` / `"false"`, `"yes"` / `"no"` for true / false settings, numbers written as strings, a list of host names for `DEFAULT_HOSTS`); anything else, such as `"DEFAULT_TIMEOUT": "fifty"` or an encoding Python does not know, is ignored with a warning naming the file and the key, and the setting keeps its value from the rest of the chain (no warning when a more specific file sets that key anyway). `null` for a string setting means its default (`DEFAULT_HOSTS: null` is `all`). A file that is not a JSON object is skipped the same way. `--config_file` applies a file exactly as the chain does, `_sshPath`, `DEFAULT_ENV_FILE` and `ERROR_MESSAGES_TO_IGNORE` included.
 
 ### Generating / Storing Config File
 To store / generate a config file with the current command line options, you can use
@@ -464,7 +464,7 @@ mssh --completion uninstall   # remove it again
 mssh --completion bash        # or print the script (bash, zsh or fish)
 ```
 
-Install writes the script to `~/.local/share/multiSSH3/` and adds a marked block that loads it to `~/.bashrc` (bash) or `$ZDOTDIR/.zshrc` (zsh, which install asks, so a `ZDOTDIR` set in `~/.zshenv` counts; `~/.zshrc` when `ZDOTDIR` is not set); for fish it writes files under `~/.config/fish/` (`$XDG_CONFIG_HOME/fish/` when that is set). It prints every file it changes, and leaves alone a script file in its way that mssh did not write. Uninstall removes exactly what install added. bash login shells (ssh logins, macOS terminals) read `~/.bash_profile`, `~/.bash_login` or `~/.profile` instead of `~/.bashrc`; those usually load `~/.bashrc`, and install prints the line to add when yours does not.
+Install writes the script to `~/.local/share/multiSSH3/` and adds a marked block that loads it to `~/.bashrc` (bash) or `$ZDOTDIR/.zshrc` (zsh, which install asks, so a `ZDOTDIR` set in `~/.zshenv` counts; `~/.zshrc` when `ZDOTDIR` is not set); for fish it writes files under `~/.config/fish/` (`$XDG_CONFIG_HOME/fish/` when that is set). It prints every file it changes, and leaves alone a script file in its way that mssh did not write. Uninstall removes exactly what install added. A zsh completion dump (`.zcompdump`) written while the script was loaded still maps `mssh` to the removed `_mssh`; uninstall names such a file, for you to delete, and zsh makes a new one. bash login shells (ssh logins, macOS terminals) read `~/.bash_profile`, `~/.bash_login` or `~/.profile` instead of `~/.bashrc`; those usually load `~/.bashrc`, and install prints the line to add when yours does not.
 
 A new block is appended to your rc file; changing or removing it replaces the file in one step, so a full disk or quota leaves it as it was. A link stays a link (the file it points to is the one changed), and the file keeps its permissions and owner (not ACLs or other extended attributes). If the block's `# >>> mssh completion >>>` or `# <<< mssh completion <<<` line is missing or repeated, install and uninstall change nothing and print the line numbers to fix by hand. When mssh may not change the file (read-only, or linked into a read-only store as home-manager does, or not a regular file, such as a link to `/dev/null`), or cannot replace it safely to change a block (bind-mounted, hard-linked, or another user's), it leaves the file as it is and prints the lines to add, replace or delete by hand.
 
@@ -525,7 +525,7 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 | Environment variable | Effect |
 | --- | --- |
 | `MSSH_COMPLETE_TIMEOUT` | Seconds the shell waits for an answer (default 0.3) |
-| `MSSH_COMPLETE_START_TIMEOUT` | bash only: seconds the shell waits for the Ctrl-R menu or the line editor to open (default 2); past that, Ctrl-R does what it did before and space is a space |
+| `MSSH_COMPLETE_START_TIMEOUT` | seconds the shell waits for the Ctrl-R menu (and bash's line editor) to open (default 2); past that, Ctrl-R does what it did before and space is a space. Ctrl-C while it opens keeps the line. A menu that opens later leaves the terminal alone |
 | `MSSH_COMPLETE_GHOST_TIMEOUT` | ble.sh only: milliseconds a grey suggestion may take (default 300) |
 | `MSSH_COMPLETE_SHELL_HISTORY` | Lines of shell history sent along (default 1000) |
 | `MSSH_COMPLETE_EDITOR` | `1` turns on the plain-bash mssh line editor (`install bash editor` sets it) |
@@ -558,8 +558,8 @@ mssh -q -- web1 grep -r TODO /srv
 - You can specify the password for all hosts using this option. Although it is recommended to use SSH keys / store password in config file for authentication.
 - `-p` needs `sshpass`, which types the password when ssh asks for it and answers nothing else. When ssh asks again or asks about a host key, sshpass gives up without a word, and mssh says why next to the return code: 5 the password was not accepted, 6 ssh asked whether to trust a host key that is not in `known_hosts` (the host's own with `SSH_STRICT_HOST_KEY_CHECKING` true, else a ProxyJump host's), 7 `known_hosts` has a different key for the host's IP address. A command of yours that prints nothing can exit with the same codes, so the line says `unless the command itself exited with N`; with `SSH_STRICT_HOST_KEY_CHECKING` false and no ProxyJump (or ProxyCommand) in the ssh config, 6 and 7 can only be the command's and mssh adds nothing.
 - Warning: by default mssh does not check host keys, so the password goes to whichever machine answers at the host's address. See [Host Key Checking](#host-key-checking).
-- Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed (an IPMI password, `-ip`, is not). mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
-- mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. Like a password typed on the command line, they reach `sshpass` and `ipmitool` as arguments, where other local users can briefly see them in `ps`.
+- mssh never shows or stores the password: the `> mssh ...` line and the history file (`-hf`, default `~/.mssh_history`) list it as `-p -`, so running either again asks for it. Typed on mssh's own command line, though, it can be seen by other local users (in `ps`) and lands in your shell history. To keep it off the command line, `-p -` asks for it on the terminal (nothing is echoed; without a terminal, or without an answer, mssh stops before running anything), or set `MSSH_PASSWORD` in the environment, or `DEFAULT_PASSWORD` in a config file (plain text, so keep that file private). `-p` on the command line wins over `MSSH_PASSWORD`, which wins over `DEFAULT_PASSWORD`; neither of those two is listed in the `> mssh ...` line or the history, as a replay gets them again, and `--store_config_file` does not write `MSSH_PASSWORD` into the config.
+- mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. They reach `sshpass` and `ipmitool`, as a password typed on the command line does, through their environment (`sshpass -e`, `ipmitool -E` with `IPMI_PASSWORD` and `IPMITOOL_PASSWORD`), which other local users cannot read, not as arguments `ps` shows them. `redfishtool` has no such option: it gets its password as an argument, visible in `ps` while it runs.
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
@@ -685,15 +685,15 @@ mssh -f ./data/ allServers /tmp/data/
 - The password ipmitool (or redfishtool) logs in to the hosts' BMCs with, in `--ipmi` mode.
 - Defaults to `admin`. It does not fall back to `-p` / `DEFAULT_PASSWORD`: see the note under `-M, --ipmi`.
 - With `-im ssh_ipmitool` it is the ssh password instead (sent with sshpass).
-- Unlike `-p`, it is neither echoed in the `> mssh ...` line nor recorded in the history file, and when it is given, neither are `-iu`, `-ia`, `-im`, `-mpre` and `-irlt`: with the configured password they would make a login you did not give, tried on every BMC (each failed login counts towards the BMC locking the account). A replayed history line tries the configured logins, as `--ipmi` alone does; give the IPMI options again to use yours.
+- It is left out of the `> mssh ...` line and the history file (not even as `-p -` is for `-p`), and when it is given, so are `-iu`, `-ia`, `-im`, `-mpre` and `-irlt`: with the configured password they would make a login you did not give, tried on every BMC (each failed login counts towards the BMC locking the account). A replayed history line tries the configured logins, as `--ipmi` alone does; give the IPMI options again to use yours.
 
 ### `-ia, --ipmi_args IPMI_ARGS` | _`DEFAULT_IPMI_ARGS`_
 - Extra arguments for ipmitool (or redfishtool) in `--ipmi` mode, in one string, placed as they are before the command. `-ea` arguments only go to ssh / scp / rsync.
-- Ex: `mssh -M -ia='-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -P <password> -I lanplus power status`. Use `=`, as the value starts with `-`.
+- Ex: `mssh -M -ia='-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -E -I lanplus power status`, with the password in its environment. Use `=`, as the value starts with `-`.
 
 ### `-im, --ipmi_method IPMI_METHOD` | _`DEFAULT_IPMI_METHOD`_
 - How `--ipmi` reaches a host:
-  - `ipmitool` (default): runs `ipmitool -H <address> -U <user> -P <password> [IPMI_ARGS] <command>` on this machine.
+  - `ipmitool` (default): runs `ipmitool -H <address> -U <user> -E [IPMI_ARGS] <command>` on this machine; `-E` reads the password from the environment mssh gives it.
   - `redfish`: runs `redfishtool -S Always -a -r <address> -u <user> -p <password> [IPMI_ARGS] <command>` on this machine (`Systems` without a command).
   - `ssh_ipmitool`: logs in to the host over ssh with the IPMI username and password (`-iu` / `-ip`, so `admin` / `admin` unless set) and runs `ipmitool <command>` there.
 - Any other value fails with `IPMI method ... not supported!`.
@@ -850,7 +850,7 @@ mssh -f ./data/ allServers /tmp/data/
 
 ### `-hf, --history_file HISTORY_FILE` | _`DEFAULT_HISTORY_FILE`_
 - The file to store command history.
-- By default, mssh store command history in `~/.mssh_history`.
+- By default, mssh store command history in `~/.mssh_history`, readable by its owner only. Passwords are not stored (see `-p`).
 - The history file is a TSV ( tab separated values ) file with each line containing: timestamp, mssh_path, options, hosts, commands.
 - A line records the command so that replaying it (the Ctrl-R picker, `mssh-complete`) runs it the same way: the hosts as typed and every option that changes what runs, where, or what is shown; a flag when it is on, an option with a value when the value is not the default (the config files' `DEFAULT_*`). `-T`, `-uk` (or `-k` with a folder), `--script` and `-s PATH` are recorded as the timeout, key file and options they chose, `--config_file` and `--host_file` with their absolute paths. Not recorded: `-ip` (and with it the other IPMI options, see `-ip`), and `--generate_config_file`, `--store_config_file` and `--add_control_master_config`, which do something besides the run. The `> mssh ...` line mssh prints at start lists the same options.
 
@@ -970,7 +970,7 @@ options:
   -u, --username USERNAME
                         The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: None)
   -p, --password PASSWORD
-                        The password to use to connect to the hosts via ssh, (default: none)
+                        The password to use to connect to the hosts via ssh, "-p -" to be asked for it, or set MSSH_PASSWORD. (default: none)
   -k, --identity_file, --key, --identity [IDENTITY_FILE]
                         The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use ~/.ssh/ (default: None)
   -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
@@ -1343,6 +1343,8 @@ __DEBUG_MODE = False
 > `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` is used to control whether to update the unreachable hosts file when mssh detects unreachable hosts.
 
 > `_DEFAULT_NO_START` is somewhat analogous to "demo mode" where mssh will return Host objects without actually allocating and starting the execution threads. Although they still can be started using `start_run_on_hosts()` but you should really be looking for `return_unfinished` instead for asynchronicity.
+
+> `run_command_on_hosts` reads `_DEFAULT_CALLED`, `_DEFAULT_RETURN_UNFINISHED`, `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` and `_DEFAULT_NO_START` each time it is called, so setting them after `import multiSSH3`, or in a file given with `--config_file`, works. The `mssh` command always starts its hosts and waits for them: of these four, only `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` changes what it does.
 
 > `_etc_hosts` is a custom dict to use instead of reading /etc/hosts file for hostname resolution.
 

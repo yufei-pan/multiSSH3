@@ -55,7 +55,7 @@ def test_help_never_shows_a_configured_password(tmp_path):
 
 	assert r.returncode == 0, r.stderr
 	assert "Hunter2" not in r.stdout + r.stderr and "s3cret" not in r.stdout + r.stderr
-	assert "via ssh, (default: set, not shown)" in r.stdout
+	assert "or set MSSH_PASSWORD. (default: set, not shown)" in r.stdout
 	assert "via ipmi. (default: set, not shown)" in r.stdout
 	# the other defaults are still shown, % and all
 	assert "(default: -o ControlPath=~/.ssh/cm-%r@%h:%p)" in r.stdout
@@ -63,7 +63,7 @@ def test_help_never_shows_a_configured_password(tmp_path):
 
 def test_help_says_when_no_password_is_set(monkeypatch):
 	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", "")
-	assert "via ssh, (default: none)" in multiSSH3.get_parser().format_help()
+	assert "or set MSSH_PASSWORD. (default: none)" in multiSSH3.get_parser().format_help()
 
 
 def test_a_percent_in_a_config_default_does_not_stop_mssh(tmp_path):

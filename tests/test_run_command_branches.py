@@ -1355,7 +1355,7 @@ def test_ipmitool_shell_command_quotes_credentials(fake_host, monkeypatch):
 	calls = []
 
 	def fake_popen(argv, **kwargs):
-		calls.append(argv)
+		calls.append((argv, kwargs.get("env")))
 		return FakeProc(stdout=b"Chassis Power is on\n")
 
 	_patch_popen(monkeypatch, fake_popen)
@@ -1363,9 +1363,11 @@ def test_ipmitool_shell_command_quotes_credentials(fake_host, monkeypatch):
 		_ipmi_failure(username="ad min", password="p$ss;touch x"),
 	])
 
-	assert shlex.split(calls[0][2]) == [
-		"ipmitool", "-H", "127.0.0.1", "-U", "ad min", "-P", "p$ss;touch x", "power", "status",
+	assert shlex.split(calls[0][0][2]) == [
+		"ipmitool", "-H", "127.0.0.1", "-U", "ad min", "-E", "power", "status",
 	]
+	# the password is not in the shell's line at all: in the environment the shell passes on
+	assert calls[0][1]["IPMI_PASSWORD"] == "p$ss;touch x"
 
 
 def test_run_command_default_retry_limit_counts_current_ipmi_definitions(fake_host, monkeypatch):
