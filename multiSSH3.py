@@ -6921,10 +6921,10 @@ def _mark_skipped_unreachable(host, expiry, this_run_only=False):
 
 
 def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAULT_ONE_ON_ONE, timeout = DEFAULT_TIMEOUT,password = DEFAULT_PASSWORD,
-						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = _DEFAULT_CALLED,max_connections=DEFAULT_MAX_CONNECTIONS,
-						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = _DEFAULT_RETURN_UNFINISHED,
+						 no_watch = DEFAULT_NO_WATCH,json = DEFAULT_JSON_MODE,called = ...,max_connections=DEFAULT_MAX_CONNECTIONS,
+						 file = None,files = None, ipmi = DEFAULT_IPMI,interface_ip_prefix = DEFAULT_INTERFACE_IP_PREFIX,return_unfinished = ...,
 						 scp=DEFAULT_SCP,gather_mode = False,username=DEFAULT_USERNAME,extraargs=DEFAULT_EXTRA_ARGS,skip_unreachable=DEFAULT_SKIP_UNREACHABLE,
-						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=_DEFAULT_UPDATE_UNREACHABLE_HOSTS,no_start=_DEFAULT_NO_START,
+						 no_env=DEFAULT_NO_ENV,greppable=DEFAULT_GREPPABLE_MODE,will_update_unreachable_hosts=...,no_start=...,
 						 skip_hosts = DEFAULT_SKIP_HOSTS, window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT,
 						 single_window = DEFAULT_SINGLE_WINDOW,file_sync = False,error_only = DEFAULT_ERROR_ONLY,quiet = False,identity_file = DEFAULT_IDENTITY_FILE,
 						 copy_id = False, unavailable_host_expiry = DEFAULT_UNAVAILABLE_HOST_EXPIRY,no_history = True,
@@ -6986,6 +6986,16 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	global __thread_start_delay
 	global __max_connections_nofile_limit_supported
 	global __keyPressesIn
+	# the _DEFAULT_ settings as they are now: a config file read after the import (--config_file), or a
+	# script, may have changed them
+	if called is ...:
+		called = _DEFAULT_CALLED
+	if return_unfinished is ...:
+		return_unfinished = _DEFAULT_RETURN_UNFINISHED
+	if will_update_unreachable_hosts is ...:
+		will_update_unreachable_hosts = _DEFAULT_UPDATE_UNREACHABLE_HOSTS
+	if no_start is ...:
+		no_start = _DEFAULT_NO_START
 	if called:
 		# a library call starts fresh; on the CLI a Ctrl-C (e.g. in an earlier --repeat run) stands
 		_emo = False
@@ -8280,7 +8290,8 @@ def main(args = None):
 	# record the command once: a line per repeat, each saying --repeat, would replay it repeat^2 times
 	if not args.no_history:
 		record_command_history(vars(args))
-	runArgs = dict(vars(args), no_history=True)
+	# the command line runs its hosts and waits for them, whatever a config file sets for scripts
+	runArgs = dict(vars(args), no_history=True, return_unfinished=False, no_start=False)
 	for i in range(args.repeat):
 		if _emo:
 			# Ctrl-C during an earlier run: no more repeats

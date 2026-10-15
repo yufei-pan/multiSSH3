@@ -1344,6 +1344,8 @@ __DEBUG_MODE = False
 
 > `_DEFAULT_NO_START` is somewhat analogous to "demo mode" where mssh will return Host objects without actually allocating and starting the execution threads. Although they still can be started using `start_run_on_hosts()` but you should really be looking for `return_unfinished` instead for asynchronicity.
 
+> `run_command_on_hosts` reads `_DEFAULT_CALLED`, `_DEFAULT_RETURN_UNFINISHED`, `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` and `_DEFAULT_NO_START` each time it is called, so setting them after `import multiSSH3`, or in a file given with `--config_file`, works. The `mssh` command always starts its hosts and waits for them: of these four, only `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` changes what it does.
+
 > `_etc_hosts` is a custom dict to use instead of reading /etc/hosts file for hostname resolution.
 
 > `ERROR_MESSAGES_TO_IGNORE` lists regexes for ssh's own notices, which mssh leaves out of each host's stderr (also in `--json` and `--greppable` output). Each regex is searched anywhere in every stderr line, so anchor yours with `^` and `$` to match whole lines (in the JSON config file, write a regex backslash as `\\`). The defaults are anchored to the lines OpenSSH prints, so a remote program's error that uses the same words, such as curl's `Recv failure: Connection reset by peer`, is kept. Connection resets are not hidden: `kex_exchange_identification: read: Connection reset by peer` is how sshd's `MaxStartups` turns away connections opened at once. Config files that `--store_config_file` or `--generate_config_file` wrote before 6.20 hold a copy of the old, unanchored defaults; mssh ignores such an unchanged copy and uses the current defaults.
