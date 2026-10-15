@@ -7826,7 +7826,37 @@ def uninstall(shell, home=None, environ=None):
 		return 1, messages + list(error.args)
 	if len(messages) == (1 if paths.get('note') else 0):
 		messages.append('nothing to remove')
+	if shell == 'zsh':
+		for dump in _zsh_dumps_naming_mssh(home, environ):
+			messages.append("zsh's completion dump {0} still maps mssh to _mssh, which is gone: "
+				"remove it (rm {0}) and zsh makes a new one".format(dump))
 	return 0, messages
+
+def _zsh_dumps_naming_mssh(home, environ):
+	'''
+	The zsh completion dumps (compinit's .zcompdump, oh-my-zsh's .zcompdump-HOST-VERSION) that map mssh
+	to _mssh. A dump written while the glue was loaded keeps that after it is removed, and zsh then
+	answers TAB with "command not found: _mssh". They are zsh's: they are named, not changed.
+	'''
+	candidates = [environ.get('ZSH_COMPDUMP')]
+	for directory in (environ.get('ZDOTDIR'), home):
+		try:
+			names = sorted(os.listdir(directory)) if directory else []
+		except OSError:
+			names = []
+		candidates.extend(os.path.join(directory, name) for name in names
+			if name.startswith('.zcompdump') and not name.endswith('.zwc'))
+	found = []
+	for path in candidates:
+		if not path or path in found:
+			continue
+		try:
+			with open(path, encoding='utf-8', errors='replace') as dump:
+				if "'_mssh'" in dump.read(4 << 20):
+					found.append(path)
+		except OSError:
+			pass
+	return found
 
 def prepare_index():
 	'''
