@@ -365,6 +365,9 @@ class StubWindow:
 	def nodelay(self, value):
 		self.calls.append(("nodelay", (value,), {}))
 
+	def timeout(self, delay):
+		self.calls.append(("timeout", (delay,), {}))
+
 	def idlok(self, value):
 		self.calls.append(("idlok", (value,), {}))
 

@@ -661,3 +661,69 @@ def test_f1_toggles_help_while_the_input_line_has_text(stub_curses_harness, fake
 
 	assert multiSSH3.__keyPressesIn == [list("a")]
 	assert result[5] is True
+
+
+TOO_SMALL = (-1, 0, 10, 2, False, False, "Terminal too small")
+
+
+def _curses_print_too_small(harness, host, monkeypatch, keys, then=None):
+	'''curses_print on a terminal too small for the display; then: what the display returns once there is room.'''
+	displays = []
+	responses = iter([TOO_SMALL, then])
+
+	def generate_display(*args):
+		displays.append(args)
+		return next(responses)
+
+	ungot = []
+	sleeps = []
+	harness.inject_keys(keys)
+	monkeypatch.setattr(multiSSH3, "__generate_display", generate_display)
+	monkeypatch.setattr(multiSSH3.curses, "ungetch", ungot.append, raising=False)
+	monkeypatch.setattr(multiSSH3.curses, "curs_set", lambda value: None)
+	monkeypatch.setattr(multiSSH3.curses, "start_color", lambda: None)
+	monkeypatch.setattr(multiSSH3.curses, "use_default_colors", lambda: None)
+	monkeypatch.setattr(multiSSH3.time, "sleep", sleeps.append)
+	multiSSH3.curses_print(harness.window, [host], [object()])
+	return displays, ungot, sleeps
+
+
+def test_curses_print_too_small_leaves_the_display_on_escape(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+
+	displays, ungot, sleeps = _curses_print_too_small(stub_curses_harness, host, monkeypatch, [27])
+
+	# Esc on an empty input line leaves the display, as it does when the hosts are shown
+	assert len(displays) == 1 and ungot == [] and sleeps == []
+
+
+def test_curses_print_too_small_waits_for_a_key_instead_of_redrawing(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	window = stub_curses_harness.window
+	polls = []
+	original_getch = window.getch
+
+	def getch():
+		polls.append(1)
+		if len(polls) == 5:
+			host.returncode = 0
+		return original_getch()
+
+	monkeypatch.setattr(window, "getch", getch)
+
+	displays, _, sleeps = _curses_print_too_small(stub_curses_harness, host, monkeypatch, [])
+
+	# about 100 redraws a second before: now one, then a wait of a quarter second for each key
+	assert len(displays) == 1 and sleeps == []
+	assert [call[0] for call in window.calls].count("clear") == 2
+	assert ("timeout", (250,), {}) in window.calls
+
+
+def test_curses_print_too_small_keeps_the_keys_typed_for_the_display(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+
+	displays, ungot, _ = _curses_print_too_small(stub_curses_harness, host, monkeypatch, [ord("y"), 27, 410])
+
+	# the resize redraws; the keys typed meanwhile, the Esc after text among them, come back in their order
+	assert len(displays) == 2 and displays[1][2:] == TOO_SMALL[:6] + ("new config",)
+	assert ungot == [27, ord("y")]

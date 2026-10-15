@@ -5658,9 +5658,54 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 			stdscr.refresh()
 		except Exception:
 			pass
+		reason = params[6]
 		params = params[:6] + ('new config',)
-		time.sleep(0.01)
+		if reason in _TUI_NO_ROOM_REASONS:
+			# nothing to show until the terminal grows: wait for it (or a key) instead of redrawing
+			if not _tui_wait_for_room(stdscr, hosts):
+				break
+		else:
+			time.sleep(0.01)
 		#time.sleep(0.25)
+
+# what __generate_display returns, before it reads any key, when the terminal has no room for the display
+_TUI_NO_ROOM_REASONS = frozenset(('Terminal too small', 'Minimum character or line length too small',
+	'Terminal too small to display any hosts', 'Host window too small'))
+
+def _tui_wait_for_room(stdscr, hosts):
+	'''
+	Wait, while the terminal is too small for the display, for a resize or for the hosts to finish.
+
+	Esc on an empty input line leaves the display, as it does when the hosts are shown. Other keys typed
+	meanwhile are put back, in their order, for the display to read once it is shown again.
+
+	Returns:
+		bool: False to leave the display: Esc, or no host is running any more
+	'''
+	size = stdscr.getmaxyx()
+	typed = []
+	stdscr.timeout(250)
+	try:
+		while any(host.returncode is None for host in hosts):
+			key = stdscr.getch()
+			if key == -1:
+				if stdscr.getmaxyx() != size:
+					break
+				continue
+			if key == curses.KEY_RESIZE:
+				break
+			if key == curses.KEY_EXIT or (key == 27 and not __keyPressesIn[-1] and not typed):
+				return False
+			typed.append(key)
+	finally:
+		stdscr.nodelay(True)
+		# ungetch puts a key in front of the others
+		for key in reversed(typed):
+			try:
+				curses.ungetch(key)
+			except Exception:
+				pass
+	return any(host.returncode is None for host in hosts)
 
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
