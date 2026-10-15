@@ -974,12 +974,11 @@ def _check_config_value(name, value):
 		return ','.join(value), None
 	if name == 'DEFAULT_EXTRA_ARGS' and list_of_strings:
 		return value, None
-	if value is None and (kind is type(None) or name in ('DEFAULT_MAX_CONNECTIONS', 'DEFAULT_HOSTS')):
-		# --store_config_file writes null for the built-in max_connections; null hosts runs a command
-		# typed without hosts on none (not on the built-in "all"), as it always did
+	if value is None and (kind is type(None) or name == 'DEFAULT_MAX_CONNECTIONS'):
+		# --store_config_file writes null for the built-in max_connections
 		return None, None
 	if value is None and kind is str:
-		# a string setting mssh ran with as null before values were checked: null reads as "not set"
+		# null reads as "not set": DEFAULT_HOSTS null is the built-in "all" (None crashed a bare mssh)
 		return _BUILTIN_SETTINGS[name], None
 	if kind is bool:
 		if isinstance(value, bool):
@@ -7044,20 +7043,24 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	if quiet:
 		__global_suppress_printout = True
 	# We create the hosts
+	if hosts is None:
+		# the default hosts as a config file set them, not as they were when mssh was imported
+		hosts = DEFAULT_HOSTS
 	# the hosts as given: one on one mode pairs commands with them in this order
 	hostTokens = _host_tokens_in_order(hosts)
 	if isinstance(hosts, list):
 		hosts = frozenset(hosts)
 	elif isinstance(hosts, dict):
 		hosts = frozenset(hosts.keys())
-	hostStr = formHostStr(hosts)
+	# no hosts: none to look up (formHostStr's EMPTY_HOSTS is a name for the echoed command only)
+	hostStr = formHostStr(hosts) if hostTokens else ''
 	skipHostStr = formHostStr(skip_hosts) if skip_hosts else ''
 	if files:
 		if not file:
 			file = files
 		else:
 			file = list(file) + list(files)
-	if username:
+	if username and hostStr:
 		userStr = f'{username.strip()}@'
 		# we also append this userStr to all hostStr which does not have username already defined
 		hostStr = hostStr.split(',')
@@ -7071,7 +7074,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				if '@' not in host:
 					skipHostStr[i] = userStr + host
 			skipHostStr = ','.join(skipHostStr)
-	targetHostDic = expand_hostnames(hostStr.split(','))
+	targetHostDic = expand_hostnames(hostStr.split(',')) if hostStr else {}
 	if __DEBUG_MODE:
 		eprint(f"Target hosts: {targetHostDic!r}")
 	skipHostsDic = expand_hostnames(skipHostStr.split(','))
