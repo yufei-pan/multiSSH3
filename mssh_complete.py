@@ -5769,6 +5769,42 @@ class LineEditor(object):
 				self.draw(term, prompt, style)
 
 #%% ------------ Shell glue ----------------
+# zsh and fish run the picker through this POSIX sh: sh -c START_SCRIPT sh SECONDS PICKER-COMMAND...
+# The picker creates MSSH_COMPLETE_CLAIM just before it takes the terminal (_claim_terminal). It is
+# given SECONDS to do so: then, or on Ctrl-C while it starts, the script creates it first and stops the
+# picker, which has not touched the terminal (a hung file system can keep it from starting, deaf to
+# Ctrl-C). mkdir succeeds for one of the two only. Exit status: the picker's, 124 when it was too slow,
+# 130 on Ctrl-C. The picker runs in the background of this sh, in the shell's process group: it can
+# read the terminal. Its answer goes through a file: a process it leaves behind when stopped cannot
+# keep the shell's command substitution open. bash waits for its "ready" line instead (_mssh_complete_start).
+START_SCRIPT = r"""limit=$1
+shift
+dir=$(mktemp -d 2>/dev/null) || exec "$@"
+exec 3<&0
+MSSH_COMPLETE_CLAIM=$dir/claim "$@" <&3 3<&- >"$dir/answer" &
+pid=$!
+exec 3<&-
+stop() {
+	mkdir "$dir/claim" 2>/dev/null && : > "$dir/$1" && kill -9 "$pid"
+}
+# the sleeper: nothing of it may keep the shell's command substitution open, and Ctrl-C is the
+# trap's (bash does not make a background subshell ignore it, as dash and busybox do)
+{ trap '' INT; sleep "$limit"; stop late; } </dev/null >/dev/null 2>&1 &
+sleeper=$!
+trap 'stop stopped' INT
+while :; do
+	wait "$pid"
+	status=$?
+	kill -0 "$pid" 2>/dev/null || break
+done
+kill "$sleeper" 2>/dev/null
+[ -e "$dir/stopped" ] && status=130
+[ -e "$dir/late" ] && status=124
+cat "$dir/answer" 2>/dev/null
+rm -rf "$dir"
+exit "$status"
+"""
+
 GLUE_MARK = 'MSSH_COMPLETE_GLUE'
 
 BASH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ bash: autocomplete for mssh (multiSSH3), protocol MSSHC1
@@ -6489,6 +6525,18 @@ _mssh_complete_engine() {
 	@ENGINE@ "$@"
 }
 
+typeset -g _mssh_complete_start_script=@START@
+
+_mssh_complete_start_pick() {
+	# the picker, reading the request on stdin: MSSH_COMPLETE_START_TIMEOUT seconds (2) at most to take
+	# the terminal, then as long as the operator takes. 124 when too slow, 130 on Ctrl-C while it
+	# starts: see START_SCRIPT in mssh_complete.py
+	emulate -L zsh
+	local limit=${MSSH_COMPLETE_START_TIMEOUT:-2}
+	[[ $limit == (<->|<->.<->|.<->) ]] || limit=2
+	command sh -c "$_mssh_complete_start_script" sh "$limit" @ENGINE@ pick
+}
+
 _mssh_complete_keep_terminal() {
 	# after each `exec {fd}< <(...)`: before zsh 5.8 the process substitution takes the terminal from the
 	# shell (Ctrl-C then goes to it, and the shell's next reads can fail with "error on TTY read"); a
@@ -6517,7 +6565,10 @@ _mssh_complete_ctrl_r() {
 	emulate -L zsh
 	local resp line text= cursor= st
 	if _mssh_complete_is_mssh "$BUFFER"; then
-		resp=$(_mssh_complete_request 'pick=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine pick 2>/dev/null)
+		# Ctrl-C while the picker starts stops it (130), and keeps the line: without a trap of its own
+		# (local: emulate -L), zsh would end the widget and drop the line
+		trap : INT
+		resp=$(_mssh_complete_request 'pick=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_start_pick 2>/dev/null)
 		st=$?
 		if (( st == 0 )) && [[ $resp == MSSHC1$'\n'*$'\n'E ]]; then
 			for line in "${(@f)resp}"; do
@@ -6538,6 +6589,8 @@ _mssh_complete_ctrl_r() {
 			[[ -n ${_mssh_complete_warn_reason-} ]] && zle -M -- "$_mssh_complete_warn_reason"
 			return 0
 		fi
+		# Ctrl-C while it started: the line stays as it is. Too slow (124): what Ctrl-R did before
+		(( st == 130 )) && return 0
 	fi
 	[[ -n $_mssh_complete_previous ]] && zle $_mssh_complete_previous
 	return 0
@@ -7064,6 +7117,7 @@ switch "$FISH_VERSION"
 		if not set -q __mssh_complete_keys
 			set -g __mssh_complete_keys 1
 ''' + _fish_nested(_FISH_QUERY, 3) + r'''
+			set -g __mssh_complete_start_script @START@
 			function __mssh_complete_is_mssh
 				string match -qr '^\s*(\S*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)\s' -- "$argv[1]"
 			end
@@ -7076,10 +7130,14 @@ switch "$FISH_VERSION"
 					set -l keep 1000
 					set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
 					# the history builtin: the operator's history function or alias (one showing times) would change the lines
+					# MSSH_COMPLETE_START_TIMEOUT seconds (2) at most for the picker to take the terminal, then as
+					# long as the operator takes: 124 when too slow, 130 on Ctrl-C while it starts (START_SCRIPT)
+					set -l limit 2
+					string match -qr '^(\d+|\d+\.\d*|\.\d+)$' -- "$MSSH_COMPLETE_START_TIMEOUT"; and set limit $MSSH_COMPLETE_START_TIMEOUT
 					set -l lines (begin
 						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM" "$before" "$after" ''
 						builtin history search -n $keep 2>/dev/null
-					end | @ENGINE@ pick 2>/dev/null)
+					end | command sh -c $__mssh_complete_start_script sh $limit @ENGINE@ pick 2>/dev/null)
 					set -l st $status
 					if test $st -eq 0; and test (count $lines) -ge 3; and test "$lines[1]" = MSSHC1; and test "$lines[-1]" = E
 						for line in $lines[2..-2]
@@ -7090,7 +7148,8 @@ switch "$FISH_VERSION"
 						end
 					end
 					commandline -f repaint
-					test $st -le 1; and return
+					# Ctrl-C while it started: the line stays as it is. Too slow (124): what Ctrl-R did before
+					test $st -le 1; or test $st -eq 130; and return
 				end
 				set -l previous __mssh_complete_previous_$mode
 				for command in $$previous
@@ -7213,6 +7272,7 @@ def render_glue(shell, command=None):
 	command = engine_command() if command is None else command
 	quote = _fish_quote if shell.startswith('fish') else shlex.quote
 	text = _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
+	text = text.replace('@START@', quote(START_SCRIPT))
 	return _zsh_guard(text) if shell == 'zsh' else text
 
 #%% ------------ Printing to a reader that may go ----------------
@@ -8265,6 +8325,25 @@ def _ready():
 	except OSError:
 		return False
 
+def _claim_terminal():
+	'''
+	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
+
+	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
+	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
+	only, so a picker slow to start never draws after the shell went on. True when the terminal is
+	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
+	'''
+	path = os.environ.get('MSSH_COMPLETE_CLAIM')
+	if not path:
+		return True
+	try:
+		os.mkdir(path, 0o700)
+		return True
+	except OSError as e:
+		_debug('pick: the shell went on ({!r}): leaving the terminal alone'.format(e))
+		return False
+
 def _cmd_pick():
 	'''
 	mssh-complete pick: the Ctrl-R picker. Reads a request on stdin, draws on /dev/tty, prints the new
@@ -8291,7 +8370,7 @@ def _cmd_pick():
 		line = before = None
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
-		if request.flags.get('ready') == '1' and not _ready():
+		if not _claim_terminal() or (request.flags.get('ready') == '1' and not _ready()):
 			return 2
 		with Terminal() as term:
 			outcome = picker.run(term, line, before)

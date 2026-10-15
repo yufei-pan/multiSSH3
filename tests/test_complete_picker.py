@@ -640,6 +640,51 @@ def test_pick_and_edit_leave_the_terminal_alone_when_nobody_waits_any_more(tmp_p
 		os.close(master)
 
 
+CLAIM_PICK = b'\0'.join([b'MSSHC1', b'zsh', b'5.9', b'pick=1 nul=0 term=xterm', b'mssh gpu[01-16] ', b'', b'', b''])
+
+
+def test_pick_claims_the_terminal_before_it_takes_it(tmp_path):
+	# zsh and fish give the picker MSSH_COMPLETE_CLAIM: the directory it creates says it has the terminal
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	claim = tmp_path / 'wait dir' / 'claim'
+	claim.parent.mkdir()
+	process, master, read_end = start_on_a_terminal(['pick'], CLAIM_PICK, dict(env, MSSH_COMPLETE_CLAIM=str(claim)), listening=True)
+	try:
+		# claimed first: the terminal is read only once the picker has it open
+		end = time.monotonic() + 10
+		while not claim.is_dir() and time.monotonic() < end and process.poll() is None:
+			time.sleep(0.02)
+		assert claim.is_dir()
+		assert b'type to filter' in terminal_output(master, 5.0, until=b'type to filter')
+		os.write(master, b'\x1b')
+		assert process.wait(10) == 1
+	finally:
+		process.kill()
+		os.close(master)
+		os.close(read_end)
+
+
+@pytest.mark.parametrize('taken', ['by the shell', 'gone'])
+def test_pick_leaves_the_terminal_alone_when_the_shell_claimed_it(tmp_path, taken):
+	# the shell stopped waiting (time limit, Ctrl-C) and claimed it first, or cleaned up its directory
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	claim = tmp_path / 'wait' / 'claim'
+	if taken == 'by the shell':
+		claim.mkdir(parents=True)
+	process, master, read_end = start_on_a_terminal(['pick'], CLAIM_PICK, dict(env, MSSH_COMPLETE_CLAIM=str(claim)), listening=True)
+	try:
+		assert process.wait(10) == 2
+		assert terminal_output(master, 0.3) == b'' and terminal_output(read_end, 0.3) == b''
+	finally:
+		process.kill()
+		os.close(master)
+		os.close(read_end)
+
+
 @pytest.mark.parametrize('shell', ['zsh', 'fish'])
 def test_slot_items_inside_an_open_quote_in_every_shell(shell):
 	# zsh and fish send the word as typed, quote included: the picker must too (here it ends in a space)
