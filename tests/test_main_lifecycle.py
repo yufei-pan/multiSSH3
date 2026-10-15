@@ -465,7 +465,8 @@ def test_record_command_history_creates_owner_only_file(tmp_path):
 	})
 
 	assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
-	assert "secret" in path.read_text()
+	# the password is not stored: a replay asks for it
+	assert "secret" not in path.read_text() and "-p=-" in path.read_text()
 
 
 def _names_only_resolve_ips(hostname, local=False):

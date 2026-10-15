@@ -185,6 +185,9 @@ def _case_argv(options, hosts, commands, directory):
 def test_history_line_replays_the_same_run(options, config, hosts, commands, replay_env, monkeypatch, capsys):
 	for name, value in config.items():
 		monkeypatch.setattr(multiSSH3, name, value)
+	# -p is listed as -p -: the replay asks, and is given the password typed first
+	monkeypatch.setattr(multiSSH3, '_terminal_to_ask_on', lambda: True)
+	monkeypatch.setattr(multiSSH3.getpass, 'getpass', lambda prompt: 'secret')
 	first, _ = _run_main(_case_argv(options, hosts, commands, replay_env), capsys)
 	line = (replay_env / 'history').read_text().splitlines()[-1]
 
@@ -198,6 +201,9 @@ def test_history_line_replays_the_same_run(options, config, hosts, commands, rep
 def test_command_echo_replays_the_same_run(options, config, hosts, commands, replay_env, monkeypatch, capsys):
 	for name, value in config.items():
 		monkeypatch.setattr(multiSSH3, name, value)
+	# -p is listed as -p -: the replay asks, and is given the password typed first
+	monkeypatch.setattr(multiSSH3, '_terminal_to_ask_on', lambda: True)
+	monkeypatch.setattr(multiSSH3.getpass, 'getpass', lambda prompt: 'secret')
 	first, echo = _run_main(_case_argv(options, hosts, commands, replay_env), capsys)
 	if echo is None:
 		assert first['no_output']  # -Q prints nothing, the echo included

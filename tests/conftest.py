@@ -220,6 +220,17 @@ def no_machine_state(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_password_prompts():
+	"""-p - asks on /dev/tty, which a test run from a terminal has: a test asking would wait for a key."""
+	# a patcher of its own, as no_machine_state's
+	with pytest.MonkeyPatch.context() as patch:
+		patch.setattr(multiSSH3, "_terminal_to_ask_on", lambda: False)
+		# nor does the developer's MSSH_PASSWORD reach the tests
+		patch.delenv("MSSH_PASSWORD", raising=False)
+		yield
+
+
+@pytest.fixture(autouse=True)
 def restore_module_globals():
 	saved = {
 		"_emo": multiSSH3._emo,

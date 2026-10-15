@@ -6761,8 +6761,10 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	when it is on, a value when it is not the CLI's default (the parser's, config files applied: a
 	replay gets the same one). Values are attached with "=", so none is read as a host or command.
 
-	Not listed: -ip (an IPMI password is not spread further; -p is, by design: README) and, when it is
-	given, the other IPMI options, the options that do something besides the run (--generate_config_file, --store_config_file,
+	A -p password other than the default (MSSH_PASSWORD, else DEFAULT_PASSWORD) is listed as -p -,
+	never itself: a replay asks for it (a placeholder replayed as the password would fail a login on
+	every host).
+	Not listed: -ip (an IPMI password is not spread further) and, when it is given, the other IPMI options, the options that do something besides the run (--generate_config_file, --store_config_file,
 	--add_control_master_config), and those main() folds into others: -T into -t, -uk and -k DIR into
 	-k FILE, --script into its options, -s PATH into -f PATH -fs.
 	'''
@@ -6786,7 +6788,10 @@ def __formCommandArgStr(shortend = False, **kwargs) -> str:
 	option('timeout', '--timeout', '-t')
 	option('repeat', '--repeat', '-r')
 	option('interval', '--interval', '-i')
-	option('password', '--password', '-p')
+	password = kwargs.get('password', defaults.get('password'))
+	if password is not None and password != defaults.get('password'):
+		# '' is no password, not a secret
+		argsList.append('{}={}'.format('-p' if shortend else '--password', '-' if password else "''"))
 	option('identity_file', '--key', '-k')
 	flag('copy_id', '--copy_id', '-ci')
 	flag('no_watch', '--no_watch', '-q')
@@ -6912,7 +6917,7 @@ def record_command_history(kwargs):
 		historyKwargs['typed_hosts'] = True
 		history_file = os.path.expanduser(historyKwargs.get('history_file', DEFAULT_HISTORY_FILE))
 		strCommand = getStrCommand(**historyKwargs)
-		# history can hold -p passwords, create it readable by the owner only
+		# the commands run can be private too: readable by the owner only
 		with os.fdopen(os.open(history_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a') as f:
 			# it follows <timestamp>\t<strCommand>\n
 			f.write(f'{int(time.time())}\t{strCommand}\n')
@@ -7420,7 +7425,8 @@ def generate_default_config(args):
 		'AUTHOR_EMAIL': AUTHOR_EMAIL,
 		'DEFAULT_HOSTS': args.hosts,
 		'DEFAULT_USERNAME': args.username,
-		'DEFAULT_PASSWORD': args.password,
+		# MSSH_PASSWORD stays in the environment it was set in
+		'DEFAULT_PASSWORD': DEFAULT_PASSWORD if os.environ.get('MSSH_PASSWORD') and args.password == os.environ.get('MSSH_PASSWORD') else args.password,
 		'DEFAULT_IDENTITY_FILE': args.identity_file if args.identity_file and not os.path.isdir(args.identity_file) else DEFAULT_IDENTITY_FILE,
 		'DEFAULT_SSH_KEY_SEARCH_PATH': args.identity_file if args.identity_file and os.path.isdir(args.identity_file) else DEFAULT_SSH_KEY_SEARCH_PATH,
 		'DEFAULT_USE_KEY': args.use_key,
@@ -7645,6 +7651,10 @@ def _plain_help(text):
 	'''
 	return text.replace('%', '%%')
 
+def _default_password():
+	'''What -p defaults to: MSSH_PASSWORD, a password kept off the command line (ps, shell history), else DEFAULT_PASSWORD.'''
+	return os.environ.get('MSSH_PASSWORD') or DEFAULT_PASSWORD
+
 def _password_shown(password):
 	'''What -h says about a default password: whether there is one, never the password.'''
 	return 'set, not shown' if password else 'none'
@@ -7690,7 +7700,7 @@ def get_parser():
 	parser.add_argument('hosts', metavar='hosts', type=str, nargs='?', help=_plain_help(f'Hosts to run the command on, use "," to seperate hosts. (default: {DEFAULT_HOSTS})'),default=DEFAULT_HOSTS)
 	parser.add_argument('commands', metavar='commands', type=str, nargs='*',default=None,help='the command to run on the hosts / the destination of the files #HOST# or #HOSTNAME# will be replaced with the host name.')
 	parser.add_argument('-u','--username', type=str,help=_plain_help(f'The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: {DEFAULT_USERNAME})'),default=DEFAULT_USERNAME)
-	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, (default: {_password_shown(DEFAULT_PASSWORD)})'),default=DEFAULT_PASSWORD)
+	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, "-p -" to be asked for it, or set MSSH_PASSWORD. (default: {_password_shown(_default_password())})'),default=_default_password())
 	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=_plain_help(f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})'),const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=_plain_help(f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})'), default=DEFAULT_USE_KEY)
 	parser.add_argument('-ea','--extraargs',type=str,help=_plain_help(f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments.Use "=" ! Ex. -ea="--delete" (default: {DEFAULT_EXTRA_ARGS})'),default=DEFAULT_EXTRA_ARGS)
@@ -8352,6 +8362,44 @@ def _exit_if_output_closed(step, args):
 	except BrokenPipeError:
 		_output_reader_gone(exit_code=141)
 
+def _terminal_to_ask_on():
+	'''Whether there is a terminal to ask for a password on: getpass asks on /dev/tty.'''
+	try:
+		with open('/dev/tty'):
+			return True
+	except OSError:
+		return False
+
+def _ask_for_password(args):
+	'''
+	-p -: ask for the ssh password on the terminal, nothing echoed, before anything runs.
+
+	Without a terminal, or without an answer, nothing runs: an empty password would be a failed login
+	on every host (fail2ban).
+	'''
+	if args.password != '-':
+		return args
+	if not _terminal_to_ask_on():
+		_exit_with_code(2, '-p - asks for the password on the terminal, and there is none: set MSSH_PASSWORD, or DEFAULT_PASSWORD in a config file')
+	# Ctrl C stops mssh here: its own handler would wait for the hosts, and none has started
+	handler = signal.getsignal(signal.SIGINT)
+	try:
+		signal.signal(signal.SIGINT, signal.default_int_handler)
+		password = getpass.getpass('ssh password for mssh: ')
+	except KeyboardInterrupt:
+		eprint('')
+		_exit_with_code(130, 'no password given: nothing was run')
+	except EOFError:
+		eprint('')
+		password = ''
+	finally:
+		if handler is not None:
+			signal.signal(signal.SIGINT, handler)
+	if not password:
+		_exit_with_code(1, 'no password given: nothing was run')
+	args.password = password
+	return args
+
 def _closed_output_to_devnull():
 	'''
 	mssh started with stdout or stderr closed (>&-): Python gives None for the stream. What mssh would
@@ -8383,6 +8431,7 @@ def main(args = None):
 	args = _exit_if_output_closed(process_args, args)
 	if args.completion:
 		_exit_with_code(_completion_command(args.completion))
+	args = _ask_for_password(args)
 	args = _exit_if_output_closed(process_config_file, args)
 	args = _exit_if_output_closed(process_commands, args)
 	args = process_keys(args)

@@ -108,7 +108,7 @@ def test_option_descriptions_never_show_a_configured_password(monkeypatch):
 			response = mc.Engine(spec, [], None).query(mc.Request(shell, before, '', before.split(' ')[-1]))
 			assert not holds_a_password(mc.format_response(response, nul=False).decode('utf-8')), (shell, before)
 	descriptions = {candidate.text: candidate.description for candidate in mc.Engine(spec, [], None).query(mc.Request('zsh', 'mssh -', '', '-')).candidates}
-	assert descriptions['--password'].endswith('via ssh, (default: set, not shown)')
+	assert descriptions['--password'].endswith('or set MSSH_PASSWORD. (default: set, not shown)')
 	assert descriptions['-ip'].endswith('via ipmi. (default: set, not shown)')
 
 
