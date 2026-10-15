@@ -4829,6 +4829,45 @@ def _text_columns(text):
 		return len(text)
 	return sum(map(_char_columns, text))
 
+def _wrap_columns(text, width, tabsize = 4, initial_indent = '', subsequent_indent = '', **options):
+	'''
+	textwrap.wrap(text, width, ...) with the width in terminal columns (see _text_columns).
+
+	Text holding no wide or zero width character is wrapped by textwrap itself. Other text is wrapped
+	as mssh's wrappers do it (drop_whitespace and replace_whitespace False, no breaking on hyphens):
+	whole words while they fit, then a word wider than a line split where the line ends. A wide
+	character never straddles two lines; one wider than the whole width gets a line of its own.
+	'''
+	text = text.expandtabs(tabsize)
+	if _text_columns(text) == len(text):
+		return textwrap.wrap(text, width, tabsize=tabsize, initial_indent=initial_indent,
+			subsequent_indent=subsequent_indent, **options)
+	lines = []
+	# words and the whitespace between them, as textwrap splits them without hyphens
+	chunks = [chunk for chunk in re.split(r'(\s+)', text) if chunk]
+	chunks.reverse()
+	while chunks:
+		indent = subsequent_indent if lines else initial_indent
+		room = width - _text_columns(indent)
+		line, used = [], 0
+		while chunks and used + _text_columns(chunks[-1]) <= room:
+			used += _text_columns(chunks[-1])
+			line.append(chunks.pop())
+		if chunks and _text_columns(chunks[-1]) > room:
+			# a word wider than a line: as much of it as fits here, at least a character
+			word = chunks.pop()
+			cut = 0
+			while cut < len(word) and used + _char_columns(word[cut]) <= room:
+				used += _char_columns(word[cut])
+				cut += 1
+			if not cut and not line:
+				cut = 1
+			line.append(word[:cut])
+			if word[cut:]:
+				chunks.append(word[cut:])
+		lines.append(indent + ''.join(line))
+	return lines
+
 def _curses_fit(text, columns, column = 0):
 	'''
 	text as curses should draw it in at most columns columns.
@@ -5894,8 +5933,8 @@ def get_host_raw_output(hosts, terminal_width):
 	# a narrower terminal gets a 20 column layout and wraps its lines itself: the headers ('█ EXECUTED COMMAND:')
 	# need 19, and textwrap fails below 2 columns and never returns at 2 (the '- ' host name indent of mergeOutputs)
 	terminal_width = max(terminal_width, 20)
-	text_wrapper = textwrap.TextWrapper(width=terminal_width - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
-									 initial_indent=' ', subsequent_indent='-')
+	wrap = functools.partial(_wrap_columns, width=terminal_width - 1, tabsize=4, replace_whitespace=False,
+		drop_whitespace=False, initial_indent=' ', subsequent_indent='-')
 	max_length = 20
 	color_cap = get_terminal_color_capability()
 	if color_cap == 'None':
@@ -5914,7 +5953,7 @@ def get_host_raw_output(hosts, terminal_width):
 		max_length = max(max_length, len(max(host.name.split(','), key=len)) + 3)
 		hostPrintOut = [f"{cyan_str}█{color_reset_str} EXECUTED COMMAND:"]
 		for line in host.command.splitlines():
-			hostPrintOut.extend(text_wrapper.wrap(line))
+			hostPrintOut.extend(wrap(line))
 		# hostPrintOut.extend(itertools.chain.from_iterable(text_wrapper.wrap(line) for line in host['command'].splitlines()))
 		lineBag = {(0,host.command)}
 		prevLine = host.command
@@ -6083,7 +6122,7 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			outputs.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
 			cmdOut = []
 			for line in CMDsOut:
-				cmdOut.extend(textwrap.wrap(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False, 
+				cmdOut.extend(_wrap_columns(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False,
 									 initial_indent=' ', subsequent_indent='-'))
 			outputs.extend(cmdOut)
 			keyPressesIn[-1].clear()
