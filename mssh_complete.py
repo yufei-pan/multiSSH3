@@ -16,7 +16,7 @@ import sys
 import time
 from bisect import bisect_left
 
-version = '0.4'
+version = '0.5'
 __version__ = version
 PROTOCOL = 'MSSHC1'
 MSSH_NAMES = ('mssh', 'mssh3', 'multissh', 'multissh3', 'multiSSH3')
