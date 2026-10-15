@@ -138,3 +138,16 @@ def test_a_password_given_to_the_module_is_not_recorded(tmp_path, monkeypatch):
 
 def test_the_shown_command_line_never_has_the_password():
 	assert "S3cret" not in multiSSH3.getStrCommand(hosts="node1", commands=["true"], password=SECRET)
+
+
+@pytest.mark.parametrize("argv, stored", [([], "from-config"), (["-p", "typed"], "typed")])
+def test_store_config_file_does_not_write_mssh_password(tmp_path, monkeypatch, argv, stored):
+	import json
+	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", "from-config")
+	monkeypatch.setenv("MSSH_PASSWORD", "from-env")
+	path = tmp_path / "stored.json"
+
+	with pytest.raises(SystemExit):
+		multiSSH3.main(argv + ["--store_config_file", str(path)])
+
+	assert json.loads(path.read_text())["DEFAULT_PASSWORD"] == stored

@@ -970,7 +970,7 @@ options:
   -u, --username USERNAME
                         The general username to use to connect to the hosts via ssh. Will get overwrote by individual username@host if specified. (default: None)
   -p, --password PASSWORD
-                        The password to use to connect to the hosts via ssh, (default: none)
+                        The password to use to connect to the hosts via ssh, "-p -" to be asked for it, or set MSSH_PASSWORD. (default: none)
   -k, --identity_file, --key, --identity [IDENTITY_FILE]
                         The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use ~/.ssh/ (default: None)
   -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
