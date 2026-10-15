@@ -147,7 +147,7 @@ def test_rsync_turned_down_by_sshpass_is_not_tried_again_with_scp(monkeypatch, f
 	# scp would be turned down the same way, after one more wrong password on the host
 	argvs = _run(monkeypatch, host, [refused, refused])
 
-	assert len(argvs) == 1 and argvs[0][3] == "/bin/rsync"
+	assert len(argvs) == 1 and argvs[0][2] == "/bin/rsync"
 	said = _sshpass_lines(host.stderr)
 	assert said and "unless rsync itself exited with 5" in said[0]
 

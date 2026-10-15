@@ -3326,8 +3326,9 @@ def _stopped_command_note(formatedCMD):
 	runs on until it ends, or until it writes to the closed connection.
 	'''
 	program = formatedCMD[0] if formatedCMD else ''
-	if program == _binPaths.get('sshpass') and len(formatedCMD) > 3:
-		program = formatedCMD[3]
+	if program == _binPaths.get('sshpass') and len(formatedCMD) > 2:
+		# sshpass -e program, or sshpass -p password program
+		program = formatedCMD[2] if formatedCMD[1] == '-e' else formatedCMD[3] if len(formatedCMD) > 3 else program
 	if program == _binPaths.get('ssh'):
 		return 'ssh was stopped: the command may still run on the host'
 	name = os.path.basename(str(program))
@@ -3756,6 +3757,25 @@ def _ipmi_definitions_to_store(args):
 			definitions.append(stored)
 	return definitions
 
+class _CommandLine(list):
+	'''
+	A command's argv, with env: the variables its process gets on top of mssh's environment.
+
+	They carry the passwords sshpass -e and ipmitool -E read: ps shows every process's command line
+	to every user of the machine, its environment only to the same user and root.
+	'''
+	def __init__(self, argv, env=None):
+		super().__init__(argv)
+		self.env = dict(env or {})
+
+def _sshpass_command(argv, password):
+	'''argv run under sshpass, which reads the password from SSHPASS.'''
+	return _CommandLine([_binPaths['sshpass'], '-e'] + list(argv), {'SSHPASS': str(password)})
+
+def _ipmitool_password_env(password):
+	'''The environment that gives ipmitool -E the password: 1.8.19 and later read IPMITOOL_PASSWORD first.'''
+	return {'IPMI_PASSWORD': str(password), 'IPMITOOL_PASSWORD': str(password)}
+
 _CommandAttempt = namedtuple('_CommandAttempt', ['action', 'argv', 'ipmi_definition', 'username', 'passwds', 'useScp', 'ipmi_definitions_list'])
 _CommandAttempt.__doc__ = '''
 What _build_command decided for one attempt.
@@ -3921,9 +3941,11 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				ipmi_args = ipmi_definition.get('args','')
 				if 'sh' in _binPaths:
 					# quote the credentials so the shell does not split or expand them, ipmi_args and the command stay raw on purpose
-					formatedCMD = [_binPaths['sh'],'-c',f'ipmitool -H {shlex.quote(str(host.address))} -U {shlex.quote(str(ipmi_definition.get("username",username)))} -P {shlex.quote(str(ipmi_definition.get("password",passwds)))} {ipmi_args} {host.command}']
+					formatedCMD = _CommandLine([_binPaths['sh'],'-c',f'ipmitool -H {shlex.quote(str(host.address))} -U {shlex.quote(str(ipmi_definition.get("username",username)))} -E {ipmi_args} {host.command}'],
+						_ipmitool_password_env(ipmi_definition.get("password",passwds)))
 				else:
-					formatedCMD = [_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}',f'-P {ipmi_definition.get("password",passwds)}'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
+					formatedCMD = _CommandLine([_binPaths['ipmitool'],f'-H {host.address}',f'-U {ipmi_definition.get("username",username)}','-E'] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command],
+						_ipmitool_password_env(ipmi_definition.get("password",passwds)))
 			elif ipmi_definition.get('ipmi_method') == 'redfish':
 				if 'redfishtool' not in _binPaths:
 					# this definition cannot run on this machine: the next one may
@@ -3961,8 +3983,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				if passwds and 'sshpass' in _binPaths:
 					# for the password prompts of the command (ssh-copy-id). Not in host.command: mssh shows that,
 					# and replaces the magic strings in it
-					shellCommand = f"{shlex.quote(_binPaths['sshpass'])} -p {shlex.quote(str(passwds))} {shellCommand}"
-				formatedCMD = [_binPaths['sh'],'-c',shellCommand]
+					shellCommand = f"{shlex.quote(_binPaths['sshpass'])} -e {shellCommand}"
+					formatedCMD = _CommandLine([_binPaths['sh'],'-c',shellCommand], {'SSHPASS': str(passwds)})
+				else:
+					formatedCMD = [_binPaths['sh'],'-c',shellCommand]
 			else:
 				host.output.append('shell not found on the local machine! Using ssh localhost instead...')
 				if __DEBUG_MODE:
@@ -4048,7 +4072,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			else:
 				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
-				formatedCMD = [_binPaths['sshpass'], '-p', passwds] + formatedCMD
+				formatedCMD = _sshpass_command(formatedCMD, passwds)
 			elif passwds:
 				host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
 				if __DEBUG_MODE:
@@ -4173,7 +4197,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					give_streams.append(give_stdin)
 				# a session of its own has no controlling terminal: ssh cannot ask there and fails with its reason
 				own_session = os.name == 'posix' and not host.use_terminal
-				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session)
+				# the passwords sshpass and ipmitool read (see _CommandLine)
+				env = dict(os.environ, **formatedCMD.env) if getattr(formatedCMD, 'env', None) else None
+				proc = subprocess.Popen(formatedCMD,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=stdin,start_new_session=own_session,env=env)
 				__running_procs.add(proc)
 				# the readers read through _CommandPipe: one can be given up when a background process holds its pipe
 				stdout_pipe = _CommandPipe(proc.stdout)
@@ -4371,9 +4397,14 @@ def _sshpass_program(formatedCMD):
 			words = shlex.split(words[2])
 		except ValueError:
 			return None
-	if not sshpass or len(words) < 4 or words[0] != sshpass or words[1] != '-p':
+	if not sshpass or len(words) < 3 or words[0] != sshpass:
 		return None
-	return os.path.basename(words[3])
+	# sshpass -e program, or sshpass -p password program
+	if words[1] == '-e':
+		return os.path.basename(words[2])
+	if words[1] == '-p' and len(words) >= 4:
+		return os.path.basename(words[3])
+	return None
 
 def _may_go_through_a_proxy(host):
 	'''
@@ -4557,7 +4588,8 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			retry_limit -= 1
 			continue
 		if host.ipmi:
-			attempt = tuple(str(arg) for arg in formatedCMD)
+			# the password is in the environment, not the command line
+			attempt = (tuple(str(arg) for arg in formatedCMD), tuple(sorted(getattr(formatedCMD, 'env', {}).items())))
 			if attempt in ran:
 				# not run: drop what building it said, it was said when it ran
 				del host.output[line_counts[0]:]

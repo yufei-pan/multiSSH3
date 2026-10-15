@@ -559,7 +559,7 @@ mssh -q -- web1 grep -r TODO /srv
 - `-p` needs `sshpass`, which types the password when ssh asks for it and answers nothing else. When ssh asks again or asks about a host key, sshpass gives up without a word, and mssh says why next to the return code: 5 the password was not accepted, 6 ssh asked whether to trust a host key that is not in `known_hosts` (the host's own with `SSH_STRICT_HOST_KEY_CHECKING` true, else a ProxyJump host's), 7 `known_hosts` has a different key for the host's IP address. A command of yours that prints nothing can exit with the same codes, so the line says `unless the command itself exited with N`; with `SSH_STRICT_HOST_KEY_CHECKING` false and no ProxyJump (or ProxyCommand) in the ssh config, 6 and 7 can only be the command's and mssh adds nothing.
 - Warning: by default mssh does not check host keys, so the password goes to whichever machine answers at the host's address. See [Host Key Checking](#host-key-checking).
 - Note: a password given on the command line is plain text. It can be seen by other local users (e.g. in `ps` and your shell history), is echoed in the `> mssh ...` line mssh prints at start, and is recorded in the history file (`-hf`, default `~/.mssh_history`) so the command can be replayed (an IPMI password, `-ip`, is not). mssh creates a new history file readable by its owner only (mode 600); an existing history file keeps its permissions. Use `-I, --no_history` to keep a command out of the history, or set `DEFAULT_PASSWORD` in a config file (also plain text, so keep that file private) to avoid typing it on the command line.
-- mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. Like a password typed on the command line, they reach `sshpass` and `ipmitool` as arguments, where other local users can briefly see them in `ps`.
+- mssh does not show the passwords from your config file: `-h` and the autocomplete only say whether one is set, the `> mssh ...` line and the history leave them out, and the commands the TUI, `--debug` and `--copy_id` show have `***` in their place. Only `--generate_config_file` (and `--store_config_file` when it cannot write the file) print the config itself, passwords included. They reach `sshpass` and `ipmitool`, as a password typed on the command line does, through their environment (`sshpass -e`, `ipmitool -E` with `IPMI_PASSWORD` and `IPMITOOL_PASSWORD`), which other local users cannot read, not as arguments `ps` shows them. `redfishtool` has no such option: it gets its password as an argument, visible in `ps` while it runs.
 
 ### `-k, --key, --identity [KEY]` | _`DEFAULT_IDENTITY_FILE`_
 - You can specify the identity file or folder to use for public key authentication. If a folder is specified, it will search for a key file inside the folder.
@@ -689,11 +689,11 @@ mssh -f ./data/ allServers /tmp/data/
 
 ### `-ia, --ipmi_args IPMI_ARGS` | _`DEFAULT_IPMI_ARGS`_
 - Extra arguments for ipmitool (or redfishtool) in `--ipmi` mode, in one string, placed as they are before the command. `-ea` arguments only go to ssh / scp / rsync.
-- Ex: `mssh -M -ia='-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -P <password> -I lanplus power status`. Use `=`, as the value starts with `-`.
+- Ex: `mssh -M -ia='-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -E -I lanplus power status`, with the password in its environment. Use `=`, as the value starts with `-`.
 
 ### `-im, --ipmi_method IPMI_METHOD` | _`DEFAULT_IPMI_METHOD`_
 - How `--ipmi` reaches a host:
-  - `ipmitool` (default): runs `ipmitool -H <address> -U <user> -P <password> [IPMI_ARGS] <command>` on this machine.
+  - `ipmitool` (default): runs `ipmitool -H <address> -U <user> -E [IPMI_ARGS] <command>` on this machine; `-E` reads the password from the environment mssh gives it.
   - `redfish`: runs `redfishtool -S Always -a -r <address> -u <user> -p <password> [IPMI_ARGS] <command>` on this machine (`Systems` without a command).
   - `ssh_ipmitool`: logs in to the host over ssh with the IPMI username and password (`-iu` / `-ip`, so `admin` / `admin` unless set) and runs `ipmitool <command>` there.
 - Any other value fails with `IPMI method ... not supported!`.

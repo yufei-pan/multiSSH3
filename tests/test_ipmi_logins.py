@@ -42,15 +42,24 @@ class FailingProc:
 		return b'', b''
 
 
+class _Run(list):
+	'''A command line mssh ran, with the password ipmitool -E read from its environment (or None).'''
+	def __init__(self, argv, env=None):
+		super().__init__(argv)
+		env = env or {}
+		# both names, for old and new ipmitool versions
+		assert env.get('IPMITOOL_PASSWORD') == env.get('IPMI_PASSWORD')
+		self.password = env.get('IPMI_PASSWORD')
+
+
 def _login(argv):
 	'''(user, password, args) of an ipmitool command line run through sh -c, else the argv.'''
 	if argv[:2] != ['/bin/sh', '-c']:
 		return tuple(argv)
 	words = shlex.split(argv[2])
 	user = words[words.index('-U') + 1]
-	password = words[words.index('-P') + 1]
-	rest = words[words.index('-P') + 2:]
-	return (user, password, ' '.join(rest[:-2]))
+	rest = words[words.index('-E') + 1:]
+	return (user, argv.password, ' '.join(rest[:-2]))
 
 
 def logins_tried(monkeypatch, config=None, argv=(), host='bmc1', command_line=True, set_in_code=None):
@@ -84,7 +93,7 @@ def commands_run(monkeypatch, config=None, argv=(), host='bmc1', command_line=Tr
 	runs = []
 
 	def popen(argv, **kwargs):
-		runs.append(list(argv))
+		runs.append(_Run(argv, kwargs.get('env')))
 		return FailingProc()
 
 	monkeypatch.setattr(multiSSH3.subprocess, 'Popen', popen)
@@ -296,7 +305,8 @@ def test_stored_config_keeps_its_definitions_and_marks_the_command_line_login(mo
 FAKE_TOOL = '''#!{python}
 import json, os, sys
 with open(os.environ['FAKE_LOG'], 'a') as log:
-	log.write(json.dumps([{name!r}] + sys.argv[1:]) + '\\n')
+	log.write(json.dumps({{'run': [{name!r}] + sys.argv[1:], 'password': os.environ.get('IPMI_PASSWORD'),
+		'tool_password': os.environ.get('IPMITOOL_PASSWORD')}}) + '\\n')
 sys.stderr.write('Error: Unable to establish IPMI v2 / RMCP+ session\\n')
 sys.exit(1)
 '''
@@ -331,14 +341,15 @@ def _mssh_ipmi_run(tmp_path, config, argv=()):
 		env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 	if not log.exists():
 		return []
-	return [json.loads(line) for line in log.read_text().splitlines()]
+	runs = [json.loads(line) for line in log.read_text().splitlines()]
+	return [_Run(run['run'], {'IPMI_PASSWORD': run['password'], 'IPMITOOL_PASSWORD': run['tool_password']}) for run in runs]
 
 
 def _ipmitool_logins(runs):
 	logins = []
 	for run in runs:
 		if run[0] == 'ipmitool':
-			logins.append((run[run.index('-U') + 1], run[run.index('-P') + 1]))
+			logins.append((run[run.index('-U') + 1], run.password))
 	return logins
 
 

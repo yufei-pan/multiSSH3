@@ -74,7 +74,7 @@ def test_copy_id_checks_host_keys_as_every_ssh_mssh_runs(monkeypatch, tmp_path, 
 
 	# a new node's unknown key made sshpass give up (exit 6) before ssh-copy-id got anywhere
 	options = "" if strict else HOST_KEY_OPTIONS + " "
-	assert _copy_id_lines(argvs) == ["/bin/sshpass -p pw /bin/ssh-copy-id {}{} bob@mock-a".format(options, TIMEOUT_OPTIONS)]
+	assert _copy_id_lines(argvs) == ["/bin/sshpass -e /bin/ssh-copy-id {}{} bob@mock-a".format(options, TIMEOUT_OPTIONS)]
 
 
 def test_copy_id_takes_the_extra_args_ssh_copy_id_knows(monkeypatch, tmp_path):
@@ -87,7 +87,7 @@ def test_copy_id_takes_the_extra_args_ssh_copy_id_knows(monkeypatch, tmp_path):
 	# (-k), so ssh's -i (a key to log in with) stays out, as do -F (ssh-copy-id 7.4 and 8.0 fail on it)
 	# and what ssh-copy-id has no option for
 	# -ea's ConnectTimeout wins over mssh's
-	assert _copy_id_lines(argvs) == ["/bin/sshpass -p pw /bin/ssh-copy-id -i '{}' {} -o ServerAliveInterval=15 "
+	assert _copy_id_lines(argvs) == ["/bin/sshpass -e /bin/ssh-copy-id -i '{}' {} -o ServerAliveInterval=15 "
 		"-o ServerAliveCountMax=4 -p 2222 -o ConnectTimeout=5 -o ProxyJump=admin@jump mock-a".format(os.path.expanduser("~/my key"), HOST_KEY_OPTIONS)]
 
 

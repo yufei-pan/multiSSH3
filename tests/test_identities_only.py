@@ -62,7 +62,7 @@ def test_password_runs_use_only_the_key_given(fake_host, monkeypatch, tmp_path):
 
 	argv = _argv_of_run(fake_host, monkeypatch, passwds="pw", command="hostname", identity_file=str(key))
 
-	assert argv[:4] == ["sshpass", "-p", "pw", "ssh"]
+	assert argv[:3] == ["sshpass", "-e", "ssh"]
 	assert _has_option(argv, "IdentitiesOnly=yes")
 
 
