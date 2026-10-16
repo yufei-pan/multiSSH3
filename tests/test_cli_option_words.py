@@ -145,3 +145,57 @@ def test_an_option_name_after_the_command_is_still_an_mssh_option():
 	# so "mssh web1 grep -q foo" runs "grep foo" without the curses window
 	args = multiSSH3.process_args(['web1', 'grep', '-q', 'foo'])
 	assert (args.commands, args.no_watch) == (['grep', 'foo'], True)
+
+
+# -ea passes options on to ssh, rsync and scp, -ia to ipmitool: the word after them is always their value,
+# as getopt reads ssh's own -o. argparse took a word starting with '-' for an option: "-ea -v" stopped
+# with an error, and "-ea '-p 2222'" read '-p 2222' as mssh's -p.
+@pytest.mark.parametrize('words, expected', [
+	(['-ea', '-p 2222'], {'extraargs': '-p 2222'}),
+	(['-ea', '-i ~/.ssh/id_x'], {'extraargs': '-i ~/.ssh/id_x'}),  # mssh's -i (--interval)
+	(['-ea', '-v'], {'extraargs': '-v'}),
+	(['-ea', '-A'], {'extraargs': '-A'}),
+	(['--extraargs', '-4'], {'extraargs': '-4'}),
+	(['-ea', '-q'], {'extraargs': '-q'}),  # mssh's -q: not set
+	(['-ea', '--delete'], {'extraargs': '--delete'}),
+	(['-ea', '-o ConnectTimeout=3'], {'extraargs': '-o ConnectTimeout=3'}),
+	(['-ea', '-ea'], {'extraargs': '-ea'}),
+	(['-ea', '=x'], {'extraargs': '=x'}),
+	(['-ea', ''], {'extraargs': ''}),
+	(['-ia', '-I lanplus'], {'ipmi_args': '-I lanplus'}),
+	(['--ipmi_args', '-v'], {'ipmi_args': '-v'}),
+])
+def test_the_word_after_ea_and_ia_is_their_value(words, expected, capsys):
+	for argv in (words + ['web1', 'cmd'], ['web1', 'cmd'] + words, ['web1'] + words + ['cmd']):
+		args = multiSSH3.process_args(argv)
+		assert {dest: getattr(args, dest) for dest in expected} == expected, argv
+		assert (args.hosts, args.commands, args.no_watch) == ('web1', ['cmd'], False), argv
+	assert capsys.readouterr().err == ''
+
+
+def test_a_double_dash_after_ea_is_its_value(capsys):
+	args = multiSSH3.process_args(['-ea', '--', 'web1', 'cmd'])
+	assert (args.extraargs, args.hosts, args.commands) == ('--', 'web1', ['cmd'])
+
+
+def test_ea_after_a_double_dash_is_a_command_word(capsys):
+	args = multiSSH3.process_args(['web1', '--', 'cmd', '-ea', '-v'])
+	assert (args.extraargs, args.commands) == (multiSSH3.DEFAULT_EXTRA_ARGS, ['cmd', '-ea', '-v'])
+
+
+def test_the_passed_on_options_are_the_parser_s():
+	actions = multiSSH3.get_parser()._actions
+	assert set(multiSSH3._PASSED_ON_OPTIONS) == {string for action in actions
+		if action.dest in ('extraargs', 'ipmi_args') for string in action.option_strings}
+
+
+@pytest.mark.parametrize('argv, hint', [
+	(['web1', 'cmd', '-ea'], "-ea='-p 2222'"),
+	(['web1', 'cmd', '--extraargs'], "-ea='-p 2222'"),
+	(['web1', 'cmd', '-ia'], "-ia='-I lanplus'"),
+])
+def test_ea_without_a_value_says_how_to_give_one(argv, hint, capsys):
+	args, err = _process(argv, capsys)
+	assert args is None
+	assert 'expected one argument' in err and hint in err
+	assert multiSSH3.REMOTE_OPTIONS_HINT not in err
