@@ -2792,34 +2792,56 @@ _shared_lines_lock = threading.Lock()
 
 def _reset_shared_lines(sharing=True):
 	'''
-	Let the shared lines go, and share from now on or not. A run starts sharing (unless it returns before
-	its hosts end: its readers go on after it), and ends not: readers given up may still read.
+	Let the shared lines go, and share from now on or not. A command's run starts sharing (unless it returns
+	before its hosts end: its readers go on after it), and ends not: readers given up may still read.
+	Free-threaded Python never shares: every reader using one dict made them wait for each other (200 hosts
+	x 20,000 lines alike took 4.85 s instead of 0.58 s).
 	'''
+	gil = getattr(sys, '_is_gil_enabled', None)
 	with _shared_lines_lock:
 		_shared_lines.clear()
-		_shared_lines_state.update(sharing=sharing, looked_up=0, found=0, failed_checks=0)
+		_shared_lines_state.update(sharing=sharing and (gil is None or gil()), looked_up=0, found=0, failed_checks=0)
 
 def _share_lines(lines):
 	'''
 	lines (a list), each replaced by the copy of it already held, if any; the others are held from now
-	on. Readers of several hosts call it at once: a line counts as found when the copy returned is another
-	object, which no other reader's lines can change (counting the pool's growth took theirs for misses).
+	on. A line counts as found when the copy returned is another object: other readers' lines do not
+	change that. Sharing runs only with the GIL, which may lose a count now and then, no line.
 	'''
 	state = _shared_lines_state
 	if not state['sharing']:
 		return lines
 	shared = [_shared_lines.setdefault(line, line) for line in lines]
-	found = len(lines) - sum(map(operator.is_, shared, lines))
-	with _shared_lines_lock:
-		state['found'] += found
-		state['looked_up'] += len(lines)
-		if state['looked_up'] >= _SHARED_LINES_CHECK:
-			state['failed_checks'] = state['failed_checks'] + 1 if state['found'] * 2 < state['looked_up'] else 0
-			if state['failed_checks'] >= 2:
-				state['sharing'] = False
-				_shared_lines.clear()
-			state['looked_up'] = state['found'] = 0
+	state['found'] += len(lines) - sum(map(operator.is_, shared, lines))
+	state['looked_up'] += len(lines)
+	if state['looked_up'] >= _SHARED_LINES_CHECK:
+		_check_shared_lines()
 	return shared
+
+def _share_line(line):
+	'''_share_lines for one line: the reader's line buffer (\\r progress, one line per read) gives one at a time.'''
+	state = _shared_lines_state
+	if not state['sharing']:
+		return line
+	shared = _shared_lines.setdefault(line, line)
+	state['found'] += shared is not line
+	state['looked_up'] += 1
+	if state['looked_up'] >= _SHARED_LINES_CHECK:
+		_check_shared_lines()
+	return shared
+
+def _check_shared_lines():
+	'''A check (see _shared_lines): sharing stops after two in a row found fewer than half the lines held.'''
+	state = _shared_lines_state
+	with _shared_lines_lock:
+		if state['looked_up'] < _SHARED_LINES_CHECK:
+			# another reader checked meanwhile
+			return
+		state['failed_checks'] = state['failed_checks'] + 1 if state['found'] * 2 < state['looked_up'] else 0
+		if state['failed_checks'] >= 2:
+			state['sharing'] = False
+			_shared_lines.clear()
+		state['looked_up'] = state['found'] = 0
 
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
@@ -2847,7 +2869,7 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		# not an encoding: the decode fails as it did before
 		bulk_encoding = False
 	def add_line(buffer,target, host):
-		current_line_str = _share_lines([buffer.getvalue().decode(_encoding,errors='backslashreplace')])[0]
+		current_line_str = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
 		target.append(current_line_str)
 		host.output.append(current_line_str)
 		# only the TUI draws from the set, and interactive_stdin is set while it runs: without it the set
@@ -6677,6 +6699,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		host.use_terminal = not use_tui and not return_unfinished and (len(hosts) == 1 or max_connections == 1)
 	global _commands_started
 	_commands_started = True
+	# each command's run shares its lines, the end of the one before switched it off (see _reset_shared_lines)
+	_reset_shared_lines(sharing=not return_unfinished)
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
 	if use_tui and threads:
 		try:

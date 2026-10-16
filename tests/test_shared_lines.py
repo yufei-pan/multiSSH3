@@ -139,3 +139,33 @@ def test_lines_read_after_a_run_ended_are_not_held():
 	_read("a", ALIKE)
 
 	assert multiSSH3._shared_lines == {}
+
+
+def test_every_command_of_a_run_shares(monkeypatch):
+	# a command's end switched sharing off for the next command of the same run
+	import subprocess
+	real_popen = subprocess.Popen
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: "/dev/null")
+	monkeypatch.setattr(multiSSH3, "_binPaths", {"ssh": "/usr/bin/ssh", "sh": "/bin/sh"})
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen",
+		lambda command, **kwargs: real_popen(["sh", "-c", "yes 'the same line' | head -n 3000"], **kwargs))
+
+	hosts = multiSSH3.run_command_on_hosts(hosts="mock-[a-b]", commands=["first", "second"], no_watch=True, quiet=True,
+		no_history=True, called=True, return_unfinished=False, will_update_unreachable_hosts=False)
+
+	assert len(hosts) == 4
+	for first, second in (hosts[:2], hosts[2:]):
+		assert first.stdout == second.stdout == ["the same line"] * 3000
+		assert all(mine is theirs for mine, theirs in zip(first.stdout, second.stdout))
+
+
+def test_free_threaded_python_shares_nothing(monkeypatch):
+	# every reader thread using one dict made them wait for each other: 200 hosts x 20,000 lines alike
+	# took 4.85 s instead of 0.58 s on 3.13t
+	monkeypatch.setattr(multiSSH3.sys, "_is_gil_enabled", lambda: False, raising=False)
+	multiSSH3._reset_shared_lines()
+
+	assert multiSSH3._shared_lines_state["sharing"] is False
+	_read("a", ALIKE)
+	assert multiSSH3._shared_lines == {}
