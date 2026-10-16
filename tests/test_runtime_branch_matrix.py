@@ -168,7 +168,7 @@ def test_process_run_premerges_and_prints(fake_host, monkeypatch):
 	events = []
 	monkeypatch.setattr(multiSSH3, "start_run_on_hosts", lambda *args, **kwargs: [])
 	monkeypatch.setattr(multiSSH3, "pre_merge_hosts", lambda hosts: events.append("merge") or hosts)
-	monkeypatch.setattr(multiSSH3, "print_output", lambda hosts, usejson=False, quiet=False, greppable=False: events.append("print"))
+	monkeypatch.setattr(multiSSH3, "_stream_output", lambda hosts, usejson=False, greppable=False: events.append("print"))
 
 	multiSSH3.processRunOnHosts(
 		1, None, 1, [host], False, True, False, False, False,
