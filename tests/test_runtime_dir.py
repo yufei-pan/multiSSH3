@@ -76,6 +76,34 @@ def test_a_place_someone_else_controls_is_skipped(places, monkeypatch, planted):
 		places['shm'].mkdir(mode=0o700)
 		places['shm'].chmod(0o777)
 	assert multiSSH3.runtime_dir() == mc.cache_dir() == str(places['temp'])
+	assert multiSSH3.runtime_dir(create=False) == mc.cache_dir(create=False) == str(places['temp'])
+
+
+@posix_only
+@pytest.mark.parametrize('holding', ['run_user', 'shm', 'temp'])
+def test_reading_looks_only_where_a_write_goes(places, holding):
+	# a later place's state (an older session's, or this machine's own while a test or a script sets
+	# $XDG_RUNTIME_DIR to a new directory) is not read while the place a write goes to is not made yet
+	places[holding].mkdir(mode=0o700)
+	(places[holding] / 'unavailable_hosts.csv').write_text('#boot_id,x\n')
+
+	assert multiSSH3.runtime_dir(create=False) is None and mc.cache_dir(create=False) is None
+	assert multiSSH3._unavailable_hosts_file_path(create=False) is None
+	assert not places['xdg'].exists()
+	# once made, it is read
+	assert multiSSH3.runtime_dir() == str(places['xdg'])
+	assert multiSSH3.runtime_dir(create=False) == mc.cache_dir(create=False) == str(places['xdg'])
+
+
+@posix_only
+def test_reading_does_not_pass_over_a_place_a_write_would_tighten(places):
+	# ours, but readable by others: a write makes it 0700 and uses it
+	places['xdg'].mkdir(mode=0o700)
+	places['xdg'].chmod(0o755)
+	places['run_user'].mkdir(mode=0o700)
+
+	assert multiSSH3.runtime_dir(create=False) is None and mc.cache_dir(create=False) is None
+	assert multiSSH3.runtime_dir() == mc.cache_dir() == str(places['xdg'])
 
 
 @posix_only
