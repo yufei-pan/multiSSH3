@@ -727,3 +727,31 @@ def test_curses_print_too_small_keeps_the_keys_typed_for_the_display(stub_curses
 	# the resize redraws; the keys typed meanwhile, the Esc after text among them, come back in their order
 	assert len(displays) == 2 and displays[1][2:] == TOO_SMALL[:6] + ("new config",)
 	assert ungot == [27, ord("y")]
+
+
+def test_hosts_without_a_window_keep_no_lines_to_draw(stub_curses_harness, fake_host, monkeypatch):
+	# a host coming into a window is drawn whole: the lines noted while it had none were never drawn,
+	# and held one entry per line of its output until it came in
+	shown, hidden = _running_host(fake_host), _running_host(fake_host)
+	shown.name, hidden.name = "mock-a", "mock-b"
+	hidden.output = ["line {}".format(number) for number in range(1000)]
+	hidden.lineNumToPrintSet = set(range(1000))
+	polls = []
+
+	def finish_on_second_poll():
+		polls.append(None)
+		if len(polls) == 2:
+			shown.returncode = hidden.returncode = 0
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", finish_on_second_poll)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	# room for one host window
+	multiSSH3.__generate_display(stub_curses_harness.window, [shown, hidden], min_char_len=80, min_line_len=20)
+
+	drawn = [arg for window in stub_curses_harness.windows for method, args, kwargs in window.calls
+		for arg in args if method == "addnstr" and isinstance(arg, str)]
+	assert any("mock-a" in text for text in drawn) and not any("mock-b" in text for text in drawn)
+	assert hidden.lineNumToPrintSet == set()

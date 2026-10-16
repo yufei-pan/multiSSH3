@@ -5714,6 +5714,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				host_window.noutrefresh()
 				host.lastPrintedUpdateTime = host.lastUpdateTime
 			hosts_to_display, host_stats,rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts,hosts_to_display, indexOffset)
+			# a host coming into a window is drawn whole: the lines noted for hosts without one would only
+			# pile up, one entry per line of their output
+			shown = set(hosts_to_display)
+			for host in hosts:
+				if host.lineNumToPrintSet and host not in shown:
+					host.lineNumToPrintSet = set()
 			if help_shown:
 				help_window.touchwin()
 				help_window.noutrefresh()
