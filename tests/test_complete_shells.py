@@ -10,7 +10,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, REPO, bash_session, build_index, fish_complete, fish_session, make_home,
+from complete_shell_harness import (ENGINE, REPO, aged, bash_session, build_index, fish_complete, fish_session, make_home,
 	require_shell, without_command, zsh_session)
 
 HISTORY = [
@@ -315,7 +315,7 @@ def test_fish_without_timeout_shows_nothing_but_the_completion(setup, tmp_path, 
 	# more shell history than a pipe holds: the slow engine never reads it, and fish must not wait to write it
 	history = home / '.local' / 'share' / 'fish'
 	history.mkdir(parents=True)
-	(history / 'fish_history').write_text(''.join('- cmd: echo {} {}\n  when: {}\n'.format(number, 'x' * 300, 1790000000 + number) for number in range(1000)))
+	(history / 'fish_history').write_text(''.join('- cmd: echo {} {}\n  when: {}\n'.format(number, 'x' * 300, aged(1790000000 + number)) for number in range(1000)))
 	if engine == 'answering':
 		command, typed, expected = ENGINE, 'mssh gp', 'mssh gpu\\[01-16\\] '
 	else:

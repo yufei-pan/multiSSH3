@@ -2577,12 +2577,9 @@ def _run_name(host, typed_user, line_user, own_user=''):
 	The name mssh gives a host in this run: what it records a failure under in unavailable_hosts.csv
 	and looks up to skip the host. The user typed with the host, else -u (line_user), else none.
 	own_user: the user an alias member is written with. -u does not replace it, a user typed with the
-	alias goes in front of it (for root@dbs with dbs=postgres@db1 mssh runs root@postgres@db1).
+	alias does (for root@dbs with dbs=postgres@db1 mssh runs root@db1).
 	'''
-	if own_user:
-		host = own_user + '@' + host
-		line_user = ''
-	user = typed_user or line_user
+	user = typed_user or own_user or line_user
 	return user + '@' + host if user else host
 
 # characters that can start an expansion the shell makes before mssh sees the word

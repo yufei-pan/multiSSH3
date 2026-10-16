@@ -310,6 +310,8 @@ When hostname need to be resolved, mssh will check in the following order:
 
 An alias's value is split into hosts as the hosts argument is (`,`, spaces, `;`, ...). An alias with an empty value (`eu=''`) stands for no hosts.
 
+A member can name its user: with `dbs="postgres@db1,db2"`, mssh logs in to db1 as postgres, and `-u` changes only db2's user. A user typed with the alias replaces it: `mssh root@dbs` logs in to both as root, as a user on the command line wins over ssh config's `User`.
+
 Inside its own expansion, directly or through other aliases, an alias's name is not expanded again but taken as a host name, as bash does with aliases: `web="web,web-b"` runs on the host `web` and on `web-b`. When no host has that name, mssh reports the loop and runs on the rest: `Error: alias loop through 'web' (web -> app -> web): 'web' is not a valid hostname or IP address!`
 
 

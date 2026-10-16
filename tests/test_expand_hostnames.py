@@ -466,6 +466,21 @@ def test_an_alias_inside_itself_is_the_host_of_that_name(env_aliases, capsys):
 	assert capsys.readouterr().err == ""
 
 
+def test_a_user_typed_with_an_alias_replaces_the_user_a_member_is_written_with(env_aliases, capsys):
+	# root@postgres@db1 made ssh log in to db1 as the user "root@postgres": a failed login on every
+	# such host. Typed on the command line, root wins, as it does over ssh config's User.
+	known = env_aliases('dbs="postgres@db1,db2"\n', dns=["db1", "db2"])
+
+	assert multiSSH3.expand_hostnames(["root@dbs"]) == {"root@db1": known["db1"], "root@db2": known["db2"]}
+	assert multiSSH3.expand_hostnames(["u[1-2]@dbs"]) == {
+		"u1@db1": known["db1"], "u2@db1": known["db1"], "u1@db2": known["db2"], "u2@db2": known["db2"]}
+	assert multiSSH3.expand_hostnames(["dbs"]) == {"postgres@db1": known["db1"], "db2": known["db2"]}
+	# without DNS the same names
+	assert multiSSH3.expand_hostnames_local(["root@dbs"])[0] == ["root@db1", "root@db2"]
+	assert multiSSH3.expand_hostnames_local(["dbs"])[0] == ["db2", "postgres@db1"]
+	assert capsys.readouterr().err == ""
+
+
 def test_alias_values_are_split_like_the_hosts_argument(env_aliases, monkeypatch, capsys):
 	monkeypatch.setattr(multiSSH3, "_no_env", False)
 	monkeypatch.setenv("MSSH_TEST_SPACED", "127.0.0.7 127.0.0.8")

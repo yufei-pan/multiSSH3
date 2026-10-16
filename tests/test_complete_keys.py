@@ -13,7 +13,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, bash_session, blesh_session, build_index, fish_session, make_home,
+from complete_shell_harness import (ENGINE, aged, bash_session, blesh_session, build_index, fish_session, make_home,
 	require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
@@ -1845,7 +1845,7 @@ def test_fish_ignores_the_operators_functions(home, where):
 	# lines only fish's own history has: a local command, and an mssh line
 	data = home / '.local' / 'share' / 'fish'
 	data.mkdir(parents=True)
-	(data / 'fish_history').write_text('- cmd: echo three\n  when: 1790000000\n- cmd: mssh zzq9 fishonly\n  when: 1790000001\n')
+	(data / 'fish_history').write_text('- cmd: echo three\n  when: {}\n- cmd: mssh zzq9 fishonly\n  when: {}\n'.format(aged(1790000000), aged(1790000001)))
 	config = home / '.config' / 'fish'
 	(config / 'completions').mkdir(parents=True)
 	(config / 'completions' / 'mssh.fish').write_text(mc.render_glue('fish', ENGINE))
