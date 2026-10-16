@@ -1041,6 +1041,20 @@ def test_a_remote_command_word_mssh_reads_as_its_own_option(engine, line, marked
 	assert warnings(engine, line, probe=False)[0] == [(marked, 'command', message)]
 
 
+@pytest.mark.parametrize('line', ['mssh web1 uptime -ea -v ', 'mssh web1 uptime -ea -h ', 'mssh web1 uptime -ea "-p 2222" '])
+def test_the_word_after_ea_is_its_value_not_a_command_word(engine, line):
+	# -ea takes the next word whatever it looks like: only -ea itself is mssh's
+	value = line.split(' -ea ')[1].strip()
+	assert warnings(engine, line, probe=False)[0] == [('-ea', 'command',
+		"-ea is mssh's --extraargs here — quote the command: {!r}".format('uptime -ea ' + value))]
+
+
+@pytest.mark.parametrize('line', ['mssh -ea -v web1 journalctl -u slurmd', 'mssh -ea -- web1 journalctl -u slurmd'])
+def test_after_an_ea_value_come_the_hosts_and_the_command(engine, line):
+	assert warnings(engine, line, probe=False)[0] == [('-u', 'command',
+		"-u is mssh's --username here — quote the command: 'journalctl -u slurmd'")]
+
+
 @pytest.mark.parametrize('line, marked', [
 	('mssh web1 ls -la /tmp', '-la'),
 	('mssh web1 head -5 /x', '-5'),

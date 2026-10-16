@@ -183,7 +183,7 @@ DASH_VALUES = [
 
 @pytest.mark.parametrize('word, is_value', DASH_VALUES)
 def test_a_dash_word_is_an_option_value_as_argparse_reads_it(word, is_value):
-	tokens = [mc.Token('-ea', '-ea'), mc.Token(word, shlex.quote(word), quoted=True), mc.Token('h', 'h')]
+	tokens = [mc.Token('-u', '-u'), mc.Token(word, shlex.quote(word), quoted=True), mc.Token('h', 'h')]
 	roles = mc.assign_roles(tokens, SPEC)
 	assert (roles[1][0] == 'value') == is_value
 	assert roles[2][0] == 'hosts'
@@ -194,10 +194,49 @@ def test_dash_values_are_what_mssh_parses(word, is_value):
 	parser = multiSSH3.get_parser()
 	parse = getattr(parser, 'parse_intermixed_args', parser.parse_args)
 	try:
-		parsed = parse(['-ea', word, 'h'])
+		parsed = parse(['-u', word, 'h'])
 	except SystemExit:
 		parsed = None
-	assert (parsed is not None and parsed.extraargs == word) == is_value
+	assert (parsed is not None and parsed.username == word) == is_value
+
+
+# -ea and -ia pass options on to ssh, rsync, scp and ipmitool: mssh takes the word after them as their
+# value whatever it looks like (_with_passed_on_values)
+@pytest.mark.parametrize('line, value', [
+	('-ea -v web1 uptime', '-v'),
+	('-ea "-p 2222" web1 uptime', '-p 2222'),
+	('--extraargs -A web1 uptime', '-A'),
+	('-ea -q web1 uptime', '-q'),
+	('-ea -- web1 uptime', '--'),
+	('-ia "-I lanplus" -M bmc1 power', '-I lanplus'),
+	('-ia -v -M bmc1 power', '-v'),
+])
+def test_the_word_after_ea_and_ia_is_their_value(line, value):
+	tokens = mc.lex(line)
+	roles = mc.assign_roles(tokens, SPEC)
+	assert [token.text for token, (role, _) in zip(tokens, roles) if role == 'value'] == [value]
+	assert [token.text for token, (role, _) in zip(tokens, roles) if role == 'hosts'] == [line.split()[-2]]
+
+
+@pytest.mark.parametrize('word', ['-v', '-p 2222', '-q', '--', '-ea'])
+def test_ea_values_are_what_mssh_parses(word):
+	args = multiSSH3.process_args(['-ea', word, 'h', 'c'])
+	tokens = [mc.Token('-ea', '-ea'), mc.Token(word, shlex.quote(word), quoted=True), mc.Token('h', 'h'), mc.Token('c', 'c')]
+	roles = [role for role, _ in mc.assign_roles(tokens, SPEC)]
+	assert (args.extraargs, args.hosts, args.commands) == (word, 'h', ['c'])
+	assert roles == ['option', 'value', 'hosts', 'command']
+
+
+@pytest.mark.parametrize('before', ['mssh -ea -', 'mssh -ea -v', 'mssh -ea "-p 22', 'mssh --extraargs --', 'mssh -ia -I'])
+def test_an_ea_value_being_typed_is_the_value_slot(before):
+	context = mc.parse_context(before, '', SPEC)
+	assert (context.slot, context.option.dest) == ('value', 'ipmi_args' if '-ia' in before else 'extraargs')
+
+
+def test_after_an_ea_value_come_the_hosts():
+	assert mc.parse_context('mssh -ea -v ', '', SPEC).slot == 'hosts'
+	features = mc.line_features(mc.lex('-ea -v h uptime'), SPEC)
+	assert 'v:extraargs=-v' in features and 'h:h' in features and 'c:uptime' in features
 
 
 def test_a_spaced_dash_value_is_learned_as_the_value():

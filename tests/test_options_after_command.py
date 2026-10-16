@@ -70,6 +70,14 @@ def test_a_value_starting_with_a_dash_is_the_option_s(argv=['-ea', '-o ConnectTi
 	assert note(['-ea', '-o ConnectTimeout=5', 'web1', 'uptime']) is None
 
 
+def test_the_word_after_ea_is_its_value_not_an_option():
+	# -ea takes the next word whatever it looks like: -h there is ssh's, not mssh's help
+	assert note(['web1', 'uptime', '-ea', '-h']) == ("Note: mssh read -ea after the command 'uptime' as its own option (--extraargs). "
+		"If it was meant for uptime, quote the command: mssh web1 'uptime -ea -h'")
+	assert note(['-ea', '-h', 'web1', 'uptime']) is None
+	assert note(['-ia', '-a', 'web1', 'uptime']) is None
+
+
 @pytest.mark.parametrize('argv, shown', [
 	(['web1', 'mysql', '-p', 'secret', 'db'], '-p'),
 	# attached to the option: only the option is named

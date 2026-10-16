@@ -166,6 +166,9 @@ def split_at_cursor(before, after):
 
 #%% ------------ Option spec ----------------
 PASSWORD_DESTS = frozenset(('password', 'ipmi_password'))
+# options passing options on to another program (-ea, -ia): mssh 6.35+ takes the word after them as
+# their value whatever it looks like (its _with_passed_on_values)
+PASSED_ON_DESTS = frozenset(('extraargs', 'ipmi_args'))
 # options naming files mssh reads its hosts and env aliases from, at Enter
 LOOKUP_DESTS = frozenset(('env_file', 'env_files', 'host_file', 'config_file'))
 PATH_DESTS = frozenset(('file', 'file_sync', 'env_file', 'env_files', 'config_file', 'store_config_file', 'host_file', 'history_file'))
@@ -506,9 +509,10 @@ def assign_roles(words, spec, current=None):
 			pending = None
 			# the word after a password option is its password, whatever it looks like: argparse stops
 			# at "-p -secret", but the shell's history keeps the line, and a password is never another word.
-			# argparse takes a dash word as the value when it holds a space and names no option
-			# (-ea "-o StrictHostKeyChecking=no"); mssh's -11 makes it read negative numbers as options
-			if not dashed or option.dest in PASSWORD_DESTS or (' ' in text and not spec.names_option(text)):
+			# mssh takes the word after -ea and -ia as their value (PASSED_ON_DESTS). argparse takes a dash
+			# word as the value when it holds a space and names no option (-u "-o x"); mssh's -11 makes it
+			# read negative numbers as options
+			if not dashed or option.dest in PASSWORD_DESTS or option.dest in PASSED_ON_DESTS or (' ' in text and not spec.names_option(text)):
 				roles.append((ROLE_VALUE, option))
 				continue
 		if text == '--' and not is_current and not after_separator:
@@ -3616,10 +3620,14 @@ class Engine(object):
 		have_hosts = False
 		run = None        # where the unquoted remote command starts in argv
 		pending = None    # nargs of an option still taking the words that follow as values
+		passed_on = False  # the word is the value of -ea or -ia, whatever it looks like
 		paths = False
 		read = []
 		stop = len(argv)
 		for index, token in enumerate(argv):
+			if passed_on:
+				passed_on, pending = False, None
+				continue
 			if token.text == '--':
 				stop = index
 				break
@@ -3642,6 +3650,7 @@ class Engine(object):
 				option, attached, _ = readings[-1]
 				if attached is None and option.nargs != '0':
 					pending = option.nargs
+					passed_on = option.dest in PASSED_ON_DESTS
 				if run is None and any(option.dest in ('file', 'file_sync', 'gather_mode') for option, _, _ in readings):
 					paths = True
 			if run is not None:
