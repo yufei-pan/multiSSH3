@@ -1,6 +1,8 @@
 import atexit
+import copy
 import ipaddress
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -230,6 +232,19 @@ def no_password_prompts():
 		yield
 
 
+def _setting_copy(value):
+	"""
+	A copy of a setting's value. Python 3.6 cannot copy a compiled regex (__ERROR_MESSAGES_TO_IGNORE_REGEX
+	is one once the settings are applied): the regex itself, which nothing changes, or a shallow copy.
+	"""
+	if isinstance(value, type(re.compile(''))):
+		return value
+	try:
+		return copy.deepcopy(value)
+	except TypeError:
+		return copy.copy(value)
+
+
 @pytest.fixture(autouse=True)
 def restore_module_globals():
 	saved = {
@@ -261,8 +276,12 @@ def restore_module_globals():
 		# process_args keeps its parser's defaults for the echoed / recorded command line
 		"__cli_option_defaults": multiSSH3.__cli_option_defaults,
 	}
+	# every setting a config file can set: a test running main() with --config_file sets them for good
+	settings = {name: _setting_copy(getattr(multiSSH3, name)) for name in multiSSH3._BUILTIN_SETTINGS if hasattr(multiSSH3, name)}
 	_clear_expand_caches()
 	yield
+	for name, value in settings.items():
+		setattr(multiSSH3, name, value)
 	for k, v in saved.items():
 		if k in (
 			"_env_files",
