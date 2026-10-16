@@ -108,9 +108,10 @@ def typing(monkeypatch, fake_host):
 	stop_event = threading.Event()
 	sleeps = []
 	real_sleep = time.sleep
+	writer = None
 
 	def counted_sleep(seconds):
-		if threading.current_thread() is writer:
+		if writer is not None and threading.current_thread() is writer:
 			sleeps.append(seconds)
 		real_sleep(seconds)
 	monkeypatch.setattr(multiSSH3.time, "sleep", counted_sleep)
@@ -174,3 +175,50 @@ def test_the_main_thread_waits_for_the_hosts_without_polling(monkeypatch):
 	assert time.monotonic() - started < 1
 	# it slept about every 10 ms, 50 times here
 	assert len(sleeps) < 5
+
+
+class _CountedWake(threading.Event):
+	"""A writer's wake event counting the times it woke."""
+	def __init__(self):
+		super().__init__()
+		self.wakes = 0
+
+	def wait(self, timeout=None):
+		woke = super().wait(timeout)
+		self.wakes += woke
+		return woke
+
+
+def test_a_command_stopping_wakes_only_its_own_typed_line_writer(monkeypatch, fake_host):
+	# each command's end woke every writer waiting: thousands of hosts in the TUI then spent most of
+	# their time fighting over one lock (20 to 45 s instead of 7.5 for 4000 hosts)
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [[]])
+	writers = []
+	for number in range(50):
+		host = fake_host("mock-%d" % number, command="cat")
+		host.interactive_stdin = True
+		stop_event, wake = threading.Event(), _CountedWake()
+		thread = threading.Thread(target=multiSSH3.__handle_writing_stream, args=(_Stream(), stop_event, host, wake), daemon=True)
+		thread.start()
+		writers.append((stop_event, wake, thread))
+	time.sleep(0.2)
+	stop_event, wake, thread = writers[0]
+
+	# as the monitor stops its command
+	stop_event.set()
+	wake.set()
+	thread.join(1)
+	time.sleep(0.1)
+
+	assert not thread.is_alive()
+	assert sum(other_wake.wakes for _, other_wake, _ in writers[1:]) == 0
+	# a typed line wakes them all
+	multiSSH3.__keyPressesIn[-1].extend("ls\n")
+	multiSSH3.__keyPressesIn.append([])
+	multiSSH3._typed_lines_changed_notify()
+	time.sleep(0.2)
+	assert all(other_wake.wakes >= 1 for _, other_wake, _ in writers[1:])
+	for stop_event, wake, thread in writers:
+		stop_event.set()
+		wake.set()
+		thread.join(1)

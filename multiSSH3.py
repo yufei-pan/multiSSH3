@@ -1180,12 +1180,18 @@ _env_files = DEFAULT_ENV_FILES
 _explicit_env_files = set()
 __globalUnavailableHosts = dict()
 __keyPressesIn = [[]]
-# the threads forwarding typed lines wait on it: notified when the TUI ends a line, the TUI ends, or a command stops
-_typed_lines_changed = threading.Condition()
+# the wake events of the threads forwarding typed lines (see __handle_writing_stream): each has its own,
+# set for all when the TUI ends a line or ends, and for one when its command stops. One Condition for all
+# woke every writer at each command's end: thousands of hosts then spent their time fighting over its lock
+_typed_line_waiters = set()
+_typed_line_waiters_lock = threading.Lock()
 
 def _typed_lines_changed_notify():
-	with _typed_lines_changed:
-		_typed_lines_changed.notify_all()
+	'''Wake every thread forwarding typed lines: a line was typed, or the TUI ended.'''
+	with _typed_line_waiters_lock:
+		waiters = list(_typed_line_waiters)
+	for wake in waiters:
+		wake.set()
 
 _emo = False
 # set once the first command starts: before that, Ctrl-C has nothing to stop and exits
@@ -2957,7 +2963,7 @@ def _typed_line_for_display(chars):
 	'''A typed line as text to show: what _encode_typed_line sends, with bytes outside _encoding as \\xe9.'''
 	return _encode_typed_line(chars).decode(encoding=_encoding, errors='backslashreplace')
 
-def __handle_writing_stream(stream,stop_event,host):
+def __handle_writing_stream(stream,stop_event,host,wake=None):
 	'''
 	Write the key presses to the stream
 
@@ -2965,6 +2971,8 @@ def __handle_writing_stream(stream,stop_event,host):
 		stream (io.BytesIO): The stream to be written to
 		stop_event (threading.Event): The event to stop the thread
 		host (Host): The host object
+		wake (threading.Event, optional): Set to wake the thread: by its monitor once stop_event is set,
+			and by _typed_lines_changed_notify
 
 	Returns:
 		None
@@ -2974,6 +2982,18 @@ def __handle_writing_stream(stream,stop_event,host):
 	# __keyPressesIn is a list of lists. 
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
+	if wake is None:
+		wake = threading.Event()
+	with _typed_line_waiters_lock:
+		_typed_line_waiters.add(wake)
+	try:
+		return _forward_typed_lines(stream, stop_event, host, wake)
+	finally:
+		with _typed_line_waiters_lock:
+			_typed_line_waiters.discard(wake)
+
+def _forward_typed_lines(stream, stop_event, host, wake):
+	'''__handle_writing_stream's work, while the thread is among _typed_line_waiters.'''
 	sentInputPos = 0
 	while not stop_event.is_set() and host.interactive_stdin:
 		if sentInputPos < len(__keyPressesIn) - 1 :
@@ -2986,11 +3006,10 @@ def __handle_writing_stream(stream,stop_event,host):
 			sentInputPos += 1
 			host.lastUpdateTime = time.monotonic()
 		else:
-			# until a line is typed or the command stops (see _typed_lines_changed), looking again every second
-			# for a change nobody announced
-			with _typed_lines_changed:
-				if sentInputPos >= len(__keyPressesIn) - 1 and not stop_event.is_set() and host.interactive_stdin:
-					_typed_lines_changed.wait(1)
+			# until a line is typed or the command stops (see _typed_line_waiters), looking again every second
+			# for a change nobody announced. Cleared before looking: a wake set after it is not lost
+			wake.wait(1)
+			wake.clear()
 	if not stop_event.is_set():
 		# the TUI ended while the command runs: send the lines already typed, then end of input
 		try:
@@ -4212,6 +4231,8 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				stderr_thread, give_stderr = _start_waiting_thread(__handle_reading_stream)
 				give_streams.append(give_stderr)
 				stdin_stop_event = threading.Event()
+				# wakes the thread forwarding typed lines (see _typed_line_waiters)
+				stdin_wake = threading.Event()
 				stdin_thread = None
 				if interactive_stdin:
 					stdin_thread, give_stdin = _start_waiting_thread(__handle_writing_stream)
@@ -4228,7 +4249,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				give_stdout((stdout_pipe,host.stdout, host,host.stdout_buffer))
 				give_stderr((stderr_pipe,host.stderr, host,host.stderr_buffer))
 				if interactive_stdin:
-					give_stdin((proc.stdin,stdin_stop_event, host))
+					give_stdin((proc.stdin,stdin_stop_event, host, stdin_wake))
 				give_streams = []
 				# Monitor the subprocess and terminate it after the timeout
 				host.lastUpdateTime = time.monotonic()
@@ -4279,7 +4300,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 						time.sleep(sleep_interval)
 						sleep_interval = min(sleep_interval * 2, _MONITOR_WAKE)
 				stdin_stop_event.set()
-				_typed_lines_changed_notify()
+				stdin_wake.set()
 				# Wait for output processing to complete
 				all_read = _wait_for_readers(host, [(stdout_thread, stdout_pipe, host.stdout, host.stdout_buffer),
 					(stderr_thread, stderr_pipe, host.stderr, host.stderr_buffer)])
