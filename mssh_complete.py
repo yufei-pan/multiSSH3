@@ -1450,6 +1450,21 @@ def _private_dir(path, create=True):
 			return False
 	return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
 
+def _could_be_private_dir(path):
+	'''Whether _private_dir(path, create=True) would take path, without changing anything (as multiSSH3's).'''
+	import stat
+	try:
+		st = os.lstat(path)
+	except FileNotFoundError:
+		return os.access(os.path.dirname(path), os.W_OK | os.X_OK)
+	except OSError:
+		return False
+	if not stat.S_ISDIR(st.st_mode):
+		return False
+	if not hasattr(os, 'getuid'):
+		return True
+	return st.st_uid == os.getuid() and not st.st_mode & 0o022
+
 def _owned_and_not_writable_by_others(path):
 	if not hasattr(os, 'getuid'):
 		return True
@@ -1468,7 +1483,8 @@ def cache_dir(create=True):
 	mssh's private runtime directory, where unavailable_hosts.csv and the index live, or None.
 
 	Exactly as multiSSH3.runtime_dir picks it: $XDG_RUNTIME_DIR/multiSSH3 when that runtime dir
-	is ours, /run/user/<uid>/multiSSH3, /dev/shm/multiSSH3-<uid>, then <tempdir>/multiSSH3-<uid>.
+	is ours, /run/user/<uid>/multiSSH3, /dev/shm/multiSSH3-<uid>, then <tempdir>/multiSSH3-<uid>;
+	without create, the one a write would use if it is there already, else None.
 	'''
 	import tempfile
 	if hasattr(os, 'getuid'):
@@ -1488,8 +1504,11 @@ def cache_dir(create=True):
 			candidates.append(os.path.join(_SHM_DIR, 'multiSSH3-{}'.format(user_id)))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for directory in candidates:
-		if _private_dir(directory, create):
-			return directory
+		if create:
+			if _private_dir(directory):
+				return directory
+		elif _could_be_private_dir(directory):
+			return directory if _private_dir(directory, create=False) else None
 	return None
 
 def _debug(message):

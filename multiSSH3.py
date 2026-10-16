@@ -6588,6 +6588,24 @@ def _private_dir(path, create=True):
 			return False
 	return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
 
+def _could_be_private_dir(path):
+	'''
+	Whether _private_dir(path, create=True) would take path, without changing anything: a directory
+	ours and only ours to write to (it makes one readable by others 0700), or none yet where we can
+	make it.
+	'''
+	try:
+		st = os.lstat(path)
+	except FileNotFoundError:
+		return os.access(os.path.dirname(path), os.W_OK | os.X_OK)
+	except OSError:
+		return False
+	if not stat.S_ISDIR(st.st_mode):
+		return False
+	if not hasattr(os, 'getuid'):
+		return True
+	return st.st_uid == os.getuid() and not st.st_mode & 0o022
+
 def _owned_and_not_writable_by_others(path):
 	'''Whether path exists, is owned by us and only we can write to it.'''
 	if not hasattr(os, 'getuid'):
@@ -6606,8 +6624,9 @@ def runtime_dir(create=True):
 	'''
 	mssh's private directory for state that must not outlive a reboot, or None to run without it.
 
-	create: set up the directory (for writing). Without it only an existing one is used, so
-	reading changes nothing on disk.
+	create: set up the directory (for writing). Without it, the directory a write would use if it
+	is there already, else None: reading changes nothing on disk, and never reads a later place (an
+	older session's state, or this machine's own when $XDG_RUNTIME_DIR is set to a new directory).
 
 	The first of these that is a directory only we control (_private_dir):
 	1. $XDG_RUNTIME_DIR/multiSSH3, when $XDG_RUNTIME_DIR is ours and only we can write to it
@@ -6631,8 +6650,11 @@ def runtime_dir(create=True):
 			candidates.append(os.path.join(_SHM_DIR, 'multiSSH3-{}'.format(user_id)))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for directory in candidates:
-		if _private_dir(directory, create):
-			return directory
+		if create:
+			if _private_dir(directory):
+				return directory
+		elif _could_be_private_dir(directory):
+			return directory if _private_dir(directory, create=False) else None
 	return None
 
 def _unavailable_hosts_file_path(create=True):
