@@ -3328,15 +3328,15 @@ def _stopped_command_note(formatedCMD):
 	Only the local program ends: a command ssh runs on a host gets no signal (it has no terminal), it
 	runs on until it ends, or until it writes to the closed connection.
 	'''
-	program = formatedCMD[0] if formatedCMD else ''
-	if program == _binPaths.get('sshpass') and len(formatedCMD) > 2:
-		# sshpass -e program, or sshpass -p password program
-		program = formatedCMD[2] if formatedCMD[1] == '-e' else formatedCMD[3] if len(formatedCMD) > 3 else program
-	if program == _binPaths.get('ssh'):
+	# the program under sshpass, also in --copy_id's sh -c line
+	name = _sshpass_program(formatedCMD) or os.path.basename(str(formatedCMD[0] if formatedCMD else ''))
+	if name == 'ssh':
 		return 'ssh was stopped: the command may still run on the host'
-	name = os.path.basename(str(program))
-	if program in (_binPaths.get('rsync'), _binPaths.get('scp')):
+	if name in ('rsync', 'scp'):
 		return f'{name} was stopped: the copy may be incomplete'
+	if name == 'ssh-copy-id':
+		# after its clean-up it may say all keys were skipped as already there
+		return 'ssh-copy-id was stopped: the key may not be installed'
 	return f'{name} was stopped'
 
 def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
@@ -4228,9 +4228,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 							stopped = f'No output for {timeout} s, so {_stopped_command_note(formatedCMD)}.'
 							host.stderr.append(stopped)
 							host.output.append(stopped)
-							proc.send_signal(signal.SIGINT)
-							time.sleep(0.1)
-							proc.terminate()
+							_stop_command(proc, formatedCMD)
 							break
 						elif time.monotonic() - host.lastUpdateTime >  max(1, timeout // 2):
 							timeoutLine = f'Timeout in [{timeout - int(time.monotonic() - host.lastUpdateTime)}] seconds!'
@@ -4250,9 +4248,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 						host.stderr.append('Ctrl C detected, Emergency Stop!')
 						host.output.append('Ctrl C detected, Emergency Stop!')
 						stopped_by_ctrl_c = True
-						proc.send_signal(signal.SIGINT)
-						time.sleep(0.1)
-						proc.terminate()
+						_stop_command(proc, formatedCMD)
 						break
 					time.sleep(sleep_interval)  # avoid busy-waiting
 					if sleep_interval < 0.001:
@@ -4380,6 +4376,71 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 		if not waiting_for_others:
 			retry_limit -= 1
 	return False, retry_limit, attempt_line_starts
+
+def _child_pids(pid):
+	'''The pids of pid's child processes; [] when neither /proc nor pgrep can list them.'''
+	try:
+		with open('/proc/{0}/task/{0}/children'.format(pid)) as children:
+			return [int(child) for child in children.read().split()]
+	except (OSError, ValueError):
+		pass
+	try:
+		listed = subprocess.run(['pgrep', '-P', str(pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1).stdout
+		return [int(child) for child in listed.split()]
+	except (OSError, ValueError, subprocess.SubprocessError):
+		return []
+
+def _sessions_below(pid):
+	'''
+	The processes below pid that lead a session of their own (sshpass makes its command one); each is
+	its process group. Never init's or mssh's own group: pgrep -P 0 lists init.
+	'''
+	if not isinstance(pid, int) or pid <= 1:
+		return []
+	leaders = []
+	seen = {pid}
+	pids = _child_pids(pid)
+	while pids:
+		child = pids.pop()
+		if child in seen or child <= 1:
+			continue
+		seen.add(child)
+		try:
+			if os.getsid(child) == child:
+				if child != os.getpgrp():
+					leaders.append(child)
+				continue
+		except OSError:
+			continue
+		pids.extend(_child_pids(child))
+	return leaders
+
+def _stop_command(proc, formatedCMD):
+	'''
+	Stop a command mssh gives up on (-t, Ctrl C) as Ctrl C at a terminal would, then as mssh always did.
+
+	sshpass runs its command as a session of its own on a terminal of its own, and passes SIGINT on as
+	a typed Ctrl C only once ssh has written there. While ssh is still connecting, any signal ends
+	sshpass at once and hangs up that terminal: ssh-copy-id, whose trap does not cover SIGHUP, then left
+	an empty ~/.ssh/ssh-copy-id.XXXXXXXXXX. So the command under sshpass gets the SIGINT first, as a
+	typed Ctrl C would give it, and a moment to end.
+	'''
+	if os.name == 'posix' and _sshpass_program(formatedCMD):
+		leaders = _sessions_below(proc.pid)
+		for leader in leaders:
+			try:
+				os.killpg(leader, signal.SIGINT)
+			except OSError:
+				pass
+		if leaders:
+			try:
+				proc.wait(timeout=1)
+			except subprocess.TimeoutExpired:
+				pass
+	if proc.poll() is None:
+		proc.send_signal(signal.SIGINT)
+		time.sleep(0.1)
+		proc.terminate()
 
 # sshpass's own exit codes: 5 ssh asked for the password again, 6 ssh asked whether to trust a host key it
 # does not know, 7 ssh warned that the key known for the host's IP address differs and asked whether to go on
