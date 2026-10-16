@@ -895,9 +895,10 @@ def test_unreachable_members_of_an_alias_with_a_user(skipping, line, word):
 	# a member written with its user keeps it, -u is for the others
 	('mssh -u root dbs uptime', ['postgres@db1', 'root@node02'], 'db1, node02'),
 	('mssh -u root dbs uptime', ['root@db1'], None),
-	# a user typed with the alias goes in front of the member's: mssh runs root@postgres@db1
-	('mssh root@dbs uptime', ['root@postgres@db1'], 'db1'),
-	('mssh root@dbs uptime', ['root@db1'], None),
+	# a user typed with the alias replaces the member's: mssh runs root@db1
+	('mssh root@dbs uptime', ['root@db1'], 'db1'),
+	('mssh root@dbs uptime', ['postgres@db1'], None),
+	('mssh root@dbs uptime', ['root@postgres@db1'], None),
 ])
 def test_unreachable_members_of_an_alias_written_with_users(skipping, tmp_path, line, failed, down):
 	# dbs=postgres@db1,node02 in an env file

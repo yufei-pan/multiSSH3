@@ -2642,9 +2642,10 @@ def __expand_hostnames(hosts, hosts_only=False) -> dict:
 		if username:
 			# we expand the username
 			username = sorted(__expand_hostname(username,validate=False))
-			# we combine the username and hostname
+			# we combine the username and hostname: the typed user replaces the one an alias member
+			# is written with, as the command line wins over ssh config's User
 			for user in username:
-				[expandedhosts.update({f'{user}@{host}':ip}) for host,ip in zip(hostSetToAdd,iplist)]
+				[expandedhosts.update({f'{user}@{host.rpartition("@")[2]}':ip}) for host,ip in zip(hostSetToAdd,iplist)]
 		else:
 			[expandedhosts.update({host:ip}) for host,ip in zip(hostSetToAdd,iplist)]
 	return expandedhosts
@@ -2697,6 +2698,8 @@ def expand_hostnames_local(hosts):
 			else:
 				members = [(user, name, source, None)]
 			for member_user, member, member_source, _ in members:
+				# a typed user replaces a member's own, as in expand_hostnames
+				member_user = user or member_user
 				full = '{}@{}'.format(member_user, member) if member_user else member
 				expanded.add(full)
 				if member_source is None:
