@@ -5924,7 +5924,7 @@ def can_merge(line_bag1, line_bag2, threshold):
 			return False
 	return len(line_bag1.intersection(line_bag2)) >= min(len(line_bag1),len(line_bag2)) * threshold
 
-def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length):
+def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_threshold,line_length,longest_output = None):
 	# indexes keeps the hosts in natural order: min() below takes the first of the hosts furthest
 	# behind, so lines only some hosts printed come in host order, not in the random order of a set
 	merging_hostnames = sorted(merging_hostnames, key=_natural_sort_key)
@@ -5933,7 +5933,11 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 	previousBuddies = set()
 	hostnameWrapper = textwrap.TextWrapper(width=line_length -1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
-	diff_display_item_count = max(1,int(max(map(len, outputs_by_hostname.values())) * (1 - diff_display_threshold)))
+	# the look ahead is a share of the longest output of all hosts: longest_output (its number of lines) when
+	# outputs_by_hostname holds only the merging hosts'
+	if longest_output is None:
+		longest_output = max(map(len, outputs_by_hostname.values()))
+	diff_display_item_count = max(1,int(longest_output * (1 - diff_display_threshold)))
 	def get_multiset_index_for_hostname(hostname):
 		index = indexes[hostname]
 		tracking_index = min(index + diff_display_item_count,len(outputs_by_hostname[hostname]))
@@ -6006,7 +6010,14 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 			working_index_keys = set(indexes.keys())
 
 def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
-	output = []
+	pieces_by_hostname = {hostname: [('', lines)] for hostname, lines in outputs_by_hostname.items()}
+	return _host_lines(_merged_output_pieces(pieces_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length))
+
+def _merged_output_pieces(pieces_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length):
+	'''
+	mergeOutputs' lines as pieces of (prefix, lines), made as they are read, from the hosts' pieces (see
+	_host_output_pieces): the lines of a host that merged with none are its own, not a copy.
+	'''
 	color_cap = get_terminal_color_capability()
 	if color_cap == 'None':
 		color_line = ''
@@ -6018,25 +6029,27 @@ def mergeOutputs(outputs_by_hostname, merge_groups, remaining_hostnames, diff_di
 		color_reset = '\033[0m'
 		green_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('green', __DEFAULT_COLOR_PALETTE['green']))
 		underline_bold_str = '\033[4m\033[1m'
-	output.append(color_line+'─'*(line_length)+color_reset)
+	# before each group or host, none after the last
+	divider = ('', [color_line+'─'*(line_length)+color_reset])
 	hostnameWrapper = textwrap.TextWrapper(width=line_length - 1, tabsize=4, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False,initial_indent=' ', subsequent_indent='- ')
 	hostnameWrapper.wordsep_simple_re = re.compile(r'([,]+)')
+	if merge_groups:
+		longest_output = max(sum(len(lines) for _prefix, lines in pieces) for pieces in pieces_by_hostname.values())
 	# groups, then the hosts that merged with none, each in natural host order (node2 before node10)
 	for merging_hostnames in sorted(merge_groups, key=lambda group: min(map(_natural_sort_key, group))):
-		mergeOutput(merging_hostnames, outputs_by_hostname, output, diff_display_threshold,line_length)
-		output.append(color_line+'─'*(line_length)+color_reset)
+		output = []
+		# mergeOutput compares the lines as they print: only the group's hosts' are copied with their indent
+		mergeOutput(merging_hostnames, {hostname: _host_lines(pieces_by_hostname[hostname]) for hostname in merging_hostnames},
+			output, diff_display_threshold, line_length, longest_output)
+		yield divider
+		yield ('', output)
 	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
 		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname], hosts_only=True)))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
-		output.extend(hostnameLines)
-		output.extend(outputs_by_hostname[hostname])
-		output.append(color_line+'─'*(line_length)+color_reset)
-	if output:
-		output.pop()
-	# if output and output[0] and output[0].startswith('├'):
-	# 	output[0] = '┌' + output[0][1:]
-	return output
+		yield divider
+		yield ('', hostnameLines)
+		yield from pieces_by_hostname[hostname]
 
 def pre_merge_hosts(hosts):
 	'''
@@ -6093,7 +6106,44 @@ def _displayed_stderr(host):
 	return host.stderr[:-1] + [summary]
 
 def get_host_raw_output(hosts, terminal_width):
-	outputs_by_hostname = {}
+	'''
+	Each host's lines in the pretty output, as _host_output_pieces makes them but as one list per host
+	(its stdout and stderr lines copied with their indent), and what goes with them.
+	'''
+	pieces_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, line_bag_lens, line_length = _host_output_pieces(hosts, terminal_width)
+	outputs_by_hostname = {hostname: _host_lines(pieces) for hostname, pieces in pieces_by_hostname.items()}
+	return outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, line_bag_lens, line_length
+
+def _host_lines(pieces):
+	'''The lines of pieces of (prefix, lines) (see _host_output_pieces) as one list, each with its prefix.'''
+	lines = []
+	for prefix, piece in pieces:
+		if prefix:
+			lines.extend(prefix + line for line in piece)
+		else:
+			lines.extend(piece)
+	return lines
+
+def _line_chunks(pieces, batch_lines = 1000):
+	'''
+	The text of pieces of (prefix, lines), each line with its prefix in front and a newline after, in chunks of
+	up to batch_lines lines: written one after the other, they never take the memory of the whole text.
+	'''
+	for prefix, lines in pieces:
+		separator = '\n' + prefix
+		for start in range(0, len(lines), batch_lines):
+			yield prefix + separator.join(lines[start:start + batch_lines]) + '\n'
+
+def _host_output_pieces(hosts, terminal_width):
+	'''
+	Each host's lines in the pretty output, its line bag for merging, the host names by the size of their
+	line bags, those sizes in order, and the width of the output's dividers.
+
+	A host's lines are pieces of (prefix, lines): its stdout and stderr lines are pieces of their own, with
+	the one space indent as their prefix, so they are written as they are (_line_chunks) instead of copied
+	with the indent in front of each (as much memory again as the output).
+	'''
+	pieces_by_hostname = {}
 	line_bag_by_hostname = {}
 	hostnames_by_line_bag_len = {}
 	# a narrower terminal gets a 20 column layout and wraps its lines itself: the headers ('█ EXECUTED COMMAND:')
@@ -6117,20 +6167,21 @@ def get_host_raw_output(hosts, terminal_width):
 		red_str = rgb_to_ansi_color_string(*COLOR_PALETTE.get('bright_red', __DEFAULT_COLOR_PALETTE['bright_red']))
 	for host in hosts:
 		max_length = max(max_length, len(max(host.name.split(','), key=len)) + 3)
-		hostPrintOut = [f"{cyan_str}█{color_reset_str} EXECUTED COMMAND:"]
+		commandLines = [f"{cyan_str}█{color_reset_str} EXECUTED COMMAND:"]
 		for line in host.command.splitlines():
-			hostPrintOut.extend(wrap(line))
+			commandLines.extend(wrap(line))
+		hostPrintOut = [('', commandLines)]
 		# hostPrintOut.extend(itertools.chain.from_iterable(text_wrapper.wrap(line) for line in host['command'].splitlines()))
 		lineBag = {(0,host.command)}
 		prevLine = host.command
 		if host.stdout:
-			hostPrintOut.append(f'{blue_str}▓{color_reset_str} STDOUT:')
+			hostPrintOut.append(('', [f'{blue_str}▓{color_reset_str} STDOUT:']))
 			# for line in host.stdout:
 			# 	if len(line) < terminal_width - 2:
 			# 		hostPrintOut.append(f" {line}")
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
-			hostPrintOut.extend(f" {line}" for line in host.stdout)
+			hostPrintOut.append((' ', host.stdout))
 			# in terminal columns: the dividers between host blocks are as wide as the widest line
 			max_length = max(max_length, max(map(_text_columns, host.stdout)))
 			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
@@ -6142,13 +6193,13 @@ def get_host_raw_output(hosts, terminal_width):
 			prevLine = host.stdout[-1]
 		stderr = _displayed_stderr(host)
 		if stderr:
-			hostPrintOut.append(f'{red_str}▒{color_reset_str} STDERR:')
+			hostPrintOut.append(('', [f'{red_str}▒{color_reset_str} STDERR:']))
 			# for line in stderr:
 			# 	if len(line) < terminal_width - 2:
 			# 		hostPrintOut.append(f" {line}")
 			# 	else:
 			# 		hostPrintOut.extend(text_wrapper.wrap(line))
-			hostPrintOut.extend(f" {line}" for line in stderr)
+			hostPrintOut.append((' ', stderr))
 			max_length = max(max_length, max(map(_text_columns, stderr)))
 			lineBag.add((prevLine,2))
 			lineBag.add((2,stderr[0]))
@@ -6160,12 +6211,12 @@ def get_host_raw_output(hosts, terminal_width):
 			codeColor = red_str
 		else:
 			codeColor = green_str
-		hostPrintOut.append(f"{codeColor}░{color_reset_str} RETURN CODE: {host.returncode}")
+		hostPrintOut.append(('', [f"{codeColor}░{color_reset_str} RETURN CODE: {host.returncode}"]))
 		lineBag.add((prevLine,f"{host.returncode}"))
-		outputs_by_hostname[host.name] = hostPrintOut
+		pieces_by_hostname[host.name] = hostPrintOut
 		line_bag_by_hostname[host.name] = lineBag
 		hostnames_by_line_bag_len.setdefault(len(lineBag), set()).add(host.name)
-	return outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted(hostnames_by_line_bag_len), min(max_length+2,terminal_width)
+	return pieces_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted(hostnames_by_line_bag_len), min(max_length+2,terminal_width)
 
 def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold):
 	merge_groups = []
@@ -6219,6 +6270,13 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 			failures (or a short "Success" if none failed). When None (default),
 			defer to quiet. Matches CLI `--error_only` semantics for formatting.
 	'''
+	return ''.join(_output_chunks(hosts, usejson, greppable, quiet, encoding, keyPressesIn, errors_only))
+
+def _output_chunks(hosts, usejson, greppable, quiet, encoding, keyPressesIn, errors_only):
+	'''
+	generate_output's text in chunks, each made when it is asked for: mssh writes them as they come
+	(_stream_output), and the whole text is never in memory at once.
+	'''
 	if errors_only is None:
 		errors_only = quiet
 	if keyPressesIn is None:
@@ -6229,45 +6287,54 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		hosts = [host for host in hosts if host.returncode != 0]
 		if not hosts:
 			if usejson:
-				return '{"Success": true}'
+				yield '{"Success": true}'
 			else:
 				if color_cap == 'None':
-					return 'Success'
+					yield 'Success'
 				else:
-					return '\033[32mSuccess\033[0m'
+					yield '\033[32mSuccess\033[0m'
+			return
 	if usejson:
-		# [print(dict(host)) for host in hosts]
-		#print(json.dumps([dict(host) for host in hosts],indent=4))
-		rtnStr = json.dumps([dict(host) for host in hosts],indent=4)
-	elif greppable:
-		# transform hosts to a 2d list
-		rtnStr = '*'*80+'\n'
-		rtnList = [['host_name','return_code','output_type','output']]
+		# json.dumps of the list of host dicts, a host at a time: in the list, a host's text is indented 4 more
+		# spaces after each newline (a JSON string holds no newline of its own)
+		empty = True
 		for host in hosts:
-			#header = f"{host['name']} | rc: {host['returncode']} | "
-			hostAdded = False
-			for line in host.stdout:
-				rtnList.append([host.name,f"rc: {host.returncode}",'stdout',line])
-				hostAdded = True
-			for line in host.stderr:
-				rtnList.append([host.name,f"rc: {host.returncode}",'stderr',line])
-				hostAdded = True
-			if not hostAdded:
-				rtnList.append([host.name,f"rc: {host.returncode}",'N/A','<EMPTY>'])
-			rtnList.append(['','','',''])
+			yield '[\n    ' if empty else ',\n    '
+			yield json.dumps(dict(host),indent=4).replace('\n', '\n    ')
+			empty = False
+		yield '[]' if empty else '\n]'
+	elif greppable:
+		yield '*'*80+'\n'
 		# the table pads the first three columns only: padded to the longest output line, every other line
-		# and divider was written out to its length (seq 1 10000 and one 5000 character line: 50 MB of spaces)
-		table = pretty_format_table([rtnList[0]] + [row[:3] + [''] for row in rtnList[1:]]).split('\n')
-		tableLines = table[:2]
-		for line, row in zip(table[2:], rtnList[1:]):
-			# a divider row stays as it is
-			tableLines.append(line.rstrip(' ') + ' ' + row[3] if any(row) else line)
-		rtnStr += '\n'.join(tableLines) + '\n'
-		rtnStr += '*'*80+'\n'
+		# and divider was written out to its length (seq 1 10000 and one 5000 character line: 50 MB of spaces).
+		# All lines of a host's stdout (or stderr) have the same first three cells: a row for each is enough to
+		# have pretty_format_table pad them as it would in the table of every line
+		rtnList = [['host_name','return_code','output_type','output']]
+		outputs = []
+		for host in hosts:
+			if host.stdout:
+				rtnList.append([host.name,f"rc: {host.returncode}",'stdout',''])
+				outputs.append(host.stdout)
+			if host.stderr:
+				rtnList.append([host.name,f"rc: {host.returncode}",'stderr',''])
+				outputs.append(host.stderr)
+			if not host.stdout and not host.stderr:
+				rtnList.append([host.name,f"rc: {host.returncode}",'N/A',''])
+				outputs.append(['<EMPTY>'])
+			rtnList.append(['','','',''])
+			outputs.append(None)
+		table = pretty_format_table(rtnList).split('\n')
+		yield table[0] + '\n' + table[1] + '\n'
+		for line, lines in zip(table[2:], outputs):
+			if lines is None:
+				# a divider row stays as it is
+				yield line + '\n'
+			else:
+				yield from _line_chunks([(line.rstrip(' ') + ' ', lines)])
+		yield '*'*80+'\n'
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			rtnStr += 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
-			#rtnStr += '\n'
+			yield 'User Inputs: '+ '\nUser Inputs: '.join(CMDsOut)
 	else:
 		try:
 			diff_display_threshold = float(DEFAULT_DIFF_DISPLAY_THRESHOLD)
@@ -6280,29 +6347,27 @@ def generate_output(hosts, usejson = False, greppable = False,quiet = False,enco
 		color_reset_str = '' if color_cap == 'None' else '\033[0m'
 		white_str = '' if color_cap == 'None' else rgb_to_ansi_color_string(*COLOR_PALETTE.get('white', __DEFAULT_COLOR_PALETTE['white']))
 		terminal_length = get_terminal_size()[0]
-		outputs_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_length = get_host_raw_output(hosts,terminal_length)
+		pieces_by_hostname, line_bag_by_hostname, hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_length = _host_output_pieces(hosts,terminal_length)
 		merge_groups ,remaining_hostnames = form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_len_keys, line_bag_by_hostname, diff_display_threshold)
-		outputs = mergeOutputs(outputs_by_hostname, merge_groups,remaining_hostnames, diff_display_threshold,line_length)
+		# the typed keys, after the hosts' lines
+		cmdOut = []
 		if keyPressesIn[-1]:
 			CMDsOut = [''.join(cmd).encode(encoding=encoding,errors='backslashreplace').decode(encoding=encoding,errors='backslashreplace').replace('\\n', '↵') for cmd in keyPressesIn if cmd]
-			outputs.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
-			cmdOut = []
+			cmdOut.append(color_reset_str + "░ User Inputs:".ljust(line_length,'─'))
 			for line in CMDsOut:
 				cmdOut.extend(_wrap_columns(line, width=line_length-1, tabsize=4, replace_whitespace=False, drop_whitespace=False,
 									 initial_indent=' ', subsequent_indent='-'))
-			outputs.extend(cmdOut)
 			keyPressesIn[-1].clear()
-		if not outputs:
+		if not merge_groups and not remaining_hostnames and not cmdOut:
 			if errors_only:
 				if color_cap == 'None':
-					return 'Success'
+					yield 'Success'
 				else:
-					return '\033[32mSuccess\033[0m'
-			else:
-				rtnStr = ''
-		else:
-			rtnStr = '\n'.join(outputs + [white_str + '─' * (line_length) + color_reset_str])
-	return rtnStr
+					yield '\033[32mSuccess\033[0m'
+			return
+		outputs = _merged_output_pieces(pieces_by_hostname, merge_groups, remaining_hostnames, diff_display_threshold, line_length)
+		yield from _line_chunks(itertools.chain(outputs, [('', cmdOut)]))
+		yield white_str + '─' * (line_length) + color_reset_str
 
 # ssh's own last word when no login method worked: "bob@node1: Permission denied (publickey,password)."
 # Remote output can hold any line: no part may match an '@' or the ':', so a long line of them costs linear
@@ -6361,6 +6426,26 @@ def print_output(hosts,usejson = False,quiet = False,greppable = False):
 		except BrokenPipeError:
 			_output_reader_gone()
 	return rtnStr
+
+def _stream_output(hosts,usejson = False,greppable = False):
+	'''
+	print_output for mssh's own run: the output goes to stdout a chunk at a time as it is made, instead of
+	being made into one string first, then encoded whole to print (more memory than the hosts' output itself
+	takes, several times over). Prints the same text, returns nothing.
+	'''
+	for host in hosts:
+		host.output.clear()
+	chunks = _output_chunks(hosts,usejson,greppable,False,_encoding,__keyPressesIn,__global_suppress_printout)
+	try:
+		for chunk in chunks:
+			# stdout closed when mssh started (>&-): as print, write nothing
+			if sys.stdout is not None:
+				sys.stdout.write(chunk)
+		# print's newline, flushed now: a reader that is gone fails here, not in the flush at exit
+		print(flush=True)
+	except BrokenPipeError:
+		# what is left is not made: nobody would read it
+		_output_reader_gone()
 
 def _output_reader_gone(exit_code=None):
 	'''
@@ -6770,7 +6855,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			# merge copies, the caller's hosts must keep one entry per real host for failure counts
 			hosts = pre_merge_hosts([host.copy() for host in hosts])
 		if not no_output:
-			print_output(hosts,json,greppable=greppable)
+			_stream_output(hosts,json,greppable=greppable)
 			_note_unasked_passwords(hosts, password)
 	else:
 		__running_threads.update(threads)
