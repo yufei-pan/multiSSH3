@@ -2779,6 +2779,39 @@ _UNICODE_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
 # of each text it decodes.
 _READER_BULK_ENCODINGS = frozenset(('utf-8', 'ascii', 'iso8859-1'))
 
+# One copy of each line that hosts print alike, which their lists share (see _share_lines): a fleet's
+# package lists and configuration files took a copy per host. Every _SHARED_LINES_CHECK lines, sharing
+# goes on only if at least half of them were held already: an entry per distinct line costs more than
+# it saves when most lines are distinct (logs)
+_SHARED_LINES_CHECK = 100000
+_shared_lines = {}
+_shared_lines_state = {'sharing': True, 'looked_up': 0, 'found': 0}
+
+def _reset_shared_lines():
+	'''Let the shared lines go and share again from scratch: a run starts and ends with it.'''
+	_shared_lines.clear()
+	_shared_lines_state.update(sharing=True, looked_up=0, found=0)
+
+def _share_lines(lines):
+	'''
+	lines (a list), each replaced by the copy of it already held, if any; the others are held from now
+	on. At each check, sharing stops and the held lines are let go when fewer than half were found.
+	Readers of several hosts call it at once: the counts are approximate, the lines exact.
+	'''
+	state = _shared_lines_state
+	if not state['sharing']:
+		return lines
+	held = len(_shared_lines)
+	lines = [_shared_lines.setdefault(line, line) for line in lines]
+	state['found'] += len(lines) - (len(_shared_lines) - held)
+	state['looked_up'] += len(lines)
+	if state['looked_up'] >= _SHARED_LINES_CHECK:
+		if state['found'] * 2 < state['looked_up']:
+			state['sharing'] = False
+			_shared_lines.clear()
+		state['looked_up'] = state['found'] = 0
+	return lines
+
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
 	Read the stream and append the lines to the target list
@@ -2805,7 +2838,7 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		# not an encoding: the decode fails as it did before
 		bulk_encoding = False
 	def add_line(buffer,target, host):
-		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
+		current_line_str = _share_lines([buffer.getvalue().decode(_encoding,errors='backslashreplace')])[0]
 		target.append(current_line_str)
 		host.output.append(current_line_str)
 		# only the TUI draws from the set, and interactive_stdin is set while it runs: without it the set
@@ -2825,7 +2858,7 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		text = data.decode(_encoding,errors='backslashreplace')
 		if _UNICODE_LINE_BREAK.search(text):
 			return False
-		lines = text.split('\n')
+		lines = _share_lines(text.split('\n'))
 		target.extend(lines)
 		host.output.extend(lines)
 		if host.interactive_stdin:
@@ -6708,6 +6741,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		if not no_output:
 			print_output(hosts,json,greppable=greppable)
 			_note_unasked_passwords(hosts, password)
+		# every reader has ended: the hosts hold their lines, the pool would keep them past the hosts
+		_reset_shared_lines()
 	else:
 		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
@@ -7198,6 +7233,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
+	_reset_shared_lines()
 	if not no_history:
 		_ = history_file
 		record_command_history(locals())

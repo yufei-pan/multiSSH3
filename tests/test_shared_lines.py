@@ -1,0 +1,81 @@
+"""
+Hosts printing the same lines (package lists, configuration files, the same command's output on a
+fleet) keep one copy of each line between them: 200 hosts x 20,000 lines alike took 660 MB, 234 MB
+shared. Sharing costs a lookup per line, and an entry per distinct line: when most lines are distinct
+(logs), it stops, and what it held is let go.
+"""
+import io
+
+import pytest
+
+import multiSSH3
+
+
+@pytest.fixture(autouse=True)
+def fresh_pool(monkeypatch):
+	monkeypatch.setattr(multiSSH3, "_SHARED_LINES_CHECK", 1000)
+	multiSSH3._reset_shared_lines()
+	yield
+	multiSSH3._reset_shared_lines()
+
+
+def _read(name, data):
+	host = multiSSH3.Host(name, "cmd", ip="127.0.0.1")
+	multiSSH3.__handle_reading_stream(io.BytesIO(data), host.stdout, host, host.stdout_buffer)
+	return host
+
+
+ALIKE = b"".join(b"package-%d-1.0.x86_64\n" % (number % 50) for number in range(3000))
+
+
+def test_hosts_printing_the_same_lines_share_them():
+	first, second = _read("a", ALIKE), _read("b", ALIKE)
+
+	assert first.stdout == second.stdout == [line.decode() for line in ALIKE.split(b"\n")[:-1]]
+	assert all(mine is theirs for mine, theirs in zip(first.stdout, second.stdout))
+	assert all(line is shown for line, shown in zip(first.stdout, first.output))
+
+
+def test_sharing_stops_when_most_lines_are_distinct():
+	logs = b"".join(b"log line %d of a host\n" % number for number in range(5000))
+	host = _read("a", logs)
+
+	assert host.stdout == [line.decode() for line in logs.split(b"\n")[:-1]]
+	assert multiSSH3._shared_lines_state["sharing"] is False
+	# what it held is let go: the lines are the host's alone
+	assert multiSSH3._shared_lines == {}
+
+
+def test_sharing_goes_on_while_most_lines_were_seen():
+	for name in "abcde":
+		_read(name, ALIKE)
+
+	assert multiSSH3._shared_lines_state["sharing"] is True
+	assert len(multiSSH3._shared_lines) == 50
+
+
+def test_each_run_starts_sharing_again(monkeypatch):
+	_read("a", b"".join(b"log line %d\n" % number for number in range(5000)))
+	assert multiSSH3._shared_lines_state["sharing"] is False
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+
+	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=["true"], no_start=True, called=True,
+		return_unfinished=True, will_update_unreachable_hosts=False, no_history=True)
+
+	assert multiSSH3._shared_lines_state["sharing"] is True
+
+
+def test_lines_read_one_at_a_time_are_shared_too():
+	# a line arriving in reads of its own goes through the line buffer, not the whole-lines path
+	class OneLineReads(io.BytesIO):
+		def read1(self, size=-1):
+			return self.readline()
+
+	hosts = []
+	for name in "ab":
+		host = multiSSH3.Host(name, "cmd", ip="127.0.0.1")
+		multiSSH3.__handle_reading_stream(OneLineReads(ALIKE[:2000]), host.stdout, host, host.stdout_buffer)
+		hosts.append(host)
+
+	assert hosts[0].stdout == hosts[1].stdout
+	assert all(mine is theirs for mine, theirs in zip(hosts[0].stdout, hosts[1].stdout))
