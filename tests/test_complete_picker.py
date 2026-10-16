@@ -615,8 +615,10 @@ def test_pick_and_edit_say_ready_before_they_take_the_terminal(tmp_path, args, d
 	process, master, read_end = start_on_a_terminal(args, data, env, listening=True)
 	try:
 		first = terminal_output(read_end, 5.0, until=b'\n')
-		drawn = terminal_output(master, 1.0)
-		assert first == b'ready\n' and (b'type to filter' if args[0] == 'pick' else b'mssh ') in drawn
+		# until it drew: a second was too little while other tests loaded the machine
+		expected = b'type to filter' if args[0] == 'pick' else b'mssh '
+		drawn = terminal_output(master, 5.0, until=expected)
+		assert first == b'ready\n' and expected in drawn
 		os.write(master, b'\x1b' if args[0] == 'pick' else b'\r')
 		assert process.wait(10) in (0, 1)
 	finally:
