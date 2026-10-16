@@ -929,3 +929,57 @@ def test_generate_display_survives_output_shrinking_while_it_draws(stub_curses_h
 
 	# it started over with "Error: list index out of range"
 	assert result is None
+
+
+class _CountedOutput(list):
+	"""A host's output whose next len() runs trigger right after counting: another thread acting just then."""
+	trigger = None
+
+	def __len__(self):
+		count = list.__len__(self)
+		trigger, self.trigger = self.trigger, None
+		if trigger:
+			trigger()
+		return count
+
+
+def test_generate_display_draws_lines_written_after_a_cut_right_after_it_counted(stub_curses_harness, fake_host, monkeypatch):
+	# the frame counts 3 lines, a cut runs whole (delete, then mark), the frame finds the marked places
+	# gone: the lines the next attempt writes there are drawn all the same
+	host = _running_host(fake_host)
+	host.output = _CountedOutput(["attempt one", "said this", "and this"])
+	host.lineNumToPrintSet = set()
+
+	def between(frame):
+		if frame == 2:
+			host.output.trigger = lambda: multiSSH3._cut_output(host, 1, 0, 0)
+		elif frame == 3:
+			host.output.extend(["attempt two", "says that"])
+		elif frame == 6:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert host.output == ["attempt one", "attempt two", "says that"]
+	assert any("attempt two" in text for text in drawn) and any("says that" in text for text in drawn)
+
+
+def test_generate_display_draws_a_countdown_that_changed_right_after_it_counted(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output = _CountedOutput(["working", "Timeout in [5] seconds!"])
+	host.lineNumToPrintSet = set()
+
+	def countdown():
+		host.output.pop()
+		host.output.append("Timeout in [4] seconds!")
+		host.lineNumToPrintSet.add(1)
+
+	def between(frame):
+		if frame == 2:
+			host.output.trigger = countdown
+		elif frame == 5:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("Timeout in [4] seconds!" in text for text in drawn)

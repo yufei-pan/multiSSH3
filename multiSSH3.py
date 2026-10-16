@@ -5697,6 +5697,8 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# only append: noting each new line's number cost 136 MB per million lines when output came
 				# faster than frames
 				line_count = len(host.output)
+				# output cut since the last frame: the lines added next take the places of drawn ones
+				host.printedLines = min(host.printedLines, line_count)
 				if host.printedLines < line_count or host.lineNumToPrintSet:
 					changed, host.lineNumToPrintSet = host.lineNumToPrintSet, set()
 					# visible range: the last host_window_height - 1 lines the window does not leave out
@@ -5709,7 +5711,9 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 							try:
 								line = host.output[lineNumToReprint]
 							except IndexError:
-								# cut since it was counted (see _cut_output, the -t countdown): marked again there
+								# cut since it was counted (see _cut_output, the -t countdown): the next frame draws
+								# what takes its place
+								host.lineNumToPrintSet.add(lineNumToReprint)
 								continue
 							if _tui_leaves_out(line):
 								continue
