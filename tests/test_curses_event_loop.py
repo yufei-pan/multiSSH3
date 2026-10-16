@@ -755,3 +755,231 @@ def test_hosts_without_a_window_keep_no_lines_to_draw(stub_curses_harness, fake_
 		for arg in args if method == "addnstr" and isinstance(arg, str)]
 	assert any("mock-a" in text for text in drawn) and not any("mock-b" in text for text in drawn)
 	assert hidden.lineNumToPrintSet == set()
+
+
+def test_readers_note_no_line_numbers_while_the_tui_runs(fake_host):
+	# the TUI draws the lines added since its last frame: a set holding every new line's number was
+	# 136 MB per million lines when output came faster than frames
+	host = fake_host("mock-a", "true")
+	host.interactive_stdin = True
+	stream = io.BytesIO(b"".join(b"line %d\n" % number for number in range(1000)))
+
+	multiSSH3.__handle_reading_stream(stream, host.stdout, host, host.stdout_buffer)
+
+	assert len(host.output) == 1000
+	assert host.lineNumToPrintSet == set()
+
+
+def _frames(stub_curses_harness, host, monkeypatch, between):
+	"""Run the display over host; between(frame) runs before each frame's drawing; the texts drawn."""
+	frames = []
+
+	def poll():
+		frames.append(None)
+		between(len(frames))
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", poll)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=8)
+	return [arg for window in stub_curses_harness.windows for method, args, kwargs in window.calls
+		for arg in args if method == "addnstr" and isinstance(arg, str)]
+
+
+def test_generate_display_draws_the_lines_added_since_the_last_frame(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.lineNumToPrintSet = set()
+
+	def between(frame):
+		if frame == 2:
+			host.output.extend(["second line", "third line"])
+		elif frame == 4:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("second line" in text for text in drawn) and any("third line" in text for text in drawn)
+
+
+def test_generate_display_draws_lines_written_again_after_a_cut(stub_curses_harness, fake_host, monkeypatch):
+	# a host tried again drops what its attempt said (see _cut_output): the lines then added take the
+	# places of lines already drawn
+	host = _running_host(fake_host)
+	host.output = ["attempt one", "said this", "and this"]
+
+	def between(frame):
+		if frame == 2:
+			multiSSH3._cut_output(host, 1, 0, 0)
+			host.output.extend(["attempt two", "says that"])
+		elif frame == 4:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("said this" in text for text in drawn)
+	assert any("attempt two" in text for text in drawn) and any("says that" in text for text in drawn)
+
+
+def test_generate_display_redraws_a_line_replaced_in_place(stub_curses_harness, fake_host, monkeypatch):
+	# the -t countdown replaces the last line
+	host = _running_host(fake_host)
+	host.output = ["working", "Timeout in [5] seconds!"]
+
+	def between(frame):
+		if frame == 2:
+			host.output[-1] = "Timeout in [4] seconds!"
+			host.lineNumToPrintSet.add(1)
+		elif frame == 4:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("Timeout in [4] seconds!" in text for text in drawn)
+
+
+def test_generate_display_draws_a_host_coming_into_a_window_whole(stub_curses_harness, fake_host, monkeypatch):
+	# drawn before in another window or layout: its new window starts empty
+	host = _running_host(fake_host)
+	host.output = ["first", "second", "third"]
+	host.printedLines = len(host.output)
+
+	def between(frame):
+		if frame == 3:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert all(any(line in text for text in drawn) for line in ("first", "second", "third"))
+
+
+def test_generate_display_draws_unchanged_lines_once(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+
+	def between(frame):
+		if frame == 6:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert sum("working" in text for text in drawn) == 1
+
+
+def test_generate_display_draws_lines_written_after_a_cut_a_frame_interrupts(stub_curses_harness, fake_host, monkeypatch):
+	# a frame drawing between _cut_output's deleting and marking: the lines then added into the cut
+	# places are still drawn
+	host = _running_host(fake_host)
+	host.output = ["attempt one", "said this", "and this"]
+	real_update = set.update
+
+	class Marks(set):
+		def update(self, *others):
+			# the cut has deleted: a frame draws now, before the marks
+			between_frames.append(len(host.output))
+			return real_update(self, *others)
+	between_frames = []
+
+	def between(frame):
+		if frame == 2:
+			host.lineNumToPrintSet = Marks(host.lineNumToPrintSet)
+			multiSSH3._cut_output(host, 1, 0, 0)
+		elif frame == 3:
+			host.output.extend(["attempt two", "says that"])
+		elif frame == 6:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert between_frames == [1]
+	assert any("attempt two" in text for text in drawn) and any("says that" in text for text in drawn)
+
+
+def test_generate_display_survives_output_shrinking_while_it_draws(stub_curses_harness, fake_host, monkeypatch):
+	# a cut (or the -t countdown's pop) by another thread while a frame draws the lines it counted
+	host = _running_host(fake_host)
+	host.output = ["a", "b", "c"]
+	original = multiSSH3._tui_first_shown_line
+	frame_now = []
+
+	def between(frame):
+		frame_now.append(frame)
+		if frame == 2:
+			host.output.extend(["d", "e"])
+		elif frame == 4:
+			host.returncode = 0
+
+	def first_shown(output, rows):
+		if frame_now[-1] == 2 and len(output) == 5:
+			multiSSH3._cut_output(host, 3)
+		return original(output, rows)
+
+	monkeypatch.setattr(multiSSH3, "_tui_first_shown_line", first_shown)
+	polls = []
+
+	def poll():
+		polls.append(None)
+		between(len(polls))
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", poll)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=8)
+
+	# it started over with "Error: list index out of range"
+	assert result is None
+
+
+class _CountedOutput(list):
+	"""A host's output whose next len() runs trigger right after counting: another thread acting just then."""
+	trigger = None
+
+	def __len__(self):
+		count = list.__len__(self)
+		trigger, self.trigger = self.trigger, None
+		if trigger:
+			trigger()
+		return count
+
+
+def test_generate_display_draws_lines_written_after_a_cut_right_after_it_counted(stub_curses_harness, fake_host, monkeypatch):
+	# the frame counts 3 lines, a cut runs whole (delete, then mark), the frame finds the marked places
+	# gone: the lines the next attempt writes there are drawn all the same
+	host = _running_host(fake_host)
+	host.output = _CountedOutput(["attempt one", "said this", "and this"])
+	host.lineNumToPrintSet = set()
+
+	def between(frame):
+		if frame == 2:
+			host.output.trigger = lambda: multiSSH3._cut_output(host, 1, 0, 0)
+		elif frame == 3:
+			host.output.extend(["attempt two", "says that"])
+		elif frame == 6:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert host.output == ["attempt one", "attempt two", "says that"]
+	assert any("attempt two" in text for text in drawn) and any("says that" in text for text in drawn)
+
+
+def test_generate_display_draws_a_countdown_that_changed_right_after_it_counted(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.output = _CountedOutput(["working", "Timeout in [5] seconds!"])
+	host.lineNumToPrintSet = set()
+
+	def countdown():
+		host.output.pop()
+		host.output.append("Timeout in [4] seconds!")
+		host.lineNumToPrintSet.add(1)
+
+	def between(frame):
+		if frame == 2:
+			host.output.trigger = countdown
+		elif frame == 5:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("Timeout in [4] seconds!" in text for text in drawn)

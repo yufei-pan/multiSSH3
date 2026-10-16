@@ -1308,7 +1308,8 @@ class Host:
 		self.output = [] # the output of the command for curses
 		self.stdout = [] # the stdout of the command
 		self.stderr = [] # the stderr of the command
-		self.lineNumToPrintSet = set() # line numbers the TUI must draw: the readers note them only while it runs (interactive_stdin)
+		self.lineNumToPrintSet = set() # line numbers the TUI must draw again: lines it drew that changed (the -t countdown, see _cut_output)
+		self.printedLines = 0 # how many lines of output the TUI drew: it draws the ones added since at its next frame
 		self.lastUpdateTime = time.monotonic() # the last time the output was updated
 		self.lastPrintedUpdateTime = 0 # the last time the output was printed
 		self.files = files # the files to be copied to the host
@@ -1369,6 +1370,7 @@ class Host:
 		newHost.stdout = self.stdout.copy()
 		newHost.stderr = self.stderr.copy()
 		newHost.lineNumToPrintSet = self.lineNumToPrintSet.copy()
+		newHost.printedLines = self.printedLines
 		newHost.lastUpdateTime = self.lastUpdateTime
 		newHost.lastPrintedUpdateTime = self.lastPrintedUpdateTime
 		newHost.current_color_pair = self.current_color_pair.copy()
@@ -2821,10 +2823,6 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
 		target.append(current_line_str)
 		host.output.append(current_line_str)
-		# only the TUI draws from the set, and interactive_stdin is set while it runs: without it the set
-		# would hold every line number for nothing
-		if host.interactive_stdin:
-			host.lineNumToPrintSet.add(len(host.output)-1)
 		buffer.seek(0)
 		buffer.truncate(0)
 		host.output_buffer.seek(0)
@@ -2841,8 +2839,6 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		lines = text.split('\n')
 		target.extend(lines)
 		host.output.extend(lines)
-		if host.interactive_stdin:
-			host.lineNumToPrintSet.update(range(len(host.output) - len(lines), len(host.output)))
 		return True
 	def split_line_breaks():
 		'''Split the line on unicode line breaks when it grew to a multiple of 100 bytes.'''
@@ -2855,8 +2851,6 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 					# for all lines except the last one, we add them to the target
 					target.append(line)
 					host.output.append(line)
-					if host.interactive_stdin:
-						host.lineNumToPrintSet.add(len(host.output)-1)
 				# we keep the last line in the buffer
 				buffer.seek(0)
 				buffer.truncate(0)
@@ -3002,7 +2996,6 @@ def _forward_typed_lines(stream, stop_event, host, wake):
 			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
 			host.output.append(line)
 			host.stdout.append(line)
-			host.lineNumToPrintSet.add(len(host.output)-1)
 			sentInputPos += 1
 			host.lastUpdateTime = time.monotonic()
 		else:
@@ -4165,6 +4158,21 @@ def _shown_command(argv, passwords=()):
 		words[index] = word
 	return ' '.join(words)
 
+def _cut_output(host, output_len, stdout_len=None, stderr_len=None):
+	'''
+	Drop the lines host's output, stdout and stderr got past these lengths (an attempt not run, a warning
+	said again). The TUI may have drawn the output lines dropped: the lines added next take their
+	places, so it draws those places again. Marked once they are gone: a frame between taking the marks
+	and the deletion would count the old lines as drawn, and never draw the new ones in their places.
+	'''
+	dropped = range(output_len, len(host.output))
+	del host.output[output_len:]
+	host.lineNumToPrintSet.update(dropped)
+	if stdout_len is not None:
+		del host.stdout[stdout_len:]
+	if stderr_len is not None:
+		del host.stderr[stderr_len:]
+
 def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(), tool=None):
 	'''
 	Run one built command, retrying (within retry_limit) while too many files are open, or no process or
@@ -4412,8 +4420,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 			return True, retry_limit, attempt_line_starts
 		if retry_reason == previous_reason == 'processes or threads':
 			# still waiting: one warning however long it takes
-			del host.output[lines_before[0]:]
-			del host.stderr[lines_before[1]:]
+			_cut_output(host, lines_before[0], stderr_len=lines_before[1])
 		else:
 			host.output.append(f"Warning: Too many {retry_reason}. retrying...")
 		time.sleep(_emfile_backoff_seconds(emfile_attempt))
@@ -4701,9 +4708,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 			attempt = (tuple(str(arg) for arg in formatedCMD), tuple(sorted(getattr(formatedCMD, 'env', {}).items())))
 			if attempt in ran:
 				# not run: drop what building it said, it was said when it ran
-				del host.output[line_counts[0]:]
-				del host.stdout[line_counts[1]:]
-				del host.stderr[line_counts[2]:]
+				_cut_output(host, *line_counts)
 				continue
 			ran.add(attempt)
 		# mssh's own ssh, scp or rsync to the host: tried again when the server drops it before login
@@ -5727,25 +5732,37 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					# clear the window
 					for i in range(host_window_height - 1):
 						_curses_add_string_to_window(window=host_window, color_pair_list=[-1, -1, 1], y=i + 1,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
-					host.lineNumToPrintSet.update(range(len(host.output)))
+					# drawn whole
+					host.printedLines = 0
 					host.lastPrintedUpdateTime = 0
 					hostWindowUpdated = True
-				# for i in range(host.printedLines, len(host.output)):
-				# 	_curses_add_string_to_window(window=host_window, y=i + 1, line=host.output[i], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color)
-				# host.printedLines = len(host.output)
-				if host.lineNumToPrintSet:
+				# the lines added since the last frame, and the lines drawn before that changed. The readers
+				# only append: noting each new line's number cost 136 MB per million lines when output came
+				# faster than frames
+				line_count = len(host.output)
+				# output cut since the last frame: the lines added next take the places of drawn ones
+				host.printedLines = min(host.printedLines, line_count)
+				if host.printedLines < line_count or host.lineNumToPrintSet:
+					changed, host.lineNumToPrintSet = host.lineNumToPrintSet, set()
 					# visible range: the last host_window_height - 1 lines the window does not leave out
 					visibleLowerBound = _tui_first_shown_line(host.output, host_window_height - 1)
-					lineNumToPrintSet = host.lineNumToPrintSet.copy()
-					host.lineNumToPrintSet = set()
-					for lineNumToReprint in sorted(lineNumToPrintSet):
+					added = range(max(host.printedLines, visibleLowerBound), line_count)
+					host.printedLines = line_count
+					for lineNumToReprint in sorted(changed.union(added)):
 						# if the line is visible, we will reprint it
-						if visibleLowerBound <= lineNumToReprint < len(host.output):
-							if _tui_leaves_out(host.output[lineNumToReprint]):
+						if visibleLowerBound <= lineNumToReprint < line_count:
+							try:
+								line = host.output[lineNumToReprint]
+							except IndexError:
+								# cut since it was counted (see _cut_output, the -t countdown): the next frame draws
+								# what takes its place
+								host.lineNumToPrintSet.add(lineNumToReprint)
+								continue
+							if _tui_leaves_out(line):
 								continue
 							# each line on its own: one line curses cannot draw must not leave the lines after it blank
 							try:
-								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
+								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=line, color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 								hostWindowUpdated = True
 							except Exception:
 								if org_dim != stdscr.getmaxyx():

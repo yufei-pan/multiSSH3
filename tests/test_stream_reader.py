@@ -77,10 +77,11 @@ class ChunkedPipe:
 
 def _final_state(reader, stream):
 	host = multiSSH3.Host("h", "cmd", ip="127.0.0.1")
-	# with the TUI running, so that the lines it must draw are noted (and compared) too
+	# with the TUI running. The reference also notes each line's number for the TUI, which the reader no
+	# longer does (the TUI draws the lines added since its last frame): that set is not compared
 	host.interactive_stdin = True
 	reader(stream, host.stdout, host, host.stdout_buffer)
-	return (host.stdout, host.output, sorted(host.lineNumToPrintSet), host.stdout_buffer.getvalue(),
+	return (host.stdout, host.output, host.stdout_buffer.getvalue(),
 		host.stdout_buffer.tell(), host.output_buffer.getvalue(), host.output_buffer.tell())
 
 
@@ -203,12 +204,13 @@ TUI_LINES_READS = [b"a\rb\n" + b"whole\n" * 10 + b"x", ("x" * 49 + "\x0c" + "y" 
 
 
 @pytest.mark.parametrize("tui", [True, False], ids=["tui", "no-tui"])
-def test_reader_notes_lines_to_redraw_only_while_the_tui_runs(tui):
+def test_reader_notes_no_lines_to_redraw(tui):
 	host = multiSSH3.Host("h", "cmd", ip="127.0.0.1")
 	host.interactive_stdin = tui
 	stream = ChunkedPipe(b"".join(TUI_LINES_READS), [len(data) for data in TUI_LINES_READS])
 	multiSSH3.__handle_reading_stream(stream, host.stdout, host, host.stdout_buffer)
 	assert host.stdout == ["b"] + ["whole"] * 10 + ["x" * 50, "y" * 100, "unfinished"]
 	assert host.output == host.stdout
-	# only the TUI draws from the set: without it, the set would hold every line number for nothing
-	assert host.lineNumToPrintSet == (set(range(len(host.output))) if tui else set())
+	# the TUI draws the lines added since its last frame (Host.printedLines): a set of every new line's
+	# number held 136 MB per million lines when output came faster than frames
+	assert host.lineNumToPrintSet == set()
