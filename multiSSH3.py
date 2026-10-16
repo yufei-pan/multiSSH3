@@ -15,6 +15,7 @@ import ipaddress
 import itertools
 import json
 import math
+import operator
 import os
 import queue
 import random
@@ -2780,37 +2781,45 @@ _UNICODE_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
 _READER_BULK_ENCODINGS = frozenset(('utf-8', 'ascii', 'iso8859-1'))
 
 # One copy of each line that hosts print alike, which their lists share (see _share_lines): a fleet's
-# package lists and configuration files took a copy per host. Every _SHARED_LINES_CHECK lines, sharing
-# goes on only if at least half of them were held already: an entry per distinct line costs more than
-# it saves when most lines are distinct (logs)
+# package lists and configuration files took a copy per host. Every _SHARED_LINES_CHECK lines it checks
+# that at least half of them were held already: an entry per distinct line costs more than it saves when
+# most lines are distinct (logs). Two checks in a row finding fewer stop it for the run (the first lines
+# of all are new, and with -m 1 the first host's)
 _SHARED_LINES_CHECK = 100000
 _shared_lines = {}
-_shared_lines_state = {'sharing': True, 'looked_up': 0, 'found': 0}
+_shared_lines_state = {'sharing': True, 'looked_up': 0, 'found': 0, 'failed_checks': 0}
+_shared_lines_lock = threading.Lock()
 
-def _reset_shared_lines():
-	'''Let the shared lines go and share again from scratch: a run starts and ends with it.'''
-	_shared_lines.clear()
-	_shared_lines_state.update(sharing=True, looked_up=0, found=0)
+def _reset_shared_lines(sharing=True):
+	'''
+	Let the shared lines go, and share from now on or not. A run starts sharing (unless it returns before
+	its hosts end: its readers go on after it), and ends not: readers given up may still read.
+	'''
+	with _shared_lines_lock:
+		_shared_lines.clear()
+		_shared_lines_state.update(sharing=sharing, looked_up=0, found=0, failed_checks=0)
 
 def _share_lines(lines):
 	'''
 	lines (a list), each replaced by the copy of it already held, if any; the others are held from now
-	on. At each check, sharing stops and the held lines are let go when fewer than half were found.
-	Readers of several hosts call it at once: the counts are approximate, the lines exact.
+	on. Readers of several hosts call it at once: a line counts as found when the copy returned is another
+	object, which no other reader's lines can change (counting the pool's growth took theirs for misses).
 	'''
 	state = _shared_lines_state
 	if not state['sharing']:
 		return lines
-	held = len(_shared_lines)
-	lines = [_shared_lines.setdefault(line, line) for line in lines]
-	state['found'] += len(lines) - (len(_shared_lines) - held)
-	state['looked_up'] += len(lines)
-	if state['looked_up'] >= _SHARED_LINES_CHECK:
-		if state['found'] * 2 < state['looked_up']:
-			state['sharing'] = False
-			_shared_lines.clear()
-		state['looked_up'] = state['found'] = 0
-	return lines
+	shared = [_shared_lines.setdefault(line, line) for line in lines]
+	found = len(lines) - sum(map(operator.is_, shared, lines))
+	with _shared_lines_lock:
+		state['found'] += found
+		state['looked_up'] += len(lines)
+		if state['looked_up'] >= _SHARED_LINES_CHECK:
+			state['failed_checks'] = state['failed_checks'] + 1 if state['found'] * 2 < state['looked_up'] else 0
+			if state['failed_checks'] >= 2:
+				state['sharing'] = False
+				_shared_lines.clear()
+			state['looked_up'] = state['found'] = 0
+	return shared
 
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
@@ -6742,7 +6751,7 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 			print_output(hosts,json,greppable=greppable)
 			_note_unasked_passwords(hosts, password)
 		# every reader has ended: the hosts hold their lines, the pool would keep them past the hosts
-		_reset_shared_lines()
+		_reset_shared_lines(sharing=False)
 	else:
 		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
@@ -7233,7 +7242,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
-	_reset_shared_lines()
+	_reset_shared_lines(sharing=not return_unfinished)
 	if not no_history:
 		_ = history_file
 		record_command_history(locals())

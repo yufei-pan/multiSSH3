@@ -55,12 +55,13 @@ def test_sharing_goes_on_while_most_lines_were_seen():
 
 
 def test_each_run_starts_sharing_again(monkeypatch):
-	_read("a", b"".join(b"log line %d\n" % number for number in range(5000)))
+	for name in "ab":
+		_read(name, b"".join(name.encode() + b" log line %d\n" % number for number in range(1500)))
 	assert multiSSH3._shared_lines_state["sharing"] is False
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
 
 	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=["true"], no_start=True, called=True,
-		return_unfinished=True, will_update_unreachable_hosts=False, no_history=True)
+		return_unfinished=False, will_update_unreachable_hosts=False, no_history=True)
 
 	assert multiSSH3._shared_lines_state["sharing"] is True
 
@@ -79,3 +80,62 @@ def test_lines_read_one_at_a_time_are_shared_too():
 
 	assert hosts[0].stdout == hosts[1].stdout
 	assert all(mine is theirs for mine, theirs in zip(hosts[0].stdout, hosts[1].stdout))
+
+
+class _BusyPool(dict):
+	"""The shared lines while other readers add theirs: each lookup comes with a line of another host's."""
+	def setdefault(self, key, default=None):
+		dict.setdefault(self, "line of another host %d" % len(self), "x")
+		return dict.setdefault(self, key, default)
+
+
+def test_lines_found_are_counted_whatever_other_readers_add(monkeypatch):
+	# counting by the pool's growth took the lines other readers added meanwhile for misses: on
+	# free-threaded Python sharing stopped after the first check with 99% of lines found
+	_read("a", ALIKE)
+	monkeypatch.setattr(multiSSH3, "_shared_lines", _BusyPool(multiSSH3._shared_lines))
+	multiSSH3._shared_lines_state.update(looked_up=0, found=0)
+
+	# whole lines: a cut last one would be new
+	_read("b", ALIKE[:ALIKE.index(b"\n", 500) + 1])
+
+	assert multiSSH3._shared_lines_state["found"] == multiSSH3._shared_lines_state["looked_up"] > 0
+
+
+def test_one_check_with_few_lines_found_does_not_stop_sharing():
+	# with -m 1 the first host's lines are all new to the pool: the first check finds few
+	first = b"".join(b"line %d of the first host\n" % number for number in range(1200))
+	_read("a", first)
+	_read("b", first)
+
+	assert multiSSH3._shared_lines_state["sharing"] is True
+
+
+def test_two_checks_in_a_row_with_few_lines_found_stop_sharing():
+	_read("a", b"".join(b"log line %d\n" % number for number in range(1500)))
+	assert multiSSH3._shared_lines_state["sharing"] is True
+
+	_read("b", b"".join(b"another log line %d\n" % number for number in range(1500)))
+
+	assert multiSSH3._shared_lines_state["sharing"] is False
+	assert multiSSH3._shared_lines == {}
+
+
+def test_a_run_returning_unfinished_shares_nothing(monkeypatch):
+	# its readers go on after it returned: lines shared then would stay held until the next run
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=["true"], no_start=True, called=True,
+		return_unfinished=True, will_update_unreachable_hosts=False, no_history=True)
+
+	assert multiSSH3._shared_lines_state["sharing"] is False
+	_read("a", ALIKE)
+	assert multiSSH3._shared_lines == {}
+
+
+def test_lines_read_after_a_run_ended_are_not_held():
+	# readers given up at the end of a run (a process left in the background) may still add lines
+	multiSSH3._reset_shared_lines(sharing=False)
+
+	_read("a", ALIKE)
+
+	assert multiSSH3._shared_lines == {}
