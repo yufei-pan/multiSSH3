@@ -166,16 +166,25 @@ def test_an_option_name_after_the_command_is_still_an_mssh_option():
 	(['--ipmi_args', '-v'], {'ipmi_args': '-v'}),
 ])
 def test_the_word_after_ea_and_ia_is_their_value(words, expected, capsys):
-	for argv in (words + ['web1', 'cmd'], ['web1', 'cmd'] + words, ['web1'] + words + ['cmd']):
+	# Python 3.6 hands the words after an option between the hosts and the command to the commands with a
+	# warning, as for every option there
+	middle = [['web1'] + words + ['cmd']] if INTERMIXED else []
+	for argv in [words + ['web1', 'cmd'], ['web1', 'cmd'] + words] + middle:
 		args = multiSSH3.process_args(argv)
 		assert {dest: getattr(args, dest) for dest in expected} == expected, argv
 		assert (args.hosts, args.commands, args.no_watch) == ('web1', ['cmd'], False), argv
 	assert capsys.readouterr().err == ''
 
 
+# argparse before Python 3.11 drops a "--" given as an option's value (-ea=-- too)
+_parser = argparse.ArgumentParser()
+_parser.add_argument('-x')
+DASHES_VALUE = _parser.parse_args(['-x=--']).x
+
+
 def test_a_double_dash_after_ea_is_its_value(capsys):
 	args = multiSSH3.process_args(['-ea', '--', 'web1', 'cmd'])
-	assert (args.extraargs, args.hosts, args.commands) == ('--', 'web1', ['cmd'])
+	assert (args.extraargs, args.hosts, args.commands) == (DASHES_VALUE, 'web1', ['cmd'])
 
 
 def test_ea_after_a_double_dash_is_a_command_word(capsys):

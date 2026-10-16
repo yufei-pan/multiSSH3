@@ -223,7 +223,9 @@ def test_ea_values_are_what_mssh_parses(word):
 	args = multiSSH3.process_args(['-ea', word, 'h', 'c'])
 	tokens = [mc.Token('-ea', '-ea'), mc.Token(word, shlex.quote(word), quoted=True), mc.Token('h', 'h'), mc.Token('c', 'c')]
 	roles = [role for role, _ in mc.assign_roles(tokens, SPEC)]
-	assert (args.extraargs, args.hosts, args.commands) == (word, 'h', ['c'])
+	# argparse before Python 3.11 drops a "--" given as an option's value (-ea=-- too)
+	dropped = word == '--' and multiSSH3.process_args(['-ea=--', 'h', 'c']).extraargs != '--'
+	assert (args.extraargs, args.hosts, args.commands) == ([] if dropped else word, 'h', ['c'])
 	assert roles == ['option', 'value', 'hosts', 'command']
 
 
