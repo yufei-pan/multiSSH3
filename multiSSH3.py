@@ -40,10 +40,10 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.33'
+version = '6.34'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-10-14'
+COMMIT_DATE = '2026-10-16'
 # TODO: Add terminal TUI
 
 # no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
