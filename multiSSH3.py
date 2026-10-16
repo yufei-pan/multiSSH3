@@ -15,6 +15,7 @@ import ipaddress
 import itertools
 import json
 import math
+import operator
 import os
 import queue
 import random
@@ -2794,6 +2795,72 @@ _UNICODE_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
 # of each text it decodes.
 _READER_BULK_ENCODINGS = frozenset(('utf-8', 'ascii', 'iso8859-1'))
 
+# One copy of each line that hosts print alike, which their lists share (see _share_lines): a fleet's
+# package lists and configuration files took a copy per host. Every _SHARED_LINES_CHECK lines it checks
+# that at least half of them were held already: an entry per distinct line costs more than it saves when
+# most lines are distinct (logs). Two checks in a row finding fewer stop it for the run (the first lines
+# of all are new, and with -m 1 the first host's)
+_SHARED_LINES_CHECK = 100000
+_shared_lines = {}
+# a command's run switches sharing on (processRunOnHosts): run_command or start_run_on_hosts alone does not
+_shared_lines_state = {'sharing': False, 'looked_up': 0, 'found': 0, 'failed_checks': 0}
+_shared_lines_lock = threading.Lock()
+
+def _reset_shared_lines(sharing=True):
+	'''
+	Let the shared lines go, and share from now on or not. A command's run starts sharing (unless it returns
+	before its hosts end: its readers go on after it), and ends not: readers given up may still read.
+	Free-threaded Python never shares: every reader using one dict made them wait for each other (200 hosts
+	x 20,000 lines alike took 4.85 s instead of 0.58 s).
+	'''
+	gil = getattr(sys, '_is_gil_enabled', None)
+	with _shared_lines_lock:
+		_shared_lines.clear()
+		_shared_lines_state.update(sharing=sharing and (gil is None or gil()), looked_up=0, found=0, failed_checks=0)
+
+def _share_lines(lines):
+	'''
+	lines (a list), each replaced by the copy of it already held, if any; the others are held from now
+	on. A line counts as found when the copy returned is another object: other readers' lines do not
+	change that. Sharing runs only with the GIL, which may lose a count now and then, no line.
+	'''
+	state = _shared_lines_state
+	if not state['sharing']:
+		return lines
+	shared = [_shared_lines.setdefault(line, line) for line in lines]
+	# counted before it is added: the GIL may switch to another reader while the lines are compared
+	found = len(lines) - sum(map(operator.is_, shared, lines))
+	state['found'] += found
+	state['looked_up'] += len(lines)
+	if state['looked_up'] >= _SHARED_LINES_CHECK:
+		_check_shared_lines()
+	return shared
+
+def _share_line(line):
+	'''_share_lines for one line: the reader's line buffer (\\r progress, one line per read) gives one at a time.'''
+	state = _shared_lines_state
+	if not state['sharing']:
+		return line
+	shared = _shared_lines.setdefault(line, line)
+	state['found'] += shared is not line
+	state['looked_up'] += 1
+	if state['looked_up'] >= _SHARED_LINES_CHECK:
+		_check_shared_lines()
+	return shared
+
+def _check_shared_lines():
+	'''A check (see _shared_lines): sharing stops after two in a row found fewer than half the lines held.'''
+	state = _shared_lines_state
+	with _shared_lines_lock:
+		if state['looked_up'] < _SHARED_LINES_CHECK:
+			# another reader checked meanwhile
+			return
+		state['failed_checks'] = state['failed_checks'] + 1 if state['found'] * 2 < state['looked_up'] else 0
+		if state['failed_checks'] >= 2:
+			state['sharing'] = False
+			_shared_lines.clear()
+		state['looked_up'] = state['found'] = 0
+
 def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
 	Read the stream and append the lines to the target list
@@ -2820,7 +2887,7 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		# not an encoding: the decode fails as it did before
 		bulk_encoding = False
 	def add_line(buffer,target, host):
-		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
+		current_line_str = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
 		target.append(current_line_str)
 		host.output.append(current_line_str)
 		buffer.seek(0)
@@ -2836,7 +2903,7 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		text = data.decode(_encoding,errors='backslashreplace')
 		if _UNICODE_LINE_BREAK.search(text):
 			return False
-		lines = text.split('\n')
+		lines = _share_lines(text.split('\n'))
 		target.extend(lines)
 		host.output.extend(lines)
 		return True
@@ -6780,6 +6847,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		host.use_terminal = not use_tui and not return_unfinished and (len(hosts) == 1 or max_connections == 1)
 	global _commands_started
 	_commands_started = True
+	# each command's run shares its lines, the end of the one before switched it off (see _reset_shared_lines)
+	_reset_shared_lines(sharing=not return_unfinished)
 	threads = start_run_on_hosts(hosts, timeout=timeout,password=password,max_connections=max_connections)
 	if use_tui and threads:
 		try:
@@ -6857,6 +6926,8 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		if not no_output:
 			_stream_output(hosts,json,greppable=greppable)
 			_note_unasked_passwords(hosts, password)
+		# every reader has ended: the hosts hold their lines, the pool would keep them past the hosts
+		_reset_shared_lines(sharing=False)
 	else:
 		__running_threads.update(threads)
 	# print the output, if the output of multiple hosts are the same, we aggragate them
@@ -7347,6 +7418,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
+	# processRunOnHosts switches sharing on for each command: not here, as no_start runs none
+	_reset_shared_lines(sharing=False)
 	if not no_history:
 		_ = history_file
 		record_command_history(locals())
