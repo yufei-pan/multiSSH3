@@ -7965,12 +7965,43 @@ _PASSED_ON_HINTS = {
 	'ipmi_args': "Give -ia the options for ipmitool: -ia='-I lanplus'",
 }
 
-def _with_passed_on_values(argv):
+# the letters of the options needing a value of their own, by where -ea / -ia pass them: ssh (scp's and
+# rsync's -e read the same), and ipmitool
+_PASSED_ON_BARE_VALUE_LETTERS = {
+	'extraargs': frozenset('BbcDEeFIiJLlmOoPpQRSWw'),
+	'ipmi_args': frozenset('AbBCdefHIklLmNoOpPRtTUyz'),
+}
+
+def _takes_passed_on_value(option, word, actions=None):
+	'''
+	Whether -ea or -ia (option, as written) takes word, the word after it, as its value: always, except a
+	bare option needing a value of its own (ssh's -p, ipmitool's -I) and a word giving mssh's password
+	(-p, -ip, --password=...). There the quotes were forgotten ("-ea -p 2222 web1" ran on a host named
+	2222), or -ea was given no value: mssh stops, as before 6.35, before it echoes or records the line.
+	actions: the parser's _option_string_actions (default: get_parser()'s).
+	'''
+	dest = 'extraargs' if option in ('-ea', '--extraargs') else 'ipmi_args'
+	if not word.startswith('-') or ' ' in word:
+		# no option, or options quoted together for -ea
+		return True
+	if len(word) == 2 and word[1] in _PASSED_ON_BARE_VALUE_LETTERS[dest]:
+		return False
+	if word.startswith('-ip'):
+		# mssh's -ip with the password attached (argparse reads "-ipx" as -i px, an error)
+		return False
+	if word[:2] == '-p' and word[2:].isdigit():
+		# ssh's or ipmitool's port
+		return True
+	read = _option_word_actions(word, actions if actions is not None else get_parser()._option_string_actions)
+	return not (read and any(action.dest in ('password', 'ipmi_password') for action in read[0]))
+
+def _with_passed_on_values(argv, actions=None):
 	'''
 	argv with each option passing options on to another program (-ea to ssh, rsync and scp, -ia to
-	ipmitool) written together with the word after it ("-ea=-v"): that word is always its value, as getopt
-	reads ssh's own -o. argparse took a word starting with '-' for an option: "-ea -v" stopped with an
-	error, and in "-ea '-p 2222'" it read mssh's -p. The words after "--" are the command's.
+	ipmitool) written together with the word after it ("-ea=-v"): that word is its value, as getopt reads
+	ssh's own -o (except as _takes_passed_on_value says). argparse took a word starting with '-' for an
+	option: "-ea -v" stopped with an error, and in "-ea '-p 2222'" it read mssh's -p. The words after
+	"--" are the command's.
 	'''
 	words = []
 	index = 0
@@ -7980,11 +8011,20 @@ def _with_passed_on_values(argv):
 		if word == '--':
 			words.extend(argv[index - 1:])
 			break
-		if word in _PASSED_ON_OPTIONS and index < len(argv):
+		if word in _PASSED_ON_OPTIONS and index < len(argv) and _takes_passed_on_value(word, argv[index], actions):
 			word = '{}={}'.format(word, argv[index])
 			index += 1
 		words.append(word)
 	return words
+
+def _spaces_hidden(word):
+	'''
+	word for the --config_file pre-parser, which knows no other option: it reads a word holding a space
+	as the file given with --config_file, "-ea=-p 2222" too. The spaces of a value given to -ea or -ia
+	are hidden from it as NULs, which no argument holds.
+	'''
+	name, equals, _ = word.partition('=')
+	return word.replace(' ', '\0') if equals and name in _PASSED_ON_OPTIONS else word
 
 class _MsshArgumentParser(argparse.ArgumentParser):
 	'''
@@ -8032,7 +8072,7 @@ def get_parser():
 	parser.add_argument('-p', '--password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ssh, "-p -" to be asked for it, or set MSSH_PASSWORD. (default: {_password_shown(_default_password())})'),default=_default_password())
 	parser.add_argument('-k','--identity_file','--key','--identity',nargs='?', type=str,help=_plain_help(f'The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use {DEFAULT_SSH_KEY_SEARCH_PATH} (default: {DEFAULT_IDENTITY_FILE})'),const=DEFAULT_SSH_KEY_SEARCH_PATH,default=DEFAULT_IDENTITY_FILE)
 	parser.add_argument('-uk','--use_key', action='store_true', help=_plain_help(f'Attempt to use public key file to connect to the hosts. (default: {DEFAULT_USE_KEY})'), default=DEFAULT_USE_KEY)
-	parser.add_argument('-ea','--extraargs',type=str,help=_plain_help(f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments. The word after -ea is always its value, also when it starts with "-". Ex. -ea "-p 2222 -A" (default: {DEFAULT_EXTRA_ARGS})'),default=DEFAULT_EXTRA_ARGS)
+	parser.add_argument('-ea','--extraargs',type=str,help=_plain_help(f'Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments. The word after -ea is its value, also when it starts with "-": quote an option with its value. Ex. -ea "-p 2222 -A" (default: {DEFAULT_EXTRA_ARGS})'),default=DEFAULT_EXTRA_ARGS)
 	parser.add_argument("-11",'--oneonone', action='store_true', help=_plain_help(f"Run one corresponding command on each host. (default: {DEFAULT_ONE_ON_ONE})"), default=DEFAULT_ONE_ON_ONE)
 	parser.add_argument("-f","--file", action='append', help="The file to be copied to the hosts. Use -f multiple times to copy multiple files")
 	parser.add_argument('-s','-fs','--file_sync',nargs='?', action='append', help=_plain_help(f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})'),const=True, default=[DEFAULT_FILE_SYNC])
@@ -8048,7 +8088,7 @@ def get_parser():
 	parser.add_argument("-pre","--interface_ip_prefix", type=str, help=_plain_help(f"The prefix of the for the interfaces (default: {DEFAULT_INTERFACE_IP_PREFIX})"), default=DEFAULT_INTERFACE_IP_PREFIX)
 	parser.add_argument('-iu','--ipmi_username', type=str,help=_plain_help(f'The username to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_USERNAME})'),default=DEFAULT_IPMI_USERNAME)
 	parser.add_argument('-ip','--ipmi_password', type=str,help=_plain_help(f'The password to use to connect to the hosts via ipmi. (default: {_password_shown(DEFAULT_IPMI_PASSWORD)})'),default=DEFAULT_IPMI_PASSWORD)
-	parser.add_argument('-ia','--ipmi_args',type=str,help=_plain_help(f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. The word after -ia is always its value. Ex. -ia "-I lanplus" (default: {DEFAULT_IPMI_ARGS})'),default=DEFAULT_IPMI_ARGS)
+	parser.add_argument('-ia','--ipmi_args',type=str,help=_plain_help(f'The arguments passed to ipmitool to use to connect to the hosts via ipmi. The word after -ia is its value, also when it starts with "-": quote an option with its value. Ex. -ia "-I lanplus" (default: {DEFAULT_IPMI_ARGS})'),default=DEFAULT_IPMI_ARGS)
 	parser.add_argument('-im','--ipmi_method', type=str,help=_plain_help(f'The method to use to connect to the hosts via ipmi. (default: {DEFAULT_IPMI_METHOD})'),default=DEFAULT_IPMI_METHOD)
 	parser.add_argument('-irlt','--ipmi_retry_lockout_time', type=int,help=_plain_help(f'The time in seconds to retry the lockout of the hosts via ipmi. (default: {DEFAULT_IPMI_RETRY_LOCKOUT_TIME})'),default=DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
 	parser.add_argument('-S',"-q","-nw","--no_watch", action='store_true', help=_plain_help(f"Quiet mode, no curses watch, only print the output. (default: {DEFAULT_NO_WATCH})"), default=DEFAULT_NO_WATCH)
@@ -8210,8 +8250,9 @@ def _options_after_the_command_note(argv, parser=None):
 		if read is None:
 			continue
 		readings, takes_next = read
-		if takes_next and index < len(words) and (word in _PASSED_ON_OPTIONS or not _looks_like_option(words[index])):
-			# its value (the word after -ea or -ia whatever it looks like: _with_passed_on_values)
+		if takes_next and index < len(words) and ((word in _PASSED_ON_OPTIONS and _takes_passed_on_value(word, words[index], actions))
+				or not _looks_like_option(words[index])):
+			# its value (the word after -ea or -ia even when it starts with '-': _with_passed_on_values)
 			index += 1
 		if len(positionals) >= 2 and not quoted:
 			found.append((index, word, readings, takes_next or readings[-1].nargs != 0))
@@ -8261,7 +8302,8 @@ def process_args(args = None):
 	cfp = 	parser = _MsshArgumentParser(add_help=False)
 	cfp.add_argument('--config_file', type=str,nargs='?',const='multiSSH3.config.json',default=None)
 	try:
-		cfpa, args = cfp.parse_known_args(args)
+		cfpa, args = cfp.parse_known_args([_spaces_hidden(word) for word in args])
+		args = [word.replace('\0', ' ') for word in args]
 		if cfpa.config_file:
 			# expanded here: the shell leaves a ~ after --config_file= as it is
 			config_file = os.path.expanduser(cfpa.config_file)
@@ -8283,6 +8325,10 @@ def process_args(args = None):
 	parser.set_defaults(**{dest: _NOT_GIVEN for dest in ipmi_option_defaults})
 	_install_signal_handlers()
 	args = _parse_command_line(parser, args)
+	for dest in ('extraargs', 'ipmi_args'):
+		# argparse before Python 3.11 drops a "--" given as an option's value (the echo said --extraargs='[]')
+		if getattr(args, dest, None) == []:
+			setattr(args, dest, '--')
 	try:
 		args.config_file = cfpa.config_file
 	except Exception:

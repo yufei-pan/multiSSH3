@@ -218,21 +218,47 @@ def test_the_word_after_ea_and_ia_is_their_value(line, value):
 	assert [token.text for token, (role, _) in zip(tokens, roles) if role == 'hosts'] == [line.split()[-2]]
 
 
-@pytest.mark.parametrize('word', ['-v', '-p 2222', '-q', '--', '-ea'])
+@pytest.mark.parametrize('word', ['-v', '-p 2222', '-q', '--', '-ea', '-p2222', '-X'])
 def test_ea_values_are_what_mssh_parses(word):
 	args = multiSSH3.process_args(['-ea', word, 'h', 'c'])
 	tokens = [mc.Token('-ea', '-ea'), mc.Token(word, shlex.quote(word), quoted=True), mc.Token('h', 'h'), mc.Token('c', 'c')]
 	roles = [role for role, _ in mc.assign_roles(tokens, SPEC)]
-	# argparse before Python 3.11 drops a "--" given as an option's value (-ea=-- too)
-	dropped = word == '--' and multiSSH3.process_args(['-ea=--', 'h', 'c']).extraargs != '--'
-	assert (args.extraargs, args.hosts, args.commands) == ([] if dropped else word, 'h', ['c'])
+	assert (args.extraargs, args.hosts, args.commands) == (word, 'h', ['c'])
 	assert roles == ['option', 'value', 'hosts', 'command']
 
 
-@pytest.mark.parametrize('before', ['mssh -ea -', 'mssh -ea -v', 'mssh -ea "-p 22', 'mssh --extraargs --', 'mssh -ia -I'])
+@pytest.mark.parametrize('line, value, dest', [
+	# a bare option needing a value of its own: mssh stops at it, and the word after it is no host
+	('-ea -p 2222 web1 uptime', '2222', 'password'),
+	('-ea -p hunter2 web1 uptime', 'hunter2', 'password'),
+	('-ea --password hunter2 web1 uptime', 'hunter2', 'password'),
+	('-ea -ip hunter2 web1 uptime', 'hunter2', 'ipmi_password'),
+	('-ea -i key web1 uptime', 'key', 'interval'),
+])
+def test_a_bare_option_needing_a_value_after_ea_is_not_its_value(line, value, dest):
+	tokens = mc.lex(line)
+	roles = mc.assign_roles(tokens, SPEC)
+	assert [role for role, _ in roles[:2]] == ['option', 'option']
+	assert [(token.text, option.dest) for token, (role, option) in zip(tokens, roles) if role == 'value'] == [(value, dest)]
+
+
+def test_the_bare_options_ea_and_ia_stop_at_are_mssh_s():
+	assert mc.PASSED_ON_BARE_VALUE_LETTERS == multiSSH3._PASSED_ON_BARE_VALUE_LETTERS
+	for option in ('-ea', '--extraargs', '-ia', '--ipmi_args'):
+		for word in ('-p', '-v', '-p2222', '-phunter2', '-p=2222', '-ip', '-ipx', '--password', '--password=x', '--ipmi_password',
+				'-qphunter2', '-X', '-I', '-E', '-ea', '--', '-p 2222', 'x', '-u', '-t', '-oX=y'):
+			assert mc.takes_passed_on_value(SPEC.by_string[option].dest, word, SPEC) == multiSSH3._takes_passed_on_value(option, word), (option, word)
+
+
+@pytest.mark.parametrize('before', ['mssh -ea -', 'mssh -ea -v', 'mssh -ea "-p 22', 'mssh --extraargs --', 'mssh -ia "-I', "mssh -ea '-p"])
 def test_an_ea_value_being_typed_is_the_value_slot(before):
 	context = mc.parse_context(before, '', SPEC)
 	assert (context.slot, context.option.dest) == ('value', 'ipmi_args' if '-ia' in before else 'extraargs')
+
+
+def test_a_bare_option_being_typed_after_ia_is_mssh_s():
+	# unquoted, a bare -I stops mssh after -ia: it is mssh's -I, as argparse reads it
+	assert mc.parse_context('mssh -ia -I', '', SPEC).slot == 'option'
 
 
 def test_after_an_ea_value_come_the_hosts():

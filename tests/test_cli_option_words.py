@@ -164,6 +164,12 @@ def test_an_option_name_after_the_command_is_still_an_mssh_option():
 	(['-ea', ''], {'extraargs': ''}),
 	(['-ia', '-I lanplus'], {'ipmi_args': '-I lanplus'}),
 	(['--ipmi_args', '-v'], {'ipmi_args': '-v'}),
+	# ssh's flags, and a value attached to an ssh option
+	(['-ea', '-X'], {'extraargs': '-X'}),
+	(['-ea', '-t'], {'extraargs': '-t'}),  # mssh's -t takes a value: not ssh's
+	(['-ea', '-p2222'], {'extraargs': '-p2222'}),
+	(['-ea', '-oConnectTimeout=5'], {'extraargs': '-oConnectTimeout=5'}),
+	(['-ia', '-E'], {'ipmi_args': '-E'}),
 ])
 def test_the_word_after_ea_and_ia_is_their_value(words, expected, capsys):
 	# Python 3.6 hands the words after an option between the hosts and the command to the commands with a
@@ -176,15 +182,48 @@ def test_the_word_after_ea_and_ia_is_their_value(words, expected, capsys):
 	assert capsys.readouterr().err == ''
 
 
-# argparse before Python 3.11 drops a "--" given as an option's value (-ea=-- too)
-_parser = argparse.ArgumentParser()
-_parser.add_argument('-x')
-DASHES_VALUE = _parser.parse_args(['-x=--']).x
+@pytest.mark.parametrize('words', [['-ea', '--'], ['-ea=--'], ['--extraargs', '--']])
+def test_a_double_dash_after_ea_is_its_value(words, capsys):
+	# argparse before Python 3.11 drops a "--" given as an option's value: the echo said --extraargs='[]'
+	args = multiSSH3.process_args(words + ['web1', 'cmd'])
+	assert (args.extraargs, args.hosts, args.commands) == ('--', 'web1', ['cmd'])
+	assert multiSSH3.process_args(['-ia', '--', 'web1', 'cmd']).ipmi_args == '--'
 
 
-def test_a_double_dash_after_ea_is_its_value(capsys):
-	args = multiSSH3.process_args(['-ea', '--', 'web1', 'cmd'])
-	assert (args.extraargs, args.hosts, args.commands) == (DASHES_VALUE, 'web1', ['cmd'])
+# a bare option needing a value of its own after -ea or -ia: the quotes were forgotten ("-ea -p 2222 web1"
+# ran on a host named 2222), or -ea was given no value before mssh's own password option. mssh stops, as
+# 6.34 did, before it echoes or records the line
+@pytest.mark.parametrize('argv', [
+	['-ea', '-p', '2222', 'web1', 'uptime'],
+	['-ea', '-p', 'hunter2', 'web1', 'uptime'],
+	['web1', 'uptime', '-ea', '-p', 'hunter2'],
+	['-ea', '-i', 'key', 'web1', 'cmd'],
+	['-ea', '-o', 'ConnectTimeout=5', 'web1', 'cmd'],
+	['-ea', '-J', 'jump', 'web1', 'cmd'],
+	['--extraargs', '-l', 'root', 'web1', 'cmd'],
+	['-ea', '--password', 'hunter2', 'web1', 'cmd'],
+	['-ea', '--password=hunter2', 'web1', 'cmd'],
+	['-ea', '-phunter2', 'web1', 'cmd'],
+	['-ea', '-ip', 'hunter2', 'web1', 'cmd'],
+	['-ea', '-iphunter2', 'web1', 'cmd'],
+	['-ea', '--ipmi_password=hunter2', 'web1', 'cmd'],
+	['-M', '-ia', '-I', 'lanplus', 'bmc1', 'power'],
+	['-M', '-ia', '-U', 'admin', 'bmc1', 'power'],
+	['-M', '--ipmi_args', '-P', 'hunter2', 'bmc1', 'power'],
+])
+def test_a_bare_option_needing_a_value_after_ea_stops_mssh(argv, capsys):
+	args, err = _process(argv, capsys)
+	assert args is None
+	assert 'expected one argument' in err
+	assert "-ea='-p 2222'" in err or "-ia='-I lanplus'" in err
+	assert 'hunter2' not in err
+
+
+@pytest.mark.parametrize('words', [['-ea', '-p 2222'], ['-ea=-p 2222']])
+def test_ea_after_a_config_file_given_no_name(words, capsys):
+	# the --config_file pre-parser knows no other option: it took "-ea=-p 2222" for its file
+	args = multiSSH3.process_args(['--config_file'] + words + ['web1', 'uptime'])
+	assert (args.config_file, args.extraargs, args.hosts, args.commands) == ('multiSSH3.config.json', '-p 2222', 'web1', ['uptime'])
 
 
 def test_ea_after_a_double_dash_is_a_command_word(capsys):

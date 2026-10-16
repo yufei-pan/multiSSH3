@@ -577,7 +577,7 @@ mssh -q -- web1 grep -r TODO /srv
 
 ### `-ea, --extraargs EXTRAARGS` | _`DEFAULT_EXTRA_ARGS`_
 - Extra arguments to pass to the ssh / rsync / scp command. Put in one string for multiple arguments.
-- The word after `-ea` is always its value, also when it starts with `-`: `-ea '-p 2222'`, `-ea -A`. ( mssh 6.34 and older need `-ea='-p 2222'`, which still works. )
+- The word after `-ea` is its value, also when it starts with `-`: `-ea '-p 2222'`, `-ea -A`. Quote an option together with its value: with `-ea -p 2222` the quotes were forgotten, and mssh stops, as it does for a password option there. ( mssh 6.34 and older need `-ea='-p 2222'`, which still works. )
 - The string is split into arguments as a shell would: quote an argument that contains spaces.
 - For a file copy with rsync, ssh's options that take a value go to the ssh that rsync runs, and the other arguments to rsync: the option followed by its value as the next word (`-o ConnectTimeout=5`, `-p 2222`, `-i FILE`, `-J HOST`, `-F FILE`, `-l USER`, ...), or `-oName=value` and `-pPORT`. scp takes ssh's options itself; ssh's `-p PORT` is given to it as `-P PORT`.
 - Example:
@@ -693,7 +693,7 @@ mssh -f ./data/ allServers /tmp/data/
 
 ### `-ia, --ipmi_args IPMI_ARGS` | _`DEFAULT_IPMI_ARGS`_
 - Extra arguments for ipmitool (or redfishtool) in `--ipmi` mode, in one string, placed as they are before the command. `-ea` arguments only go to ssh / scp / rsync.
-- Ex: `mssh -M -ia '-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -E -I lanplus power status`, with the password in its environment. The word after `-ia` is always its value, also when it starts with `-` ( mssh 6.34 and older need `-ia='-I lanplus'` ).
+- Ex: `mssh -M -ia '-I lanplus' bmc[1-4] 'power status'` runs `ipmitool -H <address> -U <user> -E -I lanplus power status`, with the password in its environment. The word after `-ia` is its value, also when it starts with `-`; quote an option together with its value ( mssh 6.34 and older need `-ia='-I lanplus'` ).
 
 ### `-im, --ipmi_method IPMI_METHOD` | _`DEFAULT_IPMI_METHOD`_
 - How `--ipmi` reaches a host:
@@ -979,7 +979,7 @@ options:
                         The identity file to use to connect to the hosts. Implies --use_key. Specify a folder for program to search for a key. Use option without value to use ~/.ssh/ (default: None)
   -uk, --use_key        Attempt to use public key file to connect to the hosts. (default: False)
   -ea, --extraargs EXTRAARGS
-                        Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments. The word after -ea is always its value, also when it starts with "-". Ex. -ea "-p 2222 -A" (default: None)
+                        Extra arguments to pass to the ssh / rsync / scp command. (Use -ia for ipmi arguments) Put in one string for multiple arguments. The word after -ea is its value, also when it starts with "-": quote an option with its value. Ex. -ea "-p 2222 -A" (default: None)
   -11, --oneonone       Run one corresponding command on each host. (default: False)
   -f, --file FILE       The file to be copied to the hosts. Use -f multiple times to copy multiple files
   -s, -fs, --file_sync [FILE_SYNC]
@@ -1004,7 +1004,7 @@ options:
   -ip, --ipmi_password IPMI_PASSWORD
                         The password to use to connect to the hosts via ipmi. (default: set, not shown)
   -ia, --ipmi_args IPMI_ARGS
-                        The arguments passed to ipmitool to use to connect to the hosts via ipmi. The word after -ia is always its value. Ex. -ia "-I lanplus" (default: )
+                        The arguments passed to ipmitool to use to connect to the hosts via ipmi. The word after -ia is its value, also when it starts with "-": quote an option with its value. Ex. -ia "-I lanplus" (default: )
   -im, --ipmi_method IPMI_METHOD
                         The method to use to connect to the hosts via ipmi. (default: ipmitool)
   -irlt, --ipmi_retry_lockout_time IPMI_RETRY_LOCKOUT_TIME
