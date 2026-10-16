@@ -78,6 +78,12 @@ def test_the_word_after_ea_is_its_value_not_an_option():
 	assert note(['-ia', '-a', 'web1', 'uptime']) is None
 
 
+def test_a_bare_option_needing_a_value_after_ea_is_not_its_value():
+	# mssh stops at it (the quotes were forgotten), and a password after it is never shown
+	assert note(['web1', 'mysql', '-ea', '-p', 'hunter2', 'db']) == ("Note: mssh read -ea, -p after the command 'mysql' as its "
+		"own options (--extraargs, --password). If they were meant for mysql, quote the command.")
+
+
 @pytest.mark.parametrize('argv, shown', [
 	(['web1', 'mysql', '-p', 'secret', 'db'], '-p'),
 	# attached to the option: only the option is named

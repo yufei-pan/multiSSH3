@@ -167,8 +167,30 @@ def split_at_cursor(before, after):
 #%% ------------ Option spec ----------------
 PASSWORD_DESTS = frozenset(('password', 'ipmi_password'))
 # options passing options on to another program (-ea, -ia): mssh 6.35+ takes the word after them as
-# their value whatever it looks like (its _with_passed_on_values)
+# their value even when it starts with '-' (its _with_passed_on_values), except as takes_passed_on_value says
 PASSED_ON_DESTS = frozenset(('extraargs', 'ipmi_args'))
+# the letters of the options needing a value of their own, by where they pass them: ssh, ipmitool
+PASSED_ON_BARE_VALUE_LETTERS = {
+	'extraargs': frozenset('BbcDEeFIiJLlmOoPpQRSWw'),
+	'ipmi_args': frozenset('AbBCdefHIklLmNoOpPRtTUyz'),
+}
+
+def takes_passed_on_value(dest, text, spec):
+	'''
+	Whether -ea or -ia (dest) takes text, the word after it, as its value, as mssh's _takes_passed_on_value
+	reads it: not a bare option needing a value of its own (-ea -p 2222: the quotes were forgotten), nor a
+	word giving mssh's password; mssh stops at those.
+	'''
+	if not text.startswith('-') or ' ' in text:
+		return True
+	if len(text) == 2 and text[1] in PASSED_ON_BARE_VALUE_LETTERS[dest]:
+		return False
+	if text.startswith('-ip'):
+		return False
+	if text[:2] == '-p' and text[2:].isdigit():
+		return True
+	option = spec.lookup(text)[0]
+	return option is None or option.dest not in PASSWORD_DESTS
 # options naming files mssh reads its hosts and env aliases from, at Enter
 LOOKUP_DESTS = frozenset(('env_file', 'env_files', 'host_file', 'config_file'))
 PATH_DESTS = frozenset(('file', 'file_sync', 'env_file', 'env_files', 'config_file', 'store_config_file', 'host_file', 'history_file'))
@@ -512,7 +534,9 @@ def assign_roles(words, spec, current=None):
 			# mssh takes the word after -ea and -ia as their value (PASSED_ON_DESTS). argparse takes a dash
 			# word as the value when it holds a space and names no option (-u "-o x"); mssh's -11 makes it
 			# read negative numbers as options
-			if not dashed or option.dest in PASSWORD_DESTS or option.dest in PASSED_ON_DESTS or (' ' in text and not spec.names_option(text)):
+			# (a word being typed in an open quote will hold more: "-I lanplus")
+			passed_on = option.dest in PASSED_ON_DESTS and (takes_passed_on_value(option.dest, text, spec) or (is_current and token.open_quote))
+			if not dashed or option.dest in PASSWORD_DESTS or passed_on or (' ' in text and not spec.names_option(text)):
 				roles.append((ROLE_VALUE, option))
 				continue
 		if text == '--' and not is_current and not after_separator:
@@ -3620,14 +3644,16 @@ class Engine(object):
 		have_hosts = False
 		run = None        # where the unquoted remote command starts in argv
 		pending = None    # nargs of an option still taking the words that follow as values
-		passed_on = False  # the word is the value of -ea or -ia, whatever it looks like
+		passed_on = None  # -ea's or -ia's dest: the word may be its value even when it starts with '-'
 		paths = False
 		read = []
 		stop = len(argv)
 		for index, token in enumerate(argv):
 			if passed_on:
-				passed_on, pending = False, None
-				continue
+				dest, passed_on = passed_on, None
+				if takes_passed_on_value(dest, token.text, self.spec):
+					pending = None
+					continue
 			if token.text == '--':
 				stop = index
 				break
@@ -3650,7 +3676,7 @@ class Engine(object):
 				option, attached, _ = readings[-1]
 				if attached is None and option.nargs != '0':
 					pending = option.nargs
-					passed_on = option.dest in PASSED_ON_DESTS
+					passed_on = option.dest if option.dest in PASSED_ON_DESTS else None
 				if run is None and any(option.dest in ('file', 'file_sync', 'gather_mode') for option, _, _ in readings):
 					paths = True
 			if run is not None:

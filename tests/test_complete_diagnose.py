@@ -1049,6 +1049,12 @@ def test_the_word_after_ea_is_its_value_not_a_command_word(engine, line):
 		"-ea is mssh's --extraargs here — quote the command: {!r}".format('uptime -ea ' + value))]
 
 
+def test_a_password_after_a_bare_ea_option_is_never_shown(engine):
+	found = warnings(engine, 'mssh web1 mysql -ea -p hunter2 db', probe=False)[0]
+	assert found and not [message for _, _, message in found if 'hunter2' in message]
+	assert [marked for marked, _, _ in found] == ['-ea', '-p']
+
+
 @pytest.mark.parametrize('line', ['mssh -ea -v web1 journalctl -u slurmd', 'mssh -ea -- web1 journalctl -u slurmd'])
 def test_after_an_ea_value_come_the_hosts_and_the_command(engine, line):
 	assert warnings(engine, line, probe=False)[0] == [('-u', 'command',
