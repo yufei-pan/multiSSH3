@@ -17,6 +17,22 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 ENGINE = [sys.executable, '-I', str(REPO / 'mssh_complete.py')]
+# 2026-10-13 00:00 UTC, when the histories these tests write were given their fixed times (1790000000 on)
+WRITTEN = 1791849600
+
+def aged(stamp):
+	'''
+	A fixed time from before WRITTEN, moved to be as old now as it was then. The engine weighs history
+	by its age on the real clock (a use halves its weight every week), so fixed times would rank
+	differently as the days pass: a suggestion the tests do not expect appeared 24 days on.
+	'''
+	stamp = int(stamp)
+	return stamp + max(0, int(time.time()) - WRITTEN) if stamp < WRITTEN else stamp
+
+def _aged_line(line):
+	'''An mssh history line with its time aged.'''
+	stamp, tab, rest = line.partition('\t')
+	return '{}\t{}'.format(aged(stamp), rest) if tab and stamp.isdigit() else line
 
 def require_shell(name):
 	'''The path of shell name; skip the test if it is missing, unless MSSH_REQUIRE_SHELLS lists it.'''
@@ -30,7 +46,7 @@ def require_shell(name):
 
 def make_home(tmp_path, history_lines=()):
 	'''
-	A private HOME and XDG_RUNTIME_DIR holding the given mssh history. Returns (env, home).
+	A private HOME and XDG_RUNTIME_DIR holding the given mssh history, its fixed times aged. Returns (env, home).
 
 	The prober's lock is taken, so no prober runs (no DNS, no ping): tests that want answers about
 	hosts write host-state.tsv themselves. An mssh config in HOME keeps this machine's /etc/hosts and
@@ -43,7 +59,7 @@ def make_home(tmp_path, history_lines=()):
 	runtime.mkdir(mode=0o700)
 	(runtime / 'multiSSH3').mkdir(mode=0o700)
 	(runtime / 'multiSSH3' / 'probe.lock').write_text('')
-	(home / '.mssh_history').write_text(''.join(line + '\n' for line in history_lines))
+	(home / '.mssh_history').write_text(''.join(_aged_line(line) + '\n' for line in history_lines))
 	(home / '.multiSSH3.config.json').write_text(json.dumps({'DEFAULT_HOST_FILE': str(home / 'hosts'),
 		'DEFAULT_ENV_FILES': [path for path in multiSSH3.DEFAULT_ENV_FILES if path.startswith('~')]}))
 	env = {
