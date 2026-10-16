@@ -1,4 +1,5 @@
 import atexit
+import copy
 import ipaddress
 import os
 import shlex
@@ -261,8 +262,12 @@ def restore_module_globals():
 		# process_args keeps its parser's defaults for the echoed / recorded command line
 		"__cli_option_defaults": multiSSH3.__cli_option_defaults,
 	}
+	# every setting a config file can set: a test running main() with --config_file sets them for good
+	settings = {name: copy.deepcopy(getattr(multiSSH3, name)) for name in multiSSH3._BUILTIN_SETTINGS if hasattr(multiSSH3, name)}
 	_clear_expand_caches()
 	yield
+	for name, value in settings.items():
+		setattr(multiSSH3, name, value)
 	for k, v in saved.items():
 		if k in (
 			"_env_files",
