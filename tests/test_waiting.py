@@ -222,3 +222,23 @@ def test_a_command_stopping_wakes_only_its_own_typed_line_writer(monkeypatch, fa
 		stop_event.set()
 		wake.set()
 		thread.join(1)
+
+
+def test_a_command_with_the_tui_ends_without_waiting_for_its_typed_line_writer(fake_host, monkeypatch):
+	# the monitor wakes its own writer when the command ends (and no other): unwoken, the writer looked
+	# again after a second, and every host's command took that long
+	monkeypatch.setattr(multiSSH3, "__keyPressesIn", [[]])
+	_real_command(monkeypatch, ["sleep", "0.3"])
+	host = fake_host("mock-a", command="sleep 0.3")
+	host.interactive_stdin = True
+	another_writer = threading.Event()
+	multiSSH3._typed_line_waiters.add(another_writer)
+	started = time.monotonic()
+	try:
+		multiSSH3.run_command(host, threading.Semaphore(1), 0, None)
+	finally:
+		multiSSH3._typed_line_waiters.discard(another_writer)
+
+	assert host.returncode == 0
+	assert time.monotonic() - started < 0.8
+	assert not another_writer.is_set()
