@@ -277,3 +277,11 @@ def test_no_session_is_looked_for_below_init_or_no_process():
 	assert multiSSH3._sessions_below(0) == []
 	assert multiSSH3._sessions_below(1) == []
 	assert multiSSH3._sessions_below(None) == []
+
+
+def test_a_timed_out_ssh_found_under_another_name_is_still_ssh(monkeypatch):
+	# Windows finds ssh as ...\ssh.EXE: mssh knows it by the path it found
+	monkeypatch.setattr(multiSSH3, "_binPaths", {"ssh": "/opt/openssh/ssh.EXE", "scp": "/opt/openssh/scp.EXE"})
+
+	assert multiSSH3._stopped_command_note(["/opt/openssh/ssh.EXE", "mock-a", "uptime"]) == "ssh was stopped: the command may still run on the host"
+	assert multiSSH3._stopped_command_note(["/opt/openssh/scp.EXE", "a", "mock-a:b"]) == "scp was stopped: the copy may be incomplete"

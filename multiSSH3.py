@@ -3329,7 +3329,11 @@ def _stopped_command_note(formatedCMD):
 	runs on until it ends, or until it writes to the closed connection.
 	'''
 	# the program under sshpass, also in --copy_id's sh -c line
-	name = _sshpass_program(formatedCMD) or os.path.basename(str(formatedCMD[0] if formatedCMD else ''))
+	name = _sshpass_program(formatedCMD)
+	if not name:
+		program = str(formatedCMD[0]) if formatedCMD else ''
+		# known by the path mssh found it at (ssh.EXE on Windows)
+		name = next((known for known in ('ssh', 'rsync', 'scp') if program == _binPaths.get(known)), os.path.basename(program))
 	if name == 'ssh':
 		return 'ssh was stopped: the command may still run on the host'
 	if name in ('rsync', 'scp'):
