@@ -4129,10 +4129,12 @@ def _cut_output(host, output_len, stdout_len=None, stderr_len=None):
 	'''
 	Drop the lines host's output, stdout and stderr got past these lengths (an attempt not run, a warning
 	said again). The TUI may have drawn the output lines dropped: the lines added next take their
-	places, so it draws those places again.
+	places, so it draws those places again. Marked once they are gone: a frame between taking the marks
+	and the deletion would count the old lines as drawn, and never draw the new ones in their places.
 	'''
-	host.lineNumToPrintSet.update(range(output_len, len(host.output)))
+	dropped = range(output_len, len(host.output))
 	del host.output[output_len:]
+	host.lineNumToPrintSet.update(dropped)
 	if stdout_len is not None:
 		del host.stdout[stdout_len:]
 	if stderr_len is not None:
@@ -5704,11 +5706,16 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 					for lineNumToReprint in sorted(changed.union(added)):
 						# if the line is visible, we will reprint it
 						if visibleLowerBound <= lineNumToReprint < line_count:
-							if _tui_leaves_out(host.output[lineNumToReprint]):
+							try:
+								line = host.output[lineNumToReprint]
+							except IndexError:
+								# cut since it was counted (see _cut_output, the -t countdown): marked again there
+								continue
+							if _tui_leaves_out(line):
 								continue
 							# each line on its own: one line curses cannot draw must not leave the lines after it blank
 							try:
-								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=host.output[lineNumToReprint], color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
+								_curses_add_string_to_window(window=host_window, y=lineNumToReprint + 1, line=line, color_pair_list=host.current_color_pair,lead_str='│',keep_top_n_lines=1,box_ansi_color=box_ansi_color,fill_char='')
 								hostWindowUpdated = True
 							except Exception:
 								if org_dim != stdscr.getmaxyx():

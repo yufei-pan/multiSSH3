@@ -836,3 +836,96 @@ def test_generate_display_redraws_a_line_replaced_in_place(stub_curses_harness, 
 	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
 
 	assert any("Timeout in [4] seconds!" in text for text in drawn)
+
+
+def test_generate_display_draws_a_host_coming_into_a_window_whole(stub_curses_harness, fake_host, monkeypatch):
+	# drawn before in another window or layout: its new window starts empty
+	host = _running_host(fake_host)
+	host.output = ["first", "second", "third"]
+	host.printedLines = len(host.output)
+
+	def between(frame):
+		if frame == 3:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert all(any(line in text for text in drawn) for line in ("first", "second", "third"))
+
+
+def test_generate_display_draws_unchanged_lines_once(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+
+	def between(frame):
+		if frame == 6:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert sum("working" in text for text in drawn) == 1
+
+
+def test_generate_display_draws_lines_written_after_a_cut_a_frame_interrupts(stub_curses_harness, fake_host, monkeypatch):
+	# a frame drawing between _cut_output's deleting and marking: the lines then added into the cut
+	# places are still drawn
+	host = _running_host(fake_host)
+	host.output = ["attempt one", "said this", "and this"]
+	real_update = set.update
+
+	class Marks(set):
+		def update(self, *others):
+			# the cut has deleted: a frame draws now, before the marks
+			between_frames.append(len(host.output))
+			return real_update(self, *others)
+	between_frames = []
+
+	def between(frame):
+		if frame == 2:
+			host.lineNumToPrintSet = Marks(host.lineNumToPrintSet)
+			multiSSH3._cut_output(host, 1, 0, 0)
+		elif frame == 3:
+			host.output.extend(["attempt two", "says that"])
+		elif frame == 6:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert between_frames == [1]
+	assert any("attempt two" in text for text in drawn) and any("says that" in text for text in drawn)
+
+
+def test_generate_display_survives_output_shrinking_while_it_draws(stub_curses_harness, fake_host, monkeypatch):
+	# a cut (or the -t countdown's pop) by another thread while a frame draws the lines it counted
+	host = _running_host(fake_host)
+	host.output = ["a", "b", "c"]
+	original = multiSSH3._tui_first_shown_line
+	frame_now = []
+
+	def between(frame):
+		frame_now.append(frame)
+		if frame == 2:
+			host.output.extend(["d", "e"])
+		elif frame == 4:
+			host.returncode = 0
+
+	def first_shown(output, rows):
+		if frame_now[-1] == 2 and len(output) == 5:
+			multiSSH3._cut_output(host, 3)
+		return original(output, rows)
+
+	monkeypatch.setattr(multiSSH3, "_tui_first_shown_line", first_shown)
+	polls = []
+
+	def poll():
+		polls.append(None)
+		between(len(polls))
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", poll)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+
+	result = multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=8)
+
+	# it started over with "Error: list index out of range"
+	assert result is None
