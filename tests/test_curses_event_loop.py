@@ -755,3 +755,84 @@ def test_hosts_without_a_window_keep_no_lines_to_draw(stub_curses_harness, fake_
 		for arg in args if method == "addnstr" and isinstance(arg, str)]
 	assert any("mock-a" in text for text in drawn) and not any("mock-b" in text for text in drawn)
 	assert hidden.lineNumToPrintSet == set()
+
+
+def test_readers_note_no_line_numbers_while_the_tui_runs(fake_host):
+	# the TUI draws the lines added since its last frame: a set holding every new line's number was
+	# 136 MB per million lines when output came faster than frames
+	host = fake_host("mock-a", "true")
+	host.interactive_stdin = True
+	stream = io.BytesIO(b"".join(b"line %d\n" % number for number in range(1000)))
+
+	multiSSH3.__handle_reading_stream(stream, host.stdout, host, host.stdout_buffer)
+
+	assert len(host.output) == 1000
+	assert host.lineNumToPrintSet == set()
+
+
+def _frames(stub_curses_harness, host, monkeypatch, between):
+	"""Run the display over host; between(frame) runs before each frame's drawing; the texts drawn."""
+	frames = []
+
+	def poll():
+		frames.append(None)
+		between(len(frames))
+		return -1
+
+	monkeypatch.setattr(stub_curses_harness.window, "getch", poll)
+	monkeypatch.setattr(multiSSH3.time, "perf_counter", lambda: 1.0)
+	monkeypatch.setattr(multiSSH3.time, "sleep", lambda seconds: None)
+	multiSSH3.__generate_display(stub_curses_harness.window, [host], min_char_len=10, min_line_len=8)
+	return [arg for window in stub_curses_harness.windows for method, args, kwargs in window.calls
+		for arg in args if method == "addnstr" and isinstance(arg, str)]
+
+
+def test_generate_display_draws_the_lines_added_since_the_last_frame(stub_curses_harness, fake_host, monkeypatch):
+	host = _running_host(fake_host)
+	host.lineNumToPrintSet = set()
+
+	def between(frame):
+		if frame == 2:
+			host.output.extend(["second line", "third line"])
+		elif frame == 4:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("second line" in text for text in drawn) and any("third line" in text for text in drawn)
+
+
+def test_generate_display_draws_lines_written_again_after_a_cut(stub_curses_harness, fake_host, monkeypatch):
+	# a host tried again drops what its attempt said (see _cut_output): the lines then added take the
+	# places of lines already drawn
+	host = _running_host(fake_host)
+	host.output = ["attempt one", "said this", "and this"]
+
+	def between(frame):
+		if frame == 2:
+			multiSSH3._cut_output(host, 1, 0, 0)
+			host.output.extend(["attempt two", "says that"])
+		elif frame == 4:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("said this" in text for text in drawn)
+	assert any("attempt two" in text for text in drawn) and any("says that" in text for text in drawn)
+
+
+def test_generate_display_redraws_a_line_replaced_in_place(stub_curses_harness, fake_host, monkeypatch):
+	# the -t countdown replaces the last line
+	host = _running_host(fake_host)
+	host.output = ["working", "Timeout in [5] seconds!"]
+
+	def between(frame):
+		if frame == 2:
+			host.output[-1] = "Timeout in [4] seconds!"
+			host.lineNumToPrintSet.add(1)
+		elif frame == 4:
+			host.returncode = 0
+
+	drawn = _frames(stub_curses_harness, host, monkeypatch, between)
+
+	assert any("Timeout in [4] seconds!" in text for text in drawn)
