@@ -2787,7 +2787,8 @@ _READER_BULK_ENCODINGS = frozenset(('utf-8', 'ascii', 'iso8859-1'))
 # of all are new, and with -m 1 the first host's)
 _SHARED_LINES_CHECK = 100000
 _shared_lines = {}
-_shared_lines_state = {'sharing': True, 'looked_up': 0, 'found': 0, 'failed_checks': 0}
+# a command's run switches sharing on (processRunOnHosts): run_command or start_run_on_hosts alone does not
+_shared_lines_state = {'sharing': False, 'looked_up': 0, 'found': 0, 'failed_checks': 0}
 _shared_lines_lock = threading.Lock()
 
 def _reset_shared_lines(sharing=True):
@@ -2812,7 +2813,9 @@ def _share_lines(lines):
 	if not state['sharing']:
 		return lines
 	shared = [_shared_lines.setdefault(line, line) for line in lines]
-	state['found'] += len(lines) - sum(map(operator.is_, shared, lines))
+	# counted before it is added: the GIL may switch to another reader while the lines are compared
+	found = len(lines) - sum(map(operator.is_, shared, lines))
+	state['found'] += found
 	state['looked_up'] += len(lines)
 	if state['looked_up'] >= _SHARED_LINES_CHECK:
 		_check_shared_lines()
@@ -7266,7 +7269,8 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	_no_env = no_env
 	_reported_invalid_hosts.clear()
 	_refresh_expansion_caches()
-	_reset_shared_lines(sharing=not return_unfinished)
+	# processRunOnHosts switches sharing on for each command: not here, as no_start runs none
+	_reset_shared_lines(sharing=False)
 	if not no_history:
 		_ = history_file
 		record_command_history(locals())

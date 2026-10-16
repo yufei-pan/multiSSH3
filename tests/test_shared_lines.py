@@ -5,6 +5,11 @@ shared. Sharing costs a lookup per line, and an entry per distinct line: when mo
 (logs), it stops, and what it held is let go.
 """
 import io
+import operator
+import os
+import subprocess
+import sys
+import types
 
 import pytest
 
@@ -14,9 +19,12 @@ import multiSSH3
 @pytest.fixture(autouse=True)
 def fresh_pool(monkeypatch):
 	monkeypatch.setattr(multiSSH3, "_SHARED_LINES_CHECK", 1000)
+	# as with the GIL, also on free-threaded Python (where mssh never shares)
+	monkeypatch.setattr(multiSSH3.sys, "_is_gil_enabled", lambda: True, raising=False)
 	multiSSH3._reset_shared_lines()
 	yield
-	multiSSH3._reset_shared_lines()
+	# as before any run
+	multiSSH3._reset_shared_lines(sharing=False)
 
 
 def _read(name, data):
@@ -54,16 +62,31 @@ def test_sharing_goes_on_while_most_lines_were_seen():
 	assert len(multiSSH3._shared_lines) == 50
 
 
+def _hosts_print_the_same_lines(monkeypatch):
+	# every host's ssh prints the same 3000 lines
+	real_popen = subprocess.Popen
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: "/dev/null")
+	monkeypatch.setattr(multiSSH3, "_binPaths", {"ssh": "/usr/bin/ssh", "sh": "/bin/sh"})
+	monkeypatch.setattr(multiSSH3.subprocess, "Popen",
+		lambda command, **kwargs: real_popen(["sh", "-c", "yes 'the same line' | head -n 3000"], **kwargs))
+
+
+def _run(commands):
+	return multiSSH3.run_command_on_hosts(hosts="mock-[a-b]", commands=commands, no_watch=True, quiet=True,
+		no_history=True, called=True, return_unfinished=False, will_update_unreachable_hosts=False)
+
+
 def test_each_run_starts_sharing_again(monkeypatch):
 	for name in "ab":
 		_read(name, b"".join(name.encode() + b" log line %d\n" % number for number in range(1500)))
 	assert multiSSH3._shared_lines_state["sharing"] is False
-	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	_hosts_print_the_same_lines(monkeypatch)
 
-	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=["true"], no_start=True, called=True,
-		return_unfinished=False, will_update_unreachable_hosts=False, no_history=True)
+	first, second = _run(["cmd"])
 
-	assert multiSSH3._shared_lines_state["sharing"] is True
+	assert first.stdout == second.stdout == ["the same line"] * 3000
+	assert all(mine is theirs for mine, theirs in zip(first.stdout, second.stdout))
 
 
 def test_lines_read_one_at_a_time_are_shared_too():
@@ -102,6 +125,20 @@ def test_lines_found_are_counted_whatever_other_readers_add(monkeypatch):
 	assert multiSSH3._shared_lines_state["found"] == multiSSH3._shared_lines_state["looked_up"] > 0
 
 
+def test_counts_other_readers_add_while_lines_are_compared_are_kept(monkeypatch):
+	# the found count was read before the lines were compared, and written back after: the GIL can
+	# switch to another reader in between, and what it counted was lost (a check failed with all found)
+	state = multiSSH3._shared_lines_state
+	def is_(shared, line):
+		state["found"] += 1  # another reader, while this one compares
+		return operator.is_(shared, line)
+	monkeypatch.setattr(multiSSH3, "operator", types.SimpleNamespace(is_=is_))
+
+	multiSSH3._share_lines(["a new line", "another new line"])
+
+	assert (state["found"], state["looked_up"]) == (2, 2)
+
+
 def test_one_check_with_few_lines_found_does_not_stop_sharing():
 	# with -m 1 the first host's lines are all new to the pool: the first check finds few
 	first = b"".join(b"line %d of the first host\n" % number for number in range(1200))
@@ -132,6 +169,24 @@ def test_a_run_returning_unfinished_shares_nothing(monkeypatch):
 	assert multiSSH3._shared_lines == {}
 
 
+def test_a_run_not_started_shares_nothing(monkeypatch):
+	# no_start, then start_run_on_hosts (the README's flow): no end of a run lets the pool go
+	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
+	multiSSH3.run_command_on_hosts(hosts="mock-a", commands=["true"], no_start=True, called=True,
+		return_unfinished=False, will_update_unreachable_hosts=False, no_history=True)
+
+	assert multiSSH3._shared_lines_state["sharing"] is False
+	_read("a", ALIKE)
+	assert multiSSH3._shared_lines == {}
+
+
+def test_nothing_is_shared_before_a_run():
+	# run_command or start_run_on_hosts called alone: no run lets the pool go
+	found = subprocess.check_output([sys.executable, "-c", "import multiSSH3; print(multiSSH3._shared_lines_state['sharing'])"],
+		cwd=os.path.dirname(os.path.abspath(multiSSH3.__file__)), universal_newlines=True)
+	assert found.strip() == "False"
+
+
 def test_lines_read_after_a_run_ended_are_not_held():
 	# readers given up at the end of a run (a process left in the background) may still add lines
 	multiSSH3._reset_shared_lines(sharing=False)
@@ -143,16 +198,9 @@ def test_lines_read_after_a_run_ended_are_not_held():
 
 def test_every_command_of_a_run_shares(monkeypatch):
 	# a command's end switched sharing off for the next command of the same run
-	import subprocess
-	real_popen = subprocess.Popen
-	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
-	monkeypatch.setattr(multiSSH3, "_unavailable_hosts_file_path", lambda create=True: "/dev/null")
-	monkeypatch.setattr(multiSSH3, "_binPaths", {"ssh": "/usr/bin/ssh", "sh": "/bin/sh"})
-	monkeypatch.setattr(multiSSH3.subprocess, "Popen",
-		lambda command, **kwargs: real_popen(["sh", "-c", "yes 'the same line' | head -n 3000"], **kwargs))
+	_hosts_print_the_same_lines(monkeypatch)
 
-	hosts = multiSSH3.run_command_on_hosts(hosts="mock-[a-b]", commands=["first", "second"], no_watch=True, quiet=True,
-		no_history=True, called=True, return_unfinished=False, will_update_unreachable_hosts=False)
+	hosts = _run(["first", "second"])
 
 	assert len(hosts) == 4
 	for first, second in (hosts[:2], hosts[2:]):
