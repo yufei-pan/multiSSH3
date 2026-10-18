@@ -344,6 +344,29 @@ def test_icase_history_matches_in_any_case():
 	assert texts(query('mssh h "echo #ho', word='echo #ho', flags=ICASE)) == ['echo #HOST#', 'echo #HOSTNAME#']
 
 
+CASED_COMMANDS = [line(NOW - number, '-su', 'login1', command) for number, command in enumerate(
+	('"systemctl status nginx"', '"systemctl STATUS Nginx"', '"Systemctl Status sshd"'))]
+
+
+def test_icase_matches_only_the_command_word_being_completed_in_any_case():
+	# the words typed before stay as typed, in a quoted command too, where the candidates are whole commands
+	knowledges = [memory(CASED_COMMANDS)]
+	assert texts(query('mssh login1 systemctl STATUS ', knowledges=knowledges, flags=ICASE)) == ['Nginx']
+	assert texts(query('mssh login1 systemctl STATUS NG', knowledges=knowledges, flags=ICASE)) == ['Nginx']
+	assert texts(query('mssh login1 "systemctl STATUS ', word='systemctl STATUS ', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
+	assert texts(query('mssh login1 "systemctl STATUS n', word='systemctl STATUS n', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
+	assert sorted(texts(query('mssh login1 "SYSTEMCTL', word='SYSTEMCTL', knowledges=knowledges, flags=ICASE))) == [
+		'Systemctl Status sshd', 'systemctl STATUS Nginx', 'systemctl status nginx']
+	assert texts(query('mssh login1 "date; systemctl status N', word='date; systemctl status N', knowledges=knowledges, flags=ICASE)) == []
+
+
+def test_prefix_ranges_match_in_any_case_from_start_on():
+	items = sorted(['AB x', 'ab X', 'ab x', 'ab y', 'Ab X'])
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', True, 3) for text in items[lo:hi]] == ['ab X', 'ab x']
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab ', True, 3) for text in items[lo:hi]] == ['ab X', 'ab x', 'ab y']
+	assert mc._prefix_ranges(items, 'aB x', True, 3) == []
+
+
 def test_icase_folds_option_names_only_where_no_other_option_differs_in_case():
 	# -s and -S are two options, never offered for each other; -su, with no -SU, is offered for -S as readline
 	# would take it; no two long options differ only in case

@@ -1068,16 +1068,16 @@ def _starts(text, prefix, icase=False):
 			return False
 	return True
 
-def _prefix_ranges(sorted_items, prefix, icase=False):
+def _prefix_ranges(sorted_items, prefix, icase=False, start=0):
 	'''
-	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase in any case (as _starts
-	matches). Each spelling of the prefix is followed one character at a time, and only while some item
-	starts with it, so the spellings tried are few however long the prefix.
+	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase with prefix[start:] in any
+	case (as _starts matches). Each spelling of it is followed one character at a time, and only while some
+	item starts with it, so the spellings tried are few however long the prefix.
 	'''
-	if not icase:
+	if not icase or start >= len(prefix):
 		return [_prefix_range(sorted_items, prefix)]
-	spellings = ['']
-	for typed in prefix:
+	spellings = [prefix[:start]]
+	for typed in prefix[start:]:
 		spellings = [spelling + char for spelling in spellings for char in _case_variants(typed) if _starts_some(sorted_items, spelling + char)]
 	return sorted(_prefix_range(sorted_items, spelling) for spelling in spellings)
 
@@ -1125,10 +1125,10 @@ class MemoryKnowledge(object):
 	def record_count(self):
 		return len(self.records)
 
-	def feature_range(self, prefix, icase=False):
+	def feature_range(self, prefix, icase=False, start=0):
 		if self._sorted is None:
 			self._sorted = sorted(self._postings)
-		return [(text, text) for lo, hi in _prefix_ranges(self._sorted, prefix, icase) for text in self._sorted[lo:hi]]
+		return [(text, text) for lo, hi in _prefix_ranges(self._sorted, prefix, icase, start) for text in self._sorted[lo:hi]]
 
 	def feature_key(self, text):
 		return text if text in self._postings else None
@@ -1159,8 +1159,8 @@ class SnapshotKnowledge(object):
 	def record_count(self):
 		return self.index.count('records')
 
-	def feature_range(self, prefix, icase=False):
-		return [(key, self.features[key]) for lo, hi in _prefix_ranges(self.features, prefix, icase) for key in range(lo, hi)]
+	def feature_range(self, prefix, icase=False, start=0):
+		return [(key, self.features[key]) for lo, hi in _prefix_ranges(self.features, prefix, icase, start) for key in range(lo, hi)]
 
 	def feature_key(self, text):
 		key = bisect_left(self.features, text)
@@ -1193,10 +1193,10 @@ KIND_WEIGHTS = {}           # feature kind ('h', 't', 'v', 'c', ...) -> weight, 
 COMMON_SHARE = 0.5          # a feature in more than this share of the records carries no context
 MAX_CONTEXT_RECORDS = 20000 # records read per query for context
 
-def score_features(knowledges, prefix, line_features, deadline=None, icase=False):
+def score_features(knowledges, prefix, line_features, deadline=None, icase=False, start=0):
 	'''
 	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge; with icase, with
-	prefix in any case.
+	prefix[start:] in any case (the word typed, after the kind of feature and the words before it).
 
 	score(c) = BETA * frecency(c) + sum over records r holding c of log(1 + weight(r)) * sim(r, line),
 	where sim sums idf(f) * KIND_WEIGHTS[kind of f] over the features f shared by r and the line.
@@ -1208,7 +1208,7 @@ def score_features(knowledges, prefix, line_features, deadline=None, icase=False
 	'''
 	scores = {}
 	for knowledge in knowledges:
-		for key, text in knowledge.feature_range(prefix, icase):
+		for key, text in knowledge.feature_range(prefix, icase, start):
 			scores[text] = scores.get(text, 0.0) + BETA * knowledge.feature_weight(key)
 	if not scores or not line_features:
 		return scores
@@ -1234,7 +1234,8 @@ def score_features(knowledges, prefix, line_features, deadline=None, icase=False
 				return scores
 			weight, features = knowledge.record(rid)
 			for text in features:
-				if _starts(text, prefix, icase):
+				# with icase, the features found above: prefix[:start] as typed
+				if (text in scores) if icase else text.startswith(prefix):
 					scores[text] = scores.get(text, 0.0) + math.log1p(weight) * value
 	return scores
 
@@ -4175,7 +4176,7 @@ class Engine(object):
 		lead = 'v:{}='.format(dest)
 		icase = context.icase
 		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
-			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase).items()]
+			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase, len(lead)).items()]
 		if dest in PATH_DESTS:
 			response.directives.add('files')
 		elif dest == 'identity_file':
@@ -4243,11 +4244,11 @@ class Engine(object):
 		lead = head + comma + user + at
 		icase = context.icase
 		scores = {}
-		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase).items():
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2).items():
 			scores[feature[2:]] = score
 		out = []
 		if not comma and not at:
-			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase).items():
+			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase, 2).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		aliases = set()
@@ -4317,23 +4318,26 @@ class Engine(object):
 				if _starts(magic, word[at:], icase):
 					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
 		if context.mode in PATH_MODES:
-			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase).items():
+			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
 		elif context.quoted:
-			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase).items():
+			# whole commands: the words typed before the current one stay as typed, only it is matched in any case
+			start = len(word) if context.command_prefix is None else len(context.command_prefix)
+			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase, 2 + start).items():
 				out.append(Candidate(feature[2:], '', 'history', score))
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
 			# a word holding whitespace would make mssh run each command word as its own command
 			if not typed:
-				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase).items():
+				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase, 2).items():
 					if _joinable(feature[2:]):
 						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
 				# the words typed before stay as typed: only the word being completed is matched in any case
-				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline, icase).items():
+				lead = 'c:' + ' '.join(typed) + ' '
+				for feature, score in score_features(self.knowledges, lead + partial, context.features, deadline, icase, len(lead)).items():
 					words = words_as_typed(feature[2:])
 					if len(words) > len(typed) and words[:len(typed)] == typed and _starts(words[len(typed)], partial, icase) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score

@@ -63,6 +63,29 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
+def ignoring_case(tmp_path, history, hosts=''):
+	'''A bash with completion-ignore-case on, in an empty directory (no file names among the candidates), no bash-completion.'''
+	env, home = make_home(tmp_path, history)
+	(home / 'hosts').write_text(hosts)
+	build_index(env)
+	empty = tmp_path / 'empty'
+	empty.mkdir()
+	extra = "bind 'set completion-ignore-case on'; cd '{}'".format(empty)
+	return bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
+
+
+def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
+	# a quoted command is completed whole: its words typed before the current one stay as typed there too
+	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
+		for number, command in enumerate(('zzctl status nginx', 'zzctl STATUS Nginx', 'Zzctl Status sshd'))])
+	try:
+		assert session.line_after('mssh login1 "zzctl STATUS n') == 'mssh login1 "zzctl STATUS Nginx" '
+		assert session.line_after('mssh login1 zzctl STATUS n') == 'mssh login1 zzctl STATUS Nginx '
+		assert session.line_after('mssh login1 "ZZCTL STATUS n') == 'mssh login1 "ZZCTL STATUS n'
+	finally:
+		session.close()
+
+
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
 	# in $'...' a backslash starts an escape: zzfmt "%s\n" x must not be offered there as it is
 	# (zzfmt: a name no local command starts with, as the first word is also completed as a command)
