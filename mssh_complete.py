@@ -1240,9 +1240,10 @@ def score_features(knowledges, prefix, line_features, deadline=None, icase=False
 				return scores
 			weight, features = knowledge.record(rid)
 			for text in features:
-				# with icase, the features found above: prefix[:start] as typed
-				if (text in scores) if icase else text.startswith(prefix):
-					scores[text] = scores.get(text, 0.0) + math.log1p(weight) * value
+				# the features starting with prefix are those found above, as every feature of a record is one of
+				# its knowledge's: looked up, they match as the ranges did (icase, start) for what startswith cost
+				if text in scores:
+					scores[text] += math.log1p(weight) * value
 	return scores
 
 #%% ------------ Hosts ----------------

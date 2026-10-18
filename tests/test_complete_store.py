@@ -87,3 +87,14 @@ def test_scores_add_up_across_knowledge():
 	first = memory([(['c:a', 'h:x'], 1.0)])
 	second = memory([(['c:a', 'h:x'], 1.0), (['c:b', 'h:y'], 1.0)])
 	assert mc.score_features([first, second], 'c:', [])['c:a'] == pytest.approx(0.2)
+
+
+def test_context_scores_in_any_case_go_to_the_features_the_lookup_found():
+	# the history's records add to the features found starting with the prefix, and to no others: with icase
+	# only prefix[start:] is in any case
+	knowledge = memory([(['c:ls x', 'h:a'], 1.0), (['c:LS X', 'h:a'], 1.0), (['c:ls X', 'h:a'], 1.0)] + [(['c:df', 'h:' + host], 1.0) for host in 'bcde'])
+	exact = mc.score_features([knowledge], 'c:ls x', ['h:a'])
+	assert set(exact) == {'c:ls x'} and exact['c:ls x'] > 0.1
+	folded = mc.score_features([knowledge], 'c:ls x', ['h:a'], icase=True, start=5)
+	assert set(folded) == {'c:ls x', 'c:ls X'} and folded['c:ls X'] == pytest.approx(exact['c:ls x'])
+	assert set(mc.score_features([knowledge], 'c:ls x', ['h:a'], icase=True, start=2)) == {'c:ls x', 'c:ls X', 'c:LS X'}
