@@ -326,6 +326,16 @@ def test_case_variants_are_every_letter_with_the_same_lower_case():
 				assert mc._case_variants(char) == ''.join(sorted(chars)), (char, chars)
 
 
+def test_ascii_text_is_matched_and_keyed_as_its_characters_are():
+	# _starts and _case_key take a shortcut for ASCII text (upper case): it must agree with _case_variants
+	chars = [chr(point) for point in range(32, 127)] + ['\u212a', '\u0130', '\u0131']
+	for typed in chars:
+		assert mc._case_key(typed) == mc._case_variants(typed)[0], typed
+		for char in chars:
+			assert mc._starts(char + 'x', typed, True) == (char in mc._case_variants(typed)), (char, typed)
+			assert (mc._case_key(char) == mc._case_key(typed)) == (char in mc._case_variants(typed)), (char, typed)
+
+
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
 	table = _host_table(tmp_path, ['Node01', 'node02', 'NODE03', 'login1'], aliases=[('GPUs', ['Node01', 'node02'])])
 	assert texts(query('mssh node0', knowledges=[], hosts=table)) == ['node02']
