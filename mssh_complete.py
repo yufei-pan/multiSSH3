@@ -1141,6 +1141,11 @@ def _locale_traits(name):
 	_LOCALES[name] = traits
 	return traits
 
+def _locale_utf8(name):
+	"""Whether the locale named name is a UTF-8 one the C library has: TAB's matching and the picker's drawing agree."""
+	traits = _locale_traits(name)
+	return bool(traits) and traits[0]
+
 def _lowers_i_dotless(name, utf8):
 	"""Whether the locale named name, now set, lowers I to something else than i (Turkish: a dotless i)."""
 	base, _, modifier = name.partition('@')
@@ -5000,20 +5005,19 @@ def _age(seconds):
 
 def _unicode_terminal():
 	'''
-	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG. Python's own encoding says
-	UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
-	always runs in UTF-8 mode.
+	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG, and taken as the C library has
+	it (_locale_utf8, as for TAB in any case: a locale the system lacks leaves the shell in C). Python's own
+	encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538),
+	and 3.15 always runs in UTF-8 mode.
 	'''
-	def utf8(name):
-		return 'utf8' in (name or '').lower().replace('-', '')
 	environ = os.environ
 	if environ.get('LC_ALL'):
-		return utf8(environ['LC_ALL'])
+		return _locale_utf8(environ['LC_ALL'])
 	ctype = environ.get('LC_CTYPE')
-	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not utf8(environ.get('LANG')):
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not _locale_utf8(environ.get('LANG') or ''):
 		# what Python sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
 		return False
-	return utf8(ctype or environ.get('LANG'))
+	return _locale_utf8(ctype or environ.get('LANG') or '')
 
 class Picker(object):
 	'''
