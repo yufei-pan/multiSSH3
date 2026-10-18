@@ -354,16 +354,97 @@ def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 		session.close()
 
 
+def comments_in_substitutions(script):
+	"""
+	The line numbers of the comments inside a command or process substitution of a bash script: every $( <(
+	and >( followed until it closes, wherever it opens. Quotes, ${...} and $(( )) are no comment and hide
+	none; a comment outside is skipped whole (its quotes are none). A case pattern's ) inside a substitution
+	would end it early: the glue has none there.
+	"""
+	found = []
+	# [kind, in a substitution, parentheses open]: code (the script, or a substitution's), dq, sq, ansi, brace, arith
+	stack = [['code', False, 0]]
+	index, line = 0, 1
+	while index < len(script):
+		char = script[index]
+		top = stack[-1]
+		if char == '\n':
+			line += 1
+		if top[0] in ('sq', 'ansi'):
+			if top[0] == 'ansi' and char == '\\':
+				line += script[index + 1:index + 2] == '\n'
+				index += 2
+				continue
+			if char == "'":
+				stack.pop()
+			index += 1
+			continue
+		if char == '\\':
+			line += script[index + 1:index + 2] == '\n'
+			index += 2
+			continue
+		if script.startswith('$((', index):
+			stack.append(['arith', False, 0])
+			index += 3
+			continue
+		if script.startswith('$(', index) or (top[0] == 'code' and script.startswith(('<(', '>('), index)):
+			stack.append(['code', True, 0])
+			index += 2
+			continue
+		if script.startswith('${', index):
+			stack.append(['brace', False, 0])
+			index += 2
+			continue
+		if top[0] == 'arith':
+			if char == '(':
+				top[2] += 1
+			elif char == ')' and top[2]:
+				top[2] -= 1
+			elif char == ')':
+				stack.pop()
+				index += 1
+			index += 1
+			continue
+		if char == '"':
+			if top[0] == 'dq':
+				stack.pop()
+			else:
+				stack.append(['dq', False, 0])
+		elif top[0] == 'dq':
+			pass
+		elif top[0] == 'brace' and char == '}':
+			stack.pop()
+		elif script.startswith("$'", index):
+			stack.append(['ansi', False, 0])
+			index += 1
+		elif char == "'":
+			stack.append(['sq', False, 0])
+		elif top[0] == 'code' and char == '#' and (index == 0 or script[index - 1] in ' \t\n;&|(<>'):
+			if any(frame[1] for frame in stack):
+				found.append(line)
+			while index + 1 < len(script) and script[index + 1] != '\n':
+				index += 1
+		elif top[0] == 'code' and char == '(':
+			top[2] += 1
+		elif top[0] == 'code' and char == ')':
+			if top[2]:
+				top[2] -= 1
+			elif top[1]:
+				stack.pop()
+		index += 1
+	return found
+
+
 def test_bash_glue_has_no_comment_inside_a_command_or_process_substitution():
 	# bash 4.2 reads a quote or a parenthesis in a comment inside <( ) or $( ) as code: a comment saying
 	# "readline's" there broke every TAB ("bad substitution: no closing `)'"), which bash 5 never shows
-	lines = mc.render_glue('bash', ENGINE).split('\n')
-	opened = [number for number, text in enumerate(lines) if text.rstrip().endswith(('<(', '$('))]
-	assert opened
-	for number in opened:
-		indent = lines[number][:len(lines[number]) - len(lines[number].lstrip())]
-		end = next(index for index in range(number + 1, len(lines)) if lines[index].startswith(indent + ')'))
-		assert not [text for text in lines[number + 1:end] if text.lstrip().startswith('#')], lines[number]
+	assert comments_in_substitutions(mc.render_glue('bash', ENGINE)) == []
+	# the scanner finds them wherever the substitution opens, and nothing else
+	assert comments_in_substitutions("x=$(\n\t# readline's\n\ty)\n") == [2]
+	assert comments_in_substitutions("done < <(if (( files )); then\n\t# readline's\n\tcompgen -f; fi 2>/dev/null || :)\n") == [2]
+	assert comments_in_substitutions('a "$(b\n# c\nd)"\n') == [2]
+	assert comments_in_substitutions("# readline's (\nx=${#y} z=$(( 10#1 + (2) )) w=$(echo '#(' \"#\" $'\\'#') v=$(a)#b\n") == []
+	assert comments_in_substitutions("f() {\n\t# it's ( not inside\n\tx=$(a; b)\n}\n# (\ny=<(c\n# in\n)\n") == [7]
 
 
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
