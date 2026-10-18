@@ -1059,6 +1059,10 @@ def _case_variants(char):
 		_CASE_VARIANTS[char] = variants
 	return variants
 
+def _case_key(text):
+	'''text with each character as the first of its _case_variants: the same for texts differing only in case.'''
+	return ''.join(_case_variants(char)[0] for char in text)
+
 def _starts(text, prefix, icase=False):
 	'''Whether text starts with prefix; with icase in any case, a character at a time as _case_variants matches.'''
 	if text.startswith(prefix):
@@ -3437,7 +3441,7 @@ def _case_unique(candidates, lead, prefix):
 	kept = {}
 	for number, candidate in enumerate(candidates):
 		full = lead + candidate.text
-		key = ''.join(_case_variants(char)[0] for char in full)
+		key = _case_key(full)
 		if key not in kept or (full.startswith(prefix) and not (lead + candidates[kept[key]].text).startswith(prefix)):
 			kept[key] = number
 	numbers = set(kept.values())
@@ -4268,22 +4272,37 @@ class Engine(object):
 			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase, 2).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
+		# readline ignoring case cannot tell gpus from GPUs: with icase, names differing only in case are one alias
+		# (a host used before as gpus is the alias GPUs, which takes its score), unreachable host and -X host
+		alias_scores = scores
+		if icase:
+			alias_scores = {}
+			for name, score in scores.items():
+				alias_scores[_case_key(name)] = alias_scores.get(_case_key(name), 0.0) + score
 		aliases = set()
 		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase):
 			aliases.add(name)
-			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
+			score = alias_scores.get(_case_key(name) if icase else name, 0.0)
+			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', score + 2 * PRIOR))
 		names = set(self.hosts.names_with_prefix(host_prefix, icase))
 		names.update(name for name in scores if _starts(name, host_prefix, icase) and '[' not in name)
 		names -= aliases
 		# mssh's list is keyed by the name a host runs as: the user typed with it, else -u's (-X hosts get it too)
 		unavailable = self.hosts.unavailable
+		boosted = boost
+		if icase:
+			alias_keys = set(_case_key(name) for name in aliases)
+			names = set(name for name in names if _case_key(name) not in alias_keys)
+			unavailable = frozenset(_case_key(name) for name in unavailable)
+			boosted = frozenset(_case_key(name) for name in boost)
 		line_user = self._line_user(next((value for option, value in reversed(context.options or ())
 			if option.dest == 'username' and value is not None), None))
 		def unreachable(name):
-			return _run_name(name, user, line_user) in unavailable
+			run_name = _run_name(name, user, line_user)
+			return (_case_key(run_name) if icase else run_name) in unavailable
 		def host_score(name):
 			score = scores.get(name, 0.0) + PRIOR
-			if name in boost:
+			if (_case_key(name) if icase else name) in boosted:
 				score += 1.0
 			if unreachable(name):
 				score *= UNAVAILABLE_PENALTY
@@ -4320,7 +4339,8 @@ class Engine(object):
 			used = sorted((name for name in names if scores.get(name)), key=lambda name: -scores[name])[:20]
 			out.extend(single(name) for name in used)
 		# the hosts the hosts argument names stay listed one by one (for -X)
-		out.extend(single(name) for name in sorted(names & set(boost)))
+		listed = [name for name in names if _case_key(name) in boosted] if icase else names & set(boost)
+		out.extend(single(name) for name in sorted(listed))
 		return out
 
 	def _commands(self, context, response, deadline):

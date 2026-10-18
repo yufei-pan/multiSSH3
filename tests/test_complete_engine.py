@@ -376,6 +376,22 @@ def test_icase_offers_one_of_the_candidates_differing_only_in_case(tmp_path):
 	assert texts(query('mssh login1 ZZ', knowledges=knowledges, flags=ICASE)) == ['zzsvc']
 
 
+def test_icase_aliases_unreachable_hosts_and_members_named_on_the_line_ignore_case(tmp_path):
+	# readline ignoring case cannot tell gpus from GPUs: a host used before as gpus is the alias GPUs (it came
+	# first, unlabeled, and the alias kept none of its score), web1 found unreachable is Web1, and -X prefers
+	# Web1 for web[1-2]
+	table = _host_table(tmp_path, ['Node01', 'node02', 'Web1', 'web2', 'web3'], aliases=[('GPUs', ['Node01', 'node02'])], unavailable=['web1'])
+	alone = query('mssh gp', knowledges=[], hosts=table, flags=ICASE).candidates
+	used = query('mssh gp', knowledges=[memory([line(NOW, '-su', 'gpus', '"uptime"')])], hosts=table, flags=ICASE).candidates
+	assert [(candidate.text, candidate.description) for candidate in used] == [('GPUs', 'alias, 2 hosts')]
+	assert used[0].score > alone[0].score
+	candidates = query('mssh we', knowledges=[], hosts=table, flags=ICASE).candidates
+	assert [(candidate.text, candidate.description) for candidate in candidates] == [('web2', ''), ('web3', ''), ('Web1', 'unreachable recently')]
+	assert texts(query('mssh web[2-3] -X W', knowledges=[], hosts=table, flags=ICASE))[:2] == ['web2', 'web3']
+	table = _host_table(tmp_path, ['Web1', 'web2', 'web3', 'm1'])
+	assert texts(query('mssh web[1-2] -X ', knowledges=[], hosts=table, flags=ICASE))[:2] == ['Web1', 'web2']
+
+
 def test_prefix_ranges_match_in_any_case_from_start_on():
 	items = sorted(['AB x', 'ab X', 'ab x', 'ab y', 'Ab X'])
 	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', True, 3) for text in items[lo:hi]] == ['ab X', 'ab x']
