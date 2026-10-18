@@ -1,8 +1,10 @@
 # Shell matrix image: current shells (see docs/superpowers/specs/2026-10-11-mssh-autocomplete-sp1-design.md)
 FROM debian:trixie-slim
+# Turkish locales (UTF-8 and ISO-8859-9): readline lowers I to the dotless i there
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends bash bash-completion zsh fish python3 python3-pytest procps xz-utils \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y -qq --no-install-recommends bash bash-completion zsh fish locales python3 python3-pytest procps xz-utils \
+ && rm -rf /var/lib/apt/lists/* \
+ && localedef -i tr_TR -f UTF-8 tr_TR.UTF-8 && localedef -i tr_TR -f ISO-8859-9 tr_TR.ISO-8859-9
 ENV LANG=C.UTF-8
 # ble.sh (Bash Line Editor), pinned: the autocomplete tests also run inside it
 ADD --checksum=sha256:7a2445f138e7f099dd5dee749391a8b045646d1b8a605975885be5b34b6b5f7e \

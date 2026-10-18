@@ -1052,7 +1052,8 @@ class CaseFold(object):
 	each lowered. In a UTF-8 locale by towlower: the I with a dot lowers to an i and a dot and counts as an
 	i, the dotless i is no I; Turkish locales and those copying them (turkic) lower I to the dotless i and
 	the I with a dot to i. In other locales by tolower on bytes, of which only ASCII letters reach the
-	engine as letters (ascii). An instance is what a query's icase holds.
+	engine as letters (ascii); a Turkish one lowers I to a dotless i that is none, so I and i match only
+	themselves there. An instance is what a query's icase holds.
 	"""
 	__slots__ = ('ascii', 'turkic', '_variants')
 
@@ -1063,10 +1064,10 @@ class CaseFold(object):
 
 	def lower(self, char):
 		"""The character readline compares for char."""
+		if self.ascii:
+			return char.lower() if 'A' <= char <= 'Z' and not (self.turkic and char == 'I') else char
 		if self.turkic and (char == 'I' or char == '\u0130'):
 			return '\u0131' if char == 'I' else 'i'
-		if self.ascii:
-			return char.lower() if 'A' <= char <= 'Z' else char
 		return char.lower()[0]
 
 	def variants(self, char):
@@ -1080,13 +1081,6 @@ class CaseFold(object):
 			self._variants[char] = variants
 		return variants
 
-	def key(self, text):
-		"""text with each character as the first of its variants: the same for texts differing only in case."""
-		if not self.turkic and _isascii(text):
-			# an ASCII character's first variant is its upper case
-			return text.upper()
-		return ''.join(self.variants(char)[0] for char in text)
-
 	def same(self, text, word):
 		"""Whether text and word, as long, differ only in case."""
 		if not self.turkic and _isascii(text) and _isascii(word):
@@ -1099,46 +1093,66 @@ class CaseFold(object):
 
 UNICODE_CASE = CaseFold()
 _CASE_KINDS = {(False, False): UNICODE_CASE}   # (ascii, turkic) -> CaseFold, sharing what each learned
-_CASE_FOLDS = {}                               # locale name -> CaseFold
-# glibc's locales with Turkish case pairs: tr_TR, and those copying its LC_CTYPE
+_LOCALES = {}                                  # locale name -> _locale_traits(name)
+# the languages whose locales may lower I to the dotless i: only theirs are asked how they lower it.
+# glibc's are tr_* and those copying tr_TR's case table, which are taken so when that cannot be asked
+_TURKIC_LANGUAGES = frozenset(('tr', 'az', 'crh', 'ku', 'tt'))
 _TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
 
 def case_fold(name):
 	"""
-	The CaseFold of the locale bash's glue names (its LC_ALL, else LC_CTYPE, else LANG; empty: C). None (a
-	glue that does not say) compares as a UTF-8 locale.
+	The CaseFold of the locale bash's glue names (its LC_ALL, else LC_CTYPE, else LANG; empty: C), as the C
+	library takes it: one it does not have leaves the shell in C. None (a glue that does not say) compares
+	as a UTF-8 locale.
 	"""
 	if name is None:
 		return UNICODE_CASE
-	fold = _CASE_FOLDS.get(name)
+	utf8, turkic = _locale_traits(name) or (False, False)
+	kind = (not utf8, turkic)
+	fold = _CASE_KINDS.get(kind)
 	if fold is None:
-		base, _, modifier = name.partition('@')
-		language, _, codeset = base.partition('.')
-		if codeset:
-			utf8 = codeset.lower().replace('-', '').replace('_', '') == 'utf8'
-		else:
-			utf8 = name not in ('', 'C', 'POSIX') and _locale_is_utf8(name)
-		turkic = language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
-		kind = (not utf8, turkic)
-		fold = _CASE_KINDS.get(kind)
-		if fold is None:
-			fold = _CASE_KINDS[kind] = CaseFold(*kind)
-		_CASE_FOLDS[name] = fold
+		fold = _CASE_KINDS[kind] = CaseFold(*kind)
 	return fold
 
-def _locale_is_utf8(name):
-	"""Whether the C library takes the locale named name, one without a codeset in its name, as UTF-8."""
+def _locale_traits(name):
+	"""
+	How the C library takes the locale named name: (utf8, turkic), or None when it has no such locale (a
+	shell then runs in C). utf8: its codeset is UTF-8; turkic: it lowers I to a dotless i, not to i. C, POSIX
+	and '' are C without asking; another name is asked once (setlocale, nl_langinfo, and how it lowers I),
+	and the process's own locale put back. The engine runs where the shell runs: the same locales are there.
+	"""
+	if name in ('', 'C', 'POSIX'):
+		return False, False
+	if name in _LOCALES:
+		return _LOCALES[name]
+	traits = None
 	try:
 		import _locale
 		saved = _locale.setlocale(_locale.LC_CTYPE)
 		try:
 			_locale.setlocale(_locale.LC_CTYPE, name)
-			return _locale.nl_langinfo(_locale.CODESET).lower().replace('-', '') == 'utf8'
+			utf8 = _locale.nl_langinfo(_locale.CODESET).lower().replace('-', '').replace('_', '') == 'utf8'
+			traits = utf8, _lowers_i_dotless(name, utf8)
 		finally:
 			_locale.setlocale(_locale.LC_CTYPE, saved)
 	except Exception:
-		# not installed (bash then runs in C) or no nl_langinfo
+		# not there (the shell runs in C), or no setlocale or nl_langinfo to ask
+		traits = None
+	_LOCALES[name] = traits
+	return traits
+
+def _lowers_i_dotless(name, utf8):
+	"""Whether the locale named name, now set, lowers I to something else than i (Turkish: a dotless i)."""
+	base, _, modifier = name.partition('@')
+	language = base.partition('.')[0]
+	if language.partition('_')[0] not in _TURKIC_LANGUAGES:
 		return False
+	try:
+		import ctypes
+		libc = ctypes.CDLL(None)
+		return (libc.towlower(ord('I')) if utf8 else libc.tolower(ord('I'))) != ord('i')
+	except Exception:
+		return language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
 
 def _starts(text, prefix, icase=None, start=0):
 	"""

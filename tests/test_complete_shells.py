@@ -274,6 +274,47 @@ def test_bash_ignoring_case_lowers_letters_as_its_locale_does(tmp_path):
 		session.close()
 
 
+def locale_here(name):
+	'''Whether the C library here has the locale named name.'''
+	import locale
+	saved = locale.setlocale(locale.LC_CTYPE)
+	try:
+		locale.setlocale(locale.LC_CTYPE, name)
+		return True
+	except locale.Error:
+		return False
+	finally:
+		locale.setlocale(locale.LC_CTYPE, saved)
+
+
+@pytest.mark.parametrize('lang', ['xx_YY.UTF-8', 'tr_XX.UTF-8'])
+def test_bash_ignoring_case_in_a_locale_this_system_lacks_runs_as_in_c(tmp_path, lang):
+	# bash runs in C in a locale the system has not, whatever its name says: \u0130stanbul is no word for i
+	if locale_here(lang):
+		pytest.skip('this C library takes any locale name')
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n', lang=lang)
+	try:
+		assert session.line_after('mssh i') == 'mssh Ix1 '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('lang, typed, line', [
+	('tr_TR.UTF-8', 'mssh i', 'mssh \u0130stanbul '), ('tr_TR.UTF-8', 'mssh I', 'mssh Ix1 '),
+	('tr_TR.ISO-8859-9', 'mssh i', 'mssh ix2 '), ('tr_TR.ISO-8859-9', 'mssh I', 'mssh Ix1 ')])
+def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
+	# in UTF-8 readline lowers I to the dotless i and the I with a dot to i; in ISO-8859-9 I and i match only
+	# themselves (it lowers I to a dotless i that is no ASCII letter, and the I with a dot reaches it as two bytes)
+	if not locale_here(lang):
+		pytest.skip('no {} locale here'.format(lang))
+	hosts = '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n' + ('10.0.0.3 ix2\n' if 'UTF-8' not in lang else '')
+	session = ignoring_case(tmp_path, [], hosts, lang=lang)
+	try:
+		assert session.line_after(typed) == line
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)

@@ -329,49 +329,88 @@ def test_case_variants_are_every_letter_with_the_same_lower_case():
 			assert mc.UNICODE_CASE.variants(char) == ''.join(sorted(chars)), (char, chars)
 
 
-@pytest.mark.parametrize('locale_name', [None, 'C', 'tr_TR.UTF-8', 'tr_TR.ISO-8859-9'])
-def test_text_is_matched_and_keyed_as_its_characters_are(locale_name):
-	# CaseFold.same and key take a shortcut for ASCII text (upper case): it must agree with the variants
-	fold = mc.case_fold(locale_name)
+@pytest.mark.parametrize('ascii, turkic', [(False, False), (True, False), (False, True), (True, True)])
+def test_text_is_matched_as_its_characters_are(ascii, turkic):
+	# CaseFold.same takes a shortcut for ASCII text (upper case): it must agree with the variants
+	fold = mc.CaseFold(ascii, turkic)
 	chars = [chr(point) for point in range(32, 127)] + ['\u212a', '\u0130', '\u0131', '\u00e9', '\u00c9']
 	for typed in chars:
-		assert fold.key(typed) == fold.variants(typed)[0], typed
 		for char in chars:
 			assert mc._starts(char + 'x', typed, fold) == (char in fold.variants(typed)), (char, typed)
-			assert (fold.key(char) == fold.key(typed)) == (char in fold.variants(typed)), (char, typed)
+
+
+# how the C library here takes some locale names: (utf8, turkic), None for one it has not
+SYSTEM_LOCALES = {'en_US.UTF-8': (True, False), 'en_US': (False, False), 'tr_TR.UTF-8': (True, True),
+	'tr_TR.ISO-8859-9': (False, True), 'de_DE.UTF-8': None, 'tr_XX.UTF-8': None}
+
+
+@pytest.fixture
+def locales(monkeypatch):
+	monkeypatch.setattr(mc, '_locale_traits', lambda name: (False, False) if name in ('', 'C', 'POSIX') else SYSTEM_LOCALES[name])
 
 
 @pytest.mark.parametrize('name, ascii, turkic', [
-	(None, False, False), ('C.UTF-8', False, False), ('en_US.utf8', False, False), ('de_DE.UTF-8@euro', False, False),
-	('C', True, False), ('POSIX', True, False), ('', True, False), ('en_US.ISO-8859-1', True, False),
-	('tr_TR.UTF-8', False, True), ('tr_CY.utf8', False, True), ('az_AZ.UTF-8', False, True), ('crh_UA.UTF-8', False, True),
-	('ku_TR.UTF-8', False, True), ('tt_RU.UTF-8@iqtelif', False, True), ('tt_RU.UTF-8', False, False), ('az_IR.UTF-8', False, False),
-	('tr_TR.ISO-8859-9', True, True)])
-def test_case_folds_as_the_locale_of_the_shell(name, ascii, turkic):
-	# readline lowers characters as the shell's locale says: towlower in a UTF-8 one, where Turkish and the like
-	# lower I to the dotless i and the I with a dot to i (glibc's tr_TR, which a few others copy); tolower on
-	# bytes elsewhere, where only ASCII letters reach the engine as letters. None: a glue that does not say
+	(None, False, False), ('en_US.UTF-8', False, False), ('en_US', True, False), ('C', True, False), ('', True, False),
+	('tr_TR.UTF-8', False, True), ('tr_TR.ISO-8859-9', True, True), ('de_DE.UTF-8', True, False), ('tr_XX.UTF-8', True, False)])
+def test_case_folds_as_the_locale_of_the_shell_is_taken(locales, name, ascii, turkic):
+	# readline lowers characters as the shell's locale says: towlower in a UTF-8 one, where Turkish lowers I to
+	# the dotless i and the I with a dot to i; tolower on bytes elsewhere, where only ASCII letters reach the
+	# engine as letters. A locale the C library does not have leaves the shell in C, whatever its name says.
+	# None: a glue that does not say
 	fold = mc.case_fold(name)
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
 
 
+def test_locales_are_taken_as_the_c_library_has_them():
+	import locale
+	before = locale.setlocale(locale.LC_CTYPE)
+	assert mc._locale_traits('C') == mc._locale_traits('POSIX') == mc._locale_traits('') == (False, False)
+	# the process's own locale is one the C library has; asking leaves the process's locale as it was
+	assert mc._locale_traits(before) is not None
+	assert mc._locale_traits(before) == mc._locale_traits(before)
+	if mc._locale_traits('xx_YY.UTF-8') is not None:
+		pytest.skip('this C library takes any locale name (musl)')
+	assert mc._locale_traits('xx_YY.UTF-8') is None and mc._locale_traits('tr_XX.UTF-8') is None
+	assert locale.setlocale(locale.LC_CTYPE) == before
+
+
+@pytest.mark.parametrize('name, traits', [('tr_TR.UTF-8', (True, True)), ('tr_TR.ISO-8859-9', (False, True)), ('C.UTF-8', (True, False))])
+def test_turkish_locales_are_told_by_how_they_lower_i(name, traits):
+	import locale
+	saved = locale.setlocale(locale.LC_CTYPE)
+	try:
+		locale.setlocale(locale.LC_CTYPE, name)
+	except locale.Error:
+		pytest.skip('no {} locale here'.format(name))
+	finally:
+		locale.setlocale(locale.LC_CTYPE, saved)
+	assert mc._locale_traits(name) == traits
+
+
 def test_case_folds_letters_as_ascii_and_turkish_locales_do():
-	ascii, turkish = mc.case_fold('C'), mc.case_fold('tr_TR.UTF-8')
+	ascii, turkish, turkish8 = mc.CaseFold(ascii=True), mc.CaseFold(turkic=True), mc.CaseFold(ascii=True, turkic=True)
 	assert ascii.variants('a') == 'Aa' and ascii.variants('\u00e9') == '\u00e9' and ascii.variants('\u0130') == '\u0130'
-	assert turkish.variants('i') == 'i\u0130' and turkish.variants('I') == 'I\u0131' and turkish.variants('\u0131') == 'I\u0131'
-	assert turkish.variants('a') == 'Aa' and turkish.key('Ii') != turkish.key('iI')
-	assert mc._starts('\u0130stanbul', 'is', turkish) and not mc._starts('Ix', 'i', turkish) and mc._starts('\u0131x', 'I', turkish)
 	assert not mc._starts('\u00c9cole', '\u00e9', ascii) and mc._starts('Ecole', 'e', ascii)
+	assert turkish.variants('i') == 'i\u0130' and turkish.variants('I') == 'I\u0131' and turkish.variants('\u0131') == 'I\u0131'
+	assert turkish.variants('a') == 'Aa'
+	assert mc._starts('\u0130stanbul', 'is', turkish) and not mc._starts('Ix', 'i', turkish) and mc._starts('\u0131x', 'I', turkish)
+	# in an 8-bit Turkish locale readline lowers I to the dotless i, which is no ASCII letter, and the I with
+	# a dot and the dotless i reach it as two UTF-8 bytes it lowers to no i: I and i match only themselves
+	assert turkish8.variants('I') == 'I' and turkish8.variants('i') == 'i' and turkish8.variants('a') == 'Aa'
+	assert not mc._starts('\u0130stanbul', 'i', turkish8) and not mc._starts('\u0131x', 'I', turkish8)
+	assert not mc._starts('Ix', 'i', turkish8) and not mc._starts('ix', 'I', turkish8) and mc._starts('Ax', 'a', turkish8)
 
 
-def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path):
-	table = _host_table(tmp_path, ['\u0130stanbul', 'Ix1', '\u00c9cole', '\u00e9t\u00e91'])
+def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path, locales):
+	table = _host_table(tmp_path, ['\u0130stanbul', 'Ix1', 'ix2', '\u00c9cole', '\u00e9t\u00e91'])
 	def found(word, lc):
 		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags={'icase': '1', 'lc': lc})))
-	assert found('i', 'C.UTF-8') == ['Ix1', '\u0130stanbul']
-	assert found('i', 'C') == ['Ix1']
-	assert found('\u00e9', 'C') == ['\u00e9t\u00e91'] and found('\u00e9', 'C.UTF-8') == ['\u00c9cole', '\u00e9t\u00e91']
-	assert found('i', 'tr_TR.UTF-8') == ['\u0130stanbul'] and found('I', 'tr_TR.UTF-8') == ['Ix1']
+	assert found('i', 'en_US.UTF-8') == ['Ix1', 'ix2', '\u0130stanbul']
+	assert found('i', 'C') == ['Ix1', 'ix2'] and found('i', 'de_DE.UTF-8') == ['Ix1', 'ix2']
+	assert found('\u00e9', 'C') == ['\u00e9t\u00e91'] and found('\u00e9', 'en_US.UTF-8') == ['\u00c9cole', '\u00e9t\u00e91']
+	assert found('i', 'tr_TR.UTF-8') == ['ix2', '\u0130stanbul'] and found('I', 'tr_TR.UTF-8') == ['Ix1']
+	assert found('i', 'tr_TR.ISO-8859-9') == ['ix2'] and found('I', 'tr_TR.ISO-8859-9') == ['Ix1']
+	assert found('I', 'tr_XX.UTF-8') == ['Ix1', 'ix2']
 
 
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
