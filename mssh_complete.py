@@ -3484,6 +3484,9 @@ class Engine(object):
 		if context is None:
 			return response
 		context.icase = request.flags.get('icase') == '1'
+		if context.icase:
+			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
+			response.directives.add('icase')
 		if context.slot == SLOT_OPTION:
 			candidates = self._options(context, request.shell)
 		elif context.slot == SLOT_VALUE:
@@ -6014,20 +6017,27 @@ _mssh_complete_delegate() {
 		fi
 	fi
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
-	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word
+	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word. When
+	# the engine matched in any case (_mssh_complete_icase), so do compgen and readline: stor gives
+	# Storage-File
 	lead=$prefix$cur
 	lead=${lead%"$word"}
 	for item in ${found[@]+"${found[@]}"}; do
 		item=$prefix$item
-		[[ -n $lead && $item == "$lead"* ]] && item=${item#"$lead"}
-		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
+		if (( ${_mssh_complete_icase-0} )); then
+			[[ -n $lead && ${item,,} == "${lead,,}"* ]] && item=${item:${#lead}}
+			[[ ${item,,} == "${word,,}"* ]] && _mssh_complete_delegated+=("$item")
+		else
+			[[ -n $lead && $item == "$lead"* ]] && item=${item#"$lead"}
+			[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
+		fi
 	done
 	return 0
 }
 
 _mssh_complete() {
 	local cur=$2 resp line item flags ble=0 files=0 dirs=0 ended=0 delegate=0
-	local _mssh_complete_before _mssh_complete_after
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
@@ -6063,6 +6073,7 @@ _mssh_complete() {
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
 						files) files=1 ;;
 						dirs) dirs=1 ;;
+						icase) _mssh_complete_icase=1 ;;
 					esac
 				done
 				;;

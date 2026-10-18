@@ -361,6 +361,12 @@ def test_icase_matches_only_the_command_word_being_completed_in_any_case():
 	assert texts(query('mssh login1 "date; systemctl status N', word='date; systemctl status N', knowledges=knowledges, flags=ICASE)) == []
 
 
+def test_icase_is_answered_back_for_the_words_the_glue_adds():
+	# bash's glue adds the words of a command's own completion, and file names: in any case too
+	assert 'icase' in query('mssh h nosuchcmd stor', flags=ICASE).directives
+	assert 'icase' not in query('mssh h nosuchcmd stor').directives
+
+
 def test_icase_offers_one_of_the_candidates_differing_only_in_case(tmp_path):
 	# readline ignoring case cannot tell them apart and stops at their common start: the one in the case
 	# typed stays, else the best

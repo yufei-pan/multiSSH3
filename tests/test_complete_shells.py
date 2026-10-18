@@ -137,6 +137,20 @@ def test_bash_follows_completion_ignore_case_as_it_changes(tmp_path, first):
 		session.close()
 
 
+def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
+	# bash's compgen ignores case too: stor gives Storage-File, ZZT gives zztool; dropped, the history's word
+	# alone went in
+	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command)
+		for number, command in enumerate(('nosuchcmd storage-x', 'zzthing'))]
+	session = ignoring_case(tmp_path, history, files=['Storage-File'], commands=['zztool'])
+	try:
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
+		assert session.line_after('mssh h ZZT') == 'mssh h zzt'
+		assert session.line_after('mssh h nosuchcmd Storage-F') == 'mssh h nosuchcmd Storage-File '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
