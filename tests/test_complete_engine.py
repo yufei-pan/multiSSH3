@@ -368,9 +368,8 @@ def test_icase_matches_only_the_command_word_being_completed_in_any_case():
 	assert texts(query('mssh login1 systemctl STATUS NG', knowledges=knowledges, flags=ICASE)) == ['Nginx']
 	assert texts(query('mssh login1 "systemctl STATUS ', word='systemctl STATUS ', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
 	assert texts(query('mssh login1 "systemctl STATUS n', word='systemctl STATUS n', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
-	# the two nginx commands differ only in case: the newer stays
 	assert sorted(texts(query('mssh login1 "SYSTEMCTL', word='SYSTEMCTL', knowledges=knowledges, flags=ICASE))) == [
-		'Systemctl Status sshd', 'systemctl status nginx']
+		'Systemctl Status sshd', 'systemctl STATUS Nginx', 'systemctl status nginx']
 	assert texts(query('mssh login1 "date; systemctl status N', word='date; systemctl status N', knowledges=knowledges, flags=ICASE)) == []
 
 
@@ -378,6 +377,18 @@ def test_icase_is_answered_back_for_the_words_the_glue_adds():
 	# bash's glue adds the words of a command's own completion, and file names: in any case too
 	assert 'icase' in query('mssh h nosuchcmd stor', flags=ICASE).directives
 	assert 'icase' not in query('mssh h nosuchcmd stor').directives
+
+
+def test_icase_keeps_candidates_differing_only_in_case_while_others_are_left():
+	# Admin and admin are two accounts: offered beside root, readline lists all three; only when they alone are
+	# left would it stop at their common start, and then the one in the case typed goes in
+	knowledges = [memory([line(NOW - number, options, 'h', '"grep {} x"'.format(word)) for number, (options, word) in enumerate(
+		(('-su -u=Admin', 'Foo'), ('-su -u=admin', 'foo'), ('-su -u=root', 'bar')))])]
+	assert sorted(texts(query('mssh -u ', knowledges=knowledges, flags=ICASE))) == ['Admin', 'admin', 'root']
+	assert texts(query('mssh -u a', knowledges=knowledges, flags=ICASE)) == ['admin']
+	assert texts(query('mssh -u A', knowledges=knowledges, flags=ICASE)) == ['Admin']
+	assert sorted(texts(query('mssh h "grep ', word='grep ', knowledges=knowledges, flags=ICASE))) == ['grep Foo x', 'grep bar x', 'grep foo x']
+	assert texts(query('mssh h "grep F', word='grep F', knowledges=knowledges, flags=ICASE)) == ['grep Foo x']
 
 
 def test_icase_offers_one_of_the_candidates_differing_only_in_case(tmp_path):

@@ -113,6 +113,26 @@ def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_p
 		session.close()
 
 
+def listed_after(session, typed):
+	'''The words readline lists for typed on a second TAB.'''
+	session.send(typed + '\t\t')
+	text = session.read_until(b'@@READY@@')
+	session.send('\x15')
+	return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text).split()
+
+
+def test_bash_ignoring_case_lists_words_differing_only_in_case_beside_others(tmp_path):
+	# Admin and admin are two accounts: beside root readline lists all three, and either goes in when typed
+	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su -u={}\th\t"uptime"'.format(number, name)
+		for number, name in enumerate(('Admin', 'admin', 'root'))])
+	try:
+		assert {'Admin', 'admin', 'root'} <= set(listed_after(session, 'mssh -u '))
+		assert session.line_after('mssh -u a') == 'mssh -u admin '
+		assert session.line_after('mssh -u A') == 'mssh -u Admin '
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('first', ['on', 'off'])
 def test_bash_follows_completion_ignore_case_as_it_changes(tmp_path, first):
 	# read once per shell, the setting went stale after a bind: turned off, the engine still offered Node01 and

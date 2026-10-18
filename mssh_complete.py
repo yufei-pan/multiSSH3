@@ -3443,20 +3443,20 @@ def _joinable(word):
 	'''
 	return len(word.split()) == 1
 
-def _case_unique(candidates, lead, prefix):
+def _case_alike(candidates, fulls, prefix):
 	'''
-	candidates (best first), of those differing only in case one: readline ignoring case cannot tell them
-	apart, and stops at their common start. The first in the case typed (lead + text starts with prefix)
-	stays, else the first.
+	candidates (best first), whose texts are fulls; when they all differ from each other only in case, the one
+	readline is to take: ignoring case, it cannot tell them apart and would stop at their common start. That
+	is the first in the case typed (starting with prefix), else the first. Names differing only in case are
+	two names all the same (two accounts, a host and an alias): while others are left, all stay.
 	'''
-	kept = {}
-	for number, candidate in enumerate(candidates):
-		full = lead + candidate.text
-		key = _case_key(full)
-		if key not in kept or (full.startswith(prefix) and not (lead + candidates[kept[key]].text).startswith(prefix)):
-			kept[key] = number
-	numbers = set(kept.values())
-	return [candidate for number, candidate in enumerate(candidates) if number in numbers]
+	key = _case_key(fulls[0])
+	if any(_case_key(full) != key for full in fulls[1:]):
+		return candidates
+	for candidate, full in zip(candidates, fulls):
+		if full.startswith(prefix):
+			return [candidate]
+	return candidates[:1]
 
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
@@ -4152,10 +4152,8 @@ class Engine(object):
 		lead = prefix[:context.value_start]
 		out = []
 		seen = set()
-		candidates = sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text))
-		if context.icase:
-			candidates = _case_unique(candidates, lead, prefix)
-		for candidate in candidates:
+		fulls = []
+		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
 			full = lead + candidate.text
 			if not _starts(full, prefix, context.icase) or full in seen:
 				continue
@@ -4173,8 +4171,11 @@ class Engine(object):
 			text = full[len(base):len(prefix)] + rest
 			raw = full[len(base):]
 			out.append(Candidate(text, candidate.description, candidate.group, candidate.score, raw if raw != text else None))
+			fulls.append(full)
 			if len(out) >= MAX_CANDIDATES:
 				break
+		if context.icase and len(out) > 1:
+			out = _case_alike(out, fulls, prefix)
 		return out
 
 	def _options(self, context, shell):
