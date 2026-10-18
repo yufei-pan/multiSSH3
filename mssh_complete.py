@@ -4369,14 +4369,16 @@ class Engine(object):
 			aliases.add(name)
 			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
 		names = set(self.hosts.names_with_prefix(host_prefix, icase))
-		names.update(name for name in scores if _starts(name, host_prefix, icase) and '[' not in name)
+		# the history's names, which its lookup found starting with the host typed
+		names.update(name for name in scores if '[' not in name)
 		names -= aliases
 		# mssh's list is keyed by the name a host runs as: the user typed with it, else -u's (-X hosts get it too)
 		unavailable = self.hosts.unavailable
 		line_user = self._line_user(next((value for option, value in reversed(context.options or ())
 			if option.dest == 'username' and value is not None), None))
 		def unreachable(name):
-			return _run_name(name, user, line_user) in unavailable
+			# most often none is: then no name needs making
+			return bool(unavailable) and _run_name(name, user, line_user) in unavailable
 		def host_score(name):
 			score = scores.get(name, 0.0) + PRIOR
 			if name in boost:
