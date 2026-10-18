@@ -45,7 +45,6 @@ version = '6.36'
 VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-10-16'
-# TODO: Add terminal TUI
 
 # no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
 # use --config_file to load one
