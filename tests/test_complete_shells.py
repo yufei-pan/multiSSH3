@@ -48,6 +48,21 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion):
 		session.close()
 
 
+def test_bash_ignoring_case_completes_in_any_case(tmp_path):
+	# completion-ignore-case on: readline takes a candidate whose case differs from the word, and puts in its spelling
+	env, home = make_home(tmp_path, HISTORY)
+	(home / 'hosts').write_text('10.0.0.1 Storage-East\n')
+	build_index(env)
+	session = bash_session(home, env, glue_file(home, 'bash'), extra="bind 'set completion-ignore-case on'")
+	try:
+		assert session.line_after('mssh storage-e') == 'mssh Storage-East '
+		assert session.line_after('mssh GP') == 'mssh gpu[01-16] '
+		assert session.line_after('mssh -u ROO') == 'mssh -u root '
+		assert session.line_after('mssh --NO_WA') == 'mssh --no_watch '
+	finally:
+		session.close()
+
+
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
 	# in $'...' a backslash starts an escape: zzfmt "%s\n" x must not be offered there as it is
 	# (zzfmt: a name no local command starts with, as the first word is also completed as a command)

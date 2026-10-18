@@ -478,6 +478,8 @@ Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[0
 
 Completion never removes what you typed, prints nothing, and falls back to the shell's normal completion when anything is slow or missing.
 
+In bash with readline's `completion-ignore-case` on (`set completion-ignore-case on` in `~/.inputrc`), what you typed matches in any case, and the candidate's own spelling goes in: `mssh storage-e<TAB>` gives `Storage-East`. Option names that differ only in case (`-s` and `-S`) stay apart.
+
 In zsh, TAB needs zsh's completion system: `compinit` has to run when zsh starts, before or after the mssh block in `~/.zshrc` (oh-my-zsh, prezto and the like run it, and so does Ubuntu's `/etc/zsh/zshrc`). `mssh --completion install` says so when `~/.zshrc` does not seem to start it. Grey suggestions, warnings and Ctrl-R work without it.
 
 It learns from an index of your history and hosts, kept in mssh's private runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or `multiSSH3-<uid>` in the temp dir) and rebuilt in the background when its sources change. `mssh --completion install` builds it right away. A reboot clears it: the first TAB after one starts the build and, until the index is ready (about a second for a long history), offers options and what your shell history holds. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
