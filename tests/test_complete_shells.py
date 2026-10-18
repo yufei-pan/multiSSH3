@@ -330,6 +330,18 @@ def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp
 		session.close()
 
 
+def test_bash_minding_case_keeps_delegated_words_in_their_case_whatever_nocasematch_says(tmp_path):
+	# with completion-ignore-case off and the shell's nocasematch on, a command's completion offering Storage-x
+	# for stor must not reach readline, which, minding case, would cut the word back to their common start
+	options = 'shopt -s nocasematch; _fakeci() { COMPREPLY=(Storage-x storage-y); }; complete -F _fakeci fakeci'
+	session = ignoring_case(tmp_path, [], on=False, options=options)
+	try:
+		assert session.line_after('mssh h fakeci stor') == 'mssh h fakeci storage-y '
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
