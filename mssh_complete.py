@@ -6034,7 +6034,7 @@ _mssh_complete_delegate() {
 }
 
 _mssh_complete() {
-	local cur=$2 resp line item flags ble=0 files=0 dirs=0 ended=0 delegate=0
+	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A seen=()
@@ -6106,6 +6106,24 @@ _mssh_complete() {
 		seen[x$item]=1
 		COMPREPLY+=("$item")
 	done
+	# readline ignoring case cannot tell apart words differing only in case and stops at their common start:
+	# when they alone are left (the engine's, a command's own and file names), the one starting with the word
+	# in its case goes in, else the first. test's = compares exactly, whatever nocasematch says
+	if (( _mssh_complete_icase && ${#COMPREPLY[@]} > 1 )); then
+		one=${COMPREPLY[0]}
+		for item in "${COMPREPLY[@]}"; do
+			if [ "${item,,}" != "${one,,}" ]; then
+				one=
+				break
+			fi
+			if [ "${item:0:${#cur}}" = "$cur" ] && [ "${one:0:${#cur}}" != "$cur" ]; then
+				one=$item
+			fi
+		done
+		if [ -n "$one" ]; then
+			COMPREPLY=("$one")
+		fi
+	fi
 	return 0
 }
 

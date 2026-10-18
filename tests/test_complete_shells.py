@@ -67,11 +67,11 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
-def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines=''):
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options=''):
 	'''
 	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
 	only files (no other file names among the candidates), with commands found first on its PATH, and
-	env_lines in ~/hosts.env (aliases).
+	env_lines in ~/hosts.env (aliases), and shell options (set -e).
 	'''
 	env, home = make_home(tmp_path, history)
 	(home / 'hosts').write_text(hosts)
@@ -87,7 +87,7 @@ def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), e
 		(found / name).write_text('#!/bin/sh\n')
 		(found / name).chmod(0o755)
 	env = dict(env, PATH=str(found) + os.pathsep + env['PATH'])
-	extra = "cd '{}'".format(work)
+	extra = "cd '{}'; {}".format(work, options)
 	if on:
 		extra = "bind 'set completion-ignore-case on'; " + extra
 	return bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
@@ -179,6 +179,19 @@ def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
 		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
 		assert session.line_after('mssh h ZZT') == 'mssh h zzt'
 		assert session.line_after('mssh h nosuchcmd Storage-F') == 'mssh h nosuchcmd Storage-File '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('options', ['', 'set -e', 'set -u'])
+def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing_only_in_case(tmp_path, options):
+	# the history's storage-file and the file Storage-File, both offered, kept readline from completing
+	session = ignoring_case(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-file"'], files=['Storage-File'], options=options)
+	try:
+		assert session.line_after('mssh h nosuchcmd storage-f') == 'mssh h nosuchcmd storage-file '
+		assert session.line_after('mssh h nosuchcmd Storage-F') == 'mssh h nosuchcmd Storage-File '
+		assert session.line_after('mssh h nosuchcmd STORAGE-F') == 'mssh h nosuchcmd storage-file '
+		assert b'unbound variable' not in session.output
 	finally:
 		session.close()
 
