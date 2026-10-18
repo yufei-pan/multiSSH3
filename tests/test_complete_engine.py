@@ -300,6 +300,32 @@ def test_prefix_ranges_find_every_spelling_differing_only_in_case():
 	assert mc._prefix_ranges(items, '', True) == [(0, len(items))]
 
 
+def test_icase_lookups_and_checks_match_letters_alike():
+	# readline compares a character at a time in lower case (towlower): KELVIN SIGN is a k, the I with a dot
+	# lowers to an i, the dotless i is no I. The sorted lookups and the checks of single texts agree.
+	items = sorted(['\u212aelvin', 'kelvin', 'Kelvin', 'Ix', 'ix', '\u0130stanbul', '\u0131x', 'SS', '\u00df', '\u1e9e'])
+	expected = {
+		'k': ['Kelvin', 'kelvin', '\u212aelvin'], '\u212a': ['Kelvin', 'kelvin', '\u212aelvin'],
+		'i': ['Ix', 'ix', '\u0130stanbul'], '\u0130': ['Ix', 'ix', '\u0130stanbul'], 'I': ['Ix', 'ix', '\u0130stanbul'],
+		'\u0131': ['\u0131x'], '\u00df': ['\u00df', '\u1e9e'], 's': ['SS'],
+	}
+	for prefix, found in expected.items():
+		assert sorted(text for lo, hi in mc._prefix_ranges(items, prefix, True) for text in items[lo:hi]) == sorted(found), prefix
+		assert sorted(text for text in items if mc._starts(text, prefix, True)) == sorted(found), prefix
+
+
+def test_case_variants_are_every_letter_with_the_same_lower_case():
+	# what this Python's Unicode data holds: a letter it adds would be matched one way only
+	alike = {}
+	for point in range(0x110000):
+		char = chr(point)
+		alike.setdefault(char.lower()[0], []).append(char)
+	for chars in alike.values():
+		if len(chars) > 1:
+			for char in chars:
+				assert mc._case_variants(char) == ''.join(sorted(chars)), (char, chars)
+
+
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
 	table = _host_table(tmp_path, ['Node01', 'node02', 'NODE03', 'login1'], aliases=[('GPUs', ['Node01', 'node02'])])
 	assert texts(query('mssh node0', knowledges=[], hosts=table)) == ['node02']

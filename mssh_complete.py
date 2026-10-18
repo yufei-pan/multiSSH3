@@ -1037,31 +1037,48 @@ def _prefix_range(sorted_items, prefix):
 		hi += 1
 	return lo, hi
 
+# letters lowering to a letter whose upper and title case are others (str has no way back from k to KELVIN
+# SIGN), by that lower case letter; the tests hold them against each Python's Unicode data
+_CASE_EXTRAS = {'i': '\u0130', 'k': '\u212a', '\u00df': '\u1e9e', '\u00e5': '\u212b', '\u03b8': '\u03f4', '\u03c9': '\u2126'}
+_CASE_VARIANTS = {}   # char -> _case_variants(char)
+
+def _case_variants(char):
+	'''
+	The characters matching char in any case, char included, sorted in one string: those with the same lower
+	case letter, as readline's completion-ignore-case compares a character at a time (towlower). The I with a
+	dot lowers to an i and a dot, and counts as an i; the dotless i is no I.
+	'''
+	variants = _CASE_VARIANTS.get(char)
+	if variants is None:
+		lower = char.lower()[0]
+		near = {char, lower, lower.upper(), lower.title()}
+		near.update(_CASE_EXTRAS.get(lower, ''))
+		variants = ''.join(sorted(other for other in near if len(other) == 1 and other.lower()[0] == lower))
+		_CASE_VARIANTS[char] = variants
+	return variants
+
 def _starts(text, prefix, icase=False):
-	'''Whether text starts with prefix; with icase in any case, as readline's completion-ignore-case compares.'''
-	if not icase:
-		return text.startswith(prefix)
-	return text[:len(prefix)].lower() == prefix.lower()
+	'''Whether text starts with prefix; with icase in any case, a character at a time as _case_variants matches.'''
+	if text.startswith(prefix):
+		return True
+	if not icase or len(text) < len(prefix):
+		return False
+	for char, typed in zip(text, prefix):
+		if char != typed and char not in _case_variants(typed):
+			return False
+	return True
 
 def _prefix_ranges(sorted_items, prefix, icase=False):
 	'''
-	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase with any spelling of it
-	differing only in case. Each spelling is followed one character at a time, and only while some item
+	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase in any case (as _starts
+	matches). Each spelling of the prefix is followed one character at a time, and only while some item
 	starts with it, so the spellings tried are few however long the prefix.
 	'''
 	if not icase:
 		return [_prefix_range(sorted_items, prefix)]
 	spellings = ['']
-	for char in prefix:
-		variants = sorted(variant for variant in {char, char.lower(), char.upper()} if len(variant) == 1)
-		longer = []
-		for spelling in spellings:
-			for variant in variants:
-				text = spelling + variant
-				index = bisect_left(sorted_items, text)
-				if index < len(sorted_items) and sorted_items[index].startswith(text):
-					longer.append(text)
-		spellings = longer
+	for typed in prefix:
+		spellings = [spelling + char for spelling in spellings for char in _case_variants(typed) if _starts_some(sorted_items, spelling + char)]
 	return sorted(_prefix_range(sorted_items, spelling) for spelling in spellings)
 
 class MemoryKnowledge(object):
