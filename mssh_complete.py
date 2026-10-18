@@ -719,9 +719,10 @@ class Context(object):
 	command_words / command_word_index / command_prefix: the remote command words up to the
 		cursor, the index of the current one, and the text in front of them inside a quoted word
 	mode: plain, push, sync, gather or ipmi; features: features of every other slot
+	icase: the word is matched in any case (bash's completion-ignore-case, request flag icase=1)
 	'''
 	__slots__ = ('slot', 'option', 'prefix', 'value_start', 'open_quote', 'quoted', 'hosts', 'options',
-		'command_words', 'command_word_index', 'command_prefix', 'mode', 'features')
+		'command_words', 'command_word_index', 'command_prefix', 'mode', 'features', 'icase')
 
 	def __init__(self, **values):
 		for name in self.__slots__:
@@ -1036,6 +1037,33 @@ def _prefix_range(sorted_items, prefix):
 		hi += 1
 	return lo, hi
 
+def _starts(text, prefix, icase=False):
+	'''Whether text starts with prefix; with icase in any case, as readline's completion-ignore-case compares.'''
+	if not icase:
+		return text.startswith(prefix)
+	return text[:len(prefix)].lower() == prefix.lower()
+
+def _prefix_ranges(sorted_items, prefix, icase=False):
+	'''
+	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase with any spelling of it
+	differing only in case. Each spelling is followed one character at a time, and only while some item
+	starts with it, so the spellings tried are few however long the prefix.
+	'''
+	if not icase:
+		return [_prefix_range(sorted_items, prefix)]
+	spellings = ['']
+	for char in prefix:
+		variants = sorted(variant for variant in {char, char.lower(), char.upper()} if len(variant) == 1)
+		longer = []
+		for spelling in spellings:
+			for variant in variants:
+				text = spelling + variant
+				index = bisect_left(sorted_items, text)
+				if index < len(sorted_items) and sorted_items[index].startswith(text):
+					longer.append(text)
+		spellings = longer
+	return sorted(_prefix_range(sorted_items, spelling) for spelling in spellings)
+
 class MemoryKnowledge(object):
 	'''
 	Records held in memory: identical invocations share one record whose weight sums their uses.
@@ -1080,11 +1108,10 @@ class MemoryKnowledge(object):
 	def record_count(self):
 		return len(self.records)
 
-	def feature_range(self, prefix):
+	def feature_range(self, prefix, icase=False):
 		if self._sorted is None:
 			self._sorted = sorted(self._postings)
-		lo, hi = _prefix_range(self._sorted, prefix)
-		return [(text, text) for text in self._sorted[lo:hi]]
+		return [(text, text) for lo, hi in _prefix_ranges(self._sorted, prefix, icase) for text in self._sorted[lo:hi]]
 
 	def feature_key(self, text):
 		return text if text in self._postings else None
@@ -1115,9 +1142,8 @@ class SnapshotKnowledge(object):
 	def record_count(self):
 		return self.index.count('records')
 
-	def feature_range(self, prefix):
-		lo, hi = _prefix_range(self.features, prefix)
-		return [(key, self.features[key]) for key in range(lo, hi)]
+	def feature_range(self, prefix, icase=False):
+		return [(key, self.features[key]) for lo, hi in _prefix_ranges(self.features, prefix, icase) for key in range(lo, hi)]
 
 	def feature_key(self, text):
 		key = bisect_left(self.features, text)
@@ -1150,9 +1176,10 @@ KIND_WEIGHTS = {}           # feature kind ('h', 't', 'v', 'c', ...) -> weight, 
 COMMON_SHARE = 0.5          # a feature in more than this share of the records carries no context
 MAX_CONTEXT_RECORDS = 20000 # records read per query for context
 
-def score_features(knowledges, prefix, line_features, deadline=None):
+def score_features(knowledges, prefix, line_features, deadline=None, icase=False):
 	'''
-	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge.
+	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge; with icase, with
+	prefix in any case.
 
 	score(c) = BETA * frecency(c) + sum over records r holding c of log(1 + weight(r)) * sim(r, line),
 	where sim sums idf(f) * KIND_WEIGHTS[kind of f] over the features f shared by r and the line.
@@ -1164,7 +1191,7 @@ def score_features(knowledges, prefix, line_features, deadline=None):
 	'''
 	scores = {}
 	for knowledge in knowledges:
-		for key, text in knowledge.feature_range(prefix):
+		for key, text in knowledge.feature_range(prefix, icase):
 			scores[text] = scores.get(text, 0.0) + BETA * knowledge.feature_weight(key)
 	if not scores or not line_features:
 		return scores
@@ -1190,7 +1217,7 @@ def score_features(knowledges, prefix, line_features, deadline=None):
 				return scores
 			weight, features = knowledge.record(rid)
 			for text in features:
-				if text.startswith(prefix):
+				if _starts(text, prefix, icase):
 					scores[text] = scores.get(text, 0.0) + math.log1p(weight) * value
 	return scores
 
@@ -1206,13 +1233,11 @@ class HostTable(object):
 		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
 		self._groups = None
 
-	def names_with_prefix(self, prefix):
-		lo, hi = _prefix_range(self.names, prefix)
-		return self.names[lo:hi]
+	def names_with_prefix(self, prefix, icase=False):
+		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase) for name in self.names[lo:hi]]
 
-	def aliases_with_prefix(self, prefix):
-		lo, hi = _prefix_range(self.alias_names, prefix)
-		return [(index, self.alias_names[index]) for index in range(lo, hi)]
+	def aliases_with_prefix(self, prefix, icase=False):
+		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase) for index in range(lo, hi)]
 
 	def sources(self, name):
 		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
@@ -3419,6 +3444,7 @@ class Engine(object):
 		response = Response(context)
 		if context is None:
 			return response
+		context.icase = request.flags.get('icase') == '1'
 		if context.slot == SLOT_OPTION:
 			candidates = self._options(context, request.shell)
 		elif context.slot == SLOT_VALUE:
@@ -4075,7 +4101,7 @@ class Engine(object):
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
 			full = lead + candidate.text
-			if not full.startswith(prefix) or full in seen:
+			if not _starts(full, prefix, context.icase) or full in seen:
 				continue
 			rest = full[len(prefix):]
 			if literal:
@@ -4100,6 +4126,12 @@ class Engine(object):
 		used = {option.dest for option, _ in context.options if not option.repeat}
 		groups = {option.group for option, _ in context.options if option.group}
 		scores = score_features(self.knowledges, 'o:', context.features)
+		# an option name is matched in any case only where no other one differs from it only in case (-s, -S):
+		# readline, taking the common start of the candidates in any case, could turn one into the other
+		folded = {}
+		for option in self.spec.options:
+			for string in option.strings:
+				folded[string.lower()] = folded.get(string.lower(), 0) + 1
 		out = []
 		for option in self.spec.options:
 			if option.dest in used or (option.group and option.group in groups):
@@ -4112,7 +4144,7 @@ class Engine(object):
 			else:
 				strings = option.strings
 			for string in strings:
-				if string.startswith(word):
+				if _starts(string, word, context.icase and folded[string.lower()] == 1):
 					out.append(Candidate(string, option.help, 'options', score))
 		return out
 
@@ -4124,31 +4156,32 @@ class Engine(object):
 			response.directives.add('nodefault')
 			return []
 		lead = 'v:{}='.format(dest)
+		icase = context.icase
 		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
-			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline).items()]
+			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase).items()]
 		if dest in PATH_DESTS:
 			response.directives.add('files')
 		elif dest == 'identity_file':
 			response.directives.add('files')
-			out.extend(self._key_files(word))
+			out.extend(self._key_files(word, icase))
 		elif dest in USER_DESTS:
 			users = set(self.users)
 			if os.environ.get('USER'):
 				users.add(os.environ['USER'])
-			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if user.startswith(word))
+			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase))
 		elif dest == 'skip_hosts':
 			# the members that can complete the host being typed (after its "," and "user@")
 			prefix = word.rpartition(',')[2].rpartition('@')[2]
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix)))
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
 		elif dest == 'completion':
-			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if action.startswith(word))
+			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase))
 		elif dest == 'encoding':
-			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if name.startswith(word))
-		if option.default and option.default.startswith(word):
+			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if _starts(name, word, icase))
+		if option.default and _starts(option.default, word, icase):
 			out.append(Candidate(option.default, 'default', 'defaults', PRIOR / 2))
 		return out
 
-	def _key_files(self, word):
+	def _key_files(self, word, icase=False):
 		directory = os.path.expanduser('~/.ssh')
 		try:
 			entries = os.listdir(directory)
@@ -4159,14 +4192,15 @@ class Engine(object):
 			if name.endswith('.pub') or not (name.startswith('id_') or name + '.pub' in entries):
 				continue
 			text = '~/.ssh/' + name
-			if text.startswith(word):
+			if _starts(text, word, icase):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text, prefix=''):
+	def _members(self, hosts_text, prefix='', icase=False):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
-		ranges), that start with prefix: the first RANGE_MEMBERS_LIMIT of them, as for its warnings.
+		ranges), that start with prefix (in any case with icase): the first RANGE_MEMBERS_LIMIT of
+		them, as for its warnings.
 		'''
 		import itertools
 		members = set()
@@ -4182,7 +4216,7 @@ class Engine(object):
 				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
 				# a range past its limit names no member, and costs nothing to find out
 				named = expand_ranges(word)
-			members.update(itertools.islice((name for name in named if name.startswith(prefix)), room))
+			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -4190,20 +4224,21 @@ class Engine(object):
 		head, comma, segment = text.rpartition(',')
 		user, at, host_prefix = segment.rpartition('@')
 		lead = head + comma + user + at
+		icase = context.icase
 		scores = {}
-		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline).items():
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase).items():
 			scores[feature[2:]] = score
 		out = []
 		if not comma and not at:
-			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline).items():
+			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		aliases = set()
-		for number, name in self.hosts.aliases_with_prefix(host_prefix):
+		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase):
 			aliases.add(name)
 			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
-		names = set(self.hosts.names_with_prefix(host_prefix))
-		names.update(name for name in scores if name.startswith(host_prefix) and '[' not in name)
+		names = set(self.hosts.names_with_prefix(host_prefix, icase))
+		names.update(name for name in scores if _starts(name, host_prefix, icase) and '[' not in name)
 		names -= aliases
 		# mssh's list is keyed by the name a host runs as: the user typed with it, else -u's (-X hosts get it too)
 		unavailable = self.hosts.unavailable
@@ -4236,7 +4271,7 @@ class Engine(object):
 			return out
 		covered = set()
 		for group_text, members in self.hosts.groups():
-			if group_text.startswith(host_prefix) and len(members) > 1 and names.issuperset(members):
+			if _starts(group_text, host_prefix, icase) and len(members) > 1 and names.issuperset(members):
 				covered.update(members)
 				out.append(Candidate(lead + group_text, '{} hosts'.format(len(members)), 'groups', sum(host_score(member) for member in members)))
 		rest = names - covered
@@ -4255,33 +4290,35 @@ class Engine(object):
 
 	def _commands(self, context, response, deadline):
 		word = context.prefix
+		icase = context.icase
 		out = []
 		if context.mode in ('sync', 'gather'):
 			response.directives.add('files')
 		if word.count('#') % 2 == 1:
 			at = word.rfind('#')
 			for magic in MAGIC_STRINGS:
-				if magic.startswith(word[at:]):
+				if _starts(magic, word[at:], icase):
 					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
 		if context.mode in PATH_MODES:
-			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline).items():
+			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
 		elif context.quoted:
-			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline).items():
+			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase).items():
 				out.append(Candidate(feature[2:], '', 'history', score))
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
 			# a word holding whitespace would make mssh run each command word as its own command
 			if not typed:
-				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline).items():
+				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase).items():
 					if _joinable(feature[2:]):
 						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
-				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline).items():
+				# the words typed before stay as typed: only the word being completed is matched in any case
+				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline, icase).items():
 					words = words_as_typed(feature[2:])
-					if len(words) > len(typed) and words[:len(typed)] == typed and words[len(typed)].startswith(partial) and _joinable(words[len(typed)]):
+					if len(words) > len(typed) and words[:len(typed)] == typed and _starts(words[len(typed)], partial, icase) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
 		if context.mode == 'plain' and context.command_words is not None:

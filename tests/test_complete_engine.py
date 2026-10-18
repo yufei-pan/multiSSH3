@@ -285,6 +285,48 @@ def test_aliases_and_unavailable_hosts(tmp_path):
 	assert candidates[-1].text == 'ab' and candidates[-1].description == 'unreachable recently'
 
 
+# bash with readline's completion-ignore-case on sends icase=1: readline takes a candidate whose case differs
+# from the word, so every lookup matches the word in any case, and a candidate keeps its own spelling
+
+ICASE = {'icase': '1'}
+
+
+def test_prefix_ranges_find_every_spelling_differing_only_in_case():
+	items = sorted(['AB', 'Ab', 'aB', 'ab', 'abc', 'a', 'b', 'ac'])
+	assert mc._prefix_ranges(items, 'ab') == [mc._prefix_range(items, 'ab')]
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab', True) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
+	assert [text for lo, hi in mc._prefix_ranges(items, 'Ab', True) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
+	assert mc._prefix_ranges(items, 'zz', True) == []
+	assert mc._prefix_ranges(items, '', True) == [(0, len(items))]
+
+
+def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
+	table = _host_table(tmp_path, ['Node01', 'node02', 'NODE03', 'login1'], aliases=[('GPUs', ['Node01', 'node02'])])
+	assert texts(query('mssh node0', knowledges=[], hosts=table)) == ['node02']
+	assert sorted(texts(query('mssh node0', knowledges=[], hosts=table, flags=ICASE))) == ['NODE03', 'Node01', 'node02']
+	assert texts(query('mssh gp', knowledges=[], hosts=table, flags=ICASE)) == ['GPUs']
+	assert sorted(texts(query('mssh login1,root@no', knowledges=[], hosts=table, flags=ICASE))) == [
+		'login1,root@NODE03', 'login1,root@Node01', 'login1,root@node02']
+
+
+def test_icase_history_matches_in_any_case():
+	assert texts(query('mssh LOG')) == []
+	assert texts(query('mssh LOG', flags=ICASE)) == ['login1']
+	assert texts(query('mssh login1 UP', flags=ICASE)) == ['uptime']
+	assert texts(query('mssh login1 "UP', word='UP', flags=ICASE)) == ['uptime']
+	assert texts(query('mssh -u ROO', flags=ICASE)) == ['root']
+	assert texts(query('mssh h "echo #ho', word='echo #ho', flags=ICASE)) == ['echo #HOST#', 'echo #HOSTNAME#']
+
+
+def test_icase_folds_option_names_only_where_no_other_option_differs_in_case():
+	# -s and -S are two options, never offered for each other; -su, with no -SU, is offered for -S as readline
+	# would take it; no two long options differ only in case
+	assert texts(query('mssh --NO_WA', flags=ICASE)) == ['--no_watch']
+	assert texts(query('mssh -s', flags=ICASE)) == texts(query('mssh -s'))
+	upper = texts(query('mssh -S', flags=ICASE))
+	assert '-S' in upper and '-s' not in upper and '-su' in upper
+
+
 # mssh records a failure under the name it ran the host as, and so looks it up: user@host when a user
 # applies (typed with the host, else -u, else the mssh config's), the bare name otherwise
 
