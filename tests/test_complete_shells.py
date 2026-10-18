@@ -67,13 +67,15 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
-def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=()):
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines=''):
 	'''
 	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
-	only files (no other file names among the candidates), with commands found first on its PATH.
+	only files (no other file names among the candidates), with commands found first on its PATH, and
+	env_lines in ~/hosts.env (aliases).
 	'''
 	env, home = make_home(tmp_path, history)
 	(home / 'hosts').write_text(hosts)
+	(home / 'hosts.env').write_text(env_lines)
 	build_index(env)
 	work = tmp_path / 'work'
 	work.mkdir()
@@ -109,6 +111,16 @@ def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_p
 		assert session.line_after('mssh STORAGE-E') == 'mssh storage-east '
 		assert session.line_after('mssh login1 Zz') == 'mssh login1 Zzsvc '
 		assert session.line_after('mssh login1 ZZ') == 'mssh login1 zzsvc '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_a_host_and_an_alias_differing_only_in_case(tmp_path):
+	# the host gpus beside the alias GPUs (an env variable): gpus typed in its case is the host, never the alias
+	session = ignoring_case(tmp_path, [], '10.0.0.1 gpus\n10.0.0.2 Node01\n10.0.0.3 node02\n', env_lines='GPUs=Node01,node02\n')
+	try:
+		assert session.line_after('mssh gpus') == 'mssh gpus '
+		assert session.line_after('mssh GPU') == 'mssh GPUs '
 	finally:
 		session.close()
 
