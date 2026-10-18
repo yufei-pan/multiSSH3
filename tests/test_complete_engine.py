@@ -329,14 +329,16 @@ def test_case_variants_are_every_letter_with_the_same_lower_case():
 			assert mc.UNICODE_CASE.variants(char) == ''.join(sorted(chars)), (char, chars)
 
 
-def test_ascii_text_is_matched_and_keyed_as_its_characters_are():
-	# _starts and CaseFold.key take a shortcut for ASCII text (upper case): it must agree with the variants
-	chars = [chr(point) for point in range(32, 127)] + ['\u212a', '\u0130', '\u0131']
+@pytest.mark.parametrize('locale_name', [None, 'C', 'tr_TR.UTF-8', 'tr_TR.ISO-8859-9'])
+def test_text_is_matched_and_keyed_as_its_characters_are(locale_name):
+	# CaseFold.same and key take a shortcut for ASCII text (upper case): it must agree with the variants
+	fold = mc.case_fold(locale_name)
+	chars = [chr(point) for point in range(32, 127)] + ['\u212a', '\u0130', '\u0131', '\u00e9', '\u00c9']
 	for typed in chars:
-		assert mc.UNICODE_CASE.key(typed) == mc.UNICODE_CASE.variants(typed)[0], typed
+		assert fold.key(typed) == fold.variants(typed)[0], typed
 		for char in chars:
-			assert mc._starts(char + 'x', typed, mc.UNICODE_CASE) == (char in mc.UNICODE_CASE.variants(typed)), (char, typed)
-			assert (mc.UNICODE_CASE.key(char) == mc.UNICODE_CASE.key(typed)) == (char in mc.UNICODE_CASE.variants(typed)), (char, typed)
+			assert mc._starts(char + 'x', typed, fold) == (char in fold.variants(typed)), (char, typed)
+			assert (fold.key(char) == fold.key(typed)) == (char in fold.variants(typed)), (char, typed)
 
 
 @pytest.mark.parametrize('name, ascii, turkic', [
