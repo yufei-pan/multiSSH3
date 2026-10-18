@@ -449,6 +449,22 @@ def test_icase_range_members_are_the_names_the_range_makes(tmp_path):
 	assert 'Web1' not in listed and 'Web[1-3]' in listed and listed[0] == 'web2'
 
 
+def test_icase_paths_keep_their_directories_as_typed(tmp_path, monkeypatch):
+	# readline's own file name completion matches only a path's last part in any case: /Data/pro is no
+	# /data/project/b.txt, and readline would replace the directories typed
+	knowledges = [memory([line(NOW, '-su -f=/data/project/b.txt', 'h', '"/srv/Data/out"')])]
+	assert texts(query('mssh -f /data/pro', knowledges=knowledges, flags=ICASE)) == ['/data/project/b.txt']
+	assert texts(query('mssh -f /data/PRO', knowledges=knowledges, flags=ICASE)) == ['/data/project/b.txt']
+	assert texts(query('mssh -f /Data/pro', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh -f /data/project/b.txt h /srv/Data/O', knowledges=knowledges, flags=ICASE)) == ['/srv/Data/out']
+	assert texts(query('mssh -f /data/project/b.txt h /srv/data/o', knowledges=knowledges, flags=ICASE)) == []
+	(tmp_path / '.ssh').mkdir()
+	(tmp_path / '.ssh' / 'id_test').write_text('')
+	monkeypatch.setenv('HOME', str(tmp_path))
+	assert texts(query('mssh -k ~/.ssh/ID', knowledges=[], flags=ICASE)) == ['~/.ssh/id_test']
+	assert texts(query('mssh -k ~/.SSH/id', knowledges=[], flags=ICASE)) == []
+
+
 def test_prefix_ranges_match_in_any_case_from_start_on():
 	items = sorted(['AB x', 'ab X', 'ab x', 'ab y', 'Ab X'])
 	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', True, 3) for text in items[lo:hi]] == ['ab X', 'ab x']

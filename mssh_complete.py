@@ -1069,17 +1069,21 @@ def _case_key(text):
 		return text.upper()
 	return ''.join(_case_variants(char)[0] for char in text)
 
-def _starts(text, prefix, icase=False):
-	'''Whether text starts with prefix; with icase in any case, a character at a time as _case_variants matches.'''
+def _starts(text, prefix, icase=False, start=0):
+	'''
+	Whether text starts with prefix; with icase with prefix[start:] in any case, a character at a time as
+	_case_variants matches.
+	'''
 	if text.startswith(prefix):
 		return True
-	if not icase or len(text) < len(prefix):
+	if not icase or len(text) < len(prefix) or not text.startswith(prefix[:start]):
 		return False
-	head = text[:len(prefix)]
-	if _isascii(head) and _isascii(prefix):
+	head = text[start:len(prefix)]
+	word = prefix[start:]
+	if _isascii(head) and _isascii(word):
 		# ASCII characters are each other's variants when their upper cases are one
-		return head.upper() == prefix.upper()
-	for char, typed in zip(head, prefix):
+		return head.upper() == word.upper()
+	for char, typed in zip(head, word):
 		if char != typed and char not in _case_variants(typed):
 			return False
 	return True
@@ -3436,6 +3440,10 @@ def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
+def _path_start(path):
+	'''Where a path's last part starts: readline's file name completion matches only that part in any case.'''
+	return path.rfind('/') + 1
+
 def _joinable(word):
 	'''
 	Whether a command word keeps unquoted command words one command. mssh joins its command words
@@ -4211,8 +4219,11 @@ class Engine(object):
 			return []
 		lead = 'v:{}='.format(dest)
 		icase = context.icase
+		# a path keeps its directories as typed, as readline's own file name completion does: only its last part
+		# is matched in any case
+		start = _path_start(word) if dest in PATH_DESTS or dest == 'identity_file' else 0
 		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
-			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase, len(lead)).items()]
+			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase, len(lead) + start).items()]
 		if dest in PATH_DESTS:
 			response.directives.add('files')
 		elif dest == 'identity_file':
@@ -4231,7 +4242,7 @@ class Engine(object):
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase))
 		elif dest == 'encoding':
 			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if _starts(name, word, icase))
-		if option.default and _starts(option.default, word, icase):
+		if option.default and _starts(option.default, word, icase, start):
 			out.append(Candidate(option.default, 'default', 'defaults', PRIOR / 2))
 		return out
 
@@ -4246,7 +4257,7 @@ class Engine(object):
 			if name.endswith('.pub') or not (name.startswith('id_') or name + '.pub' in entries):
 				continue
 			text = '~/.ssh/' + name
-			if _starts(text, word, icase):
+			if _starts(text, word, icase, _path_start(word)):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
@@ -4356,7 +4367,8 @@ class Engine(object):
 				if _starts(magic, word[at:], icase):
 					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
 		if context.mode in PATH_MODES:
-			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2).items():
+			# the directories typed stay as typed
+			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2 + _path_start(word)).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
 		elif context.quoted:
 			# whole commands: the words typed before the current one stay as typed, only it is matched in any case

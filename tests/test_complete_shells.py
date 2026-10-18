@@ -226,6 +226,18 @@ def test_bash_glue_gives_the_shell_back_its_nocasematch(tmp_path):
 		session.close()
 
 
+def test_bash_ignoring_case_keeps_the_directories_of_a_path_as_typed(tmp_path):
+	# as readline's own file name completion does: /Zzdata/pro became /zzdata/project/b.txt
+	session = ignoring_case(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su -f=/zzdata/project/b.txt\th\t"/zzsrv/Out"'])
+	try:
+		assert session.line_after('mssh -f /Zzdata/pro') == 'mssh -f /Zzdata/pro'
+		assert session.line_after('mssh -f /zzdata/PRO') == 'mssh -f /zzdata/project/b.txt '
+		assert session.line_after('mssh -f /x h /ZZSRV/o') == 'mssh -f /x h /ZZSRV/o'
+		assert session.line_after('mssh -f /x h /zzsrv/o') == 'mssh -f /x h /zzsrv/Out '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
