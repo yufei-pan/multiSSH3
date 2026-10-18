@@ -5978,7 +5978,7 @@ _mssh_complete_split() {
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated.
-	local word=$1 cword=$2 prefix=$3 cmd spec func item lead
+	local word=$1 cword=$2 prefix=$3 cmd spec func item lead nocase=0
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
 	local -a words=("$@") found=()
@@ -6016,20 +6016,26 @@ _mssh_complete_delegate() {
 	fi
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
 	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word. When
-	# the engine matched in any case (_mssh_complete_icase), so do compgen and readline: stor gives
-	# Storage-File
+	# the engine matched in any case (_mssh_complete_icase), so do compgen and readline (stor gives
+	# Storage-File): nocasematch says which, then goes back to what it was
 	lead=$prefix$cur
 	lead=${lead%"$word"}
+	shopt -q nocasematch && nocase=1
+	if (( ${_mssh_complete_icase-0} )); then
+		shopt -s nocasematch
+	else
+		shopt -u nocasematch
+	fi
 	for item in ${found[@]+"${found[@]}"}; do
 		item=$prefix$item
-		if (( ${_mssh_complete_icase-0} )); then
-			[[ -n $lead && ${item,,} == "${lead,,}"* ]] && item=${item:${#lead}}
-			[[ ${item,,} == "${word,,}"* ]] && _mssh_complete_delegated+=("$item")
-		else
-			[[ -n $lead && $item == "$lead"* ]] && item=${item#"$lead"}
-			[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
-		fi
+		[[ -n $lead && $item == "$lead"* ]] && item=${item:${#lead}}
+		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
 	done
+	if (( nocase )); then
+		shopt -s nocasematch
+	else
+		shopt -u nocasematch
+	fi
 	return 0
 }
 

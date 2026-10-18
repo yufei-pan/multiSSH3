@@ -196,6 +196,36 @@ def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing
 		session.close()
 
 
+def nocasematch(session):
+	'''Whether the running bash has nocasematch on: 'on' or 'off' (None if it does not say).'''
+	start = len(session.output)
+	session.send('shopt -q nocasematch && echo "@@NOCASE""=on@@" || echo "@@NOCASE""=off@@"\r')
+	deadline = time.monotonic() + 10
+	while time.monotonic() < deadline:
+		found = re.search(rb'@@NOCASE=(on|off)@@', session.output[start:])
+		if found:
+			return found.group(1).decode()
+		session.read_until(b'@@NOCASE=', 0.1)
+	return None
+
+
+def test_bash_glue_gives_the_shell_back_its_nocasematch(tmp_path):
+	# the glue sets nocasematch to match delegated words as the engine matched them (on while ignoring case,
+	# whatever the shell had), and puts back what the shell had
+	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-x"']
+	session = ignoring_case(tmp_path, history, files=['Storage-File'])
+	try:
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
+		assert nocasematch(session) == 'off'
+		set_ignore_case(session, 'off')
+		session.send('shopt -s nocasematch\r')
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-x '
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
