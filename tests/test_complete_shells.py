@@ -67,14 +67,15 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
-def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options=''):
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options='', lang=None):
 	'''
 	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
 	only files (no other file names among the candidates), with commands found first on its PATH, and
-	env_lines in ~/hosts.env (aliases), and shell options (set -e).
+	env_lines in ~/hosts.env (aliases), shell options (set -e), and LANG=lang if given (the index is built in
+	the tests' own).
 	'''
 	env, home = make_home(tmp_path, history)
-	(home / 'hosts').write_text(hosts)
+	(home / 'hosts').write_text(hosts, encoding='utf-8')
 	(home / 'hosts.env').write_text(env_lines)
 	build_index(env)
 	work = tmp_path / 'work'
@@ -87,6 +88,8 @@ def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), e
 		(found / name).write_text('#!/bin/sh\n')
 		(found / name).chmod(0o755)
 	env = dict(env, PATH=str(found) + os.pathsep + env['PATH'])
+	if lang is not None:
+		env['LANG'] = lang
 	extra = "cd '{}'; {}".format(work, options)
 	if on:
 		extra = "bind 'set completion-ignore-case on'; " + extra
@@ -234,6 +237,16 @@ def test_bash_ignoring_case_keeps_the_directories_of_a_path_as_typed(tmp_path):
 		assert session.line_after('mssh -f /zzdata/PRO') == 'mssh -f /zzdata/project/b.txt '
 		assert session.line_after('mssh -f /x h /ZZSRV/o') == 'mssh -f /x h /ZZSRV/o'
 		assert session.line_after('mssh -f /x h /zzsrv/o') == 'mssh -f /x h /zzsrv/Out '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_lowers_letters_as_its_locale_does(tmp_path):
+	# in the C locale readline lowers ASCII letters only: \u0130stanbul is no word for i there, and offered
+	# beside Ix1 it kept readline from completing
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n', lang='C')
+	try:
+		assert session.line_after('mssh i') == 'mssh Ix1 '
 	finally:
 		session.close()
 

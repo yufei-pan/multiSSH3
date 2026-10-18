@@ -294,10 +294,10 @@ ICASE = {'icase': '1'}
 def test_prefix_ranges_find_every_spelling_differing_only_in_case():
 	items = sorted(['AB', 'Ab', 'aB', 'ab', 'abc', 'a', 'b', 'ac'])
 	assert mc._prefix_ranges(items, 'ab') == [mc._prefix_range(items, 'ab')]
-	assert [text for lo, hi in mc._prefix_ranges(items, 'ab', True) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
-	assert [text for lo, hi in mc._prefix_ranges(items, 'Ab', True) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
-	assert mc._prefix_ranges(items, 'zz', True) == []
-	assert mc._prefix_ranges(items, '', True) == [(0, len(items))]
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab', mc.UNICODE_CASE) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
+	assert [text for lo, hi in mc._prefix_ranges(items, 'Ab', mc.UNICODE_CASE) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
+	assert mc._prefix_ranges(items, 'zz', mc.UNICODE_CASE) == []
+	assert mc._prefix_ranges(items, '', mc.UNICODE_CASE) == [(0, len(items))]
 
 
 def test_icase_lookups_and_checks_match_letters_alike():
@@ -310,8 +310,8 @@ def test_icase_lookups_and_checks_match_letters_alike():
 		'\u0131': ['\u0131x'], '\u00df': ['\u00df', '\u1e9e'], 's': ['SS'],
 	}
 	for prefix, found in expected.items():
-		assert sorted(text for lo, hi in mc._prefix_ranges(items, prefix, True) for text in items[lo:hi]) == sorted(found), prefix
-		assert sorted(text for text in items if mc._starts(text, prefix, True)) == sorted(found), prefix
+		assert sorted(text for lo, hi in mc._prefix_ranges(items, prefix, mc.UNICODE_CASE) for text in items[lo:hi]) == sorted(found), prefix
+		assert sorted(text for text in items if mc._starts(text, prefix, mc.UNICODE_CASE)) == sorted(found), prefix
 
 
 def test_case_variants_are_every_letter_with_the_same_lower_case():
@@ -326,17 +326,50 @@ def test_case_variants_are_every_letter_with_the_same_lower_case():
 	assert len(alike) > 1000
 	for chars in alike.values():
 		for char in chars:
-			assert mc._case_variants(char) == ''.join(sorted(chars)), (char, chars)
+			assert mc.UNICODE_CASE.variants(char) == ''.join(sorted(chars)), (char, chars)
 
 
 def test_ascii_text_is_matched_and_keyed_as_its_characters_are():
-	# _starts and _case_key take a shortcut for ASCII text (upper case): it must agree with _case_variants
+	# _starts and CaseFold.key take a shortcut for ASCII text (upper case): it must agree with the variants
 	chars = [chr(point) for point in range(32, 127)] + ['\u212a', '\u0130', '\u0131']
 	for typed in chars:
-		assert mc._case_key(typed) == mc._case_variants(typed)[0], typed
+		assert mc.UNICODE_CASE.key(typed) == mc.UNICODE_CASE.variants(typed)[0], typed
 		for char in chars:
-			assert mc._starts(char + 'x', typed, True) == (char in mc._case_variants(typed)), (char, typed)
-			assert (mc._case_key(char) == mc._case_key(typed)) == (char in mc._case_variants(typed)), (char, typed)
+			assert mc._starts(char + 'x', typed, mc.UNICODE_CASE) == (char in mc.UNICODE_CASE.variants(typed)), (char, typed)
+			assert (mc.UNICODE_CASE.key(char) == mc.UNICODE_CASE.key(typed)) == (char in mc.UNICODE_CASE.variants(typed)), (char, typed)
+
+
+@pytest.mark.parametrize('name, ascii, turkic', [
+	(None, False, False), ('C.UTF-8', False, False), ('en_US.utf8', False, False), ('de_DE.UTF-8@euro', False, False),
+	('C', True, False), ('POSIX', True, False), ('', True, False), ('en_US.ISO-8859-1', True, False),
+	('tr_TR.UTF-8', False, True), ('tr_CY.utf8', False, True), ('az_AZ.UTF-8', False, True), ('crh_UA.UTF-8', False, True),
+	('ku_TR.UTF-8', False, True), ('tt_RU.UTF-8@iqtelif', False, True), ('tt_RU.UTF-8', False, False), ('az_IR.UTF-8', False, False),
+	('tr_TR.ISO-8859-9', True, True)])
+def test_case_folds_as_the_locale_of_the_shell(name, ascii, turkic):
+	# readline lowers characters as the shell's locale says: towlower in a UTF-8 one, where Turkish and the like
+	# lower I to the dotless i and the I with a dot to i (glibc's tr_TR, which a few others copy); tolower on
+	# bytes elsewhere, where only ASCII letters reach the engine as letters. None: a glue that does not say
+	fold = mc.case_fold(name)
+	assert (fold.ascii, fold.turkic) == (ascii, turkic)
+
+
+def test_case_folds_letters_as_ascii_and_turkish_locales_do():
+	ascii, turkish = mc.case_fold('C'), mc.case_fold('tr_TR.UTF-8')
+	assert ascii.variants('a') == 'Aa' and ascii.variants('\u00e9') == '\u00e9' and ascii.variants('\u0130') == '\u0130'
+	assert turkish.variants('i') == 'i\u0130' and turkish.variants('I') == 'I\u0131' and turkish.variants('\u0131') == 'I\u0131'
+	assert turkish.variants('a') == 'Aa' and turkish.key('Ii') != turkish.key('iI')
+	assert mc._starts('\u0130stanbul', 'is', turkish) and not mc._starts('Ix', 'i', turkish) and mc._starts('\u0131x', 'I', turkish)
+	assert not mc._starts('\u00c9cole', '\u00e9', ascii) and mc._starts('Ecole', 'e', ascii)
+
+
+def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path):
+	table = _host_table(tmp_path, ['\u0130stanbul', 'Ix1', '\u00c9cole', '\u00e9t\u00e91'])
+	def found(word, lc):
+		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags={'icase': '1', 'lc': lc})))
+	assert found('i', 'C.UTF-8') == ['Ix1', '\u0130stanbul']
+	assert found('i', 'C') == ['Ix1']
+	assert found('\u00e9', 'C') == ['\u00e9t\u00e91'] and found('\u00e9', 'C.UTF-8') == ['\u00c9cole', '\u00e9t\u00e91']
+	assert found('i', 'tr_TR.UTF-8') == ['\u0130stanbul'] and found('I', 'tr_TR.UTF-8') == ['Ix1']
 
 
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
@@ -467,9 +500,9 @@ def test_icase_paths_keep_their_directories_as_typed(tmp_path, monkeypatch):
 
 def test_prefix_ranges_match_in_any_case_from_start_on():
 	items = sorted(['AB x', 'ab X', 'ab x', 'ab y', 'Ab X'])
-	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', True, 3) for text in items[lo:hi]] == ['ab X', 'ab x']
-	assert [text for lo, hi in mc._prefix_ranges(items, 'ab ', True, 3) for text in items[lo:hi]] == ['ab X', 'ab x', 'ab y']
-	assert mc._prefix_ranges(items, 'aB x', True, 3) == []
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', mc.UNICODE_CASE, 3) for text in items[lo:hi]] == ['ab X', 'ab x']
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab ', mc.UNICODE_CASE, 3) for text in items[lo:hi]] == ['ab X', 'ab x', 'ab y']
+	assert mc._prefix_ranges(items, 'aB x', mc.UNICODE_CASE, 3) == []
 
 
 def test_icase_matches_option_names_in_any_case_only_where_the_word_names_none_as_typed():

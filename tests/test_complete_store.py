@@ -95,6 +95,6 @@ def test_context_scores_in_any_case_go_to_the_features_the_lookup_found():
 	knowledge = memory([(['c:ls x', 'h:a'], 1.0), (['c:LS X', 'h:a'], 1.0), (['c:ls X', 'h:a'], 1.0)] + [(['c:df', 'h:' + host], 1.0) for host in 'bcde'])
 	exact = mc.score_features([knowledge], 'c:ls x', ['h:a'])
 	assert set(exact) == {'c:ls x'} and exact['c:ls x'] > 0.1
-	folded = mc.score_features([knowledge], 'c:ls x', ['h:a'], icase=True, start=5)
+	folded = mc.score_features([knowledge], 'c:ls x', ['h:a'], icase=mc.UNICODE_CASE, start=5)
 	assert set(folded) == {'c:ls x', 'c:ls X'} and folded['c:ls X'] == pytest.approx(exact['c:ls x'])
-	assert set(mc.score_features([knowledge], 'c:ls x', ['h:a'], icase=True, start=2)) == {'c:ls x', 'c:ls X', 'c:LS X'}
+	assert set(mc.score_features([knowledge], 'c:ls x', ['h:a'], icase=mc.UNICODE_CASE, start=2)) == {'c:ls x', 'c:ls X', 'c:LS X'}

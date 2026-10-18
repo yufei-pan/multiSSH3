@@ -1042,63 +1042,126 @@ def _prefix_range(sorted_items, prefix):
 # letters lowering to a letter whose upper and title case are others (str has no way back from k to KELVIN
 # SIGN), by that lower case letter; the tests hold them against each Python's Unicode data
 _CASE_EXTRAS = {'i': '\u0130', 'k': '\u212a', '\u00df': '\u1e9e', '\u00e5': '\u212b', '\u03b8': '\u03f4', '\u03c9': '\u2126'}
-_CASE_VARIANTS = {}   # char -> _case_variants(char)
-
-def _case_variants(char):
-	'''
-	The characters matching char in any case, char included, sorted in one string: those with the same lower
-	case letter, as readline's completion-ignore-case compares a character at a time (towlower). The I with a
-	dot lowers to an i and a dot, and counts as an i; the dotless i is no I.
-	'''
-	variants = _CASE_VARIANTS.get(char)
-	if variants is None:
-		lower = char.lower()[0]
-		near = {char, lower, lower.upper(), lower.title()}
-		near.update(_CASE_EXTRAS.get(lower, ''))
-		variants = ''.join(sorted(other for other in near if len(other) == 1 and other.lower()[0] == lower))
-		_CASE_VARIANTS[char] = variants
-	return variants
 
 # str.isascii came with Python 3.7
 _isascii = getattr(str, 'isascii', None) or (lambda text: not text or max(text) < '\x80')
 
-def _case_key(text):
-	'''text with each character as the first of its _case_variants: the same for texts differing only in case.'''
-	if _isascii(text):
-		# an ASCII character's first variant is its upper case
-		return text.upper()
-	return ''.join(_case_variants(char)[0] for char in text)
+class CaseFold(object):
+	"""
+	How readline's completion-ignore-case compares characters in the shell's locale: a character at a time,
+	each lowered. In a UTF-8 locale by towlower: the I with a dot lowers to an i and a dot and counts as an
+	i, the dotless i is no I; Turkish locales and those copying them (turkic) lower I to the dotless i and
+	the I with a dot to i. In other locales by tolower on bytes, of which only ASCII letters reach the
+	engine as letters (ascii). An instance is what a query's icase holds.
+	"""
+	__slots__ = ('ascii', 'turkic', '_variants')
 
-def _starts(text, prefix, icase=False, start=0):
-	'''
-	Whether text starts with prefix; with icase with prefix[start:] in any case, a character at a time as
-	_case_variants matches.
-	'''
+	def __init__(self, ascii=False, turkic=False):
+		self.ascii = ascii
+		self.turkic = turkic
+		self._variants = {}   # char -> variants(char)
+
+	def lower(self, char):
+		"""The character readline compares for char."""
+		if self.turkic and (char == 'I' or char == '\u0130'):
+			return '\u0131' if char == 'I' else 'i'
+		if self.ascii:
+			return char.lower() if 'A' <= char <= 'Z' else char
+		return char.lower()[0]
+
+	def variants(self, char):
+		"""The characters matching char, char included, sorted in one string: those lowering as it does."""
+		variants = self._variants.get(char)
+		if variants is None:
+			lower = self.lower(char)
+			near = {char, lower, lower.upper(), lower.title()}
+			near.update(_CASE_EXTRAS.get(lower, ''))
+			variants = ''.join(sorted(other for other in near if len(other) == 1 and self.lower(other) == lower))
+			self._variants[char] = variants
+		return variants
+
+	def key(self, text):
+		"""text with each character as the first of its variants: the same for texts differing only in case."""
+		if not self.turkic and _isascii(text):
+			# an ASCII character's first variant is its upper case
+			return text.upper()
+		return ''.join(self.variants(char)[0] for char in text)
+
+	def same(self, text, word):
+		"""Whether text and word, as long, differ only in case."""
+		if not self.turkic and _isascii(text) and _isascii(word):
+			# ASCII characters are each other's variants when their upper cases are one
+			return text.upper() == word.upper()
+		for char, typed in zip(text, word):
+			if char != typed and char not in self.variants(typed):
+				return False
+		return True
+
+UNICODE_CASE = CaseFold()
+_CASE_KINDS = {(False, False): UNICODE_CASE}   # (ascii, turkic) -> CaseFold, sharing what each learned
+_CASE_FOLDS = {}                               # locale name -> CaseFold
+# glibc's locales with Turkish case pairs: tr_TR, and those copying its LC_CTYPE
+_TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
+
+def case_fold(name):
+	"""
+	The CaseFold of the locale bash's glue names (its LC_ALL, else LC_CTYPE, else LANG; empty: C). None (a
+	glue that does not say) compares as a UTF-8 locale.
+	"""
+	if name is None:
+		return UNICODE_CASE
+	fold = _CASE_FOLDS.get(name)
+	if fold is None:
+		base, _, modifier = name.partition('@')
+		language, _, codeset = base.partition('.')
+		if codeset:
+			utf8 = codeset.lower().replace('-', '').replace('_', '') == 'utf8'
+		else:
+			utf8 = name not in ('', 'C', 'POSIX') and _locale_is_utf8(name)
+		turkic = language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
+		kind = (not utf8, turkic)
+		fold = _CASE_KINDS.get(kind)
+		if fold is None:
+			fold = _CASE_KINDS[kind] = CaseFold(*kind)
+		_CASE_FOLDS[name] = fold
+	return fold
+
+def _locale_is_utf8(name):
+	"""Whether the C library takes the locale named name, one without a codeset in its name, as UTF-8."""
+	try:
+		import _locale
+		saved = _locale.setlocale(_locale.LC_CTYPE)
+		try:
+			_locale.setlocale(_locale.LC_CTYPE, name)
+			return _locale.nl_langinfo(_locale.CODESET).lower().replace('-', '') == 'utf8'
+		finally:
+			_locale.setlocale(_locale.LC_CTYPE, saved)
+	except Exception:
+		# not installed (bash then runs in C) or no nl_langinfo
+		return False
+
+def _starts(text, prefix, icase=None, start=0):
+	"""
+	Whether text starts with prefix; with icase (a CaseFold) with prefix[start:] in any case, as icase
+	compares.
+	"""
 	if text.startswith(prefix):
 		return True
 	if not icase or len(text) < len(prefix) or not text.startswith(prefix[:start]):
 		return False
-	head = text[start:len(prefix)]
-	word = prefix[start:]
-	if _isascii(head) and _isascii(word):
-		# ASCII characters are each other's variants when their upper cases are one
-		return head.upper() == word.upper()
-	for char, typed in zip(head, word):
-		if char != typed and char not in _case_variants(typed):
-			return False
-	return True
+	return icase.same(text[start:len(prefix)], prefix[start:])
 
-def _prefix_ranges(sorted_items, prefix, icase=False, start=0):
+def _prefix_ranges(sorted_items, prefix, icase=None, start=0):
 	'''
-	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase with prefix[start:] in any
-	case (as _starts matches). Each spelling of it is followed one character at a time, and only while some
-	item starts with it, so the spellings tried are few however long the prefix.
+	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase (a CaseFold) with
+	prefix[start:] in any case (as _starts matches). Each spelling of it is followed one character at a time,
+	and only while some item starts with it, so the spellings tried are few however long the prefix.
 	'''
 	if not icase or start >= len(prefix):
 		return [_prefix_range(sorted_items, prefix)]
 	spellings = [prefix[:start]]
 	for typed in prefix[start:]:
-		spellings = [spelling + char for spelling in spellings for char in _case_variants(typed) if _starts_some(sorted_items, spelling + char)]
+		spellings = [spelling + char for spelling in spellings for char in icase.variants(typed) if _starts_some(sorted_items, spelling + char)]
 	return sorted(_prefix_range(sorted_items, spelling) for spelling in spellings)
 
 class MemoryKnowledge(object):
@@ -1145,7 +1208,7 @@ class MemoryKnowledge(object):
 	def record_count(self):
 		return len(self.records)
 
-	def feature_range(self, prefix, icase=False, start=0):
+	def feature_range(self, prefix, icase=None, start=0):
 		if self._sorted is None:
 			self._sorted = sorted(self._postings)
 		return [(text, text) for lo, hi in _prefix_ranges(self._sorted, prefix, icase, start) for text in self._sorted[lo:hi]]
@@ -1179,7 +1242,7 @@ class SnapshotKnowledge(object):
 	def record_count(self):
 		return self.index.count('records')
 
-	def feature_range(self, prefix, icase=False, start=0):
+	def feature_range(self, prefix, icase=None, start=0):
 		return [(key, self.features[key]) for lo, hi in _prefix_ranges(self.features, prefix, icase, start) for key in range(lo, hi)]
 
 	def feature_key(self, text):
@@ -1213,9 +1276,9 @@ KIND_WEIGHTS = {}           # feature kind ('h', 't', 'v', 'c', ...) -> weight, 
 COMMON_SHARE = 0.5          # a feature in more than this share of the records carries no context
 MAX_CONTEXT_RECORDS = 20000 # records read per query for context
 
-def score_features(knowledges, prefix, line_features, deadline=None, icase=False, start=0):
+def score_features(knowledges, prefix, line_features, deadline=None, icase=None, start=0):
 	'''
-	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge; with icase, with
+	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge; with icase (a CaseFold), with
 	prefix[start:] in any case (the word typed, after the kind of feature and the words before it).
 
 	score(c) = BETA * frecency(c) + sum over records r holding c of log(1 + weight(r)) * sim(r, line),
@@ -1272,10 +1335,10 @@ class HostTable(object):
 		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
 		self._groups = None
 
-	def names_with_prefix(self, prefix, icase=False):
+	def names_with_prefix(self, prefix, icase=None):
 		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase) for name in self.names[lo:hi]]
 
-	def aliases_with_prefix(self, prefix, icase=False):
+	def aliases_with_prefix(self, prefix, icase=None):
 		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase) for index in range(lo, hi)]
 
 	def sources(self, name):
@@ -3451,15 +3514,15 @@ def _joinable(word):
 	'''
 	return len(word.split()) == 1
 
-def _case_alike(candidates, fulls, prefix):
+def _case_alike(candidates, fulls, prefix, icase):
 	'''
 	candidates (best first), whose texts are fulls; when they all differ from each other only in case, the one
 	readline is to take: ignoring case, it cannot tell them apart and would stop at their common start. That
 	is the first in the case typed (starting with prefix), else the first. Names differing only in case are
 	two names all the same (two accounts, a host and an alias): while others are left, all stay.
 	'''
-	key = _case_key(fulls[0])
-	if any(_case_key(full) != key for full in fulls[1:]):
+	key = icase.key(fulls[0])
+	if any(icase.key(full) != key for full in fulls[1:]):
 		return candidates
 	for candidate, full in zip(candidates, fulls):
 		if full.startswith(prefix):
@@ -3502,7 +3565,8 @@ class Engine(object):
 		response = Response(context)
 		if context is None:
 			return response
-		context.icase = request.flags.get('icase') == '1'
+		# how readline compares characters ignoring case, in the shell's locale (bash's glue says which)
+		context.icase = case_fold(request.flags.get('lc')) if request.flags.get('icase') == '1' else None
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
@@ -4183,7 +4247,7 @@ class Engine(object):
 			if len(out) >= MAX_CANDIDATES:
 				break
 		if context.icase and len(out) > 1:
-			out = _case_alike(out, fulls, prefix)
+			out = _case_alike(out, fulls, prefix, context.icase)
 		return out
 
 	def _options(self, context, shell):
@@ -4193,7 +4257,7 @@ class Engine(object):
 		scores = score_features(self.knowledges, 'o:', context.features)
 		# option names are matched in any case only when the word starts none as typed, used ones included:
 		# readline, finding no candidate in the case typed, puts in the first one's spelling (-q -S became -s)
-		icase = context.icase and not _starts_some(self.spec.strings, word)
+		icase = context.icase if not _starts_some(self.spec.strings, word) else None
 		out = []
 		for option in self.spec.options:
 			if option.dest in used or (option.group and option.group in groups):
@@ -4246,7 +4310,7 @@ class Engine(object):
 			out.append(Candidate(option.default, 'default', 'defaults', PRIOR / 2))
 		return out
 
-	def _key_files(self, word, icase=False):
+	def _key_files(self, word, icase=None):
 		directory = os.path.expanduser('~/.ssh')
 		try:
 			entries = os.listdir(directory)
@@ -4261,7 +4325,7 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text, prefix='', icase=False):
+	def _members(self, hosts_text, prefix='', icase=None):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
 		ranges), that start with prefix (in any case with icase): the first RANGE_MEMBERS_LIMIT of
@@ -6070,12 +6134,13 @@ _mssh_complete() {
 	fi
 	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
 	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
+	# lc: the locale bash runs in (its variables, exported or not), which says how readline lowers letters.
 	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
 	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" resp < <(
 		{
 			local icase=0
 			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && icase=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase lc=${LC_ALL:-${LC_CTYPE:-${LANG-}}}" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
