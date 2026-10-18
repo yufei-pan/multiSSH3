@@ -414,9 +414,10 @@ def test_icase_is_answered_back_for_the_words_the_glue_adds():
 	assert 'icase' not in query('mssh h nosuchcmd stor').directives
 
 
-def test_icase_keeps_candidates_differing_only_in_case_while_others_are_left():
+def test_icase_keeps_candidates_differing_only_in_case_while_others_are_left(monkeypatch):
 	# Admin and admin are two accounts: offered beside root, readline lists all three; only when they alone are
-	# left would it stop at their common start, and then the one in the case typed goes in
+	# left would it stop at their common start, and then the one in the case typed goes in ($USER is offered too)
+	monkeypatch.setenv('USER', 'root')
 	knowledges = [memory([line(NOW - number, options, 'h', '"grep {} x"'.format(word)) for number, (options, word) in enumerate(
 		(('-su -u=Admin', 'Foo'), ('-su -u=admin', 'foo'), ('-su -u=root', 'bar')))])]
 	assert sorted(texts(query('mssh -u ', knowledges=knowledges, flags=ICASE))) == ['Admin', 'admin', 'root']
