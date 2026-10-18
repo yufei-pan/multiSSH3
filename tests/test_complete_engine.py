@@ -355,9 +355,25 @@ def test_icase_matches_only_the_command_word_being_completed_in_any_case():
 	assert texts(query('mssh login1 systemctl STATUS NG', knowledges=knowledges, flags=ICASE)) == ['Nginx']
 	assert texts(query('mssh login1 "systemctl STATUS ', word='systemctl STATUS ', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
 	assert texts(query('mssh login1 "systemctl STATUS n', word='systemctl STATUS n', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
+	# the two nginx commands differ only in case: the newer stays
 	assert sorted(texts(query('mssh login1 "SYSTEMCTL', word='SYSTEMCTL', knowledges=knowledges, flags=ICASE))) == [
-		'Systemctl Status sshd', 'systemctl STATUS Nginx', 'systemctl status nginx']
+		'Systemctl Status sshd', 'systemctl status nginx']
 	assert texts(query('mssh login1 "date; systemctl status N', word='date; systemctl status N', knowledges=knowledges, flags=ICASE)) == []
+
+
+def test_icase_offers_one_of_the_candidates_differing_only_in_case(tmp_path):
+	# readline ignoring case cannot tell them apart and stops at their common start: the one in the case
+	# typed stays, else the best
+	table = _host_table(tmp_path, ['Storage-East'])
+	knowledges = [memory([line(NOW, '-su', 'storage-east', '"uptime"')] + [line(NOW - number, '-su', 'login1', command)
+		for number, command in enumerate(('"zzsvc status"', '"zzsvc start"', '"Zzsvc restart"'))])]
+	assert texts(query('mssh storage-e', knowledges=knowledges, hosts=table, flags=ICASE)) == ['storage-east']
+	assert texts(query('mssh Storage-E', knowledges=knowledges, hosts=table, flags=ICASE)) == ['Storage-East']
+	assert texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table, flags=ICASE)) == ['storage-east']
+	assert sorted(texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table))) == []
+	assert texts(query('mssh login1 zz', knowledges=knowledges, flags=ICASE)) == ['zzsvc']
+	assert texts(query('mssh login1 Zz', knowledges=knowledges, flags=ICASE)) == ['Zzsvc']
+	assert texts(query('mssh login1 ZZ', knowledges=knowledges, flags=ICASE)) == ['zzsvc']
 
 
 def test_prefix_ranges_match_in_any_case_from_start_on():

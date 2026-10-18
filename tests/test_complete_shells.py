@@ -78,6 +78,22 @@ def ignoring_case(tmp_path, history, hosts=''):
 	return bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
 
 
+def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_path):
+	# readline cannot tell storage-east from Storage-East and would stop at their common start
+	history = ['1790000000\t/x/multiSSH3.py\t-su\tstorage-east\t"uptime"']
+	history += ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number + 1, command)
+		for number, command in enumerate(('zzsvc status', 'zzsvc start', 'Zzsvc restart'))]
+	session = ignoring_case(tmp_path, history, '10.0.0.1 Storage-East\n')
+	try:
+		assert session.line_after('mssh storage-e') == 'mssh storage-east '
+		assert session.line_after('mssh Storage-E') == 'mssh Storage-East '
+		assert session.line_after('mssh STORAGE-E') == 'mssh storage-east '
+		assert session.line_after('mssh login1 Zz') == 'mssh login1 Zzsvc '
+		assert session.line_after('mssh login1 ZZ') == 'mssh login1 zzsvc '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)

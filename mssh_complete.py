@@ -3428,6 +3428,21 @@ def _joinable(word):
 	'''
 	return len(word.split()) == 1
 
+def _case_unique(candidates, lead, prefix):
+	'''
+	candidates (best first), of those differing only in case one: readline ignoring case cannot tell them
+	apart, and stops at their common start. The first in the case typed (lead + text starts with prefix)
+	stays, else the first.
+	'''
+	kept = {}
+	for number, candidate in enumerate(candidates):
+		full = lead + candidate.text
+		key = ''.join(_case_variants(char)[0] for char in full)
+		if key not in kept or (full.startswith(prefix) and not (lead + candidates[kept[key]].text).startswith(prefix)):
+			kept[key] = number
+	numbers = set(kept.values())
+	return [candidate for number, candidate in enumerate(candidates) if number in numbers]
+
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
 	def __init__(self, spec, knowledges=(), hosts=None, users=()):
@@ -4119,7 +4134,10 @@ class Engine(object):
 		lead = prefix[:context.value_start]
 		out = []
 		seen = set()
-		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
+		candidates = sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text))
+		if context.icase:
+			candidates = _case_unique(candidates, lead, prefix)
+		for candidate in candidates:
 			full = lead + candidate.text
 			if not _starts(full, prefix, context.icase) or full in seen:
 				continue
