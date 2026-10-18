@@ -319,11 +319,14 @@ def test_case_variants_are_every_letter_with_the_same_lower_case():
 	alike = {}
 	for point in range(0x110000):
 		char = chr(point)
-		alike.setdefault(char.lower()[0], []).append(char)
+		lower = char.lower()[0]
+		if lower != char:
+			assert lower.lower()[0] == lower, char
+			alike.setdefault(lower, [lower]).append(char)
+	assert len(alike) > 1000
 	for chars in alike.values():
-		if len(chars) > 1:
-			for char in chars:
-				assert mc._case_variants(char) == ''.join(sorted(chars)), (char, chars)
+		for char in chars:
+			assert mc._case_variants(char) == ''.join(sorted(chars)), (char, chars)
 
 
 def test_ascii_text_is_matched_and_keyed_as_its_characters_are():
