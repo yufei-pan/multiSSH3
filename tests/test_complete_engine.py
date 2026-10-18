@@ -384,6 +384,9 @@ def test_turkish_locales_are_told_by_how_they_lower_i(name, traits):
 		pytest.skip('no {} locale here'.format(name))
 	finally:
 		locale.setlocale(locale.LC_CTYPE, saved)
+	if name.startswith('tr') and mc._locale_traits('xx_YY.UTF-8') is not None:
+		# and so does its bash's readline
+		pytest.skip('this C library takes any locale name as UTF-8 and lowers I to i in all (musl)')
 	assert mc._locale_traits(name) == traits
 
 

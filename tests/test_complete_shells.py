@@ -307,6 +307,8 @@ def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
 	# themselves (it lowers I to a dotless i that is no ASCII letter, and the I with a dot reaches it as two bytes)
 	if not locale_here(lang):
 		pytest.skip('no {} locale here'.format(lang))
+	if not mc._locale_traits(lang)[1]:
+		pytest.skip('this C library does not lower I to the dotless i in {} (musl)'.format(lang))
 	hosts = '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n' + ('10.0.0.3 ix2\n' if 'UTF-8' not in lang else '')
 	session = ignoring_case(tmp_path, [], hosts, lang=lang)
 	try:
