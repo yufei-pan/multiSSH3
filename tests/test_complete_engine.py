@@ -367,13 +367,15 @@ def test_prefix_ranges_match_in_any_case_from_start_on():
 	assert mc._prefix_ranges(items, 'aB x', True, 3) == []
 
 
-def test_icase_folds_option_names_only_where_no_other_option_differs_in_case():
-	# -s and -S are two options, never offered for each other; -su, with no -SU, is offered for -S as readline
-	# would take it; no two long options differ only in case
+def test_icase_matches_option_names_in_any_case_only_where_the_word_names_none_as_typed():
+	# readline, finding no candidate in the case typed, puts in the first one's spelling: -S, which starts an
+	# option name as typed (a used one too), must never become -s (-q -S<TAB> gave -s, --file_sync)
 	assert texts(query('mssh --NO_WA', flags=ICASE)) == ['--no_watch']
+	assert texts(query('mssh -SU', flags=ICASE)) == ['-su']
 	assert texts(query('mssh -s', flags=ICASE)) == texts(query('mssh -s'))
-	upper = texts(query('mssh -S', flags=ICASE))
-	assert '-S' in upper and '-s' not in upper and '-su' in upper
+	assert texts(query('mssh -S', flags=ICASE)) == ['-S']
+	for before in ('mssh -q -S', 'mssh --scp -W', 'mssh -nh -I'):
+		assert texts(query(before, flags=ICASE)) == [], before
 
 
 # mssh records a failure under the name it ran the host as, and so looks it up: user@host when a user

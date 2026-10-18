@@ -255,6 +255,8 @@ class ParserSpec(object):
 		for option in self.options:
 			for string in option.strings:
 				self.by_string[string] = option
+		# every option string, sorted
+		self.strings = sorted(self.by_string)
 		self._passwords = [option for option in self.options if option.dest in PASSWORD_DESTS]
 
 	def names_option(self, text):
@@ -4144,12 +4146,9 @@ class Engine(object):
 		used = {option.dest for option, _ in context.options if not option.repeat}
 		groups = {option.group for option, _ in context.options if option.group}
 		scores = score_features(self.knowledges, 'o:', context.features)
-		# an option name is matched in any case only where no other one differs from it only in case (-s, -S):
-		# readline, taking the common start of the candidates in any case, could turn one into the other
-		folded = {}
-		for option in self.spec.options:
-			for string in option.strings:
-				folded[string.lower()] = folded.get(string.lower(), 0) + 1
+		# option names are matched in any case only when the word starts none as typed, used ones included:
+		# readline, finding no candidate in the case typed, puts in the first one's spelling (-q -S became -s)
+		icase = context.icase and not _starts_some(self.spec.strings, word)
 		out = []
 		for option in self.spec.options:
 			if option.dest in used or (option.group and option.group in groups):
@@ -4162,7 +4161,7 @@ class Engine(object):
 			else:
 				strings = option.strings
 			for string in strings:
-				if _starts(string, word, context.icase and folded[string.lower()] == 1):
+				if _starts(string, word, icase):
 					out.append(Candidate(string, option.help, 'options', score))
 		return out
 

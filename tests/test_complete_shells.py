@@ -59,6 +59,10 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		assert session.line_after('mssh GP') == 'mssh gpu[01-16] '
 		assert session.line_after('mssh -u ROO') == 'mssh -u root '
 		assert session.line_after('mssh --NO_WA') == 'mssh --no_watch '
+		# -S, -W and -I start option names as typed (used here): none may become -s, -w or -i
+		assert session.line_after('mssh -q -S') == 'mssh -q -S'
+		assert session.line_after('mssh --scp -W') == 'mssh --scp -W'
+		assert session.line_after('mssh -nh -I') == 'mssh -nh -I'
 	finally:
 		session.close()
 
