@@ -4283,34 +4283,34 @@ class Engine(object):
 			return []
 		lead = 'v:{}='.format(dest)
 		icase = context.icase
-		# a path keeps its directories as typed, as readline's own file name completion does: only its last part
-		# is matched in any case
-		start = _path_start(word) if dest in PATH_DESTS or dest == 'identity_file' else 0
+		# of a value only the part after its last "/" is matched in any case, as readline matches a file name
+		# (the directories typed stay as typed); values that are no paths have no "/"
+		start = _path_start(word)
 		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
 			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase, len(lead) + start).items()]
 		if dest in PATH_DESTS:
 			response.directives.add('files')
 		elif dest == 'identity_file':
 			response.directives.add('files')
-			out.extend(self._key_files(word, icase))
+			out.extend(self._key_files(word, icase, start))
 		elif dest in USER_DESTS:
 			users = set(self.users)
 			if os.environ.get('USER'):
 				users.add(os.environ['USER'])
-			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase))
+			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase, start))
 		elif dest == 'skip_hosts':
 			# the members that can complete the host being typed (after its "," and "user@")
 			prefix = word.rpartition(',')[2].rpartition('@')[2]
 			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
 		elif dest == 'completion':
-			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase))
+			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase, start))
 		elif dest == 'encoding':
-			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if _starts(name, word, icase))
+			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if _starts(name, word, icase, start))
 		if option.default and _starts(option.default, word, icase, start):
 			out.append(Candidate(option.default, 'default', 'defaults', PRIOR / 2))
 		return out
 
-	def _key_files(self, word, icase=None):
+	def _key_files(self, word, icase=None, start=0):
 		directory = os.path.expanduser('~/.ssh')
 		try:
 			entries = os.listdir(directory)
@@ -4321,7 +4321,7 @@ class Engine(object):
 			if name.endswith('.pub') or not (name.startswith('id_') or name + '.pub' in entries):
 				continue
 			text = '~/.ssh/' + name
-			if _starts(text, word, icase, _path_start(word)):
+			if _starts(text, word, icase, start):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
@@ -4432,30 +4432,32 @@ class Engine(object):
 			for magic in MAGIC_STRINGS:
 				if _starts(magic, word[at:], icase):
 					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
+		# only the word being completed is matched in any case, and of a path in it only the last part, as
+		# readline matches a file name: the words typed before it and the directories stay as typed
 		if context.mode in PATH_MODES:
-			# the directories typed stay as typed
 			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2 + _path_start(word)).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
 		elif context.quoted:
-			# whole commands: the words typed before the current one stay as typed, only it is matched in any case
+			# whole commands, the current word last
 			start = len(word) if context.command_prefix is None else len(context.command_prefix)
+			start += _path_start(word[start:])
 			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase, 2 + start).items():
 				out.append(Candidate(feature[2:], '', 'history', score))
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
 			# a word holding whitespace would make mssh run each command word as its own command
+			start = _path_start(partial)
 			if not typed:
-				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase, 2).items():
+				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase, 2 + start).items():
 					if _joinable(feature[2:]):
 						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
-				# the words typed before stay as typed: only the word being completed is matched in any case
 				lead = 'c:' + ' '.join(typed) + ' '
-				for feature, score in score_features(self.knowledges, lead + partial, context.features, deadline, icase, len(lead)).items():
+				for feature, score in score_features(self.knowledges, lead + partial, context.features, deadline, icase, len(lead) + start).items():
 					words = words_as_typed(feature[2:])
-					if len(words) > len(typed) and words[:len(typed)] == typed and _starts(words[len(typed)], partial, icase) and _joinable(words[len(typed)]):
+					if len(words) > len(typed) and words[:len(typed)] == typed and _starts(words[len(typed)], partial, icase, start) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
 		if context.mode == 'plain' and context.command_words is not None:

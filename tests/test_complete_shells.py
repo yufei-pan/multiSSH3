@@ -315,6 +315,21 @@ def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
 		session.close()
 
 
+def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp_path):
+	# as readline's own file name completion does: /zzsrv/data/o became /zzsrv/Data/out
+	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command)
+		for number, command in enumerate(('nosuchcmd /zzsrv/Data/out', '/Zzopt/Tool/run.sh'))]
+	session = ignoring_case(tmp_path, history)
+	try:
+		assert session.line_after('mssh h nosuchcmd /zzsrv/data/o') == 'mssh h nosuchcmd /zzsrv/data/o'
+		assert session.line_after('mssh h nosuchcmd /zzsrv/Data/O') == 'mssh h nosuchcmd /zzsrv/Data/out '
+		assert session.line_after('mssh h "nosuchcmd /zzsrv/data/o') == 'mssh h "nosuchcmd /zzsrv/data/o'
+		assert session.line_after('mssh h /zzopt/tool/r') == 'mssh h /zzopt/tool/r'
+		assert session.line_after('mssh h /Zzopt/Tool/R') == 'mssh h /Zzopt/Tool/run.sh '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)

@@ -535,6 +535,19 @@ def test_icase_paths_keep_their_directories_as_typed(tmp_path, monkeypatch):
 	assert texts(query('mssh -k ~/.SSH/id', knowledges=[], flags=ICASE)) == []
 
 
+def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
+	# the word being completed in a remote command is matched as readline matches a file name: only its
+	# last part in any case (the directories typed came back in another case)
+	knowledges = [memory([line(NOW, '-su', 'h', '"cat /srv/Data/out"'), line(NOW - 1, '-su', 'h', '"/Opt/Tool/run.sh"')])]
+	assert texts(query('mssh h cat /srv/data/o', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh h cat /srv/Data/O', knowledges=knowledges, flags=ICASE)) == ['/srv/Data/out']
+	assert texts(query('mssh h "cat /srv/data/o', word='cat /srv/data/o', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh h "cat /srv/Data/O', word='cat /srv/Data/O', knowledges=knowledges, flags=ICASE)) == ['cat /srv/Data/out']
+	assert texts(query('mssh h /opt/tool/r', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh h /Opt/Tool/R', knowledges=knowledges, flags=ICASE)) == ['/Opt/Tool/run.sh']
+	assert texts(query('mssh h CAT /srv', knowledges=knowledges, flags=ICASE)) == []
+
+
 def test_prefix_ranges_match_in_any_case_from_start_on():
 	items = sorted(['AB x', 'ab X', 'ab x', 'ab y', 'Ab X'])
 	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', mc.UNICODE_CASE, 3) for text in items[lo:hi]] == ['ab X', 'ab x']
