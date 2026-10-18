@@ -6036,19 +6036,20 @@ _mssh_complete() {
 		_mssh_complete_before=${COMP_LINE:0:COMP_POINT}
 		_mssh_complete_after=${COMP_LINE:COMP_POINT}
 	fi
-	if [[ -z ${_mssh_complete_icase-} ]]; then
-		_mssh_complete_icase=0
-		[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_icase=1
-	fi
 	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
 	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
-	flags="nosort=0 icase=$_mssh_complete_icase ble=$ble term=${TERM-}"
+	flags="nosort=0 ble=$ble term=${TERM-}"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		flags="nosort=1 ${flags#nosort=0 }"
 	fi
+	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
+	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
+	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
 	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" resp < <(
 		{
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
+			local icase=0
+			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && icase=1
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0

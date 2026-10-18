@@ -67,15 +67,34 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
-def ignoring_case(tmp_path, history, hosts=''):
-	'''A bash with completion-ignore-case on, in an empty directory (no file names among the candidates), no bash-completion.'''
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=()):
+	'''
+	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
+	only files (no other file names among the candidates), with commands found first on its PATH.
+	'''
 	env, home = make_home(tmp_path, history)
 	(home / 'hosts').write_text(hosts)
 	build_index(env)
-	empty = tmp_path / 'empty'
-	empty.mkdir()
-	extra = "bind 'set completion-ignore-case on'; cd '{}'".format(empty)
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in files:
+		(work / name).write_text('')
+	found = tmp_path / 'bin'
+	found.mkdir()
+	for name in commands:
+		(found / name).write_text('#!/bin/sh\n')
+		(found / name).chmod(0o755)
+	env = dict(env, PATH=str(found) + os.pathsep + env['PATH'])
+	extra = "cd '{}'".format(work)
+	if on:
+		extra = "bind 'set completion-ignore-case on'; " + extra
 	return bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
+
+
+def set_ignore_case(session, value):
+	'''Turn completion-ignore-case on or off in a running bash, as a bind or a re-read ~/.inputrc does.'''
+	session.send("bind 'set completion-ignore-case {}'\r".format(value))
+	session.read_until(b'@@READY@@')
 
 
 def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_path):
@@ -94,6 +113,30 @@ def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_p
 		session.close()
 
 
+@pytest.mark.parametrize('first', ['on', 'off'])
+def test_bash_follows_completion_ignore_case_as_it_changes(tmp_path, first):
+	# read once per shell, the setting went stale after a bind: turned off, the engine still offered Node01 and
+	# NODE03 for node0, and readline, now minding case, cut the word back to their common start (mssh N);
+	# turned on, words in another case stayed out
+	session = ignoring_case(tmp_path, HISTORY, '10.0.0.1 Node01\n10.0.0.3 NODE03\n10.0.0.5 Storage-East\n', on=first == 'on')
+
+	def completes(value):
+		if value == 'on':
+			assert session.line_after('mssh storage-e') == 'mssh Storage-East '
+		else:
+			assert session.line_after('mssh node0') == 'mssh node0'
+			assert session.line_after('mssh storage-e') == 'mssh storage-e'
+	try:
+		completes(first)
+		other = 'off' if first == 'on' else 'on'
+		set_ignore_case(session, other)
+		completes(other)
+		set_ignore_case(session, first)
+		completes(first)
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 	# a quoted command is completed whole: its words typed before the current one stay as typed there too
 	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
@@ -104,6 +147,18 @@ def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
 		assert session.line_after('mssh login1 "ZZCTL STATUS n') == 'mssh login1 "ZZCTL STATUS n'
 	finally:
 		session.close()
+
+
+def test_bash_glue_has_no_comment_inside_a_command_or_process_substitution():
+	# bash 4.2 reads a quote or a parenthesis in a comment inside <( ) or $( ) as code: a comment saying
+	# "readline's" there broke every TAB ("bad substitution: no closing `)'"), which bash 5 never shows
+	lines = mc.render_glue('bash', ENGINE).split('\n')
+	opened = [number for number, text in enumerate(lines) if text.rstrip().endswith(('<(', '$('))]
+	assert opened
+	for number in opened:
+		indent = lines[number][:len(lines[number]) - len(lines[number].lstrip())]
+		end = next(index for index in range(number + 1, len(lines)) if lines[index].startswith(indent + ')'))
+		assert not [text for text in lines[number + 1:end] if text.lstrip().startswith('#')], lines[number]
 
 
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
