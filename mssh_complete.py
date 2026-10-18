@@ -3514,21 +3514,6 @@ def _joinable(word):
 	'''
 	return len(word.split()) == 1
 
-def _case_alike(candidates, fulls, prefix, icase):
-	'''
-	candidates (best first), whose texts are fulls; when they all differ from each other only in case, the one
-	readline is to take: ignoring case, it cannot tell them apart and would stop at their common start. That
-	is the first in the case typed (starting with prefix), else the first. Names differing only in case are
-	two names all the same (two accounts, a host and an alias): while others are left, all stay.
-	'''
-	key = icase.key(fulls[0])
-	if any(icase.key(full) != key for full in fulls[1:]):
-		return candidates
-	for candidate, full in zip(candidates, fulls):
-		if full.startswith(prefix):
-			return [candidate]
-	return candidates[:1]
-
 class Engine(object):
 	'''Answers completion requests from parsed options, history knowledge and the host table.'''
 	def __init__(self, spec, knowledges=(), hosts=None, users=()):
@@ -4224,7 +4209,6 @@ class Engine(object):
 		lead = prefix[:context.value_start]
 		out = []
 		seen = set()
-		fulls = []
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
 			full = lead + candidate.text
 			if not _starts(full, prefix, context.icase) or full in seen:
@@ -4243,11 +4227,8 @@ class Engine(object):
 			text = full[len(base):len(prefix)] + rest
 			raw = full[len(base):]
 			out.append(Candidate(text, candidate.description, candidate.group, candidate.score, raw if raw != text else None))
-			fulls.append(full)
 			if len(out) >= MAX_CANDIDATES:
 				break
-		if context.icase and len(out) > 1:
-			out = _case_alike(out, fulls, prefix, context.icase)
 		return out
 
 	def _options(self, context, shell):

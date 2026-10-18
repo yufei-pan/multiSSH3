@@ -414,32 +414,27 @@ def test_icase_is_answered_back_for_the_words_the_glue_adds():
 	assert 'icase' not in query('mssh h nosuchcmd stor').directives
 
 
-def test_icase_keeps_candidates_differing_only_in_case_while_others_are_left(monkeypatch):
-	# Admin and admin are two accounts: offered beside root, readline lists all three; only when they alone are
-	# left would it stop at their common start, and then the one in the case typed goes in ($USER is offered too)
+def test_icase_offers_every_name_differing_only_in_case(monkeypatch):
+	# Admin and admin are two accounts: the engine offers both, also when they alone are left; bash's glue,
+	# which adds words of its own, puts in one when readline could not tell the words left apart ($USER is
+	# offered too)
 	monkeypatch.setenv('USER', 'root')
 	knowledges = [memory([line(NOW - number, options, 'h', '"grep {} x"'.format(word)) for number, (options, word) in enumerate(
 		(('-su -u=Admin', 'Foo'), ('-su -u=admin', 'foo'), ('-su -u=root', 'bar')))])]
 	assert sorted(texts(query('mssh -u ', knowledges=knowledges, flags=ICASE))) == ['Admin', 'admin', 'root']
-	assert texts(query('mssh -u a', knowledges=knowledges, flags=ICASE)) == ['admin']
-	assert texts(query('mssh -u A', knowledges=knowledges, flags=ICASE)) == ['Admin']
+	assert sorted(texts(query('mssh -u a', knowledges=knowledges, flags=ICASE))) == ['Admin', 'admin']
 	assert sorted(texts(query('mssh h "grep ', word='grep ', knowledges=knowledges, flags=ICASE))) == ['grep Foo x', 'grep bar x', 'grep foo x']
-	assert texts(query('mssh h "grep F', word='grep F', knowledges=knowledges, flags=ICASE)) == ['grep Foo x']
+	assert sorted(texts(query('mssh h "grep F', word='grep F', knowledges=knowledges, flags=ICASE))) == ['grep Foo x', 'grep foo x']
 
 
-def test_icase_offers_one_of_the_candidates_differing_only_in_case(tmp_path):
-	# readline ignoring case cannot tell them apart and stops at their common start: the one in the case
-	# typed stays, else the best
+def test_icase_offers_the_candidates_differing_only_in_case_best_first(tmp_path):
+	# bash's glue puts in the one in the case typed, else the first: the best
 	table = _host_table(tmp_path, ['Storage-East'])
 	knowledges = [memory([line(NOW, '-su', 'storage-east', '"uptime"')] + [line(NOW - number, '-su', 'login1', command)
 		for number, command in enumerate(('"zzsvc status"', '"zzsvc start"', '"Zzsvc restart"'))])]
-	assert texts(query('mssh storage-e', knowledges=knowledges, hosts=table, flags=ICASE)) == ['storage-east']
-	assert texts(query('mssh Storage-E', knowledges=knowledges, hosts=table, flags=ICASE)) == ['Storage-East']
-	assert texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table, flags=ICASE)) == ['storage-east']
-	assert sorted(texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table))) == []
-	assert texts(query('mssh login1 zz', knowledges=knowledges, flags=ICASE)) == ['zzsvc']
-	assert texts(query('mssh login1 Zz', knowledges=knowledges, flags=ICASE)) == ['Zzsvc']
-	assert texts(query('mssh login1 ZZ', knowledges=knowledges, flags=ICASE)) == ['zzsvc']
+	assert texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table, flags=ICASE)) == ['storage-east', 'Storage-East']
+	assert texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table)) == []
+	assert texts(query('mssh login1 ZZ', knowledges=knowledges, flags=ICASE)) == ['zzsvc', 'Zzsvc']
 
 
 def test_icase_matches_hosts_in_any_case_but_keeps_names_apart(tmp_path):
@@ -447,10 +442,10 @@ def test_icase_matches_hosts_in_any_case_but_keeps_names_apart(tmp_path):
 	# variables), its list of unreachable hosts (keyed by user@host) and -X compare names exactly
 	table = _host_table(tmp_path, ['gpus', 'gpx1', 'Node01', 'node02', 'Web1', 'web2', 'web3', 'm1'],
 		aliases=[('GPUs', ['Node01', 'node02'])], unavailable=['web1', 'root@web2'])
-	# the host gpus stays the host gpus, the alias GPUs the alias; when only they are left, readline cannot
-	# tell them apart: the one in the case typed goes in
-	assert texts(query('mssh gpus', knowledges=[], hosts=table, flags=ICASE)) == ['gpus']
-	assert texts(query('mssh GPUs', knowledges=[], hosts=table, flags=ICASE)) == ['GPUs']
+	# the host gpus stays the host gpus, the alias GPUs the alias (when only they are left, bash's glue puts in
+	# the one in the case typed)
+	assert [(candidate.text, candidate.group) for candidate in query('mssh gpus', knowledges=[], hosts=table, flags=ICASE).candidates] == [
+		('GPUs', 'aliases'), ('gpus', 'hosts')]
 	described = {candidate.text: candidate.description for candidate in query('mssh gp', knowledges=[], hosts=table, flags=ICASE).candidates}
 	assert described == {'gpus': '', 'gpx1': '', 'GPUs': 'alias, 2 hosts'}
 	# mssh skips web1 and root@web2, not Web1 nor ROOT@web2
@@ -469,9 +464,9 @@ def test_icase_aliases_differing_only_in_case_keep_their_own_scores(tmp_path):
 	knowledges = [memory([line(NOW - number, '-su', 'gpus', '"uptime"') for number in range(10)])]
 	scored = {candidate.text: candidate.score for candidate in query('mssh gp', knowledges=knowledges, hosts=table, flags=ICASE).candidates}
 	assert scored['gpus'] > scored['GPUS'] == pytest.approx(2 * mc.PRIOR)
-	# alone, the two are one for readline: the best goes in
+	# alone, the two are one for readline: bash's glue puts in the first, the best
 	table = _host_table(tmp_path, ['a1', 'a2', 'b1'], aliases=[('gpus', ['a1', 'a2']), ('GPUS', ['b1'])])
-	assert texts(query('mssh Gp', knowledges=knowledges, hosts=table, flags=ICASE)) == ['gpus']
+	assert texts(query('mssh Gp', knowledges=knowledges, hosts=table, flags=ICASE)) == ['gpus', 'GPUS']
 
 
 def test_icase_range_members_are_the_names_the_range_makes(tmp_path):

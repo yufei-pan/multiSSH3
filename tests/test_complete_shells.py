@@ -118,12 +118,35 @@ def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_p
 		session.close()
 
 
+def test_bash_ignoring_case_lists_its_words_differing_only_in_case_beside_a_file_name(tmp_path):
+	# the engine kept one of storage-file and Storage-file, not knowing the glue would add storage-other
+	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"nosuchcmd {}"'.format(number, word)
+		for number, word in enumerate(('storage-file', 'Storage-file'))]
+	session = ignoring_case(tmp_path, history, files=['storage-other'])
+	try:
+		assert {'storage-file', 'Storage-file', 'storage-other'} <= set(listed_after(session, 'mssh h nosuchcmd storage-'))
+		assert session.line_after('mssh h nosuchcmd storage-f') == 'mssh h nosuchcmd storage-file '
+		assert session.line_after('mssh h nosuchcmd Storage-f') == 'mssh h nosuchcmd Storage-file '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_a_host_and_an_alias_differing_only_in_case(tmp_path):
 	# the host gpus beside the alias GPUs (an env variable): gpus typed in its case is the host, never the alias
 	session = ignoring_case(tmp_path, [], '10.0.0.1 gpus\n10.0.0.2 Node01\n10.0.0.3 node02\n', env_lines='GPUs=Node01,node02\n')
 	try:
 		assert session.line_after('mssh gpus') == 'mssh gpus '
 		assert session.line_after('mssh GPU') == 'mssh GPUs '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_puts_in_the_more_used_of_two_aliases_differing_only_in_case(tmp_path):
+	# gpus was used ten times, GPUS never: neither in the case typed, the engine's first goes in
+	history = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpus\t"uptime"'.format(number) for number in range(10)]
+	session = ignoring_case(tmp_path, history, '10.0.0.1 a1\n10.0.0.2 a2\n10.0.0.3 b1\n', env_lines='gpus=a1,a2\nGPUS=b1,b1\n')
+	try:
+		assert session.line_after('mssh Gp') == 'mssh gpus '
 	finally:
 		session.close()
 
