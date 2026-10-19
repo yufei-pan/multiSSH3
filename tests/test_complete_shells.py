@@ -375,6 +375,27 @@ def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tm
 		session.close()
 
 
+@pytest.mark.parametrize('setting', ['on', 'off'])
+def test_bash_a_completion_file_a_loader_sources_cannot_turn_the_glue_s_tests_to_any_case(tmp_path, setting):
+	# bash-completion's loaders source a command's completion file at its first TAB: the shell's code, which
+	# ran in the glue's setting. A file turning nocasematch on left the glue's own tests ignoring case:
+	# complete -p's -f read as -F, and zzrun, the remote command, ran here as its completion function
+	history = ['1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"']
+	completion = tmp_path / 'zzrun.bash'
+	completion.write_text('shopt -s nocasematch\ncomplete -f zzrun\n')
+	options = "_completion_loader() {{ [[ $1 == zzrun ]] && . '{}'; }}; shopt -{} nocasematch".format(completion, 's' if setting == 'on' else 'u')
+	session = ignoring_case(tmp_path, history, commands=['zzrun'], options=options)
+	ran = tmp_path / 'zzrun-ran'
+	(tmp_path / 'bin' / 'zzrun').write_text('#!/bin/sh\necho "$@" > {}\n'.format(ran))
+	try:
+		assert session.line_after('mssh h zzrun ab') == 'mssh h zzrun ab'
+		assert not ran.exists(), ran.read_text()
+		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
+		assert nocasematch(session) == setting
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('setting, prompt_command', [('on', 'kept'), ('on', 'replaced'), ('off', 'replaced')])
 def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting, prompt_command):
 	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function is cut too):
@@ -453,15 +474,16 @@ def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back
 
 CUT_PROBE = r'''
 . "$1"
-# a command's completion function, for the delegate path
+# a command's completion function, for the delegate path, and one a loader registers at the first TAB
 _zzstand() { COMPREPLY=(Alpha alpine beta); }
 complete -F _zzstand zzcmd
+_completion_loader() { [[ $1 == zzlazy ]] && complete -F _zzstand zzlazy; }
 # the probe writes to fd 3: command substitutions in the glue take its stdout
 exec 3>&1
 _probe() {
 	# before each command of the glue's and of the stand-in's: what the heal makes of a cut landing
 	# there (in a subshell: the call goes on)
-	case ${FUNCNAME[1]-} in _mssh_complete_*|_zzstand) ;; *) return 0 ;; esac
+	case ${FUNCNAME[1]-} in _mssh_complete_*|_zzstand|_completion_loader) ;; *) return 0 ;; esac
 	local got
 	got=$(trap - DEBUG; _mssh_complete_heal; shopt -q nocasematch && echo on || echo off)
 	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got" >&3
@@ -484,6 +506,7 @@ printf 'delegated: %s\n' "${_mssh_complete_delegated[*]-}"
 	# a command's completion function, run and its words filtered by the word typed: in any case, and as typed
 	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'Alpha alpine'),
 	('_mssh_complete_icase=0 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'alpine'),
+	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzlazy al', 'Alpha alpine'),
 ])
 def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call, delegated):
 	# a cut between turning nocasematch off and noting it left the glue's off where its note said the

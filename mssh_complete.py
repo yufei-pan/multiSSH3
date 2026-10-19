@@ -6327,12 +6327,13 @@ _mssh_complete_delegate() {
 		done < <(compgen -c -- "$cur" 2>/dev/null || :)
 	else
 		if ! complete -p -- "$cmd" >/dev/null 2>&1; then
+			# the loaders source the command's completion file: the shell's code, in the shell's setting
 			if declare -F _comp_load >/dev/null 2>&1; then
-				_comp_load "$cmd" >/dev/null 2>&1 || :
+				_mssh_complete_operator _comp_load "$cmd" >/dev/null 2>&1 || :
 			elif declare -F __load_completion >/dev/null 2>&1; then
-				__load_completion "$cmd" >/dev/null 2>&1 || :
+				_mssh_complete_operator __load_completion "$cmd" >/dev/null 2>&1 || :
 			elif declare -F _completion_loader >/dev/null 2>&1; then
-				_completion_loader "$cmd" >/dev/null 2>&1 || :
+				_mssh_complete_operator _completion_loader "$cmd" >/dev/null 2>&1 || :
 			fi
 		fi
 		spec=$(complete -p -- "$cmd" 2>/dev/null) || spec=
