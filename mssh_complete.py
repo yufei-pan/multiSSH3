@@ -3140,8 +3140,8 @@ def _brace_split(token, shell, unicode):
 				and all(_closed_brackets(piece) for piece in pieces)):
 			meant = pieces[0] + ''.join(mssh_range(group) + pieces[index + 1] for index, group in enumerate(groups))
 		elif count <= BRACE_LIST_LIMIT:
-			# hosts beside the braces once, split as mssh splits them
-			meant = ','.join(_unique(host for number in range(count) for host in split_hosts(word(number))))
+			# hosts beside the braces once, split as mssh splits them; none in words of separators alone
+			meant = ','.join(_unique(host for number in range(count) for host in split_hosts(word(number)))) or None
 	if meant is not None and len(message) + len(dash) + len(meant) + len('did you mean ?') <= MAX_MESSAGE:
 		message += dash + 'did you mean {}?'.format(meant)
 	return Diagnostic(token.start, token.start + len(token.raw), 'range', message)

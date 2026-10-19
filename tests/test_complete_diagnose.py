@@ -268,6 +268,10 @@ def test_a_brace_warning_without_a_suggestion(engine):
 	word = 'n{' + ','.join(str(number) for number in range(1, 21)) + '}'
 	assert warnings_if_all_unknown(engine, 'mssh {} uptime'.format(word)) == [
 		(word, 'range', '{}: the shell makes 20 words of this; mssh would run n2 as the command'.format(word))]
+	# words of separators alone: no host to suggest
+	for word, second in (('/{,}', '/'), ('{/,//}', '//')):
+		assert warnings_if_all_unknown(engine, 'mssh {} uptime'.format(word)) == [
+			(word, 'range', '{}: the shell makes 2 words of this; mssh would run {} as the command'.format(word, second))]
 
 
 @pytest.mark.parametrize('line', [
