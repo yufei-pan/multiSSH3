@@ -6223,7 +6223,8 @@ _mssh_complete_guard() {
 	# the next prompt (_mssh_complete_heal), else at the next call, unless the shell changed it since.
 	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's
 	# code runs inside it. _mssh_complete_held: the shell's setting while a call runs; _mssh_complete_left:
-	# the setting the glue last made
+	# the setting the glue last made, noted before the glue turns the shell's off and after it puts the
+	# shell's back: a cut between the two finds the shell's setting where the note differs, which the heal keeps
 	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
 	if [[ -z $_mssh_complete_outer ]]; then
 		_mssh_complete_heal || :
@@ -6232,8 +6233,8 @@ _mssh_complete_guard() {
 	# the shell's setting, as the outermost call found it (one inside is called with it off, or as ble.sh set it)
 	local _mssh_complete_nocase=${_mssh_complete_outer:-$_mssh_complete_was}
 	[[ -n $_mssh_complete_outer ]] || _mssh_complete_held=$_mssh_complete_was
-	shopt -u nocasematch
 	_mssh_complete_left=0
+	shopt -u nocasematch
 	"$@" || _mssh_complete_rc=$?
 	if (( _mssh_complete_was )); then
 		shopt -s nocasematch
@@ -6288,8 +6289,8 @@ _mssh_complete_operator() {
 		_mssh_complete_left=1
 	fi
 	"$@" || _mssh_complete_rc=$?
-	shopt -u nocasematch
 	_mssh_complete_left=0
+	shopt -u nocasematch
 	return $_mssh_complete_rc
 }
 

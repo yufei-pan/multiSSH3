@@ -451,6 +451,42 @@ def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back
 		session.close()
 
 
+CUT_PROBE = r'''
+. "$1"
+_probe() {
+	# before each command of the glue's: what the heal makes of a cut landing there (in a subshell: the call goes on)
+	case ${FUNCNAME[1]-} in _mssh_complete_*) ;; *) return 0 ;; esac
+	local got
+	got=$(trap - DEBUG; _mssh_complete_heal; shopt -q nocasematch && echo on || echo off)
+	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got"
+}
+shopt -$2 nocasematch
+set -T
+trap _probe DEBUG
+eval "$3"
+trap - DEBUG
+'''
+
+
+@pytest.mark.parametrize('setting', ['on', 'off'])
+@pytest.mark.parametrize('call', [
+	# the shell's code run by the glue (a delegated completion, the Ctrl-R binding it took over)
+	'_mssh_complete_guard _mssh_complete_operator true',
+	# a glue call made from there (ble.sh's hooks)
+	'_mssh_complete_guard _mssh_complete_operator _mssh_complete_guard true',
+])
+def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call):
+	# a cut between turning nocasematch off and noting it left the glue's off where its note said the
+	# shell's on: the heal took that for the shell's doing and kept it off. A cut can land before any
+	# command of a call; the heal from there must give the shell back its setting
+	glue = glue_file(tmp_path, 'bash')
+	output = subprocess.run([require_shell('bash'), '-c', CUT_PROBE, 'probe', str(glue), 's' if setting == 'on' else 'u', call],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	lines = output.stdout.decode().splitlines()
+	assert len(lines) > 20, output
+	assert [line for line in lines if not line.endswith('-> ' + setting)] == []
+
+
 @pytest.mark.parametrize('icase', ['on', 'off'])
 def test_bash_a_completion_turning_nocasematch_on_leaves_the_shell_as_it_was(tmp_path, icase):
 	# a command's completion function that turns nocasematch on and leaves it so: the glue, which runs it,
