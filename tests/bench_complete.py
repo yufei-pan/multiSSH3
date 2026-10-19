@@ -136,16 +136,20 @@ def main():
 		started = time.monotonic()
 		path = subprocess.run(engine + ['rebuild'], env=env, stdout=subprocess.PIPE, check=True).stdout.decode().strip()
 		print('rebuild: {:.0f} ms, index {:.1f} MB'.format((time.monotonic() - started) * 1000, os.path.getsize(path) / 1e6))
-		for line in ('mssh ', 'mssh node0', 'mssh node00042 "', 'mssh -u ', 'mssh ', "mssh -u root node1 'nvid"):
+		queries = [(line, '') for line in ('mssh ', 'mssh node0', 'mssh node00042 "', 'mssh -u ', 'mssh ', "mssh -u root node1 'nvid")]
+		# bash with completion-ignore-case on: every lookup in any case
+		queries += [(line, ' icase=1') for line in ('mssh ', 'mssh NODE0', "mssh -u root node1 'NVID")]
+		for line, flags in queries:
 			word = '' if line.endswith((' ', '"')) else line.split(' ')[-1].lstrip("'")
-			request = 'MSSHC1\0bash\x005.2\0nosort=1\0{}\0\0{}\0'.format(line, word).encode()
+			request = 'MSSHC1\0bash\x005.2\0nosort=1{}\0{}\0\0{}\0'.format(flags, line, word).encode()
 			timings = []
 			for _ in range(15):
 				started = time.monotonic()
 				subprocess.run(engine + ['query'], input=request, env=env, stdout=subprocess.DEVNULL, check=True)
 				timings.append((time.monotonic() - started) * 1000)
 			timings.sort()
-			print('query {!r:32} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
+			label = 'query' + (' icase' if flags else '')
+			print('{} {!r:32} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(label, line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
 		for line in ('mssh node0004', 'mssh -u r', 'mssh node00042 "nvid'):
 			request = 'MSSHC1\0bash\x005.2\0ghost=1 nul=0\0{}\0\0\0'.format(line).encode()
 			timings = []

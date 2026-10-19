@@ -530,6 +530,9 @@ def test_an_ascii_terminal_gets_ascii_messages(engine, monkeypatch):
 	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
 ])
 def test_a_utf8_terminal_is_told_by_the_locale_variables(monkeypatch, variables, unicode):
+	# as a C library with these locales takes them (en_US: ISO-8859-1)
+	system = {'en_US.UTF-8': (True, False), 'C.utf8': (True, False), 'C.UTF-8': (True, False), 'en_US': (False, False)}
+	monkeypatch.setattr(mc, '_locale_traits', lambda name: (False, False) if name in ('', 'C', 'POSIX') else system.get(name))
 	for name in ('LC_ALL', 'LC_CTYPE', 'LANG'):
 		monkeypatch.delenv(name, raising=False)
 	for name, value in variables.items():
@@ -537,10 +540,21 @@ def test_a_utf8_terminal_is_told_by_the_locale_variables(monkeypatch, variables,
 	assert mc._unicode_terminal() is unicode
 
 
-@pytest.mark.parametrize('lang, unicode', [('C', False), ('POSIX', False), (None, False), ('C.UTF-8', True)])
+def test_a_utf8_locale_the_system_lacks_gets_ascii(monkeypatch):
+	# the shell runs in C there, and TAB in any case compares so too
+	if mc._locale_traits('xx_YY.UTF-8') is not None:
+		pytest.skip('this C library takes any locale name (musl)')
+	for name in ('LC_ALL', 'LC_CTYPE'):
+		monkeypatch.delenv(name, raising=False)
+	monkeypatch.setenv('LANG', 'xx_YY.UTF-8')
+	assert mc._unicode_terminal() is False
+
+
+@pytest.mark.parametrize('lang, unicode', [('C', False), ('POSIX', False), (None, False), ('C.UTF-8', mc._locale_utf8('C.UTF-8'))])
 def test_a_c_locale_gets_ascii_whatever_python_makes_of_it(lang, unicode):
 	# Python 3.7+ starts a C locale as C.UTF-8 (PEP 538) and 3.15 always in UTF-8 mode: its own encoding
-	# says UTF-8 where the shell shows the bytes of a ⚠ as \M-b\M-^Z\M-
+	# says UTF-8 where the shell shows the bytes of a ⚠ as \M-b\M-^Z\M-. C.UTF-8 draws Unicode where the
+	# system has it (not CentOS 7's glibc 2.17)
 	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin')}
 	if lang is not None:
 		env['LANG'] = lang

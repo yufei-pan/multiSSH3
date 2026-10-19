@@ -114,7 +114,7 @@ MSSHC1\0<shell>\0<shell_version>\0<flags>\0<before_cursor>\0<after_cursor>\0<wor
 
 - `<before_cursor>` / `<after_cursor>`: the command line split at the cursor (bash: `${COMP_LINE:0:COMP_POINT}` and the rest). Sending text instead of an index keeps the unit question inside the glue. In a UTF-8 locale, bash 4.2 counts `COMP_POINT` in **bytes** while its substring expansion counts characters; bash 4.3 and later count both in characters (verified on 4.2.46, 4.3.48, 4.4.20/23, 5.0, 5.1, 5.2). The bash glue therefore slices inside a function with `local LC_ALL=C` on bash 4.2, which makes the slice byte-based and restores the locale on return.
 - `<word>`: the shell's own notion of the word being replaced (bash `$2`, zsh `$PREFIX`, fish `commandline -ct`). Candidates are returned relative to exactly this word. This word is not uniform across shells and versions, so the engine takes it as given: fish passes the raw token including an opening quote (`"a | gré`) and the engine dequotes it; bash 4.2 passes `@no` for `root@no` where bash 5.2 passes `no`, so the engine never assumes `@` splits words.
-- `<flags>`: space-separated `key=value` capability flags: `nosort=0|1`, `icase=0|1` (readline `completion-ignore-case`), `ble=0|1`, `zas=0|1` (zsh-autosuggestions), `term=<TERM>`. SP1 uses `nosort` and `icase`; the rest are recorded for SP2.
+- `<flags>`: space-separated `key=value` capability flags: `nosort=0|1`, `icase=0|1` (readline `completion-ignore-case`), `lc=<locale>` (bash's `LC_ALL`, else `LC_CTYPE`, else `LANG`: how readline lowers letters), `ble=0|1`, `zas=0|1` (zsh-autosuggestions), `term=<TERM>`. SP1 uses `nosort` and `icase`; the rest are recorded for SP2.
 
 **Response** (stdout), one record per line, terminated by a single `\0`:
 
@@ -208,7 +208,7 @@ Only records reachable through the line's features are decoded, which keeps the 
 
 ### Matching
 
-- bash: case-sensitive prefix match on `<word>`, or case-insensitive when `icase=1`. Every candidate extends the word.
+- bash: case-sensitive prefix match on `<word>`, or case-insensitive when `icase=1`: a character at a time, each lowered as readline does in the locale `lc` names, as the C library has it (`towlower` in a UTF-8 locale, with I/ı and İ/i where it lowers I to the dotless i, as tr_TR does; ASCII letters only in others, I and i only themselves in an 8-bit Turkish one; a locale the system lacks is C), and only the word being completed, of a path only its last part (the words of a command typed before it, and the directories, stay as typed). Every candidate extends the word in some case. Names differing only in case stay apart (mssh compares hosts, aliases, unreachable hosts, -X members and users exactly), and the engine offers them all, best first; only when the words left all differ only in case, which readline cannot tell apart, does the glue, over its merged words, put in one (the one in the case typed, else the first). Option names match in any case only when the word starts none as typed, since readline puts in the first candidate's spelling when none has the case typed.
 - zsh and fish: the same prefix filtering in SP1; candidates are passed with the user's own matcher configuration left untouched.
 - Rank order is visible in zsh and fish, and in bash 4.4+ via `nosort`.
 
@@ -273,10 +273,10 @@ Not indexed. Each request carries the shell's in-memory tail (default 1000 entri
 
 - Registration: `complete -o default -o bashdefault -F _mssh_complete mssh mssh3 multissh multissh3 multiSSH3`. With `-o default`, an empty answer falls back to bash's filename completion.
 - Per TAB:
-  1. Build the request: before/after cursor text, `$2`, bash version, flags (`nosort` when bash ≥ 4.4; `icase` from `bind -v`, read once when the glue loads), and `fc -ln -1000`.
+  1. Build the request: before/after cursor text, `$2`, bash version, flags (`nosort` when bash ≥ 4.4; `icase` from `bind -v`, read at every TAB in the subshell that writes the request, beside the engine's start, as a bind or a re-read `~/.inputrc` changes it), and `fc -ln -1000`.
   2. `IFS= read -r -d '' -t "$deadline" resp < <(engine query 2>/dev/null)`. On timeout, nonzero status, or a bad first line: return with empty `COMPREPLY`.
   3. Apply directives with `compopt`; fill `COMPREPLY` from `C` records.
-  4. For an `X` record: load the command's completion with the first bash-completion loader that exists — `_comp_load` (2.12+), `__load_completion` (2.2–2.11), `_completion_loader` (2.0–2.1) — run its function with local synthetic `COMP_WORDS`, `COMP_CWORD`, `COMP_LINE`, `COMP_POINT`, prepend `<prefix>` to each result, and merge with the engine's candidates (deduplicated, engine order first). Without bash-completion: `compgen -c` for the command word, `compgen -f` for its arguments.
+  4. For an `X` record: load the command's completion with the first bash-completion loader that exists — `_comp_load` (2.12+), `__load_completion` (2.2–2.11), `_completion_loader` (2.0–2.1) — run its function with local synthetic `COMP_WORDS`, `COMP_CWORD`, `COMP_LINE`, `COMP_POINT`, prepend `<prefix>` to each result, and merge with the engine's candidates (deduplicated, engine order first). Without bash-completion: `compgen -c` for the command word, `compgen -f` for its arguments. The results are kept when they start with `$2`, in any case when the engine answered the directive `icase` (compgen ignores case as readline does; the glue sets `nocasematch` for the test and restores it).
 - Verified readline behavior this design relies on (pty probes on bash 4.2.46 and 5.2.37): inside an open quote, `$2` is the dequoted inner text (`"lscp` → `lscp`; `"a | gre` → `a | gre`); `=` breaks words (`-f=/et` → `/et`); `,` does not break words; `@` differs by version (see Protocol).
 - The glue is written for bash 4.2: no namerefs (`local -n`, 4.3), no `${var@Q}` (4.4), no `mapfile -d` (4.4), no negative array subscripts (4.3). `compopt -o nosort` is used only on bash ≥ 4.4; older bash shows candidates alphabetically. Verified on 4.2: fractional `read -t` on a process substitution aborts on time; `compopt`, `mapfile`, associative arrays and `fc -ln` work.
 - SP1 adds no key bindings, readline variables, `PROMPT_COMMAND` or traps.
@@ -430,7 +430,7 @@ Drafting and testing the implementation against real shells and the replay evalu
 | Test baseline | The existing suite has 520 tests | 269 was an older count |
 | Python 3.6 | The argparse cross-check is skipped there | `parse_intermixed_args` arrived in Python 3.7; mssh itself falls back to `parse_known_args` on 3.6 |
 | Providers | Providers are `Engine` methods (`_options`, `_values`, `_hosts`, `_commands`); there is no empty `remote_probe` provider | SP3 adds remote probing where it plugs in; an empty stub would only be dead code |
-| Case | The `icase` flag is sent but SP1 matches case-sensitively | Case-insensitive matching has to reach every prefix lookup in the index; left for a follow-up |
+| Case | SP1 sent the `icase` flag but matched case-sensitively; matching in any case came after it (see Matching) | Case-insensitive matching has to reach every prefix lookup in the index |
 | zsh groups | zsh shows one list (`compadd -V mssh`) in rank order, with descriptions | Separate groups per kind would break the cross-kind rank order |
 | Benchmark | `tests/bench_complete.py` does not time shell start | The installed glue runs no commands at shell start, and `test_new_shells_stay_silent` checks it prints nothing and keeps `$?` |
 | bash install | bash always loads the glue from `~/.bashrc` (data-dir `completion.bash` plus the marked block); the bash-completion per-user directory is not used | bash-completion being installed does not mean it runs: stock Debian root shells do not load it, so install would report success while TAB did nothing new |

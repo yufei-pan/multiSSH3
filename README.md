@@ -478,7 +478,7 @@ Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[0
 
 Completion never removes what you typed, prints nothing, and falls back to the shell's normal completion when anything is slow or missing.
 
-In bash with readline's `completion-ignore-case` on (`set completion-ignore-case on` in `~/.inputrc`), what you typed matches in any case, and the candidate's own spelling goes in: `mssh storage-e<TAB>` gives `Storage-East`. Option names that differ only in case (`-s` and `-S`) stay apart.
+In bash with readline's `completion-ignore-case` on (`set completion-ignore-case on` in `~/.inputrc`, or `bind` at any time: it is read at every TAB), what you typed matches in any case, and the candidate's own spelling goes in: `mssh storage-e<TAB>` gives `Storage-East`. Names differing only in case stay different names, as mssh compares host, alias and user names exactly; when they alone are left, which readline cannot tell apart, the one in the case you typed goes in, else the most likely. The words of a command before the one being completed and the directories of a path stay as typed, and an option name typed in its own case is never turned into another (`-S` stays `-S`, never `-s`). Letters match as your locale lowers them: in a non-UTF-8 locale (`LANG=C`, or a locale the system lacks) only ASCII letters, in a Turkish UTF-8 one `I` goes with `ı` and `İ` with `i`.
 
 In zsh, TAB needs zsh's completion system: `compinit` has to run when zsh starts, before or after the mssh block in `~/.zshrc` (oh-my-zsh, prezto and the like run it, and so does Ubuntu's `/etc/zsh/zshrc`). `mssh --completion install` says so when `~/.zshrc` does not seem to start it. Grey suggestions, warnings and Ctrl-R work without it.
 

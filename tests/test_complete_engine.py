@@ -294,10 +294,126 @@ ICASE = {'icase': '1'}
 def test_prefix_ranges_find_every_spelling_differing_only_in_case():
 	items = sorted(['AB', 'Ab', 'aB', 'ab', 'abc', 'a', 'b', 'ac'])
 	assert mc._prefix_ranges(items, 'ab') == [mc._prefix_range(items, 'ab')]
-	assert [text for lo, hi in mc._prefix_ranges(items, 'ab', True) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
-	assert [text for lo, hi in mc._prefix_ranges(items, 'Ab', True) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
-	assert mc._prefix_ranges(items, 'zz', True) == []
-	assert mc._prefix_ranges(items, '', True) == [(0, len(items))]
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab', mc.UNICODE_CASE) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
+	assert [text for lo, hi in mc._prefix_ranges(items, 'Ab', mc.UNICODE_CASE) for text in items[lo:hi]] == ['AB', 'Ab', 'aB', 'ab', 'abc']
+	assert mc._prefix_ranges(items, 'zz', mc.UNICODE_CASE) == []
+	assert mc._prefix_ranges(items, '', mc.UNICODE_CASE) == [(0, len(items))]
+
+
+def test_icase_lookups_and_checks_match_letters_alike():
+	# readline compares a character at a time in lower case (towlower): KELVIN SIGN is a k, the I with a dot
+	# lowers to an i, the dotless i is no I. The sorted lookups and the checks of single texts agree.
+	items = sorted(['\u212aelvin', 'kelvin', 'Kelvin', 'Ix', 'ix', '\u0130stanbul', '\u0131x', 'SS', '\u00df', '\u1e9e'])
+	expected = {
+		'k': ['Kelvin', 'kelvin', '\u212aelvin'], '\u212a': ['Kelvin', 'kelvin', '\u212aelvin'],
+		'i': ['Ix', 'ix', '\u0130stanbul'], '\u0130': ['Ix', 'ix', '\u0130stanbul'], 'I': ['Ix', 'ix', '\u0130stanbul'],
+		'\u0131': ['\u0131x'], '\u00df': ['\u00df', '\u1e9e'], 's': ['SS'],
+	}
+	for prefix, found in expected.items():
+		assert sorted(text for lo, hi in mc._prefix_ranges(items, prefix, mc.UNICODE_CASE) for text in items[lo:hi]) == sorted(found), prefix
+		assert sorted(text for text in items if mc._starts(text, prefix, mc.UNICODE_CASE)) == sorted(found), prefix
+
+
+def test_case_variants_are_every_letter_with_the_same_lower_case():
+	# what this Python's Unicode data holds: a letter it adds would be matched one way only
+	alike = {}
+	for point in range(0x110000):
+		char = chr(point)
+		lower = char.lower()[0]
+		if lower != char:
+			assert lower.lower()[0] == lower, char
+			alike.setdefault(lower, [lower]).append(char)
+	assert len(alike) > 1000
+	for chars in alike.values():
+		for char in chars:
+			assert mc.UNICODE_CASE.variants(char) == ''.join(sorted(chars)), (char, chars)
+
+
+@pytest.mark.parametrize('ascii, turkic', [(False, False), (True, False), (False, True), (True, True)])
+def test_text_is_matched_as_its_characters_are(ascii, turkic):
+	# CaseFold.same takes a shortcut for ASCII text (upper case): it must agree with the variants
+	fold = mc.CaseFold(ascii, turkic)
+	chars = [chr(point) for point in range(32, 127)] + ['\u212a', '\u0130', '\u0131', '\u00e9', '\u00c9']
+	for typed in chars:
+		for char in chars:
+			assert mc._starts(char + 'x', typed, fold) == (char in fold.variants(typed)), (char, typed)
+
+
+# how the C library here takes some locale names: (utf8, turkic), None for one it has not
+SYSTEM_LOCALES = {'en_US.UTF-8': (True, False), 'en_US': (False, False), 'tr_TR.UTF-8': (True, True),
+	'tr_TR.ISO-8859-9': (False, True), 'de_DE.UTF-8': None, 'tr_XX.UTF-8': None}
+
+
+@pytest.fixture
+def locales(monkeypatch):
+	monkeypatch.setattr(mc, '_locale_traits', lambda name: (False, False) if name in ('', 'C', 'POSIX') else SYSTEM_LOCALES[name])
+
+
+@pytest.mark.parametrize('name, ascii, turkic', [
+	(None, False, False), ('en_US.UTF-8', False, False), ('en_US', True, False), ('C', True, False), ('', True, False),
+	('tr_TR.UTF-8', False, True), ('tr_TR.ISO-8859-9', True, True), ('de_DE.UTF-8', True, False), ('tr_XX.UTF-8', True, False)])
+def test_case_folds_as_the_locale_of_the_shell_is_taken(locales, name, ascii, turkic):
+	# readline lowers characters as the shell's locale says: towlower in a UTF-8 one, where Turkish lowers I to
+	# the dotless i and the I with a dot to i; tolower on bytes elsewhere, where only ASCII letters reach the
+	# engine as letters. A locale the C library does not have leaves the shell in C, whatever its name says.
+	# None: a glue that does not say
+	fold = mc.case_fold(name)
+	assert (fold.ascii, fold.turkic) == (ascii, turkic)
+
+
+def test_locales_are_taken_as_the_c_library_has_them():
+	import locale
+	before = locale.setlocale(locale.LC_CTYPE)
+	assert mc._locale_traits('C') == mc._locale_traits('POSIX') == mc._locale_traits('') == (False, False)
+	# the process's own locale is one the C library has; asking leaves the process's locale as it was
+	assert mc._locale_traits(before) is not None
+	assert mc._locale_traits(before) == mc._locale_traits(before)
+	if mc._locale_traits('xx_YY.UTF-8') is not None:
+		pytest.skip('this C library takes any locale name (musl)')
+	assert mc._locale_traits('xx_YY.UTF-8') is None and mc._locale_traits('tr_XX.UTF-8') is None
+	assert locale.setlocale(locale.LC_CTYPE) == before
+
+
+@pytest.mark.parametrize('name, traits', [('tr_TR.UTF-8', (True, True)), ('tr_TR.ISO-8859-9', (False, True)), ('C.UTF-8', (True, False))])
+def test_turkish_locales_are_told_by_how_they_lower_i(name, traits):
+	import locale
+	saved = locale.setlocale(locale.LC_CTYPE)
+	try:
+		locale.setlocale(locale.LC_CTYPE, name)
+	except locale.Error:
+		pytest.skip('no {} locale here'.format(name))
+	finally:
+		locale.setlocale(locale.LC_CTYPE, saved)
+	if name.startswith('tr') and mc._locale_traits('xx_YY.UTF-8') is not None:
+		# and so does its bash's readline
+		pytest.skip('this C library takes any locale name as UTF-8 and lowers I to i in all (musl)')
+	assert mc._locale_traits(name) == traits
+
+
+def test_case_folds_letters_as_ascii_and_turkish_locales_do():
+	ascii, turkish, turkish8 = mc.CaseFold(ascii=True), mc.CaseFold(turkic=True), mc.CaseFold(ascii=True, turkic=True)
+	assert ascii.variants('a') == 'Aa' and ascii.variants('\u00e9') == '\u00e9' and ascii.variants('\u0130') == '\u0130'
+	assert not mc._starts('\u00c9cole', '\u00e9', ascii) and mc._starts('Ecole', 'e', ascii)
+	assert turkish.variants('i') == 'i\u0130' and turkish.variants('I') == 'I\u0131' and turkish.variants('\u0131') == 'I\u0131'
+	assert turkish.variants('a') == 'Aa'
+	assert mc._starts('\u0130stanbul', 'is', turkish) and not mc._starts('Ix', 'i', turkish) and mc._starts('\u0131x', 'I', turkish)
+	# in an 8-bit Turkish locale readline lowers I to the dotless i, which is no ASCII letter, and the I with
+	# a dot and the dotless i reach it as two UTF-8 bytes it lowers to no i: I and i match only themselves
+	assert turkish8.variants('I') == 'I' and turkish8.variants('i') == 'i' and turkish8.variants('a') == 'Aa'
+	assert not mc._starts('\u0130stanbul', 'i', turkish8) and not mc._starts('\u0131x', 'I', turkish8)
+	assert not mc._starts('Ix', 'i', turkish8) and not mc._starts('ix', 'I', turkish8) and mc._starts('Ax', 'a', turkish8)
+
+
+def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path, locales):
+	table = _host_table(tmp_path, ['\u0130stanbul', 'Ix1', 'ix2', '\u00c9cole', '\u00e9t\u00e91'])
+	def found(word, lc):
+		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags={'icase': '1', 'lc': lc})))
+	assert found('i', 'en_US.UTF-8') == ['Ix1', 'ix2', '\u0130stanbul']
+	assert found('i', 'C') == ['Ix1', 'ix2'] and found('i', 'de_DE.UTF-8') == ['Ix1', 'ix2']
+	assert found('\u00e9', 'C') == ['\u00e9t\u00e91'] and found('\u00e9', 'en_US.UTF-8') == ['\u00c9cole', '\u00e9t\u00e91']
+	assert found('i', 'tr_TR.UTF-8') == ['ix2', '\u0130stanbul'] and found('I', 'tr_TR.UTF-8') == ['Ix1']
+	assert found('i', 'tr_TR.ISO-8859-9') == ['ix2'] and found('I', 'tr_TR.ISO-8859-9') == ['Ix1']
+	assert found('I', 'tr_XX.UTF-8') == ['Ix1', 'ix2']
 
 
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
@@ -318,13 +434,139 @@ def test_icase_history_matches_in_any_case():
 	assert texts(query('mssh h "echo #ho', word='echo #ho', flags=ICASE)) == ['echo #HOST#', 'echo #HOSTNAME#']
 
 
-def test_icase_folds_option_names_only_where_no_other_option_differs_in_case():
-	# -s and -S are two options, never offered for each other; -su, with no -SU, is offered for -S as readline
-	# would take it; no two long options differ only in case
+CASED_COMMANDS = [line(NOW - number, '-su', 'login1', command) for number, command in enumerate(
+	('"systemctl status nginx"', '"systemctl STATUS Nginx"', '"Systemctl Status sshd"'))]
+
+
+def test_icase_matches_only_the_command_word_being_completed_in_any_case():
+	# the words typed before stay as typed, in a quoted command too, where the candidates are whole commands
+	knowledges = [memory(CASED_COMMANDS)]
+	assert texts(query('mssh login1 systemctl STATUS ', knowledges=knowledges, flags=ICASE)) == ['Nginx']
+	assert texts(query('mssh login1 systemctl STATUS NG', knowledges=knowledges, flags=ICASE)) == ['Nginx']
+	assert texts(query('mssh login1 "systemctl STATUS ', word='systemctl STATUS ', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
+	assert texts(query('mssh login1 "systemctl STATUS n', word='systemctl STATUS n', knowledges=knowledges, flags=ICASE)) == ['systemctl STATUS Nginx']
+	assert sorted(texts(query('mssh login1 "SYSTEMCTL', word='SYSTEMCTL', knowledges=knowledges, flags=ICASE))) == [
+		'Systemctl Status sshd', 'systemctl STATUS Nginx', 'systemctl status nginx']
+	assert texts(query('mssh login1 "date; systemctl status N', word='date; systemctl status N', knowledges=knowledges, flags=ICASE)) == []
+
+
+def test_icase_is_answered_back_for_the_words_the_glue_adds():
+	# bash's glue adds the words of a command's own completion, and file names: in any case too
+	assert 'icase' in query('mssh h nosuchcmd stor', flags=ICASE).directives
+	assert 'icase' not in query('mssh h nosuchcmd stor').directives
+
+
+def test_icase_offers_every_name_differing_only_in_case(monkeypatch):
+	# Admin and admin are two accounts: the engine offers both, also when they alone are left; bash's glue,
+	# which adds words of its own, puts in one when readline could not tell the words left apart ($USER is
+	# offered too)
+	monkeypatch.setenv('USER', 'root')
+	knowledges = [memory([line(NOW - number, options, 'h', '"grep {} x"'.format(word)) for number, (options, word) in enumerate(
+		(('-su -u=Admin', 'Foo'), ('-su -u=admin', 'foo'), ('-su -u=root', 'bar')))])]
+	assert sorted(texts(query('mssh -u ', knowledges=knowledges, flags=ICASE))) == ['Admin', 'admin', 'root']
+	assert sorted(texts(query('mssh -u a', knowledges=knowledges, flags=ICASE))) == ['Admin', 'admin']
+	assert sorted(texts(query('mssh h "grep ', word='grep ', knowledges=knowledges, flags=ICASE))) == ['grep Foo x', 'grep bar x', 'grep foo x']
+	assert sorted(texts(query('mssh h "grep F', word='grep F', knowledges=knowledges, flags=ICASE))) == ['grep Foo x', 'grep foo x']
+
+
+def test_icase_offers_the_candidates_differing_only_in_case_best_first(tmp_path):
+	# bash's glue puts in the one in the case typed, else the first: the best
+	table = _host_table(tmp_path, ['Storage-East'])
+	knowledges = [memory([line(NOW, '-su', 'storage-east', '"uptime"')] + [line(NOW - number, '-su', 'login1', command)
+		for number, command in enumerate(('"zzsvc status"', '"zzsvc start"', '"Zzsvc restart"'))])]
+	assert texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table, flags=ICASE)) == ['storage-east', 'Storage-East']
+	assert texts(query('mssh STORAGE-E', knowledges=knowledges, hosts=table)) == []
+	assert texts(query('mssh login1 ZZ', knowledges=knowledges, flags=ICASE)) == ['zzsvc', 'Zzsvc']
+
+
+def test_icase_matches_hosts_in_any_case_but_keeps_names_apart(tmp_path):
+	# matching in any case decides which names match the word, never that two are one: mssh's aliases (env
+	# variables), its list of unreachable hosts (keyed by user@host) and -X compare names exactly
+	table = _host_table(tmp_path, ['gpus', 'gpx1', 'Node01', 'node02', 'Web1', 'web2', 'web3', 'm1'],
+		aliases=[('GPUs', ['Node01', 'node02'])], unavailable=['web1', 'root@web2'])
+	# the host gpus stays the host gpus, the alias GPUs the alias (when only they are left, bash's glue puts in
+	# the one in the case typed)
+	assert [(candidate.text, candidate.group) for candidate in query('mssh gpus', knowledges=[], hosts=table, flags=ICASE).candidates] == [
+		('GPUs', 'aliases'), ('gpus', 'hosts')]
+	described = {candidate.text: candidate.description for candidate in query('mssh gp', knowledges=[], hosts=table, flags=ICASE).candidates}
+	assert described == {'gpus': '', 'gpx1': '', 'GPUs': 'alias, 2 hosts'}
+	# mssh skips web1 and root@web2, not Web1 nor ROOT@web2
+	described = {candidate.text: candidate.description for candidate in query('mssh WE', knowledges=[], hosts=table, flags=ICASE).candidates}
+	assert described == {'Web1': '', 'web2': '', 'web3': ''}
+	described = {candidate.text: candidate.description for candidate in query('mssh ROOT@WE', knowledges=[], hosts=table, flags=ICASE).candidates}
+	assert described == {'ROOT@Web1': '', 'ROOT@web2': '', 'ROOT@web3': ''}
+	# -X Web1 would not skip web1: for web[1-2] -X prefers web1's and web2's names only
+	assert texts(query('mssh web[1-2] -X ', knowledges=[], hosts=table, flags=ICASE))[:1] == ['web2']
+	assert 'Web1' in texts(query('mssh web[1-2] -X W', knowledges=[], hosts=table, flags=ICASE))[1:]
+
+
+def test_icase_aliases_differing_only_in_case_keep_their_own_scores(tmp_path):
+	# gpus was used ten times, GPUS never: they shared one score, and GPUS came first by its spelling
+	table = _host_table(tmp_path, ['a1', 'a2', 'b1', 'gpx1'], aliases=[('gpus', ['a1', 'a2']), ('GPUS', ['b1'])])
+	knowledges = [memory([line(NOW - number, '-su', 'gpus', '"uptime"') for number in range(10)])]
+	scored = {candidate.text: candidate.score for candidate in query('mssh gp', knowledges=knowledges, hosts=table, flags=ICASE).candidates}
+	assert scored['gpus'] > scored['GPUS'] == pytest.approx(2 * mc.PRIOR)
+	# alone, the two are one for readline: bash's glue puts in the first, the best
+	table = _host_table(tmp_path, ['a1', 'a2', 'b1'], aliases=[('gpus', ['a1', 'a2']), ('GPUS', ['b1'])])
+	assert texts(query('mssh Gp', knowledges=knowledges, hosts=table, flags=ICASE)) == ['gpus', 'GPUS']
+
+
+def test_icase_range_members_are_the_names_the_range_makes(tmp_path):
+	# a range used before hides its members beside it: those it makes, in their case; Web1 is none of web[1-3]'s
+	table = _host_table(tmp_path, ['Web1', 'web2', 'web3'])
+	knowledges = [memory([line(NOW, '-su', 'web[1-3]', '"uptime"')])]
+	assert sorted(texts(query('mssh w', knowledges=knowledges, hosts=table, flags=ICASE))) == ['Web1', 'web[1-3]']
+	# Web[1-3] makes Web1, and -X for web[1-2] does not name it (web1 is another name)
+	knowledges = [memory([line(NOW, '-su', 'Web[1-3]', '"uptime"')])]
+	listed = texts(query('mssh web[1-2] -X W', knowledges=knowledges, hosts=table, flags=ICASE))
+	assert 'Web1' not in listed and 'Web[1-3]' in listed and listed[0] == 'web2'
+
+
+def test_icase_paths_keep_their_directories_as_typed(tmp_path, monkeypatch):
+	# readline's own file name completion matches only a path's last part in any case: /Data/pro is no
+	# /data/project/b.txt, and readline would replace the directories typed
+	knowledges = [memory([line(NOW, '-su -f=/data/project/b.txt', 'h', '"/srv/Data/out"')])]
+	assert texts(query('mssh -f /data/pro', knowledges=knowledges, flags=ICASE)) == ['/data/project/b.txt']
+	assert texts(query('mssh -f /data/PRO', knowledges=knowledges, flags=ICASE)) == ['/data/project/b.txt']
+	assert texts(query('mssh -f /Data/pro', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh -f /data/project/b.txt h /srv/Data/O', knowledges=knowledges, flags=ICASE)) == ['/srv/Data/out']
+	assert texts(query('mssh -f /data/project/b.txt h /srv/data/o', knowledges=knowledges, flags=ICASE)) == []
+	(tmp_path / '.ssh').mkdir()
+	(tmp_path / '.ssh' / 'id_test').write_text('')
+	monkeypatch.setenv('HOME', str(tmp_path))
+	assert texts(query('mssh -k ~/.ssh/ID', knowledges=[], flags=ICASE)) == ['~/.ssh/id_test']
+	assert texts(query('mssh -k ~/.SSH/id', knowledges=[], flags=ICASE)) == []
+
+
+def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
+	# the word being completed in a remote command is matched as readline matches a file name: only its
+	# last part in any case (the directories typed came back in another case)
+	knowledges = [memory([line(NOW, '-su', 'h', '"cat /srv/Data/out"'), line(NOW - 1, '-su', 'h', '"/Opt/Tool/run.sh"')])]
+	assert texts(query('mssh h cat /srv/data/o', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh h cat /srv/Data/O', knowledges=knowledges, flags=ICASE)) == ['/srv/Data/out']
+	assert texts(query('mssh h "cat /srv/data/o', word='cat /srv/data/o', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh h "cat /srv/Data/O', word='cat /srv/Data/O', knowledges=knowledges, flags=ICASE)) == ['cat /srv/Data/out']
+	assert texts(query('mssh h /opt/tool/r', knowledges=knowledges, flags=ICASE)) == []
+	assert texts(query('mssh h /Opt/Tool/R', knowledges=knowledges, flags=ICASE)) == ['/Opt/Tool/run.sh']
+	assert texts(query('mssh h CAT /srv', knowledges=knowledges, flags=ICASE)) == []
+
+
+def test_prefix_ranges_match_in_any_case_from_start_on():
+	items = sorted(['AB x', 'ab X', 'ab x', 'ab y', 'Ab X'])
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab x', mc.UNICODE_CASE, 3) for text in items[lo:hi]] == ['ab X', 'ab x']
+	assert [text for lo, hi in mc._prefix_ranges(items, 'ab ', mc.UNICODE_CASE, 3) for text in items[lo:hi]] == ['ab X', 'ab x', 'ab y']
+	assert mc._prefix_ranges(items, 'aB x', mc.UNICODE_CASE, 3) == []
+
+
+def test_icase_matches_option_names_in_any_case_only_where_the_word_names_none_as_typed():
+	# readline, finding no candidate in the case typed, puts in the first one's spelling: -S, which starts an
+	# option name as typed (a used one too), must never become -s (-q -S<TAB> gave -s, --file_sync)
 	assert texts(query('mssh --NO_WA', flags=ICASE)) == ['--no_watch']
+	assert texts(query('mssh -SU', flags=ICASE)) == ['-su']
 	assert texts(query('mssh -s', flags=ICASE)) == texts(query('mssh -s'))
-	upper = texts(query('mssh -S', flags=ICASE))
-	assert '-S' in upper and '-s' not in upper and '-su' in upper
+	assert texts(query('mssh -S', flags=ICASE)) == ['-S']
+	for before in ('mssh -q -S', 'mssh --scp -W', 'mssh -nh -I'):
+		assert texts(query(before, flags=ICASE)) == [], before
 
 
 # mssh records a failure under the name it ran the host as, and so looks it up: user@host when a user

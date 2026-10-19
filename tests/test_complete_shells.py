@@ -59,8 +59,394 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		assert session.line_after('mssh GP') == 'mssh gpu[01-16] '
 		assert session.line_after('mssh -u ROO') == 'mssh -u root '
 		assert session.line_after('mssh --NO_WA') == 'mssh --no_watch '
+		# -S, -W and -I start option names as typed (used here): none may become -s, -w or -i
+		assert session.line_after('mssh -q -S') == 'mssh -q -S'
+		assert session.line_after('mssh --scp -W') == 'mssh --scp -W'
+		assert session.line_after('mssh -nh -I') == 'mssh -nh -I'
 	finally:
 		session.close()
+
+
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options='', lang=None):
+	'''
+	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
+	only files (no other file names among the candidates), with commands found first on its PATH, and
+	env_lines in ~/hosts.env (aliases), shell options (set -e), and LANG=lang if given (the index is built in
+	the tests' own).
+	'''
+	env, home = make_home(tmp_path, history)
+	(home / 'hosts').write_text(hosts, encoding='utf-8')
+	(home / 'hosts.env').write_text(env_lines)
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in files:
+		(work / name).write_text('')
+	found = tmp_path / 'bin'
+	found.mkdir()
+	for name in commands:
+		(found / name).write_text('#!/bin/sh\n')
+		(found / name).chmod(0o755)
+	env = dict(env, PATH=str(found) + os.pathsep + env['PATH'])
+	if lang is not None:
+		env['LANG'] = lang
+	extra = "cd '{}'; {}".format(work, options)
+	if on:
+		extra = "bind 'set completion-ignore-case on'; " + extra
+	return bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra=extra)
+
+
+def set_ignore_case(session, value):
+	'''Turn completion-ignore-case on or off in a running bash, as a bind or a re-read ~/.inputrc does.'''
+	session.send("bind 'set completion-ignore-case {}'\r".format(value))
+	session.read_until(b'@@READY@@')
+
+
+def test_bash_ignoring_case_offers_one_of_the_words_differing_only_in_case(tmp_path):
+	# readline cannot tell storage-east from Storage-East and would stop at their common start
+	history = ['1790000000\t/x/multiSSH3.py\t-su\tstorage-east\t"uptime"']
+	history += ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number + 1, command)
+		for number, command in enumerate(('zzsvc status', 'zzsvc start', 'Zzsvc restart'))]
+	session = ignoring_case(tmp_path, history, '10.0.0.1 Storage-East\n')
+	try:
+		assert session.line_after('mssh storage-e') == 'mssh storage-east '
+		assert session.line_after('mssh Storage-E') == 'mssh Storage-East '
+		assert session.line_after('mssh STORAGE-E') == 'mssh storage-east '
+		assert session.line_after('mssh login1 Zz') == 'mssh login1 Zzsvc '
+		assert session.line_after('mssh login1 ZZ') == 'mssh login1 zzsvc '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_lists_its_words_differing_only_in_case_beside_a_file_name(tmp_path):
+	# the engine kept one of storage-file and Storage-file, not knowing the glue would add storage-other
+	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"nosuchcmd {}"'.format(number, word)
+		for number, word in enumerate(('storage-file', 'Storage-file'))]
+	session = ignoring_case(tmp_path, history, files=['storage-other'])
+	try:
+		assert {'storage-file', 'Storage-file', 'storage-other'} <= set(listed_after(session, 'mssh h nosuchcmd storage-'))
+		assert session.line_after('mssh h nosuchcmd storage-f') == 'mssh h nosuchcmd storage-file '
+		assert session.line_after('mssh h nosuchcmd Storage-f') == 'mssh h nosuchcmd Storage-file '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_a_host_and_an_alias_differing_only_in_case(tmp_path):
+	# the host gpus beside the alias GPUs (an env variable): gpus typed in its case is the host, never the alias
+	session = ignoring_case(tmp_path, [], '10.0.0.1 gpus\n10.0.0.2 Node01\n10.0.0.3 node02\n', env_lines='GPUs=Node01,node02\n')
+	try:
+		assert session.line_after('mssh gpus') == 'mssh gpus '
+		assert session.line_after('mssh GPU') == 'mssh GPUs '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_puts_in_the_more_used_of_two_aliases_differing_only_in_case(tmp_path):
+	# gpus was used ten times, GPUS never: neither in the case typed, the engine's first goes in
+	history = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpus\t"uptime"'.format(number) for number in range(10)]
+	session = ignoring_case(tmp_path, history, '10.0.0.1 a1\n10.0.0.2 a2\n10.0.0.3 b1\n', env_lines='gpus=a1,a2\nGPUS=b1,b1\n')
+	try:
+		assert session.line_after('mssh Gp') == 'mssh gpus '
+	finally:
+		session.close()
+
+
+def listed_after(session, typed):
+	'''The words readline lists for typed on a second TAB.'''
+	session.send(typed + '\t\t')
+	text = session.read_until(b'@@READY@@')
+	session.send('\x15')
+	return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text).split()
+
+
+def test_bash_ignoring_case_lists_words_differing_only_in_case_beside_others(tmp_path):
+	# Admin and admin are two accounts: beside root readline lists all three, and either goes in when typed
+	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su -u={}\th\t"uptime"'.format(number, name)
+		for number, name in enumerate(('Admin', 'admin', 'root'))])
+	try:
+		assert {'Admin', 'admin', 'root'} <= set(listed_after(session, 'mssh -u '))
+		assert session.line_after('mssh -u a') == 'mssh -u admin '
+		assert session.line_after('mssh -u A') == 'mssh -u Admin '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('first', ['on', 'off'])
+def test_bash_follows_completion_ignore_case_as_it_changes(tmp_path, first):
+	# read once per shell, the setting went stale after a bind: turned off, the engine still offered Node01 and
+	# NODE03 for node0, and readline, now minding case, cut the word back to their common start (mssh N);
+	# turned on, words in another case stayed out
+	session = ignoring_case(tmp_path, HISTORY, '10.0.0.1 Node01\n10.0.0.3 NODE03\n10.0.0.5 Storage-East\n', on=first == 'on')
+
+	def completes(value):
+		if value == 'on':
+			assert session.line_after('mssh storage-e') == 'mssh Storage-East '
+		else:
+			assert session.line_after('mssh node0') == 'mssh node0'
+			assert session.line_after('mssh storage-e') == 'mssh storage-e'
+	try:
+		completes(first)
+		other = 'off' if first == 'on' else 'on'
+		set_ignore_case(session, other)
+		completes(other)
+		set_ignore_case(session, first)
+		completes(first)
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
+	# bash's compgen ignores case too: stor gives Storage-File, ZZT gives zztool; dropped, the history's word
+	# alone went in
+	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command)
+		for number, command in enumerate(('nosuchcmd storage-x', 'zzthing'))]
+	session = ignoring_case(tmp_path, history, files=['Storage-File'], commands=['zztool'])
+	try:
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
+		assert session.line_after('mssh h ZZT') == 'mssh h zzt'
+		assert session.line_after('mssh h nosuchcmd Storage-F') == 'mssh h nosuchcmd Storage-File '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('options', ['', 'set -e', 'set -u'])
+def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing_only_in_case(tmp_path, options):
+	# the history's storage-file and the file Storage-File, both offered, kept readline from completing
+	session = ignoring_case(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-file"'], files=['Storage-File'], options=options)
+	try:
+		assert session.line_after('mssh h nosuchcmd storage-f') == 'mssh h nosuchcmd storage-file '
+		assert session.line_after('mssh h nosuchcmd Storage-F') == 'mssh h nosuchcmd Storage-File '
+		assert session.line_after('mssh h nosuchcmd STORAGE-F') == 'mssh h nosuchcmd storage-file '
+		assert b'unbound variable' not in session.output
+	finally:
+		session.close()
+
+
+def nocasematch(session):
+	'''Whether the running bash has nocasematch on: 'on' or 'off' (None if it does not say).'''
+	start = len(session.output)
+	session.send('shopt -q nocasematch && echo "@@NOCASE""=on@@" || echo "@@NOCASE""=off@@"\r')
+	deadline = time.monotonic() + 10
+	while time.monotonic() < deadline:
+		found = re.search(rb'@@NOCASE=(on|off)@@', session.output[start:])
+		if found:
+			return found.group(1).decode()
+		session.read_until(b'@@NOCASE=', 0.1)
+	return None
+
+
+def test_bash_glue_gives_the_shell_back_its_nocasematch(tmp_path):
+	# the glue sets nocasematch to match delegated words as the engine matched them (on while ignoring case,
+	# whatever the shell had), and puts back what the shell had
+	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-x"']
+	session = ignoring_case(tmp_path, history, files=['Storage-File'])
+	try:
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
+		assert nocasematch(session) == 'off'
+		set_ignore_case(session, 'off')
+		session.send('shopt -s nocasematch\r')
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-x '
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_directories_of_a_path_as_typed(tmp_path):
+	# as readline's own file name completion does: /Zzdata/pro became /zzdata/project/b.txt
+	session = ignoring_case(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su -f=/zzdata/project/b.txt\th\t"/zzsrv/Out"'])
+	try:
+		assert session.line_after('mssh -f /Zzdata/pro') == 'mssh -f /Zzdata/pro'
+		assert session.line_after('mssh -f /zzdata/PRO') == 'mssh -f /zzdata/project/b.txt '
+		assert session.line_after('mssh -f /x h /ZZSRV/o') == 'mssh -f /x h /ZZSRV/o'
+		assert session.line_after('mssh -f /x h /zzsrv/o') == 'mssh -f /x h /zzsrv/Out '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_lowers_letters_as_its_locale_does(tmp_path):
+	# in the C locale readline lowers ASCII letters only: \u0130stanbul is no word for i there, and offered
+	# beside Ix1 it kept readline from completing
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n', lang='C')
+	try:
+		assert session.line_after('mssh i') == 'mssh Ix1 '
+	finally:
+		session.close()
+
+
+def locale_here(name):
+	'''Whether the C library here has the locale named name.'''
+	import locale
+	saved = locale.setlocale(locale.LC_CTYPE)
+	try:
+		locale.setlocale(locale.LC_CTYPE, name)
+		return True
+	except locale.Error:
+		return False
+	finally:
+		locale.setlocale(locale.LC_CTYPE, saved)
+
+
+@pytest.mark.parametrize('lang', ['xx_YY.UTF-8', 'tr_XX.UTF-8'])
+def test_bash_ignoring_case_in_a_locale_this_system_lacks_runs_as_in_c(tmp_path, lang):
+	# bash runs in C in a locale the system has not, whatever its name says: \u0130stanbul is no word for i
+	if locale_here(lang):
+		pytest.skip('this C library takes any locale name')
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n', lang=lang)
+	try:
+		assert session.line_after('mssh i') == 'mssh Ix1 '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('lang, typed, line', [
+	('tr_TR.UTF-8', 'mssh i', 'mssh \u0130stanbul '), ('tr_TR.UTF-8', 'mssh I', 'mssh Ix1 '),
+	('tr_TR.ISO-8859-9', 'mssh i', 'mssh ix2 '), ('tr_TR.ISO-8859-9', 'mssh I', 'mssh Ix1 ')])
+def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
+	# in UTF-8 readline lowers I to the dotless i and the I with a dot to i; in ISO-8859-9 I and i match only
+	# themselves (it lowers I to a dotless i that is no ASCII letter, and the I with a dot reaches it as two bytes)
+	if not locale_here(lang):
+		pytest.skip('no {} locale here'.format(lang))
+	if not mc._locale_traits(lang)[1]:
+		pytest.skip('this C library does not lower I to the dotless i in {} (musl)'.format(lang))
+	hosts = '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n' + ('10.0.0.3 ix2\n' if 'UTF-8' not in lang else '')
+	session = ignoring_case(tmp_path, [], hosts, lang=lang)
+	try:
+		assert session.line_after(typed) == line
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp_path):
+	# as readline's own file name completion does: /zzsrv/data/o became /zzsrv/Data/out
+	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command)
+		for number, command in enumerate(('nosuchcmd /zzsrv/Data/out', '/Zzopt/Tool/run.sh'))]
+	session = ignoring_case(tmp_path, history)
+	try:
+		assert session.line_after('mssh h nosuchcmd /zzsrv/data/o') == 'mssh h nosuchcmd /zzsrv/data/o'
+		assert session.line_after('mssh h nosuchcmd /zzsrv/Data/O') == 'mssh h nosuchcmd /zzsrv/Data/out '
+		assert session.line_after('mssh h "nosuchcmd /zzsrv/data/o') == 'mssh h "nosuchcmd /zzsrv/data/o'
+		assert session.line_after('mssh h /zzopt/tool/r') == 'mssh h /zzopt/tool/r'
+		assert session.line_after('mssh h /Zzopt/Tool/R') == 'mssh h /Zzopt/Tool/run.sh '
+	finally:
+		session.close()
+
+
+def test_bash_minding_case_keeps_delegated_words_in_their_case_whatever_nocasematch_says(tmp_path):
+	# with completion-ignore-case off and the shell's nocasematch on, a command's completion offering Storage-x
+	# for stor must not reach readline, which, minding case, would cut the word back to their common start
+	options = 'shopt -s nocasematch; _fakeci() { COMPREPLY=(Storage-x storage-y); }; complete -F _fakeci fakeci'
+	session = ignoring_case(tmp_path, [], on=False, options=options)
+	try:
+		assert session.line_after('mssh h fakeci stor') == 'mssh h fakeci storage-y '
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_command_words_typed_before(tmp_path):
+	# a quoted command is completed whole: its words typed before the current one stay as typed there too
+	session = ignoring_case(tmp_path, ['179000000{}\t/x/multiSSH3.py\t-su\tlogin1\t"{}"'.format(number, command)
+		for number, command in enumerate(('zzctl status nginx', 'zzctl STATUS Nginx', 'Zzctl Status sshd'))])
+	try:
+		assert session.line_after('mssh login1 "zzctl STATUS n') == 'mssh login1 "zzctl STATUS Nginx" '
+		assert session.line_after('mssh login1 zzctl STATUS n') == 'mssh login1 zzctl STATUS Nginx '
+		assert session.line_after('mssh login1 "ZZCTL STATUS n') == 'mssh login1 "ZZCTL STATUS n'
+	finally:
+		session.close()
+
+
+def comments_in_substitutions(script):
+	"""
+	The line numbers of the comments inside a command or process substitution of a bash script: every $( <(
+	and >( followed until it closes, wherever it opens. Quotes, ${...} and $(( )) are no comment and hide
+	none; a comment outside is skipped whole (its quotes are none). A case pattern's ) inside a substitution
+	would end it early: the glue has none there.
+	"""
+	found = []
+	# [kind, in a substitution, parentheses open]: code (the script, or a substitution's), dq, sq, ansi, brace, arith
+	stack = [['code', False, 0]]
+	index, line = 0, 1
+	while index < len(script):
+		char = script[index]
+		top = stack[-1]
+		if char == '\n':
+			line += 1
+		if top[0] in ('sq', 'ansi'):
+			if top[0] == 'ansi' and char == '\\':
+				line += script[index + 1:index + 2] == '\n'
+				index += 2
+				continue
+			if char == "'":
+				stack.pop()
+			index += 1
+			continue
+		if char == '\\':
+			line += script[index + 1:index + 2] == '\n'
+			index += 2
+			continue
+		if script.startswith('$((', index):
+			stack.append(['arith', False, 0])
+			index += 3
+			continue
+		if script.startswith('$(', index) or (top[0] == 'code' and script.startswith(('<(', '>('), index)):
+			stack.append(['code', True, 0])
+			index += 2
+			continue
+		if script.startswith('${', index):
+			stack.append(['brace', False, 0])
+			index += 2
+			continue
+		if top[0] == 'arith':
+			if char == '(':
+				top[2] += 1
+			elif char == ')' and top[2]:
+				top[2] -= 1
+			elif char == ')':
+				stack.pop()
+				index += 1
+			index += 1
+			continue
+		if char == '"':
+			if top[0] == 'dq':
+				stack.pop()
+			else:
+				stack.append(['dq', False, 0])
+		elif top[0] == 'dq':
+			pass
+		elif top[0] == 'brace' and char == '}':
+			stack.pop()
+		elif script.startswith("$'", index):
+			stack.append(['ansi', False, 0])
+			index += 1
+		elif char == "'":
+			stack.append(['sq', False, 0])
+		elif top[0] == 'code' and char == '#' and (index == 0 or script[index - 1] in ' \t\n;&|(<>'):
+			if any(frame[1] for frame in stack):
+				found.append(line)
+			while index + 1 < len(script) and script[index + 1] != '\n':
+				index += 1
+		elif top[0] == 'code' and char == '(':
+			top[2] += 1
+		elif top[0] == 'code' and char == ')':
+			if top[2]:
+				top[2] -= 1
+			elif top[1]:
+				stack.pop()
+		index += 1
+	return found
+
+
+def test_bash_glue_has_no_comment_inside_a_command_or_process_substitution():
+	# bash 4.2 reads a quote or a parenthesis in a comment inside <( ) or $( ) as code: a comment saying
+	# "readline's" there broke every TAB ("bad substitution: no closing `)'"), which bash 5 never shows
+	assert comments_in_substitutions(mc.render_glue('bash', ENGINE)) == []
+	# the scanner finds them wherever the substitution opens, and nothing else
+	assert comments_in_substitutions("x=$(\n\t# readline's\n\ty)\n") == [2]
+	assert comments_in_substitutions("done < <(if (( files )); then\n\t# readline's\n\tcompgen -f; fi 2>/dev/null || :)\n") == [2]
+	assert comments_in_substitutions('a "$(b\n# c\nd)"\n') == [2]
+	assert comments_in_substitutions("# readline's (\nx=${#y} z=$(( 10#1 + (2) )) w=$(echo '#(' \"#\" $'\\'#') v=$(a)#b\n") == []
+	assert comments_in_substitutions("f() {\n\t# it's ( not inside\n\tx=$(a; b)\n}\n# (\ny=<(c\n# in\n)\n") == [7]
 
 
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):

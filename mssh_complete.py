@@ -255,6 +255,8 @@ class ParserSpec(object):
 		for option in self.options:
 			for string in option.strings:
 				self.by_string[string] = option
+		# every option string, sorted
+		self.strings = sorted(self.by_string)
 		self._passwords = [option for option in self.options if option.dest in PASSWORD_DESTS]
 
 	def names_option(self, text):
@@ -1037,31 +1039,148 @@ def _prefix_range(sorted_items, prefix):
 		hi += 1
 	return lo, hi
 
-def _starts(text, prefix, icase=False):
-	'''Whether text starts with prefix; with icase in any case, as readline's completion-ignore-case compares.'''
-	if not icase:
-		return text.startswith(prefix)
-	return text[:len(prefix)].lower() == prefix.lower()
+# letters lowering to a letter whose upper and title case are others (str has no way back from k to KELVIN
+# SIGN), by that lower case letter; the tests hold them against each Python's Unicode data
+_CASE_EXTRAS = {'i': '\u0130', 'k': '\u212a', '\u00df': '\u1e9e', '\u00e5': '\u212b', '\u03b8': '\u03f4', '\u03c9': '\u2126'}
 
-def _prefix_ranges(sorted_items, prefix, icase=False):
+# str.isascii came with Python 3.7
+_isascii = getattr(str, 'isascii', None) or (lambda text: not text or max(text) < '\x80')
+
+class CaseFold(object):
+	"""
+	How readline's completion-ignore-case compares characters in the shell's locale: a character at a time,
+	each lowered. In a UTF-8 locale by towlower: the I with a dot lowers to an i and a dot and counts as an
+	i, the dotless i is no I; Turkish locales and those copying them (turkic) lower I to the dotless i and
+	the I with a dot to i. In other locales by tolower on bytes, of which only ASCII letters reach the
+	engine as letters (ascii); a Turkish one lowers I to a dotless i that is none, so I and i match only
+	themselves there. An instance is what a query's icase holds.
+	"""
+	__slots__ = ('ascii', 'turkic', '_variants')
+
+	def __init__(self, ascii=False, turkic=False):
+		self.ascii = ascii
+		self.turkic = turkic
+		self._variants = {}   # char -> variants(char)
+
+	def lower(self, char):
+		"""The character readline compares for char."""
+		if self.ascii:
+			return char.lower() if 'A' <= char <= 'Z' and not (self.turkic and char == 'I') else char
+		if self.turkic and (char == 'I' or char == '\u0130'):
+			return '\u0131' if char == 'I' else 'i'
+		return char.lower()[0]
+
+	def variants(self, char):
+		"""The characters matching char, char included, sorted in one string: those lowering as it does."""
+		variants = self._variants.get(char)
+		if variants is None:
+			lower = self.lower(char)
+			near = {char, lower, lower.upper(), lower.title()}
+			near.update(_CASE_EXTRAS.get(lower, ''))
+			variants = ''.join(sorted(other for other in near if len(other) == 1 and self.lower(other) == lower))
+			self._variants[char] = variants
+		return variants
+
+	def same(self, text, word):
+		"""Whether text and word, as long, differ only in case."""
+		if not self.turkic and _isascii(text) and _isascii(word):
+			# ASCII characters are each other's variants when their upper cases are one
+			return text.upper() == word.upper()
+		for char, typed in zip(text, word):
+			if char != typed and char not in self.variants(typed):
+				return False
+		return True
+
+UNICODE_CASE = CaseFold()
+_CASE_KINDS = {(False, False): UNICODE_CASE}   # (ascii, turkic) -> CaseFold, sharing what each learned
+_LOCALES = {}                                  # locale name -> _locale_traits(name)
+# the languages whose locales may lower I to the dotless i: only theirs are asked how they lower it.
+# glibc's are tr_* and those copying tr_TR's case table, which are taken so when that cannot be asked
+_TURKIC_LANGUAGES = frozenset(('tr', 'az', 'crh', 'ku', 'tt'))
+_TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
+
+def case_fold(name):
+	"""
+	The CaseFold of the locale bash's glue names (its LC_ALL, else LC_CTYPE, else LANG; empty: C), as the C
+	library takes it: one it does not have leaves the shell in C. None (a glue that does not say) compares
+	as a UTF-8 locale.
+	"""
+	if name is None:
+		return UNICODE_CASE
+	utf8, turkic = _locale_traits(name) or (False, False)
+	kind = (not utf8, turkic)
+	fold = _CASE_KINDS.get(kind)
+	if fold is None:
+		fold = _CASE_KINDS[kind] = CaseFold(*kind)
+	return fold
+
+def _locale_traits(name):
+	"""
+	How the C library takes the locale named name: (utf8, turkic), or None when it has no such locale (a
+	shell then runs in C). utf8: its codeset is UTF-8; turkic: it lowers I to a dotless i, not to i. C, POSIX
+	and '' are C without asking; another name is asked once (setlocale, nl_langinfo, and how it lowers I),
+	and the process's own locale put back. The engine runs where the shell runs: the same locales are there.
+	"""
+	if name in ('', 'C', 'POSIX'):
+		return False, False
+	if name in _LOCALES:
+		return _LOCALES[name]
+	traits = None
+	try:
+		import _locale
+		saved = _locale.setlocale(_locale.LC_CTYPE)
+		try:
+			_locale.setlocale(_locale.LC_CTYPE, name)
+			utf8 = _locale.nl_langinfo(_locale.CODESET).lower().replace('-', '').replace('_', '') == 'utf8'
+			traits = utf8, _lowers_i_dotless(name, utf8)
+		finally:
+			_locale.setlocale(_locale.LC_CTYPE, saved)
+	except Exception:
+		# not there (the shell runs in C), or no setlocale or nl_langinfo to ask
+		traits = None
+	_LOCALES[name] = traits
+	return traits
+
+def _locale_utf8(name):
+	"""Whether the locale named name is a UTF-8 one the C library has: TAB's matching and the picker's drawing agree."""
+	traits = _locale_traits(name)
+	return bool(traits) and traits[0]
+
+def _lowers_i_dotless(name, utf8):
+	"""Whether the locale named name, now set, lowers I to something else than i (Turkish: a dotless i)."""
+	base, _, modifier = name.partition('@')
+	language = base.partition('.')[0]
+	if language.partition('_')[0] not in _TURKIC_LANGUAGES:
+		return False
+	try:
+		import ctypes
+		libc = ctypes.CDLL(None)
+		return (libc.towlower(ord('I')) if utf8 else libc.tolower(ord('I'))) != ord('i')
+	except Exception:
+		return language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
+
+def _starts(text, prefix, icase=None, start=0):
+	"""
+	Whether text starts with prefix; with icase (a CaseFold) with prefix[start:] in any case, as icase
+	compares.
+	"""
+	if text.startswith(prefix):
+		return True
+	if not icase or len(text) < len(prefix) or not text.startswith(prefix[:start]):
+		return False
+	return icase.same(text[start:len(prefix)], prefix[start:])
+
+def _prefix_ranges(sorted_items, prefix, icase=None, start=0):
 	'''
-	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase with any spelling of it
-	differing only in case. Each spelling is followed one character at a time, and only while some item
-	starts with it, so the spellings tried are few however long the prefix.
+	[(lo, hi)] in order: the runs of sorted_items starting with prefix, with icase (a CaseFold) with
+	prefix[start:] in any case (as _starts matches). Each spelling of it is followed one character at a time,
+	and only while some item starts with it, so the spellings tried are few however long the prefix.
 	'''
-	if not icase:
+	if not icase or start >= len(prefix):
 		return [_prefix_range(sorted_items, prefix)]
-	spellings = ['']
-	for char in prefix:
-		variants = sorted(variant for variant in {char, char.lower(), char.upper()} if len(variant) == 1)
-		longer = []
-		for spelling in spellings:
-			for variant in variants:
-				text = spelling + variant
-				index = bisect_left(sorted_items, text)
-				if index < len(sorted_items) and sorted_items[index].startswith(text):
-					longer.append(text)
-		spellings = longer
+	spellings = [prefix[:start]]
+	for typed in prefix[start:]:
+		spellings = [spelling + char for spelling in spellings for char in icase.variants(typed) if _starts_some(sorted_items, spelling + char)]
 	return sorted(_prefix_range(sorted_items, spelling) for spelling in spellings)
 
 class MemoryKnowledge(object):
@@ -1108,10 +1227,10 @@ class MemoryKnowledge(object):
 	def record_count(self):
 		return len(self.records)
 
-	def feature_range(self, prefix, icase=False):
+	def feature_range(self, prefix, icase=None, start=0):
 		if self._sorted is None:
 			self._sorted = sorted(self._postings)
-		return [(text, text) for lo, hi in _prefix_ranges(self._sorted, prefix, icase) for text in self._sorted[lo:hi]]
+		return [(text, text) for lo, hi in _prefix_ranges(self._sorted, prefix, icase, start) for text in self._sorted[lo:hi]]
 
 	def feature_key(self, text):
 		return text if text in self._postings else None
@@ -1142,8 +1261,8 @@ class SnapshotKnowledge(object):
 	def record_count(self):
 		return self.index.count('records')
 
-	def feature_range(self, prefix, icase=False):
-		return [(key, self.features[key]) for lo, hi in _prefix_ranges(self.features, prefix, icase) for key in range(lo, hi)]
+	def feature_range(self, prefix, icase=None, start=0):
+		return [(key, self.features[key]) for lo, hi in _prefix_ranges(self.features, prefix, icase, start) for key in range(lo, hi)]
 
 	def feature_key(self, text):
 		key = bisect_left(self.features, text)
@@ -1176,10 +1295,10 @@ KIND_WEIGHTS = {}           # feature kind ('h', 't', 'v', 'c', ...) -> weight, 
 COMMON_SHARE = 0.5          # a feature in more than this share of the records carries no context
 MAX_CONTEXT_RECORDS = 20000 # records read per query for context
 
-def score_features(knowledges, prefix, line_features, deadline=None, icase=False):
+def score_features(knowledges, prefix, line_features, deadline=None, icase=None, start=0):
 	'''
-	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge; with icase, with
-	prefix in any case.
+	Score every feature starting with prefix (e.g. "c:sys") in the given knowledge; with icase (a CaseFold), with
+	prefix[start:] in any case (the word typed, after the kind of feature and the words before it).
 
 	score(c) = BETA * frecency(c) + sum over records r holding c of log(1 + weight(r)) * sim(r, line),
 	where sim sums idf(f) * KIND_WEIGHTS[kind of f] over the features f shared by r and the line.
@@ -1191,7 +1310,7 @@ def score_features(knowledges, prefix, line_features, deadline=None, icase=False
 	'''
 	scores = {}
 	for knowledge in knowledges:
-		for key, text in knowledge.feature_range(prefix, icase):
+		for key, text in knowledge.feature_range(prefix, icase, start):
 			scores[text] = scores.get(text, 0.0) + BETA * knowledge.feature_weight(key)
 	if not scores or not line_features:
 		return scores
@@ -1217,8 +1336,10 @@ def score_features(knowledges, prefix, line_features, deadline=None, icase=False
 				return scores
 			weight, features = knowledge.record(rid)
 			for text in features:
-				if _starts(text, prefix, icase):
-					scores[text] = scores.get(text, 0.0) + math.log1p(weight) * value
+				# the features starting with prefix are those found above, as every feature of a record is one of
+				# its knowledge's: looked up, they match as the ranges did (icase, start) for what startswith cost
+				if text in scores:
+					scores[text] += math.log1p(weight) * value
 	return scores
 
 #%% ------------ Hosts ----------------
@@ -1233,10 +1354,10 @@ class HostTable(object):
 		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
 		self._groups = None
 
-	def names_with_prefix(self, prefix, icase=False):
+	def names_with_prefix(self, prefix, icase=None):
 		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase) for name in self.names[lo:hi]]
 
-	def aliases_with_prefix(self, prefix, icase=False):
+	def aliases_with_prefix(self, prefix, icase=None):
 		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase) for index in range(lo, hi)]
 
 	def sources(self, name):
@@ -3401,6 +3522,10 @@ def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
+def _path_start(path):
+	'''Where a path's last part starts: readline's file name completion matches only that part in any case.'''
+	return path.rfind('/') + 1
+
 def _joinable(word):
 	'''
 	Whether a command word keeps unquoted command words one command. mssh joins its command words
@@ -3444,7 +3569,11 @@ class Engine(object):
 		response = Response(context)
 		if context is None:
 			return response
-		context.icase = request.flags.get('icase') == '1'
+		# how readline compares characters ignoring case, in the shell's locale (bash's glue says which)
+		context.icase = case_fold(request.flags.get('lc')) if request.flags.get('icase') == '1' else None
+		if context.icase:
+			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
+			response.directives.add('icase')
 		if context.slot == SLOT_OPTION:
 			candidates = self._options(context, request.shell)
 		elif context.slot == SLOT_VALUE:
@@ -4126,12 +4255,9 @@ class Engine(object):
 		used = {option.dest for option, _ in context.options if not option.repeat}
 		groups = {option.group for option, _ in context.options if option.group}
 		scores = score_features(self.knowledges, 'o:', context.features)
-		# an option name is matched in any case only where no other one differs from it only in case (-s, -S):
-		# readline, taking the common start of the candidates in any case, could turn one into the other
-		folded = {}
-		for option in self.spec.options:
-			for string in option.strings:
-				folded[string.lower()] = folded.get(string.lower(), 0) + 1
+		# option names are matched in any case only when the word starts none as typed, used ones included:
+		# readline, finding no candidate in the case typed, puts in the first one's spelling (-q -S became -s)
+		icase = context.icase if not _starts_some(self.spec.strings, word) else None
 		out = []
 		for option in self.spec.options:
 			if option.dest in used or (option.group and option.group in groups):
@@ -4144,7 +4270,7 @@ class Engine(object):
 			else:
 				strings = option.strings
 			for string in strings:
-				if _starts(string, word, context.icase and folded[string.lower()] == 1):
+				if _starts(string, word, icase):
 					out.append(Candidate(string, option.help, 'options', score))
 		return out
 
@@ -4157,31 +4283,34 @@ class Engine(object):
 			return []
 		lead = 'v:{}='.format(dest)
 		icase = context.icase
+		# of a value only the part after its last "/" is matched in any case, as readline matches a file name
+		# (the directories typed stay as typed); values that are no paths have no "/"
+		start = _path_start(word)
 		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
-			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase).items()]
+			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase, len(lead) + start).items()]
 		if dest in PATH_DESTS:
 			response.directives.add('files')
 		elif dest == 'identity_file':
 			response.directives.add('files')
-			out.extend(self._key_files(word, icase))
+			out.extend(self._key_files(word, icase, start))
 		elif dest in USER_DESTS:
 			users = set(self.users)
 			if os.environ.get('USER'):
 				users.add(os.environ['USER'])
-			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase))
+			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase, start))
 		elif dest == 'skip_hosts':
 			# the members that can complete the host being typed (after its "," and "user@")
 			prefix = word.rpartition(',')[2].rpartition('@')[2]
 			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
 		elif dest == 'completion':
-			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase))
+			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase, start))
 		elif dest == 'encoding':
-			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if _starts(name, word, icase))
-		if option.default and _starts(option.default, word, icase):
+			out.extend(Candidate(name, '', 'values', PRIOR) for name in ENCODINGS if _starts(name, word, icase, start))
+		if option.default and _starts(option.default, word, icase, start):
 			out.append(Candidate(option.default, 'default', 'defaults', PRIOR / 2))
 		return out
 
-	def _key_files(self, word, icase=False):
+	def _key_files(self, word, icase=None, start=0):
 		directory = os.path.expanduser('~/.ssh')
 		try:
 			entries = os.listdir(directory)
@@ -4192,11 +4321,11 @@ class Engine(object):
 			if name.endswith('.pub') or not (name.startswith('id_') or name + '.pub' in entries):
 				continue
 			text = '~/.ssh/' + name
-			if _starts(text, word, icase):
+			if _starts(text, word, icase, start):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text, prefix='', icase=False):
+	def _members(self, hosts_text, prefix='', icase=None):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
 		ranges), that start with prefix (in any case with icase): the first RANGE_MEMBERS_LIMIT of
@@ -4226,26 +4355,30 @@ class Engine(object):
 		lead = head + comma + user + at
 		icase = context.icase
 		scores = {}
-		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase).items():
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2).items():
 			scores[feature[2:]] = score
 		out = []
 		if not comma and not at:
-			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase).items():
+			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase, 2).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
+		# with icase only the lookups match the host typed in any case: the names found stay apart (mssh's aliases,
+		# its list of unreachable hosts and -X compare them exactly)
 		aliases = set()
 		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase):
 			aliases.add(name)
 			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
 		names = set(self.hosts.names_with_prefix(host_prefix, icase))
-		names.update(name for name in scores if _starts(name, host_prefix, icase) and '[' not in name)
+		# the history's names, which its lookup found starting with the host typed
+		names.update(name for name in scores if '[' not in name)
 		names -= aliases
 		# mssh's list is keyed by the name a host runs as: the user typed with it, else -u's (-X hosts get it too)
 		unavailable = self.hosts.unavailable
 		line_user = self._line_user(next((value for option, value in reversed(context.options or ())
 			if option.dest == 'username' and value is not None), None))
 		def unreachable(name):
-			return _run_name(name, user, line_user) in unavailable
+			# most often none is: then no name needs making
+			return bool(unavailable) and _run_name(name, user, line_user) in unavailable
 		def host_score(name):
 			score = scores.get(name, 0.0) + PRIOR
 			if name in boost:
@@ -4299,26 +4432,32 @@ class Engine(object):
 			for magic in MAGIC_STRINGS:
 				if _starts(magic, word[at:], icase):
 					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
+		# only the word being completed is matched in any case, and of a path in it only the last part, as
+		# readline matches a file name: the words typed before it and the directories stay as typed
 		if context.mode in PATH_MODES:
-			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase).items():
+			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2 + _path_start(word)).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
 		elif context.quoted:
-			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase).items():
+			# whole commands, the current word last
+			start = len(word) if context.command_prefix is None else len(context.command_prefix)
+			start += _path_start(word[start:])
+			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase, 2 + start).items():
 				out.append(Candidate(feature[2:], '', 'history', score))
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
 			# a word holding whitespace would make mssh run each command word as its own command
+			start = _path_start(partial)
 			if not typed:
-				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase).items():
+				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase, 2 + start).items():
 					if _joinable(feature[2:]):
 						out.append(Candidate(feature[2:], '', 'history', score))
 			else:
 				following = {}
-				# the words typed before stay as typed: only the word being completed is matched in any case
-				for feature, score in score_features(self.knowledges, 'c:' + ' '.join(typed) + ' ' + partial, context.features, deadline, icase).items():
+				lead = 'c:' + ' '.join(typed) + ' '
+				for feature, score in score_features(self.knowledges, lead + partial, context.features, deadline, icase, len(lead) + start).items():
 					words = words_as_typed(feature[2:])
-					if len(words) > len(typed) and words[:len(typed)] == typed and _starts(words[len(typed)], partial, icase) and _joinable(words[len(typed)]):
+					if len(words) > len(typed) and words[:len(typed)] == typed and _starts(words[len(typed)], partial, icase, start) and _joinable(words[len(typed)]):
 						following[words[len(typed)]] = following.get(words[len(typed)], 0.0) + score
 				out.extend(Candidate(text, '', 'history', score) for text, score in following.items())
 		if context.mode == 'plain' and context.command_words is not None:
@@ -4868,20 +5007,19 @@ def _age(seconds):
 
 def _unicode_terminal():
 	'''
-	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG. Python's own encoding says
-	UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
-	always runs in UTF-8 mode.
+	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG, and taken as the C library has
+	it (_locale_utf8, as for TAB in any case: a locale the system lacks leaves the shell in C). Python's own
+	encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538),
+	and 3.15 always runs in UTF-8 mode.
 	'''
-	def utf8(name):
-		return 'utf8' in (name or '').lower().replace('-', '')
 	environ = os.environ
 	if environ.get('LC_ALL'):
-		return utf8(environ['LC_ALL'])
+		return _locale_utf8(environ['LC_ALL'])
 	ctype = environ.get('LC_CTYPE')
-	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not utf8(environ.get('LANG')):
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not _locale_utf8(environ.get('LANG') or ''):
 		# what Python sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
 		return False
-	return utf8(ctype or environ.get('LANG'))
+	return _locale_utf8(ctype or environ.get('LANG') or '')
 
 class Picker(object):
 	'''
@@ -5919,7 +6057,7 @@ _mssh_complete_split() {
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated.
-	local word=$1 cword=$2 prefix=$3 cmd spec func item lead
+	local word=$1 cword=$2 prefix=$3 cmd spec func item lead nocase=0
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
 	local -a words=("$@") found=()
@@ -5956,20 +6094,33 @@ _mssh_complete_delegate() {
 		fi
 	fi
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
-	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word
+	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word. When
+	# the engine matched in any case (_mssh_complete_icase), so do compgen and readline (stor gives
+	# Storage-File): nocasematch says which, then goes back to what it was
 	lead=$prefix$cur
 	lead=${lead%"$word"}
+	shopt -q nocasematch && nocase=1
+	if (( ${_mssh_complete_icase-0} )); then
+		shopt -s nocasematch
+	else
+		shopt -u nocasematch
+	fi
 	for item in ${found[@]+"${found[@]}"}; do
 		item=$prefix$item
-		[[ -n $lead && $item == "$lead"* ]] && item=${item#"$lead"}
+		[[ -n $lead && $item == "$lead"* ]] && item=${item:${#lead}}
 		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
 	done
+	if (( nocase )); then
+		shopt -s nocasematch
+	else
+		shopt -u nocasematch
+	fi
 	return 0
 }
 
 _mssh_complete() {
-	local cur=$2 resp line item flags ble=0 files=0 dirs=0 ended=0 delegate=0
-	local _mssh_complete_before _mssh_complete_after
+	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
@@ -5978,19 +6129,21 @@ _mssh_complete() {
 		_mssh_complete_before=${COMP_LINE:0:COMP_POINT}
 		_mssh_complete_after=${COMP_LINE:COMP_POINT}
 	fi
-	if [[ -z ${_mssh_complete_icase-} ]]; then
-		_mssh_complete_icase=0
-		[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_icase=1
-	fi
 	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
 	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
-	flags="nosort=0 icase=$_mssh_complete_icase ble=$ble term=${TERM-}"
+	flags="nosort=0 ble=$ble term=${TERM-}"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		flags="nosort=1 ${flags#nosort=0 }"
 	fi
+	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
+	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
+	# lc: the locale bash runs in (its variables, exported or not), which says how readline lowers letters.
+	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
 	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" resp < <(
 		{
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
+			local icase=0
+			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && icase=1
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase lc=${LC_ALL:-${LC_CTYPE:-${LANG-}}}" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
@@ -6004,6 +6157,7 @@ _mssh_complete() {
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
 						files) files=1 ;;
 						dirs) dirs=1 ;;
+						icase) _mssh_complete_icase=1 ;;
 					esac
 				done
 				;;
@@ -6038,6 +6192,24 @@ _mssh_complete() {
 		seen[x$item]=1
 		COMPREPLY+=("$item")
 	done
+	# readline ignoring case cannot tell apart words differing only in case and stops at their common start:
+	# when they alone are left (the engine's, a command's own and file names), the one starting with the word
+	# in its case goes in, else the first. test's = compares exactly, whatever nocasematch says
+	if (( _mssh_complete_icase && ${#COMPREPLY[@]} > 1 )); then
+		one=${COMPREPLY[0]}
+		for item in "${COMPREPLY[@]}"; do
+			if [ "${item,,}" != "${one,,}" ]; then
+				one=
+				break
+			fi
+			if [ "${item:0:${#cur}}" = "$cur" ] && [ "${one:0:${#cur}}" != "$cur" ]; then
+				one=$item
+			fi
+		done
+		if [ -n "$one" ]; then
+			COMPREPLY=("$one")
+		fi
+	fi
 	return 0
 }
 
