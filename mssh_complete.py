@@ -6316,6 +6316,16 @@ _mssh_complete_operator() {
 	return $_mssh_complete_rc
 }
 
+_mssh_complete_compspec() {
+	# whether command $1 has a completion as bash finds it, its name in _mssh_complete_named: the word as
+	# typed, else its last part (a full path's command: bash-completion registers that)
+	_mssh_complete_named=$1
+	complete -p -- "$1" >/dev/null 2>&1 && return 0
+	[[ $1 == */* ]] || return 1
+	_mssh_complete_named=${1##*/}
+	complete -p -- "$_mssh_complete_named" >/dev/null 2>&1
+}
+
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated. Its variables
@@ -6335,11 +6345,7 @@ _mssh_complete_delegate() {
 			_mssh_complete_results+=("$_mssh_complete_item")
 		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
 	else
-		# the command's completion as bash finds it: by the word as typed, else by its last part (a full
-		# path's command: bash-completion registers that)
-		_mssh_complete_named=$_mssh_complete_cmd
-		complete -p -- "$_mssh_complete_named" >/dev/null 2>&1 || _mssh_complete_named=${_mssh_complete_cmd##*/}
-		if ! complete -p -- "$_mssh_complete_named" >/dev/null 2>&1; then
+		if ! _mssh_complete_compspec "$_mssh_complete_cmd"; then
 			# the loaders source the command's completion file: the shell's code, in the shell's setting. They
 			# get the word as typed, as from bash itself
 			if declare -F _comp_load >/dev/null 2>&1; then
@@ -6349,9 +6355,9 @@ _mssh_complete_delegate() {
 			elif declare -F _completion_loader >/dev/null 2>&1; then
 				_mssh_complete_operator _completion_loader "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			fi
-			_mssh_complete_named=$_mssh_complete_cmd
-			complete -p -- "$_mssh_complete_named" >/dev/null 2>&1 || _mssh_complete_named=${_mssh_complete_cmd##*/}
+			_mssh_complete_compspec "$_mssh_complete_cmd"
 		fi
+		# printed once, into a variable: the one fork of the lookup
 		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_named" 2>/dev/null) || _mssh_complete_spec=
 		# bash prints -F last, right before the name, after the single-quoted arguments of -G, -W, -P, -S, -X
 		# and -C, which may hold " -F " themselves. From bash 5.2 it single-quotes a name or a function
