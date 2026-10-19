@@ -5105,14 +5105,18 @@ def _unicode_terminal():
 	(_exec_environ), which that change leaves alone. Where they cannot be (macOS, the BSDs), os.environ is
 	read, where Python changed LC_CTYPE only where it took C, which also starts its UTF-8 mode: then an
 	LC_CTYPE of C.UTF-8, C.utf8 or UTF-8 may be Python's and draws ASCII, whatever LANG says. UTF-8 mode
-	says so on 3.7 to 3.14 (the engine runs isolated, -I: PYTHONUTF8 does not change it); 3.6 changes
+	says so on 3.7 to 3.14, unless PYTHONUTF8 set it: this file runs isolated (-I), which ignores that,
+	but the mssh-complete script pip or uv makes does not, and with PYTHONUTF8 in its environment the
+	mode says nothing (PYTHONCOERCECLOCALE needs nothing: it keeps LC_CTYPE as given). 3.6 changes
 	nothing (RHEL 8's does, where /proc is), and 3.15 always runs in UTF-8 mode, where such an LC_CTYPE
 	always draws ASCII.
 	'''
 	started = _exec_environ()
 	if started is not None:
 		return _locale_variables_utf8(started)
-	return _locale_variables_utf8(os.environ, coerced=bool(getattr(sys.flags, 'utf8_mode', 0)))
+	mode = getattr(sys.flags, 'utf8_mode', None)
+	told = mode is None or sys.flags.ignore_environment or 'PYTHONUTF8' not in os.environ
+	return _locale_variables_utf8(os.environ, coerced=bool(mode) or not told)
 
 def _exec_environ():
 	'''

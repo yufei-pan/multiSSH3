@@ -609,25 +609,40 @@ def test_a_utf8_terminal_is_told_by_the_variables_the_engine_was_started_with(sy
 
 
 @pytest.mark.parametrize('ctype', [None, 'C', 'C.UTF-8'])
-def test_without_the_started_environment_python_s_utf8_mode_tells_a_changed_lc_ctype(ctype):
+@pytest.mark.parametrize('isolated, variables', [
+	# as this file is run (-I), and as the mssh-complete script pip or uv makes runs it, which reads the environment
+	(True, {}), (False, {}), (False, {'PYTHONUTF8': '0'}), (False, {'PYTHONUTF8': '1'}), (False, {'PYTHONCOERCECLOCALE': '0'})])
+def test_without_the_started_environment_python_s_utf8_mode_tells_a_changed_lc_ctype(ctype, isolated, variables):
 	# no /proc/self/environ (macOS, the BSDs): os.environ, where Python 3.7+ set LC_CTYPE=C.UTF-8 where
-	# it took C (PEP 538), and then runs in UTF-8 mode, which says so; the engine runs isolated (-I)
+	# it took C (PEP 538), and then runs in UTF-8 mode, which says so unless PYTHONUTF8 set the mode
 	utf8 = next((name for name in ('C.UTF-8', 'en_US.UTF-8') if mc._utf8_codeset(mc._locale_codeset(name))), None)
 	if utf8 is None:
 		pytest.skip('no UTF-8 locale here')
-	if ctype == 'C' and sys.version_info < (3, 7):
-		# RHEL 8's 3.6 changes LC_CTYPE (a backport of PEP 538) with no UTF-8 mode to say so; it runs where /proc is
-		pytest.skip('Python 3.6 has no UTF-8 mode')
-	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': utf8}
+	env = dict(variables, PATH=os.environ.get('PATH', '/usr/bin:/bin'), LANG=utf8)
 	if ctype is not None:
 		env['LC_CTYPE'] = ctype
-	code = 'import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; mc._exec_environ = lambda: None; print(mc._unicode_terminal())'
-	output = subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], env=env,
+	code = ('import os, sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; mc._exec_environ = lambda: None; '
+		'print(mc._unicode_terminal(), os.environ.get("LC_CTYPE"))')
+	output = subprocess.run([sys.executable] + (['-I'] if isolated else []) + ['-c', code, os.path.dirname(mc.__file__)], env=env,
 		stdout=subprocess.PIPE, check=True, timeout=30).stdout
-	# LC_CTYPE=C: bash runs in C. From Python 3.15 UTF-8 mode is always on: an LC_CTYPE=C.UTF-8 of the
-	# operator's cannot be told from Python's, and draws ASCII
-	unicode = ctype is None or (ctype == 'C.UTF-8' and sys.version_info < (3, 15))
-	assert output.decode().strip() == str(unicode)
+	unicode, seen = output.decode().split()
+	if ctype == 'C' and seen != 'C' and sys.version_info < (3, 7):
+		# RHEL 8's 3.6 changes LC_CTYPE (a backport of PEP 538) with no UTF-8 mode to say so; it runs where /proc is
+		pytest.skip('this Python 3.6 changes LC_CTYPE with no UTF-8 mode')
+	if ctype is None:
+		expected = True
+	elif ctype == 'C':
+		# bash runs in C
+		expected = False
+	elif sys.version_info < (3, 7):
+		# the operator's own C.UTF-8: no UTF-8 mode, nothing changed, read as bash takes it
+		expected = True
+	else:
+		# told apart only where UTF-8 mode is off: not where the system has no C.UTF-8 (Python runs in C,
+		# in UTF-8 mode), not from 3.15 (always in UTF-8 mode), not where PYTHONUTF8 set the mode
+		expected = (mc._locale_codeset('C.UTF-8') is not None and sys.version_info < (3, 15)
+			and (isolated or 'PYTHONUTF8' not in variables))
+	assert unicode == str(expected)
 
 
 @pytest.mark.parametrize('flag', ['1', '0'])
