@@ -316,6 +316,21 @@ def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
 		session.close()
 
 
+@pytest.mark.parametrize('lang', ['zh_CN.GB18030', 'ko_KR.EUC-KR'])
+def test_bash_ignoring_case_in_a_two_byte_locale_that_is_not_utf8(tmp_path, lang):
+	# a two-byte UTF-8 character is one there too: these were taken for UTF-8 (\u00c9clair offered for the
+	# bytes of \u00e9 typed, which the locale reads as another character)
+	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': lang}
+	if bash_locale(env, multibyte=True) != (False, False, True):
+		pytest.skip('no {} locale here'.format(lang))
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u00c9clair\n10.0.0.2 Ix1\n', lang=lang)
+	try:
+		assert session.line_after('mssh \u00e9') == 'mssh \u00e9'
+		assert session.line_after('mssh i') == 'mssh Ix1 '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_in_the_locale_bash_takes_from_lang_over_a_bad_lc_ctype(tmp_path):
 	# macOS's ssh sends LC_CTYPE=UTF-8, no locale on Linux: bash keeps LANG's, a UTF-8 one, and so does TAB
 	if taken_by_bash('C.UTF-8', 'UTF-8') != (True, False):

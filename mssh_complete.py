@@ -6161,11 +6161,12 @@ _mssh_complete_guard() {
 
 _mssh_complete_read_locale() {
 	# how bash, and readline with it, takes characters in the locale it runs in, as request flags: utf8=1
-	# when it counts a two-byte UTF-8 character as one, turkic=1 when it lowers I to another letter than i
+	# when it counts a two-byte UTF-8 character as one and two bytes that are none as two (GB18030, GBK,
+	# EUC-KR, EUC-JP and Big5 count both as one), turkic=1 when it lowers I to another letter than i
 	# (Turkish: a dotless i). Whatever LC_ALL, LC_CTYPE and LANG name, this is the locale bash took
-	local u=$'\xc3\xa9' i=I turkic=1
+	local u=$'\xc3\xa9' g=$'\xa1\xa1' i=I turkic=1
 	[[ ${i,,} == i ]] && turkic=0
-	_mssh_complete_locale="utf8=$(( ${#u} == 1 )) turkic=$turkic"
+	_mssh_complete_locale="utf8=$(( ${#u} == 1 && ${#g} == 2 )) turkic=$turkic"
 }
 
 _mssh_complete_operator() {

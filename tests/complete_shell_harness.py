@@ -44,15 +44,19 @@ def require_shell(name):
 		pytest.skip('{} is not installed'.format(name))
 	return path
 
-def bash_locale(env):
+def bash_locale(env, multibyte=False):
 	"""
 	How bash takes the locale the variables of env name, measured as bash's glue measures it: (utf8,
-	turkic), whether it counts a two-byte UTF-8 character as one and lowers I to another letter than i.
+	turkic), whether it reads UTF-8 (a two-byte UTF-8 character as one, two bytes that are none as two)
+	and lowers I to another letter than i; with multibyte, also whether it reads two-byte characters
+	(the GB18030, EUC and Big5 locales count both pairs as one).
 	"""
-	script = "u=$'\\xc3\\xa9'; i=I; t=1; [[ ${i,,} == i ]] && t=0; echo \"$(( ${#u} == 1 )) $t\""
+	script = ("u=$'\\xc3\\xa9'; g=$'\\xa1\\xa1'; i=I; t=1; [[ ${i,,} == i ]] && t=0; "
+		"echo \"$(( ${#u} == 1 && ${#g} == 2 )) $t $(( ${#g} == 1 ))\"")
 	output = subprocess.run([require_shell('bash'), '-c', script], env=env, stdout=subprocess.PIPE,
 		stderr=subprocess.DEVNULL, timeout=30).stdout.split()
-	return output[0] == b'1', output[1] == b'1'
+	measured = output[0] == b'1', output[1] == b'1'
+	return measured + (output[2] == b'1',) if multibyte else measured
 
 def make_home(tmp_path, history_lines=()):
 	'''
