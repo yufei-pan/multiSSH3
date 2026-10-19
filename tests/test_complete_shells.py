@@ -219,8 +219,13 @@ def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
 	('complete -C "echo -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
 	('complete -X "!*.c -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
 	('complete -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
-	# no function: file names
+	# no function: file names. Nor where the quoted argument ends with a -F and a quoted word (bash 5.2
+	# quotes a function name so)
 	('complete -W "start -F touch x" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -W "start -F \'touch\'" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -X "! -F \'touch\'" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -C "echo -F \'touch\'" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -W "a -F \'touch\'" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
 ])
 def test_bash_delegation_runs_the_function_bash_prints_last(tmp_path, spec, completed):
 	options = '_zzreal() { COMPREPLY=(zzalpha zzalpine); }; ' + spec
@@ -232,12 +237,22 @@ def test_bash_delegation_runs_the_function_bash_prints_last(tmp_path, spec, comp
 		session.close()
 
 
-@pytest.mark.parametrize('name', ['zzplain', 'zz svc', "zz's", 'zz$b', 'zz"q', '/opt/zz bin/zzgit'])
+@pytest.mark.parametrize('name', ['zzplain', 'zz svc', "zz's", 'zz$b', 'zz"q', '/opt/zz bin/zzgit', "'", '\\'])
 def test_bash_delegation_reads_the_function_of_a_command_whatever_its_name(tmp_path, name):
 	# complete -p prints the name as it is before bash 5.2, single-quoted from 5.2 where it needs it
 	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha zzalpine); }; complete -F _zzreal -- "$2"; '
 		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" "$2" zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), name],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
+
+
+@pytest.mark.parametrize('function', ['zz^f', 'zz%f', 'zz@f', '_zzplain'])
+def test_bash_delegation_runs_a_completion_function_whatever_its_name(tmp_path, function):
+	# from bash 5.2 complete -p single-quotes a function name holding a shell metacharacter (-F 'zz^f')
+	script = ('. "$1"; eval "function $2 { COMPREPLY=(zzalpha zzalpine); }"; complete -F "$2" zzsvc; '
+		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), function],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
 
