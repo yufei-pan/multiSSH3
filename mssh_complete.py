@@ -577,17 +577,15 @@ _HOST_PATTERNS = None
 
 def _host_patterns():
 	'''
-	The patterns of hosts text, compiled at the first use from _HOST_PUNCTUATION and \\s, which takes what
-	str.split() splits on (a test checks them against mssh over every code point): word, a host word (a
-	run of characters that are no separator); cut, a hosts text up to its last separator.
+	(word, cut), compiled at the first use from _HOST_PUNCTUATION and \\s, which takes what str.split()
+	splits on (a test checks them against mssh over every code point): the pattern of a host word (a run
+	of characters that are no separator), and of a hosts text up to its last separator.
 	'''
 	global _HOST_PATTERNS
 	if _HOST_PATTERNS is None:
-		import collections
 		import re
 		separators = re.escape(_HOST_PUNCTUATION) + '\\s'
-		_HOST_PATTERNS = collections.namedtuple('HostPatterns', 'word cut')(
-			re.compile('[^' + separators + ']+'), re.compile('.*[' + separators + ']', re.S))
+		_HOST_PATTERNS = re.compile('[^' + separators + ']+'), re.compile('.*[' + separators + ']', re.S)
 	return _HOST_PATTERNS
 
 def split_hosts(text):
@@ -602,7 +600,8 @@ def _last_host_start(text):
 	split_hosts splits) and where its name does (after "user@"). The cut pattern goes to the end at once
 	and steps back over the last word alone.
 	'''
-	found = _host_patterns().cut.match(text)
+	_, cut_pattern = _host_patterns()
+	found = cut_pattern.match(text)
 	cut = found.end() if found else 0
 	return cut, text.rfind('@', cut) + 1 or cut
 
@@ -2032,7 +2031,8 @@ def build_index(directory, now=None, mssh=None):
 	def add(name, source, address=''):
 		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
 		# systemd's ssh config) is never one host
-		if not name or not safe_field(name) or not _host_patterns().word.fullmatch(name):
+		word, _ = _host_patterns()
+		if not name or not safe_field(name) or not word.fullmatch(name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -2829,7 +2829,8 @@ def _host_parts(token):
 	text = token.text
 	exact = token.raw == text and token.start >= 0
 	parts = []
-	for found in _host_patterns().word.finditer(text):
+	word, _ = _host_patterns()
+	for found in word.finditer(text):
 		position, end = found.span()
 		user, _, name = found.group().rpartition('@')
 		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
@@ -3006,7 +3007,8 @@ def _without_shell_expansions(token, shell, users=False):
 		expanded[start:end] = [True] * (end - start)
 	blanked = list(text)
 	kept = False
-	for found in _host_patterns().word.finditer(text):
+	word, _ = _host_patterns()
+	for found in word.finditer(text):
 		position, end = found.span()
 		at = text.rfind('@', position, end)
 		# the shell rewrites a piece of the host, or only of its user@
@@ -7067,7 +7069,7 @@ _mssh() {
 	local -F _mssh_complete_end
 	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0
 	local -i _mssh_complete_dcword _mssh_complete_offset _mssh_complete_matches=$compstate[nmatches]
-	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_dwords
+	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed
 	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} ${compstate[quote]}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
 	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM"
@@ -7115,7 +7117,6 @@ _mssh() {
 				_mssh_complete_fields=("${(@ps:\t:)_mssh_complete_rest}")
 				_mssh_complete_delegating=1
 				_mssh_complete_dcword=$_mssh_complete_fields[1]
-				_mssh_complete_dwords=("${(@)_mssh_complete_fields[3,-1]}")
 				;;
 		esac
 	done
