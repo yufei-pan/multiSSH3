@@ -1144,15 +1144,10 @@ def case_fold(flags):
 	matching in any case where it names no locale; 6.36's sent icase alone, read once per shell, and its
 	engine matched in the case typed.
 	"""
-	if 'utf8' in flags:
-		kind = (flags['utf8'] != '1', flags.get('turkic') == '1')
-	elif 'lc' in flags:
-		named = _named_locale(flags['lc'])
-		if named is None:
-			return None
-		kind = (not named[0], named[1])
-	else:
+	measured = _shell_locale(flags)
+	if not measured:
 		return None
+	kind = (not measured[0], measured[1])
 	fold = _CASE_KINDS.get(kind)
 	if fold is None:
 		fold = _CASE_KINDS[kind] = CaseFold(*kind)
@@ -1175,19 +1170,25 @@ def _named_locale(name):
 	turkic = language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
 	return _utf8_codeset(codeset), turkic
 
+def _shell_locale(flags):
+	"""
+	(utf8, turkic) of the locale bash runs in, as its glue's request flags say: this glue's measure
+	(utf8=, turkic=), or the locale an older glue named (lc=, _named_locale). False where lc= names a
+	locale the C library has not, None where the flags say nothing of it (zsh, fish, 6.36's glue).
+	"""
+	if 'utf8' in flags:
+		return flags['utf8'] == '1', flags.get('turkic') == '1'
+	if 'lc' in flags:
+		return _named_locale(flags['lc']) or False
+	return None
+
 def _measured_utf8(request):
 	"""
-	Whether bash runs in a UTF-8 locale, as a request of its glue says (utf8=, or an older glue's lc=:
-	ASCII where that names no locale), None where it says nothing (zsh, fish, 6.36's glue).
+	Whether bash runs in a UTF-8 locale, as a request of its glue says (_shell_locale: ASCII where an
+	older glue's lc= names no locale), None where it says nothing.
 	"""
-	if request.shell != 'bash':
-		return None
-	if 'utf8' in request.flags:
-		return request.flags['utf8'] == '1'
-	if 'lc' in request.flags:
-		named = _named_locale(request.flags['lc'])
-		return named is not None and named[0]
-	return None
+	measured = _shell_locale(request.flags) if request.shell == 'bash' else None
+	return None if measured is None else bool(measured) and measured[0]
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
