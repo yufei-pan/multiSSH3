@@ -5101,8 +5101,8 @@ def _unicode_terminal():
 	(_locale_variables_utf8): for what bash's glue has not measured (Engine.unicode). Python's own encoding
 	says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 in os.environ there (PEP
 	538), and 3.15 always runs in UTF-8 mode. The variables are read as the process was started with them
-	(_exec_environ), which that change leaves alone; where they cannot be, os.environ's C.UTF-8 beside a
-	LANG that is not UTF-8 may be Python's and draws ASCII.
+	(_exec_environ), which that change leaves alone; where they cannot be (macOS, the BSDs), an LC_CTYPE of
+	C.UTF-8, C.utf8 or UTF-8 in os.environ may be Python's and draws ASCII, whatever LANG says.
 	'''
 	started = _exec_environ()
 	if started is not None:
@@ -5138,8 +5138,9 @@ def _locale_variables_utf8(environ, coerced=False):
 	on glibc, checked): LC_ALL if set, C if the C library refuses it; else LANG if set, which it must take
 	(else C), LC_CTYPE taking over if it takes that; else LC_CTYPE, C if it refuses any LC_ variable set.
 	A missing locale is C: ASCII. coerced: environ may be os.environ after Python's PEP 538, which sets
-	LC_CTYPE to C.UTF-8 where it was C, UTF-8 or a missing locale; beside a LANG that is not UTF-8 that
-	cannot be told from the operator's own C.UTF-8, and draws ASCII (unreadable is worse than plain)
+	LC_CTYPE to C.UTF-8 (C.utf8, UTF-8) where it took C (C, UTF-8 or a missing locale), whatever LANG
+	is: with LC_ALL unset, that cannot be told from the operator's own C.UTF-8, and draws ASCII
+	(unreadable is worse than plain)
 	'''
 	def utf8(name):
 		return _utf8_codeset(_locale_codeset(name))
@@ -5147,7 +5148,7 @@ def _locale_variables_utf8(environ, coerced=False):
 		return utf8(environ['LC_ALL'])
 	lang = environ.get('LANG')
 	ctype = environ.get('LC_CTYPE')
-	if coerced and ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not (lang and utf8(lang)):
+	if coerced and ctype in ('C.UTF-8', 'C.utf8', 'UTF-8'):
 		return False
 	if lang:
 		if _locale_codeset(lang) is None:

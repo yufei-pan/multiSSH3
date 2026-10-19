@@ -562,7 +562,7 @@ def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(syst
 
 @pytest.mark.parametrize('variables, unicode', [
 	# what Python 3.7+ sets where LC_CTYPE was C, UTF-8 or a locale the C library has not (PEP 538):
-	# beside a LANG that is not UTF-8 it cannot be told from the operator's C.UTF-8, and draws ASCII
+	# it cannot be told from the operator's C.UTF-8, whatever LANG says, and draws ASCII
 	({'LANG': 'C', 'LC_CTYPE': 'C.UTF-8'}, False),
 	({'LC_CTYPE': 'C.UTF-8'}, False),
 	({'LC_CTYPE': 'C.utf8'}, False),
@@ -570,7 +570,13 @@ def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(syst
 	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'C.UTF-8'}, False),
 	({'LANG': 'tr_TR.ISO-8859-9', 'LC_CTYPE': 'C.UTF-8'}, False),
 	({'LANG': 'xx_YY.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, False),
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
+	# LANG=en_US.UTF-8 LC_CTYPE=C: bash runs in C, Python sets LC_CTYPE=C.UTF-8
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, False),
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.utf8'}, False),
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}, False),
+	# Python leaves LC_CTYPE alone where LC_ALL is set, or LC_CTYPE takes another locale than C
+	({'LC_ALL': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
+	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8'}, True),
 	({'LANG': 'en_US.UTF-8'}, True),
 ])
 def test_a_utf8_terminal_from_variables_python_may_have_changed_fails_safe_to_ascii(system_locales, variables, unicode):
