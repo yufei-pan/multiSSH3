@@ -66,6 +66,8 @@ def make_home(tmp_path, history_lines=()):
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
 		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '5',
 		'MSSH_COMPLETE_START_TIMEOUT': '10',
+		# the debug log (runtime/multiSSH3/complete.log): a failing test shows it (conftest.py)
+		'MSSH_COMPLETE_DEBUG': '1',
 	}
 	return env, home
 

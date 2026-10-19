@@ -1657,6 +1657,11 @@ def cache_dir(create=True):
 			return directory if _private_dir(directory, create=False) else None
 	return None
 
+def _traceback():
+	'''The traceback of the exception being handled, for the debug log.'''
+	import traceback
+	return traceback.format_exc().rstrip()
+
 def _debug(message):
 	'''Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB).'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
@@ -8618,6 +8623,7 @@ def _cmd_pick():
 	chosen, 1 cancelled, 2 unavailable (the shell then does what Ctrl-R did before). With the flag
 	ready=1, "ready" comes first, before the terminal is taken.
 	'''
+	started = time.monotonic()
 	data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
 	try:
 		request = parse_request(data)
@@ -8638,19 +8644,27 @@ def _cmd_pick():
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
 		if not _claim_terminal() or (request.flags.get('ready') == '1' and not _ready()):
+			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 			return 2
 		with Terminal() as term:
+			# logged once the terminal is taken: "ready" comes just before that, nothing between
+			_debug('pick: ready {:.3f} s in'.format(time.monotonic() - started))
 			outcome = picker.run(term, line, before)
 	except Exception as e:
-		_debug('pick failed: {!r}'.format(e))
+		_debug('pick failed: {!r}\n{}'.format(e, _traceback()))
 		return 2
+	_debug('pick: {}, {:.3f} s in'.format(outcome, time.monotonic() - started))
 	if outcome == 'unavailable':
 		return 2
 	if outcome != 'choose':
 		return 1
 	line, cursor = apply_pick(request, picker, word, parse_context(request.before, request.after, engine.spec))
-	sys.stdout.buffer.write('MSSHC1\nL {}\t{}\nE\n'.format(cursor, line).encode('utf-8', 'surrogateescape'))
-	sys.stdout.buffer.flush()
+	try:
+		sys.stdout.buffer.write('MSSHC1\nL {}\t{}\nE\n'.format(cursor, line).encode('utf-8', 'surrogateescape'))
+		sys.stdout.buffer.flush()
+	except OSError as e:
+		_debug('pick: the answer did not reach the shell: {!r}'.format(e))
+		raise
 	return 0
 
 def editor_completions(engine, before):
@@ -8719,6 +8733,7 @@ def _cmd_edit(args):
 	parser.add_argument('--ready', action='store_true')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
+	started = time.monotonic()
 	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
 	history = []
 	if not sys.stdin.isatty():
@@ -8760,16 +8775,23 @@ def _cmd_edit(args):
 	editor.refresh()
 	editor.refresh_warnings()
 	if options.ready and not _ready():
+		_debug('edit: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 		return 3
+	_debug('edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, options.text))
 	try:
 		with term:
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
-		_debug('editor failed: {!r}'.format(e))
+		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
 		action, replay = 'pass', b''
 	out = 'MSSHC1\nL {}\t{}\nK {}\t{}\nE\n'.format(editor.cursor, editor.text, action, readline_keyseq(replay))
-	sys.stdout.buffer.write(out.encode('utf-8', 'surrogateescape'))
-	sys.stdout.buffer.flush()
+	try:
+		sys.stdout.buffer.write(out.encode('utf-8', 'surrogateescape'))
+		sys.stdout.buffer.flush()
+	except OSError as e:
+		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
+		raise
+	_debug('edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', editor.text, editor.cursor, time.monotonic() - started))
 	return 0
 
 def _cmd_rebuild(args):

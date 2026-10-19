@@ -541,3 +541,20 @@ def no_ssh_config_files():
 		clear()
 		yield
 		clear()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+	"""A failed test shows mssh-complete's debug log, which the shells' engines write under its tmp_path
+	(make_home sets MSSH_COMPLETE_DEBUG=1): what the editor or picker did when a key went missing."""
+	outcome = yield
+	report = outcome.get_result()
+	tmp = getattr(item, 'funcargs', {}).get('tmp_path')
+	if report.when != 'call' or not report.failed or tmp is None:
+		return
+	for log in sorted(Path(tmp).rglob('complete.log')):
+		try:
+			text = log.read_text(errors='replace')
+		except OSError:
+			continue
+		report.sections.append(('mssh-complete log ' + str(log.relative_to(tmp)), text[-20000:]))
