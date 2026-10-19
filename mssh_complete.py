@@ -573,20 +573,30 @@ def assign_roles(words, spec, current=None):
 # what separates hosts in a hosts argument for mssh: this punctuation, which it replaces with spaces,
 # and then any whitespace str.split() splits on
 _HOST_PUNCTUATION = ',;|/&'
-_HOST_PATTERNS = None
+_HOST_WORD = _HOST_CUT = None
 
-def _host_patterns():
+def _compile_host_patterns():
 	'''
-	(word, cut): the patterns of a host word and of a hosts text up to its last separator, compiled at the
-	first use from _HOST_PUNCTUATION and \\s, which takes what str.split() splits on (a test checks them
-	against mssh over every code point).
+	_HOST_WORD and _HOST_CUT, from _HOST_PUNCTUATION and \\s, which takes what str.split() splits on (a
+	test checks them against mssh over every code point).
 	'''
-	global _HOST_PATTERNS
-	if _HOST_PATTERNS is None:
-		import re
-		separators = re.escape(_HOST_PUNCTUATION) + '\\s'
-		_HOST_PATTERNS = (re.compile('[^' + separators + ']+'), re.compile('.*[' + separators + ']', re.S))
-	return _HOST_PATTERNS
+	global _HOST_WORD, _HOST_CUT
+	import re
+	separators = re.escape(_HOST_PUNCTUATION) + '\\s'
+	_HOST_WORD = re.compile('[^' + separators + ']+')
+	_HOST_CUT = re.compile('.*[' + separators + ']', re.S)
+
+def _host_word():
+	'''The pattern of a host word (a run of characters that are no separator), compiled at the first use.'''
+	if _HOST_WORD is None:
+		_compile_host_patterns()
+	return _HOST_WORD
+
+def _host_cut():
+	'''The pattern of a hosts text up to its last separator, compiled at the first use.'''
+	if _HOST_CUT is None:
+		_compile_host_patterns()
+	return _HOST_CUT
 
 def split_hosts(text):
 	'''Split a hosts argument into host words, as mssh does: its punctuation made spaces, then str.split().'''
@@ -600,7 +610,7 @@ def _last_host_start(text):
 	split_hosts splits) and where its name does (after "user@"). The cut pattern goes to the end at once
 	and steps back over the last word alone.
 	'''
-	found = _host_patterns()[1].match(text)
+	found = _host_cut().match(text)
 	cut = found.end() if found else 0
 	return cut, text.rfind('@', cut) + 1 or cut
 
@@ -2030,7 +2040,7 @@ def build_index(directory, now=None, mssh=None):
 	def add(name, source, address=''):
 		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
 		# systemd's ssh config) is never one host
-		if not name or not safe_field(name) or not _host_patterns()[0].fullmatch(name):
+		if not name or not safe_field(name) or not _host_word().fullmatch(name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -2827,7 +2837,7 @@ def _host_parts(token):
 	text = token.text
 	exact = token.raw == text and token.start >= 0
 	parts = []
-	for found in _host_patterns()[0].finditer(text):
+	for found in _host_word().finditer(text):
 		position, end = found.span()
 		user, _, name = found.group().rpartition('@')
 		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
@@ -3004,7 +3014,7 @@ def _without_shell_expansions(token, shell, users=False):
 		expanded[start:end] = [True] * (end - start)
 	blanked = list(text)
 	kept = False
-	for found in _host_patterns()[0].finditer(text):
+	for found in _host_word().finditer(text):
 		position, end = found.span()
 		at = text.rfind('@', position, end)
 		# the shell rewrites a piece of the host, or only of its user@

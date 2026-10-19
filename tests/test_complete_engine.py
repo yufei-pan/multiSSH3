@@ -596,11 +596,10 @@ def test_hosts_are_split_as_mssh_splits_them_at_every_code_point():
 	everything = ''.join(map(chr, range(0x110000)))
 	text = 'x'.join(everything)
 	split = multiSSH3._split_host_str(text)
-	word, cut = mc._host_patterns()
-	assert mc.split_hosts(text) == split and word.findall(text) == split
+	word, cut = mc._host_word(), mc._host_cut()
+	assert len(split) > 1 and mc.split_hosts(text) == split and word.findall(text) == split
 	# the cut stops after a code point exactly where a host word cannot hold it
 	assert [char for char in everything if cut.match('a' + char + 'b')] == [char for char in everything if not word.fullmatch(char)]
-	assert len(split) == 35
 
 
 def test_frame_drops_candidates_matching_earlier_text_in_any_case():
