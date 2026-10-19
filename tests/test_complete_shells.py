@@ -273,8 +273,10 @@ def test_bash_a_completion_function_setting_names_of_its_own_leaves_the_glue_alo
 		' '.join("{}='a b'".format(name) for name in BASH_GLUE_NAMES.split()))
 	session = ignoring_case(tmp_path, [], on=on, options=options)
 	try:
+		# what the shell printed for the TAB alone (CentOS 7's bash warns of a missing locale at its start)
+		start = len(session.output)
 		assert session.line_after('mssh h zzclob al') == 'mssh h zzclob alp'
-		assert b'syntax error' not in session.output and b'bash: ' not in session.output
+		assert b'syntax error' not in session.output[start:] and b'bash: ' not in session.output[start:]
 	finally:
 		session.close()
 
@@ -426,8 +428,8 @@ def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp
 
 
 @pytest.mark.parametrize('icase', ['on', 'off'])
-@pytest.mark.parametrize('setting', ['on', 'off'])
-@pytest.mark.parametrize('arrives', ['registered', 'loaded'])
+# registered with the shell's setting off: no nocasematch anywhere, nothing for the test to find
+@pytest.mark.parametrize('arrives, setting', [('registered', 'on'), ('loaded', 'on'), ('loaded', 'off')])
 def test_bash_tab_runs_no_command_complete_f_names_and_gives_file_names(tmp_path, arrives, setting, icase):
 	# with nocasematch on, the glue read "complete -f zzrun" as "complete -F zzrun" and ran zzrun, the remote
 	# command, here as its completion function: with the shell's setting on (registered), and with the
@@ -970,19 +972,23 @@ def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
 
 
 def test_zsh_a_completion_function_setting_names_of_its_own_leaves_the_glue_alone(setup):
-	# zsh scopes as bash does: a completion setting matches made _mssh think nothing was offered, and file
-	# names came in beside the command's words (alzzfile)
+	# zsh scopes as bash does. A completion setting matches made _mssh think nothing was offered, and file
+	# names came in beside the command's words (alzzfile); one setting nodefault and offering nothing kept
+	# out the file names zsh offers then (zzfile_unique). Each sets the other name as the glue had it
 	env, home = setup
 	(home / 'alzzfile').write_text('')
+	(home / 'zzfile_unique').write_text('')
 	names = ('before after flags resp chunk line item name fd kind rest fields texts shown dwords compsys_options',
-		'end remaining files delegate dcword start matches')
+		'end remaining files delegate dcword start')
 	clobber = (' '.join("{}='a b'".format(name) for name in names[0].split()) + '; '
-		+ ' '.join('{}=1000'.format(name) for name in names[1].split()) + ' nodefault=0')
-	extra = '_zzclob() {{ {}; compadd alpha alpine }}\ncompdef _zzclob zzclob'.format(clobber)
+		+ ' '.join('{}=1000'.format(name) for name in names[1].split()))
+	extra = ('_zzclob() {{ {0}; matches=1000 nodefault=0; compadd alpha alpine }}\ncompdef _zzclob zzclob\n'
+		'_zzquiet() {{ {0}; matches=0 nodefault=1 }}\ncompdef _zzquiet zzquiet').format(clobber)
 	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=extra)
 	try:
 		assert session.line_after('zzclob al') == 'zzclob alp'
 		assert session.line_after('mssh h zzclob al') == 'mssh h zzclob alp'
+		assert session.line_after('mssh h zzquiet zz') == 'mssh h zzquiet zzfile_unique '
 		assert b'_mssh:' not in session.output
 	finally:
 		session.close()
