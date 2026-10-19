@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -663,7 +664,10 @@ def test_fish_completes(setup, tmp_path, timeout):
 	glue = glue_file(home, 'fish')
 	assert fish_complete(env, glue, 'mssh gp') == [('gpu[01-16]', 'used before')]
 	assert fish_complete(env, glue, 'mssh gpu[01-16] "nvid')[0] == ('nvidia-smi', '')
-	assert fish_complete(env, glue, 'mssh -u r') == [('root', 'used before')]
+	# fish sets $USER from the user database, and mssh-complete offers it: the name of whoever runs the
+	# tests (runner, on GitHub's machines) may start with r too
+	me = pwd.getpwuid(os.getuid()).pw_name
+	assert [pair for pair in fish_complete(env, glue, 'mssh -u r') if pair != (me, 'user')] == [('root', 'used before')]
 	assert fish_complete(env, glue, 'mssh h fakecmd al') == [('alpha', '')]
 	assert fish_complete(env, glue, 'mssh h "date; fakecmd al') == [('date; fakecmd alpha', '')]
 

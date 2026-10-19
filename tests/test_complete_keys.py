@@ -1859,8 +1859,8 @@ def test_fish_ignores_the_operators_functions(home, where):
 		pre += '\n' + OPERATOR_FISH
 	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)
 	try:
-		# TAB, from mssh's history and from fish's
-		assert printed(session, 'mssh -u r\t') == 'mssh -u root '
+		# TAB, from mssh's history and from fish's (roo: fish offers $USER too, which may start with r)
+		assert printed(session, 'mssh -u roo\t') == 'mssh -u root '
 		assert words(printed(session, '\x15mssh h "echo th\t')) == ['mssh', 'h', 'echo three']
 		# the picker's history tab holds the line fish's history has
 		session.send('\x15mssh zzq9 ')
