@@ -486,6 +486,20 @@ def test_editor_keys_after_ctrl_r_go_to_the_picker_then_the_editor(home):
 		session.close()
 
 
+def test_editor_keeps_passwords_out_of_the_debug_log(home):
+	# make_home turns the log on for every shell test, and a failed test's report carries it
+	from pathlib import Path
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh -p hunter2 host1 uptime\r')
+		assert '@@RAN[-p hunter2 host1 uptime]@@' in session.read_until(b'@@RAN[-p hunter2 host1 uptime]@@', 15)
+	finally:
+		session.close()
+	log = (Path(env['XDG_RUNTIME_DIR']) / 'multiSSH3' / 'complete.log').read_text()
+	assert "-p *** host1 uptime" in log and 'hunter2' not in log
+
+
 def test_editor_runs_pasted_lines_in_order(home):
 	env, home = home
 	session = editor_session(env, home)

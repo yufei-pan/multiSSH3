@@ -5352,6 +5352,32 @@ def picker_warnings(engine, request):
 		return []
 	return [item.message for item in found[:3]]
 
+def _without_passwords(line, spec):
+	'''
+	An mssh line with the passwords it gives shown as ***, for the debug log: -p VALUE, -pVALUE, -p=VALUE,
+	--password VALUE, the abbreviations mssh took before 6.32, -qpVALUE, the ipmi password's spellings.
+	'''
+	tokens = lex(line)
+	start = _mssh_start(tokens)
+	if start is None:
+		return line
+	words = tokens[start + 1:]
+	parts = []
+	end = 0
+	for token, (role, option) in zip(words, assign_roles(words, spec)):
+		if option is None or option.dest not in PASSWORD_DESTS or role not in (ROLE_OPTION, ROLE_VALUE):
+			continue
+		if role == ROLE_VALUE:
+			shown = '***'
+		else:
+			attached = spec.lookup(token.text)[1]
+			if attached is None:
+				continue
+			shown = token.text[:len(token.text) - len(attached)] + '***'
+		parts.append(line[end:token.start] + shown)
+		end = token.start + len(token.raw)
+	return ''.join(parts) + line[end:]
+
 def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
 	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
@@ -8897,9 +8923,10 @@ def _cmd_edit(args):
 	if options.ready and not _ready():
 		_debug('edit: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 		return 3
-	_debug('edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, options.text))
 	try:
 		with term:
+			# logged once the terminal is taken, as pick does: keys typed before that are echoed by it
+			_debug('edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
 		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
@@ -8911,7 +8938,7 @@ def _cmd_edit(args):
 	except OSError as e:
 		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
-	_debug('edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', editor.text, editor.cursor, time.monotonic() - started))
+	_debug('edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor, time.monotonic() - started))
 	return 0
 
 def _cmd_rebuild(args):
