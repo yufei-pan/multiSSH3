@@ -637,6 +637,25 @@ def test_a_c_locale_gets_ascii_whatever_python_makes_of_it(lang, ctype, unicode)
 	assert output.decode().strip() == str(unicode)
 
 
+@pytest.mark.parametrize('first', [True, False])
+def test_a_locale_variable_set_twice_is_read_as_its_first_value(first):
+	# as getenv, the C library's setlocale, os.environ, zsh and fish take it (bash takes the last one, but
+	# its glue measures the locale bash runs in): the environment the engine was started with holds both
+	if not os.path.exists('/proc/self/environ'):
+		pytest.skip('no /proc/self/environ here')
+	utf8 = next((name for name in ('C.UTF-8', 'en_US.UTF-8') if mc._utf8_codeset(mc._locale_codeset(name))), None)
+	if utf8 is None:
+		pytest.skip('no UTF-8 locale here')
+	values = [utf8, 'C'] if first else ['C', utf8]
+	# a str and a bytes name: the child gets LC_ALL twice, in this order
+	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LC_ALL': values[0], b'LC_ALL': values[1].encode()}
+	code = ('import os, sys; sys.path.insert(0, sys.argv[1]); import mssh_complete; '
+		'print(mssh_complete._exec_environ()["LC_ALL"], os.environ["LC_ALL"], mssh_complete._unicode_terminal())')
+	output = subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], env=env,
+		stdout=subprocess.PIPE, check=True, timeout=30).stdout
+	assert output.decode().split() == [values[0], values[0], str(first)]
+
+
 def test_a_range_mssh_completion_cannot_expand_says_nothing(engine):
 	# letter ranges: nothing is known about their members
 	assert warnings(engine, 'mssh node[a-c] uptime') == ([], False)

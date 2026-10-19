@@ -5109,7 +5109,9 @@ def _unicode_terminal():
 def _exec_environ():
 	'''
 	The environment this process was started with, as Linux keeps it in /proc/self/environ (setenv,
-	which Python's PEP 538 uses, does not change it); None where there is none.
+	which Python's PEP 538 uses, does not change it); None where there is none. A variable set twice
+	is its first value, as getenv, the C library's setlocale, os.environ, zsh and fish take it (bash
+	takes the last, but its glue measures the locale bash runs in).
 	'''
 	try:
 		with open('/proc/self/environ', 'rb') as f:
@@ -5120,7 +5122,7 @@ def _exec_environ():
 	for item in data.split(b'\0'):
 		name, sep, value = item.partition(b'=')
 		if sep:
-			environ[name.decode('utf-8', 'surrogateescape')] = value.decode('utf-8', 'surrogateescape')
+			environ.setdefault(name.decode('utf-8', 'surrogateescape'), value.decode('utf-8', 'surrogateescape'))
 	return environ
 
 # the locale categories besides LC_CTYPE: with LANG unset, bash keeps C if the C library refuses any
