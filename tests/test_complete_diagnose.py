@@ -543,8 +543,8 @@ def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(monk
 	# as a C library with these locales takes them (en_US: ISO-8859-1)
 	system = {'en_US.UTF-8': 'UTF-8', 'C.utf8': 'UTF-8', 'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1'}
 	monkeypatch.setattr(mc, '_locale_codeset', lambda name: 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else system.get(name))
-	monkeypatch.setattr(mc, '_SHELL_UTF8', None)
-	for name in ('LC_ALL', 'LC_CTYPE', 'LANG', 'LC_MESSAGES'):
+	# every variable the rule reads: one left from the tests' own environment (LC_TIME=en_GB.UTF-8) changed it
+	for name in ('LC_ALL', 'LC_CTYPE', 'LANG') + mc._OTHER_CATEGORIES:
 		monkeypatch.delenv(name, raising=False)
 	for name, value in variables.items():
 		monkeypatch.setenv(name, value)
@@ -553,21 +553,21 @@ def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(monk
 
 @pytest.mark.parametrize('flag', ['1', '0'])
 def test_a_request_of_bash_says_the_locale_it_runs_in(monkeypatch, flag):
-	# measured by the glue in the shell: it holds against the variables
-	monkeypatch.setattr(mc, '_SHELL_UTF8', None)
+	# measured by the glue in the shell: it holds against the variables, for the engine the request makes
+	# (the picker, the editor and warnings take it from there); another shell's request says nothing
 	monkeypatch.setenv('LANG', 'C' if flag == '1' else 'C.UTF-8')
-	mc._note_shell_locale(mc.Request('bash', 'mssh ', '', '', flags={'utf8': flag}))
-	assert mc._unicode_terminal() is (flag == '1')
-	mc._note_shell_locale(mc.Request('zsh', 'mssh ', '', '', flags={'utf8': '1' if flag == '0' else '0'}))
-	assert mc._unicode_terminal() is (flag == '1')
+	monkeypatch.setattr(mc, '_unicode_terminal', lambda: flag != '1')
+	engine = mc.engine_for(mc.Request('bash', 'mssh ', flags={'utf8': flag}), directory=None)
+	assert engine.unicode is (flag == '1')
+	assert engine.query(mc.Request('bash', 'mssh x ', flags={'utf8': flag, 'diag': '1'})).unicode is (flag == '1')
+	assert mc.engine_for(mc.Request('zsh', 'mssh ', flags={'utf8': flag}), directory=None).unicode is (flag != '1')
 
 
 def test_a_utf8_locale_the_system_lacks_gets_ascii(monkeypatch):
 	# the shell runs in C there, and TAB in any case compares so too
 	if mc._locale_codeset('xx_YY.UTF-8') is not None:
 		pytest.skip('this C library takes any locale name (musl)')
-	monkeypatch.setattr(mc, '_SHELL_UTF8', None)
-	for name in ('LC_ALL', 'LC_CTYPE'):
+	for name in ('LC_ALL', 'LC_CTYPE') + mc._OTHER_CATEGORIES:
 		monkeypatch.delenv(name, raising=False)
 	monkeypatch.setenv('LANG', 'xx_YY.UTF-8')
 	assert mc._unicode_terminal() is False

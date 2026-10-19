@@ -13,7 +13,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, aged, bash_session, blesh_session, build_index, fish_session, make_home,
+from complete_shell_harness import (ENGINE, aged, bash_locale, bash_session, blesh_session, build_index, fish_session, make_home,
 	require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
@@ -125,6 +125,25 @@ def test_bash_picker_draws_in_the_locale_bash_runs_in(home):
 		time.sleep(0.3)
 		session.send('\x12')
 		assert 'type to filter \u00b7' in session.read_until('type to filter \u00b7'.encode('utf-8'), 10)
+	finally:
+		session.close()
+
+
+C_SHELL = 'LC_ALL=C   # not exported: bash runs in C, mssh-complete sees the exported LANG=C.UTF-8'
+
+
+def test_bash_picker_draws_in_the_locale_bash_measured_not_the_exported_one(home):
+	# the exported variables say UTF-8, the shell runs in C: the picker draws in ASCII
+	env, home = home
+	env = dict(env, LANG='C.UTF-8')
+	if bash_locale(env) != (True, False):
+		pytest.skip('no C.UTF-8 here')
+	session = bash_session(home, env, glue_file(home, 'bash'), extra=C_SHELL)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
 	finally:
 		session.close()
 
@@ -482,6 +501,25 @@ def test_editor_keys_after_ctrl_r_go_to_the_picker_then_the_editor(home):
 		time.sleep(1)
 		assert words(printed(session, '')) == PICKED + ['XYZ']
 		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+def test_editor_draws_in_the_locale_bash_measured_not_the_exported_one(home):
+	# the editor is told the locale bash runs in: its picker (Ctrl-R) draws in ASCII where the shell runs in
+	# C, whatever the exported variables say (it drew in Unicode, from them)
+	env, home = home
+	env = dict(env, LANG='C.UTF-8')
+	if bash_locale(env) != (True, False):
+		pytest.skip('no C.UTF-8 here')
+	if bash_version(env) < 44:
+		pytest.skip('the mssh line editor needs bash 4.4 or later')
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + C_SHELL)
+	try:
+		session.send('mssh ')
+		time.sleep(0.5)
+		session.send('gpu[01-16] \x12')
+		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
 	finally:
 		session.close()
 

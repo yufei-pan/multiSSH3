@@ -2690,9 +2690,9 @@ class Diagnostic(object):
 	def __repr__(self):
 		return 'Diagnostic({}, {}, {!r}, {!r})'.format(self.start, self.end, self.kind, self.message)
 
-def _punctuation():
-	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal, ASCII elsewhere.'''
-	return (' — ', '…') if _unicode_terminal() else (' - ', '...')
+def _punctuation(unicode):
+	'''The dash and the ellipsis messages use: typographic on a UTF-8 terminal (unicode), ASCII elsewhere.'''
+	return (' — ', '…') if unicode else (' - ', '...')
 
 def _shell_operator(raw):
 	'''
@@ -3038,7 +3038,7 @@ def _closed_brackets(text):
 			inside = False
 	return not inside
 
-def _brace_split(token, shell):
+def _brace_split(token, shell, unicode=False):
 	'''
 	The warning for a hosts word the shell makes several words of by brace expansion (node{1,2},
 	gpu{01..16}): mssh takes the first as its hosts and runs the second as the command. It says
@@ -3087,7 +3087,7 @@ def _brace_split(token, shell):
 			number, chosen[index] = divmod(number, _count(groups[index][2]))
 		return pieces[0] + ''.join(value(groups[index], chosen[index]) + pieces[index + 1] for index in range(len(groups)))
 
-	dash, _ = _punctuation()
+	dash, _ = _punctuation(unicode)
 	message = '{}: the shell makes {} words of this; mssh would run {} as the command'.format(token.raw, count, word(1))
 	meant = None
 	if token.raw == text:
@@ -3412,7 +3412,7 @@ class Response(object):
 	(word index, prefix, words) when the shell should add its own completion of a remote
 	command. ghost is the grey suggestion (SP2), diagnostics the warnings about the line (SP3).
 	'''
-	__slots__ = ('context', 'candidates', 'directives', 'delegate', 'ghost', 'diagnostics')
+	__slots__ = ('context', 'candidates', 'directives', 'delegate', 'ghost', 'diagnostics', 'unicode')
 
 	def __init__(self, context=None):
 		self.context = context
@@ -3421,6 +3421,8 @@ class Response(object):
 		self.delegate = None
 		self.ghost = None
 		self.diagnostics = []
+		# whether the reason line may hold Unicode; None: as the variables say
+		self.unicode = None
 
 def _mssh_start(tokens):
 	'''Index of the word that runs mssh in a command line (mssh, sudo mssh, python3 multiSSH3.py, ...), or None.'''
@@ -3566,6 +3568,13 @@ class Engine(object):
 		self.flag_defaults = {}
 		# OPTION_NO_EFFECT entries from mssh: (long option, 'with' | 'without', other long options, why)
 		self.no_effect = []
+		# whether bash runs in a UTF-8 locale, as its glue measured it (request flag utf8), None if not said
+		self.shell_utf8 = None
+
+	@property
+	def unicode(self):
+		'''Whether to write in Unicode (messages, the picker): as bash's glue measured its locale, else as the variables say.'''
+		return _unicode_terminal() if self.shell_utf8 is None else self.shell_utf8
 
 	def query(self, request, deadline=None):
 		ghost = request.flags.get('ghost') == '1'
@@ -3576,6 +3585,7 @@ class Engine(object):
 			if ghost:
 				response.ghost = self.suggest(request, deadline)
 			if diag:
+				response.unicode = self.unicode
 				try:
 					response.diagnostics, pending = self.diagnose(request)
 					if pending:
@@ -3658,7 +3668,7 @@ class Engine(object):
 					# mssh skips unreachable hosts by the name it runs them under, user@ included: unknown here
 					found.extend(item for item in self._host_diagnostics(users, states, now, wanted, reach) if item.kind != 'unreachable')
 				try:
-					split = _brace_split(token, request.shell)
+					split = _brace_split(token, request.shell, self.unicode)
 				except Exception as e:
 					# a word of odd braces must not cost the line its other warnings
 					_debug('brace warning failed: {!r}'.format(e))
@@ -3718,7 +3728,7 @@ class Engine(object):
 				down = _unique(member for member, own_user in zip(members, own_users)
 					if answers[member] != 'invalid' and unreachable(member, user, own_user))
 				if down:
-					_, more = _punctuation()
+					_, more = _punctuation(self.unicode)
 					shown = ', '.join(down[:3] + ([more] if len(down) > 3 else []))
 					found.append(Diagnostic(start, end, 'unreachable', '{}: {} unreachable ({})'.format(name, len(down), shown)))
 		return found
@@ -3879,7 +3889,7 @@ class Engine(object):
 		example = _quoted_command(' '.join(token.raw for token in argv[run:stop]))
 		if any(verdict == 'unsure' or any(option.dest in PASSWORD_DESTS for option, _, _ in readings) for _, verdict, readings in read):
 			example = None
-		dash, _ = _punctuation()
+		dash, _ = _punctuation(self.unicode)
 		found = []
 		for token, verdict, readings in read:
 			if typing(token) and not (verdict == 'options' and ends_line(token)):
@@ -3972,7 +3982,7 @@ class Engine(object):
 		'''
 		unavailable, skipping, expiry = reach[:3]
 		if run_name in unavailable:
-			dash, _ = _punctuation()
+			dash, _ = _punctuation(self.unicode)
 			return '{}: {}unreachable in a recent mssh run'.format(name, 'will be skipped' + dash if skipping else '')
 		if (state is not None and state.fresh_ping(now) == 'silent' and state.answered_at
 				and now - state.answered_at <= expiry):
@@ -3980,7 +3990,7 @@ class Engine(object):
 		return None
 
 	def _unknown_message(self, name, states, now):
-		dash, _ = _punctuation()
+		dash, _ = _punctuation(self.unicode)
 		meant = self._did_you_mean(name, states, now)
 		return '{}: unknown host'.format(name) + (dash + 'did you mean {}?'.format(meant) if meant else '')
 
@@ -4012,7 +4022,7 @@ class Engine(object):
 					unknown.append(member)
 		if not unknown:
 			return None
-		dash, more = _punctuation()
+		dash, more = _punctuation(self.unicode)
 		if checked < total:
 			message = '{}: {} of {} checked, {} unknown so far'.format(name, checked, total, len(unknown))
 		else:
@@ -4525,7 +4535,7 @@ def format_response(response, nul=True):
 		lines.append('W {}\t{}\t{}\t{}'.format(item.start, item.end, item.kind, _clean(item.message)[:MAX_MESSAGE]))
 	if response.diagnostics:
 		# the line shells show under the prompt, the same everywhere
-		lines.append('R ' + _clean(reason_line(response.diagnostics)))
+		lines.append('R ' + _clean(reason_line(response.diagnostics, response.unicode)))
 	if response.delegate is not None:
 		index, prefix, words = response.delegate
 		fields = [str(index), prefix] + list(words)
@@ -4576,6 +4586,9 @@ def engine_for(request, directory=Ellipsis, now=None, deadline=None):
 		history = request.history[::-1] if request.shell == 'fish' else request.history
 		knowledges.append(shell_history_knowledge(history, spec))
 	engine = Engine(spec, knowledges, HostTable(index), users)
+	if request.shell == 'bash' and 'utf8' in request.flags:
+		# the locale bash runs in, as its glue measured it
+		engine.shell_utf8 = request.flags['utf8'] == '1'
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	engine.directory = directory
 	engine.flag_sets, engine.flag_defaults = flags
@@ -5024,24 +5037,13 @@ def _age(seconds):
 			return '{}{}'.format(int(seconds // size), unit)
 	return 'now'
 
-# whether bash runs in a UTF-8 locale, as a request from its glue says (flag utf8); None: not said
-_SHELL_UTF8 = None
-
-def _note_shell_locale(request):
-	'''Take the locale bash runs in from a request of its glue, for drawing and messages (_unicode_terminal).'''
-	global _SHELL_UTF8
-	if request.shell == 'bash' and 'utf8' in request.flags:
-		_SHELL_UTF8 = request.flags['utf8'] == '1'
-
 def _unicode_terminal():
 	'''
-	Whether the shell runs in a UTF-8 locale: as bash's glue measured it when a request said so, else
-	from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them (_locale_variables_utf8). Python's own
-	encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538),
-	and 3.15 always runs in UTF-8 mode.
+	Whether the shell runs in a UTF-8 locale, from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them
+	(_locale_variables_utf8): for what bash's glue has not measured (Engine.unicode). Python's own encoding
+	says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
+	always runs in UTF-8 mode.
 	'''
-	if _SHELL_UTF8 is not None:
-		return _SHELL_UTF8
 	return _locale_variables_utf8(os.environ)
 
 # the locale categories besides LC_CTYPE: with LANG unset, bash keeps C if the C library refuses any
@@ -5777,7 +5779,7 @@ class LineEditor(object):
 	suggest(before) -> Ghost or None; complete(before) -> (candidate texts, word) where the texts
 	replace word at the end of before; pick(text, cursor, slot_only) -> (text, cursor) or None.
 	'''
-	def __init__(self, text, suggest=None, complete=None, pick=None, diagnose=None):
+	def __init__(self, text, suggest=None, complete=None, pick=None, diagnose=None, unicode=None):
 		self.text = text
 		self.cursor = len(text)
 		self.prefix = len(text)
@@ -5794,6 +5796,8 @@ class LineEditor(object):
 		self.reason = ''
 		self._warned_for = None
 		self._asks = []
+		# whether the reason line may hold Unicode; None: as the variables say
+		self.unicode = unicode
 
 	def refresh(self):
 		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
@@ -5935,7 +5939,7 @@ class LineEditor(object):
 			_debug('warnings failed: {!r}'.format(e))
 			found, pending = [], False
 		self.marks = [(item.start, item.end) for item in found if 0 <= item.start < item.end <= len(self.text)]
-		self.reason = reason_line(found)
+		self.reason = reason_line(found, self.unicode)
 		self._warned_for = (self.text, self.cursor)
 		if not pending:
 			self._asks = []
@@ -6570,9 +6574,11 @@ _mssh_complete_previous() {
 }
 
 _mssh_complete_run_edit() {
-	# the editor, for _mssh_complete_start, on _mssh_complete_space's line
+	# the editor, for _mssh_complete_start, on _mssh_complete_space's line, told the locale bash runs in
+	local _mssh_complete_locale
+	_mssh_complete_read_locale
 	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null
 	return "${PIPESTATUS[1]}"
 }
 
@@ -8730,7 +8736,6 @@ def _cmd_query():
 	except ValueError as e:
 		_debug('bad request: {}'.format(e))
 		return 1
-	_note_shell_locale(request)
 	try:
 		response = answer(request, deadline)
 	except Exception as e:
@@ -8796,7 +8801,6 @@ def _cmd_pick():
 		request = parse_request(data)
 	except ValueError:
 		return 2
-	_note_shell_locale(request)
 	if ghost_style(os.environ.get('TERM', '')) is None:
 		return 2
 	now = time.time()
@@ -8806,7 +8810,7 @@ def _cmd_pick():
 		slot, title, history, word = picker_items(request, engine, history_lines, now)
 		if not slot and not history:
 			return 2
-		picker = Picker(slot, history, title, now, warnings=picker_warnings(engine, request))
+		picker = Picker(slot, history, title, now, unicode=engine.unicode, warnings=picker_warnings(engine, request))
 		prompt = _prompt_from_flags(request.flags)
 		line = before = None
 		if prompt is not None:
@@ -8899,8 +8903,11 @@ def _cmd_edit(args):
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
 	parser.add_argument('--expand', action='store_true')
 	parser.add_argument('--ready', action='store_true')
+	# request flags from bash's glue: the locale it measured in the shell (utf8, turkic)
+	parser.add_argument('--flags', default='')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
+	flags = dict(flag.partition('=')[::2] for flag in options.flags.split())
 	started = time.monotonic()
 	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
 	history = []
@@ -8908,7 +8915,7 @@ def _cmd_edit(args):
 		data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
 		history = [line for line in data.decode('utf-8', 'surrogateescape').split('\n') if line.strip()]
 	try:
-		engine = engine_for(Request('bash', options.text, '', '', history=history))
+		engine = engine_for(Request('bash', options.text, '', '', flags=flags, history=history))
 		term = Terminal()
 	except Exception as e:
 		_debug('editor cannot start: {!r}'.format(e))
@@ -8928,7 +8935,7 @@ def _cmd_edit(args):
 		slot, title, items, word = picker_items(request, engine, cache['history'])
 		if not slot and (slot_only or not items):
 			return None
-		picker = Picker(slot, [] if slot_only else items, title, warnings=picker_warnings(engine, request))
+		picker = Picker(slot, [] if slot_only else items, title, unicode=engine.unicode, warnings=picker_warnings(engine, request))
 		editor.erase(term)
 		outcome = picker.run(term, prompt + text, prompt + text[:cursor])
 		if outcome != 'choose':
@@ -8938,7 +8945,7 @@ def _cmd_edit(args):
 	def diagnose(text, cursor):
 		return engine.diagnose(Request('bash', text[:cursor], text[cursor:], ''))
 
-	editor = LineEditor(options.text, suggest, complete, pick, diagnose)
+	editor = LineEditor(options.text, suggest, complete, pick, diagnose, unicode=engine.unicode)
 	# the suggestion and the warnings it opens with: asked before the shell hears "ready"
 	editor.refresh()
 	editor.refresh_warnings()
