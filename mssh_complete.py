@@ -6206,25 +6206,32 @@ _mssh_complete_guard() {
 	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
 	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
 	# completion function). The shell's setting comes back on every return, also after a command's
-	# completion function changed it; after a Ctrl-C cut a call short, at the next prompt
-	# (_mssh_complete_heal), else at the next call. _mssh_complete_operator runs the shell's own code in
-	# it. Its variables are prefixed: the shell's code runs inside it
+	# completion function changed it; after a Ctrl-C cut a call short (bash 5 cuts bind -x commands), at
+	# the next prompt (_mssh_complete_heal), else at the next call, unless the shell changed it since.
+	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's
+	# code runs inside it. _mssh_complete_held: the shell's setting while a call runs; _mssh_complete_left:
+	# the setting the glue last made
 	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
-	if [[ -z $_mssh_complete_outer && -n ${_mssh_complete_held-} ]] && (( _mssh_complete_held )); then
-		shopt -s nocasematch
+	if [[ -z $_mssh_complete_outer ]]; then
+		_mssh_complete_heal || :
 	fi
 	shopt -q nocasematch && _mssh_complete_was=1
 	# the shell's setting, as the outermost call found it (one inside is called with it off, or as ble.sh set it)
 	local _mssh_complete_nocase=${_mssh_complete_outer:-$_mssh_complete_was}
 	[[ -n $_mssh_complete_outer ]] || _mssh_complete_held=$_mssh_complete_was
 	shopt -u nocasematch
+	_mssh_complete_left=0
 	"$@" || _mssh_complete_rc=$?
 	if (( _mssh_complete_was )); then
 		shopt -s nocasematch
 	else
 		shopt -u nocasematch
 	fi
-	[[ -n $_mssh_complete_outer ]] || _mssh_complete_held=
+	_mssh_complete_left=$_mssh_complete_was
+	if [[ -z $_mssh_complete_outer ]]; then
+		_mssh_complete_held=
+		_mssh_complete_left=
+	fi
 	return $_mssh_complete_rc
 }
 
@@ -6239,14 +6246,22 @@ _mssh_complete_read_locale() {
 }
 
 _mssh_complete_heal() {
-	# PROMPT_COMMAND (ble.sh: PRECMD): a glue call a Ctrl-C cut short left nocasematch off; the shell's
-	# setting comes back before the next command line is read, so none runs without it
-	local status=$?
+	# PROMPT_COMMAND (ble.sh: PRECMD), and the next glue call: a glue call a Ctrl-C cut short left the
+	# setting it had made; the shell's comes back, at the prompt before the next command line is read.
+	# Where the setting is no longer what the glue left, the shell changed it since: it stays. Left
+	# alike by the shell (shopt -u after a cut that left it off) it cannot be told, and comes back
+	local status=$? now=0
 	if [[ -n ${_mssh_complete_held-} ]]; then
-		if (( _mssh_complete_held )); then
-			shopt -s nocasematch
+		shopt -q nocasematch && now=1
+		if (( now == ${_mssh_complete_left:-0} )); then
+			if (( _mssh_complete_held )); then
+				shopt -s nocasematch
+			else
+				shopt -u nocasematch
+			fi
 		fi
 		_mssh_complete_held=
+		_mssh_complete_left=
 	fi
 	return $status
 }
@@ -6257,9 +6272,11 @@ _mssh_complete_operator() {
 	local _mssh_complete_rc=0
 	if (( ${_mssh_complete_nocase:-0} )); then
 		shopt -s nocasematch
+		_mssh_complete_left=1
 	fi
 	"$@" || _mssh_complete_rc=$?
 	shopt -u nocasematch
+	_mssh_complete_left=0
 	return $_mssh_complete_rc
 }
 
@@ -6322,11 +6339,13 @@ _mssh_complete_delegate() {
 	done
 	if (( ${_mssh_complete_icase-0} )); then
 		shopt -s nocasematch
+		_mssh_complete_left=1
 	fi
 	for item in ${kept[@]+"${kept[@]}"}; do
 		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
 	done
 	shopt -u nocasematch
+	_mssh_complete_left=0
 	return 0
 }
 

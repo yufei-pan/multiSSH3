@@ -375,30 +375,31 @@ def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tm
 		session.close()
 
 
-@pytest.mark.parametrize('setting', ['on', 'off'])
-def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting):
-	# Ctrl-C cut the Ctrl-R binding the glue took over (a slow one) short, inside the glue: its note of the
-	# shell's setting stayed, and the next glue call put that back over what the shell set in between.
-	# bash defers Ctrl-C while a completion function runs (TAB is not cut short); bash 5 cuts bind -x
-	# commands short, bash 4 lets them end
+@pytest.mark.parametrize('setting, prompt_command', [('on', 'kept'), ('on', 'replaced'), ('off', 'replaced')])
+def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting, prompt_command):
+	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function always ends):
+	# here the Ctrl-R binding the glue took over, a slow one, with the glue's note of the shell's
+	# nocasematch left. The shell then sets it the other way, and TAB must leave that: the note came back
+	# at the next glue call (round 5's heal at the next prompt fixed that only where PROMPT_COMMAND
+	# still holds it, 'kept'). With 'off' nothing came back before; it guards the note of an off setting
 	env, home = make_home(tmp_path, [])
 	pre = '''shopt -{} nocasematch
-_slow() {{ local end=$((SECONDS + 2)); while (( SECONDS < end )); do :; done; }}
+_slow() {{ printf '@@SLOW''@@\\n'; local end=$((SECONDS + 2)); while (( SECONDS < end )); do :; done; }}
 bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
 	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, pre=pre)
 	try:
-		session.send('true\r')
+		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
+		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
 		session.read_until(b'@@READY@@')
 		session.send('echo a\x12')
-		time.sleep(0.8)
+		session.read_until(b'@@SLOW@@')
 		session.send('\x03')
-		# the binding ends; then no key prefix left pending (bash 4 kept the line), the line cleared
-		time.sleep(2.5)
-		session.send('\x07\x15')
-		time.sleep(0.3)
-		assert nocasematch(session) == setting
+		# the binding is over once a command runs; bash 4 kept the line and drops a key: cancel, clear, a space
+		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
+		session.read_until(b'@@ALIVE@@', 15)
+		session.read_until(b'@@READY@@')
 		other = 'off' if setting == 'on' else 'on'
-		session.send('shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
+		session.send(' shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
 		session.read_until(b'@@READY@@')
 		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
 		assert nocasematch(session) == other
