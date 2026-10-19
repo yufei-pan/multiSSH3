@@ -6059,13 +6059,51 @@ _mssh_complete_split() {
 	_mssh_complete_fields+=("$text")
 }
 
+_mssh_complete_guard() {
+	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
+	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
+	# completion function). The shell's setting comes back on every return, also after a command's
+	# completion function changed it, and at the next call after a Ctrl-C cut one short;
+	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's code
+	# runs inside it
+	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
+	if [[ -z $_mssh_complete_outer && -n ${_mssh_complete_held-} ]] && (( _mssh_complete_held )); then
+		shopt -s nocasematch
+	fi
+	shopt -q nocasematch && _mssh_complete_was=1
+	# the shell's setting, as the outermost call found it (one inside is called with it off, or as ble.sh set it)
+	local _mssh_complete_nocase=${_mssh_complete_outer:-$_mssh_complete_was}
+	[[ -n $_mssh_complete_outer ]] || _mssh_complete_held=$_mssh_complete_was
+	shopt -u nocasematch
+	"$@" || _mssh_complete_rc=$?
+	if (( _mssh_complete_was )); then
+		shopt -s nocasematch
+	else
+		shopt -u nocasematch
+	fi
+	[[ -n $_mssh_complete_outer ]] || _mssh_complete_held=
+	return $_mssh_complete_rc
+}
+
+_mssh_complete_operator() {
+	# run "$@", the shell's own code (a command's completion function, the binding ours took over), in
+	# the shell's nocasematch; the glue's comes back after
+	local _mssh_complete_rc=0
+	if (( ${_mssh_complete_nocase:-0} )); then
+		shopt -s nocasematch
+	fi
+	"$@" || _mssh_complete_rc=$?
+	shopt -u nocasematch
+	return $_mssh_complete_rc
+}
+
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated.
-	local word=$1 cword=$2 prefix=$3 cmd spec func item lead nocase=0
+	local word=$1 cword=$2 prefix=$3 cmd spec func item lead
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
-	local -a words=("$@") found=()
+	local -a words=("$@") found=() kept=()
 	local cur=${words[cword]-}
 	cmd=${words[0]-}
 	_mssh_complete_delegated=()
@@ -6090,7 +6128,7 @@ _mssh_complete_delegate() {
 			local COMP_CWORD=$cword COMP_LINE="${words[*]}" COMP_POINT
 			COMP_POINT=${#COMP_LINE}
 			local -a COMPREPLY=()
-			"$func" "$cmd" "$cur" "${words[cword-1]}" >/dev/null 2>&1 || :
+			_mssh_complete_operator "$func" "$cmd" "$cur" "${words[cword-1]}" >/dev/null 2>&1 || :
 			found=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
 		else
 			while IFS= read -r item; do
@@ -6099,31 +6137,32 @@ _mssh_complete_delegate() {
 		fi
 	fi
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
-	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word. When
-	# the engine matched in any case (_mssh_complete_icase), so do compgen and readline (stor gives
-	# Storage-File): nocasematch says which, then goes back to what it was
+	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word, as typed.
+	# The word itself in any case when the engine matched so (_mssh_complete_icase), as compgen and
+	# readline do (stor gives Storage-File): nocasematch on for that test alone
 	lead=$prefix$cur
 	lead=${lead%"$word"}
-	shopt -q nocasematch && nocase=1
-	if (( ${_mssh_complete_icase-0} )); then
-		shopt -s nocasematch
-	else
-		shopt -u nocasematch
-	fi
 	for item in ${found[@]+"${found[@]}"}; do
 		item=$prefix$item
 		[[ -n $lead && $item == "$lead"* ]] && item=${item:${#lead}}
+		kept+=("$item")
+	done
+	if (( ${_mssh_complete_icase-0} )); then
+		shopt -s nocasematch
+	fi
+	for item in ${kept[@]+"${kept[@]}"}; do
 		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
 	done
-	if (( nocase )); then
-		shopt -s nocasematch
-	else
-		shopt -u nocasematch
-	fi
+	shopt -u nocasematch
 	return 0
 }
 
 _mssh_complete() {
+	# TAB (complete -F)
+	_mssh_complete_guard _mssh_complete_tab "$@"
+}
+
+_mssh_complete_tab() {
 	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
@@ -6344,6 +6383,10 @@ _mssh_complete_run_pick() {
 
 _mssh_complete_pick() {
 	# the picker for the mssh line in READLINE_LINE; fails when it is unavailable or too slow to start
+	_mssh_complete_guard _mssh_complete_pick_now
+}
+
+_mssh_complete_pick_now() {
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_resp _mssh_complete_status
 	local _mssh_complete_action _mssh_complete_keys
 	_mssh_complete_cut
@@ -6357,13 +6400,17 @@ _mssh_complete_pick() {
 _mssh_complete_ctrl_r() {
 	# Ctrl-R (a macro: the hook key of keymap $1, then "\C-x\C-y"): the picker on mssh lines, else
 	# what Ctrl-R did before
+	_mssh_complete_guard _mssh_complete_ctrl_r_key "$@"
+}
+
+_mssh_complete_ctrl_r_key() {
 	local keymap=$1 previous
 	bind -m "$keymap" '"\C-x\C-y": ""'
 	_mssh_complete_is_mssh "$READLINE_LINE" && _mssh_complete_pick && return 0
 	previous=_mssh_complete_previous_${keymap//-/_}
 	previous=${!previous-}
 	case $previous in
-		x:*) eval "${previous#x:}" ;;
+		x:*) _mssh_complete_operator eval "${previous#x:}" ;;
 		?*)
 			# put the previous binding back while it runs (a reverse search repeats with Ctrl-R
 			# only when Ctrl-R is bound to it); the next prompt takes Ctrl-R back
@@ -6378,7 +6425,11 @@ _mssh_complete_ctrl_r() {
 
 _mssh_complete_rearm() {
 	# PROMPT_COMMAND, once after a Ctrl-R fallback: Ctrl-R opens the picker again
-	local status=$? keymap
+	_mssh_complete_guard _mssh_complete_rearm_now "$?"
+}
+
+_mssh_complete_rearm_now() {
+	local status=$1 keymap
 	for keymap in ${_mssh_complete_unarmed-}; do
 		_mssh_complete_arm "$keymap"
 	done
@@ -6431,6 +6482,10 @@ _mssh_complete_run_edit() {
 
 _mssh_complete_space() {
 	# space ("\C-x\C-t\C-x\C-y"): after an mssh name alone, the mssh line editor; else a space
+	_mssh_complete_guard _mssh_complete_space_key "$@"
+}
+
+_mssh_complete_space_key() {
 	local shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
 	local -a expand=()
@@ -6482,11 +6537,15 @@ if [[ -n ${BLE_VERSION-} ]]; then
 
 	function ble/widget/mssh-complete/ctrl-r {
 		# Ctrl-R: the picker on mssh lines, else the widget Ctrl-R had
+		_mssh_complete_guard _mssh_complete_ble_ctrl_r
+	}
+
+	_mssh_complete_ble_ctrl_r() {
 		if _mssh_complete_is_mssh "$_ble_edit_str" && ble/widget/.EDIT_COMMAND _mssh_complete_pick; then
 			return 0
 		fi
 		local previous=_mssh_complete_previous_$_ble_decode_keymap
-		[[ -n ${!previous-} ]] && builtin eval -- "_mssh_complete_ble_call ${!previous}"
+		[[ -n ${!previous-} ]] && _mssh_complete_operator builtin eval -- "_mssh_complete_ble_call ${!previous}"
 		return 0
 	}
 
@@ -6504,14 +6563,17 @@ if [[ -n ${BLE_VERSION-} ]]; then
 			esac
 		done < <(ble-bind -m "$1" -P 2>/dev/null || :)
 	}
-	blehook/eval-after-load keymap_emacs '_mssh_complete_ble_bind emacs'
-	blehook/eval-after-load keymap_vi '_mssh_complete_ble_bind vi_imap'
+	blehook/eval-after-load keymap_emacs '_mssh_complete_guard _mssh_complete_ble_bind emacs'
+	blehook/eval-after-load keymap_vi '_mssh_complete_guard _mssh_complete_ble_bind vi_imap'
 
 	_mssh_complete_ble_source() {
 		# define ble.sh's mssh suggestion source and put it first
 		declare -F ble/complete/auto-complete/enter >/dev/null 2>&1 || return 0
 		function ble/complete/auto-complete/source:mssh {
 			# grey text for mssh lines: 1 lets the next source try, 148 when typing interrupted the query
+			_mssh_complete_guard _mssh_complete_ble_ghost
+		}
+		_mssh_complete_ble_ghost() {
 			((_ble_edit_ind == ${#_ble_edit_str})) || return 1
 			_mssh_complete_is_mssh "$_ble_edit_str" || return 1
 			local request=$_ble_base_run/$$.mssh-complete.request answer=$_ble_base_run/$$.mssh-complete.answer line text= status
@@ -6529,7 +6591,7 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		}
 		[[ " ${_ble_complete_auto_source[*]-} " == *' mssh '* ]] || _ble_complete_auto_source=(mssh ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"})
 	}
-	blehook/eval-after-load complete _mssh_complete_ble_source
+	blehook/eval-after-load complete '_mssh_complete_guard _mssh_complete_ble_source'
 
 	_mssh_complete_warn_ranges=()
 	_mssh_complete_warn_key=
@@ -6550,6 +6612,10 @@ if [[ -n ${BLE_VERSION-} ]]; then
 
 	_mssh_complete_ble_warn_ask() {
 		# idle task: ask the engine about the line, mark the words and show the reason line
+		_mssh_complete_guard _mssh_complete_ble_warn_asked
+	}
+
+	_mssh_complete_ble_warn_asked() {
 		local request=$_ble_base_run/$$.mssh-complete.warn.request answer=$_ble_base_run/$$.mssh-complete.warn.answer
 		local line reason= pending=0 status start
 		local -a ranges=() starts=()
@@ -6621,7 +6687,7 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		fi
 		ble/highlight/layer:{selection}/declare mssh
 		function ble/highlight/layer:mssh/update {
-			_mssh_complete_ble_warn_watch "$1"
+			_mssh_complete_guard _mssh_complete_ble_warn_watch "$1"
 			local -a sel=(${_mssh_complete_warn_ranges[@]+"${_mssh_complete_warn_ranges[@]}"}) gflags=()
 			local ret i
 			ble/color/face2g mssh_warning
@@ -6645,7 +6711,11 @@ elif [[ $- == *i* ]]; then
 	_mssh_complete_keys() {
 		# PROMPT_COMMAND, once, at the first prompt: take the keys. Not while the rc file loads: there
 		# stderr is often /dev/null, and readline starting then would lose its terminal setup
-		local status=$? keymap line previous
+		_mssh_complete_guard _mssh_complete_take_keys "$?"
+	}
+
+	_mssh_complete_take_keys() {
+		local status=$1 keymap line previous
 		PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_keys;/}
 		[[ -o emacs || -o vi ]] || return $status
 		for keymap in emacs vi-insert; do

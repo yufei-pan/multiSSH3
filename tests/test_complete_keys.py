@@ -303,7 +303,7 @@ def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
 		session.close()
 
 
-@pytest.mark.parametrize('option', ['set -e', 'set -u', 'set -o pipefail'])
+@pytest.mark.parametrize('option', ['set -e', 'set -u', 'set -o pipefail', 'shopt -s nocasematch'])
 def test_bash_shell_options_do_not_break_ctrl_r_or_the_editor(home, option):
 	env, home = home
 	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + option)
@@ -324,6 +324,13 @@ def test_bash_shell_options_do_not_break_ctrl_r_or_the_editor(home, option):
 		assert '@@RAN[xy]@@' in session.read_until(b'@@RAN[xy]@@', 10)
 		session.send('echo "[alive]"\r')
 		assert '[alive]\r\n' in session.read_until(b'[alive]\r\n', 10)
+		# the option is still the operator's
+		name = {'set -e': 'errexit', 'set -u': 'nounset'}.get(option, option.split()[-1])
+		start = len(session.output)
+		session.send('if shopt -qo {0} 2>/dev/null || shopt -q {0} 2>/dev/null; then echo "@@OPT""=on@@"; else echo "@@OPT""=off@@"; fi\r'.format(name))
+		session.read_until(b'@@OPT=o', 10)
+		session.read_until(b'@@READY@@', 5)
+		assert '@@OPT=on@@' in session.output[start:].decode('utf-8', 'replace')
 	finally:
 		session.close()
 

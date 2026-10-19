@@ -333,6 +333,47 @@ def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp
 		session.close()
 
 
+@pytest.mark.parametrize('icase', ['on', 'off'])
+def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tmp_path, icase):
+	# with the shell's nocasematch on, the glue read "complete -f zzrun" as "complete -F zzrun" and ran zzrun,
+	# the remote command, here as its completion function; every test of the glue's own compares exactly
+	history = ['1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"']
+	session = ignoring_case(tmp_path, history, on=icase == 'on', commands=['zzrun'], options='shopt -s nocasematch; complete -f zzrun')
+	ran = tmp_path / 'zzrun-ran'
+	(tmp_path / 'bin' / 'zzrun').write_text('#!/bin/sh\necho "$@" > {}\n'.format(ran))
+	try:
+		assert session.line_after('mssh h zzrun ab') == 'mssh h zzrun ab'
+		assert not ran.exists(), ran.read_text()
+		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('icase', ['on', 'off'])
+def test_bash_a_completion_turning_nocasematch_on_leaves_the_shell_as_it_was(tmp_path, icase):
+	# a command's completion function that turns nocasematch on and leaves it so: the glue, which runs it,
+	# gives the shell back the setting it had before
+	options = '_leaky() { shopt -s nocasematch; COMPREPLY=(storage-y); }; complete -F _leaky leaky'
+	session = ignoring_case(tmp_path, [], on=icase == 'on', options=options)
+	try:
+		assert session.line_after('mssh h leaky stor') == 'mssh h leaky storage-y '
+		assert nocasematch(session) == 'off'
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_text_before_its_word_as_typed(tmp_path):
+	# bash's word stops at ":": the delegated host:file continues HOST:fi only if HOST: is as typed, else
+	# file went in after the HOST: typed, a name no file has
+	session = ignoring_case(tmp_path, [], files=['host:file'])
+	try:
+		assert session.line_after('mssh h nosuchcmd HOST:fi') == 'mssh h nosuchcmd HOST:fi'
+		assert session.line_after('mssh h nosuchcmd host:FI') == 'mssh h nosuchcmd host:file '
+	finally:
+		session.close()
+
+
 def test_bash_minding_case_keeps_delegated_words_in_their_case_whatever_nocasematch_says(tmp_path):
 	# with completion-ignore-case off and the shell's nocasematch on, a command's completion offering Storage-x
 	# for stor must not reach readline, which, minding case, would cut the word back to their common start
