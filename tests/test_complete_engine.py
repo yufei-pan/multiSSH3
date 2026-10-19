@@ -364,6 +364,19 @@ def test_case_folds_as_an_older_glue_says(monkeypatch, lc, ascii):
 	assert (fold.ascii, fold.turkic) == (ascii, False)
 
 
+def test_asking_the_c_library_about_a_locale_leaves_the_process_locale_as_it_was(monkeypatch):
+	# _locale_codeset sets LC_CTYPE to the name to ask nl_langinfo, then puts back what it was
+	import locale
+	monkeypatch.setattr(mc, '_CODESETS', {})
+	before = locale.setlocale(locale.LC_CTYPE)
+	for name in ('C.UTF-8', 'en_US.UTF-8', 'tr_TR.ISO-8859-9', 'xx_YY.UTF-8', before):
+		mc._locale_codeset(name)
+		assert locale.setlocale(locale.LC_CTYPE) == before, name
+	# the process's own locale is one the C library has; asked once
+	assert mc._locale_codeset(before) is not None and before in mc._CODESETS
+	assert mc._locale_codeset('C') == mc._locale_codeset('POSIX') == mc._locale_codeset('')
+
+
 def test_case_folds_letters_as_ascii_and_turkish_locales_do():
 	ascii, turkish, turkish8 = mc.CaseFold(ascii=True), mc.CaseFold(turkic=True), mc.CaseFold(ascii=True, turkic=True)
 	assert ascii.variants('a') == 'Aa' and ascii.variants('\u00e9') == '\u00e9' and ascii.variants('\u0130') == '\u0130'
