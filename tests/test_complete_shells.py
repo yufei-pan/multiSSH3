@@ -929,6 +929,14 @@ def test_bash_ignoring_case_reads_the_engine_s_answer_whatever_ifs_the_shell_has
 		session.close()
 
 
+def test_bash_glue_splitter_takes_an_empty_separator_for_a_tab(tmp_path):
+	# ${2-...} kept an empty separator, which every remainder holds: the loop never ended
+	script = '. "$1"; _mssh_complete_split $\'a b\\tc\' ""; printf "%s|" "${_mssh_complete_fields[@]}"'
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+	assert output.stdout.decode() == 'a b|c|', output
+
+
 @pytest.mark.parametrize('ifs', ["$'\\n'", ':', "''"])
 def test_bash_glue_joins_and_splits_its_own_lists_whatever_ifs_the_shell_has(tmp_path, ifs):
 	# COMP_LINE joined the words with IFS's first character; the keymaps to arm again were split with it

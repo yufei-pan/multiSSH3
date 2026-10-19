@@ -6224,9 +6224,9 @@ _mssh_complete_slice() {
 }
 
 _mssh_complete_split() {
-	# split $1 on tabs (or on $2) into _mssh_complete_fields, keeping empty fields, whatever IFS the shell
+	# split $1 on tabs (or on $2 when not empty) into _mssh_complete_fields, keeping empty fields, whatever IFS the shell
 	# has (not IFS=' ' read -a <<<: with the shell's IFS empty, bash 4.2 read " emacs vi-insert" as one word)
-	local _mssh_complete_text=$1 _mssh_complete_separator=${2-$'\t'}
+	local _mssh_complete_text=$1 _mssh_complete_separator=${2:-$'\t'}
 	_mssh_complete_fields=()
 	while [[ $_mssh_complete_text == *"$_mssh_complete_separator"* ]]; do
 		_mssh_complete_fields+=("${_mssh_complete_text%%"$_mssh_complete_separator"*}")
