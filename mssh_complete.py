@@ -7633,8 +7633,8 @@ _mssh_complete_setup() {
 _mssh_complete_zas_strategy() {
 	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
 	emulate -L zsh
-	# split on spaces, whatever IFS the shell has
-	(( ${${(s: :)ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${(s: :)ZSH_AUTOSUGGEST_STRATEGY:-history})
+	# joined and split on spaces, whatever IFS the shell has: (s) alone joins an array with IFS first
+	(( ${${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 
 if [[ -o interactive ]]; then

@@ -940,14 +940,18 @@ def test_bash_glue_joins_and_splits_its_own_lists_whatever_ifs_the_shell_has(tmp
 	assert output.stdout.decode().splitlines() == ['line[zzcmd a b]', 'arm[emacs]', 'arm[vi-insert]'], output
 
 
+@pytest.mark.parametrize('strategy, strategies', [
+	# zsh-autosuggestions' own form, a list written as one string, none set
+	('(history completion)', ['history', 'completion']), ('"history completion"', ['history', 'completion']), ('', ['history'])])
 @pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
-def test_zsh_glue_splits_the_autosuggestion_strategies_whatever_ifs_the_shell_has(tmp_path, ifs):
-	# outside the completion system (which sets IFS for itself): a strategy list written as one string
-	script = ('source "$1"; IFS=' + ifs + '; ZSH_AUTOSUGGEST_STRATEGY="history completion"; _mssh_complete_zas_strategy; '
-		'print -rl -- $ZSH_AUTOSUGGEST_STRATEGY')
+def test_zsh_glue_splits_the_autosuggestion_strategies_whatever_ifs_the_shell_has(tmp_path, ifs, strategy, strategies):
+	# outside the completion system (which sets IFS for itself): (s: :) joined an array with IFS first, and
+	# (history completion) became one strategy history:completion, which does not exist
+	script = ('source "$1"; IFS=' + ifs + '; ' + ('ZSH_AUTOSUGGEST_STRATEGY=' + strategy if strategy else 'unset ZSH_AUTOSUGGEST_STRATEGY')
+		+ '; _mssh_complete_zas_strategy; print -r -- "${(j:|:)ZSH_AUTOSUGGEST_STRATEGY}"')
 	output = subprocess.run([require_shell('zsh'), '-f', '-c', script, 'probe', str(glue_file(tmp_path, 'zsh'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-	assert output.stdout.decode().splitlines() == ['mssh', 'history', 'completion'], output
+	assert output.stdout.decode() == '|'.join(['mssh'] + strategies) + '\n', output
 
 
 # a command whose completion is built on _arguments, as most of zsh's are
