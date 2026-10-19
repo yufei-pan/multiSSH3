@@ -6293,10 +6293,17 @@ _mssh_complete_start() {
 		trap '_mssh_complete_interrupted=1' INT
 	fi
 	{
-		# in short reads: a trapped Ctrl-C does not end a read
+		# in short reads: a trapped Ctrl-C does not end a read. A byte at a time: bash reads a pipe one byte
+		# per call, and a read that times out partway through a line loses what it read of it (bash 4.2
+		# drops it, later ones keep it for the next read to write over); the rest of the line, written
+		# with its first byte, is there without waiting
 		while (( got > 128 && !_mssh_complete_interrupted && waited++ < tenths )); do
-			IFS= read -r -t 0.1 line && got=0 || got=$?
+			IFS= read -r -t 0.1 -n 1 line && got=0 || got=$?
 		done
+		if (( got == 0 )) && [[ -n $line ]]; then
+			IFS= read -r rest || :
+			line+=$rest
+		fi
 		(( got > 128 )) || IFS= read -r -d '' rest || :
 	} < <("$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
 	if [[ -z ${BLE_VERSION-} ]]; then

@@ -690,6 +690,46 @@ def test_editor_goes_on_without_an_engine_slow_to_start(home):
 		session.close()
 
 
+def split_ready_engine(home, command):
+	"""
+	The engine, its "ready" for command (edit, pick) cut in two across the shell's 0.1 s waits for it, as
+	when the wait ends between two of the bytes bash reads one at a time: then "mssh split-ok" as the line.
+	"""
+	import shlex
+	path = home / 'split-engine'
+	path.write_text('#!/bin/sh\nif [ "$1" = {} ]; then\n\tcat >/dev/null\n\tprintf re; sleep 0.25; printf "ady\\n"\n'
+		'\tprintf "MSSHC1\\nL 13\\tmssh split-ok\\nK \\t\\nE\\n"\n\texit 0\nfi\nexec {} "$@"\n'.format(
+			command, ' '.join(shlex.quote(part) for part in ENGINE)))
+	path.chmod(0o755)
+	return [str(path)]
+
+
+def test_editor_ready_cut_by_the_wait_still_counts(home):
+	# bash 4.2 drops what a read that timed out had read, later ones keep it but the next read wrote over it:
+	# either way the answer was lost, and the line fell back to "mssh " with what was typed after it
+	env, home = home
+	session = editor_session(env, home, command=split_ready_engine(home, 'edit'))
+	try:
+		session.send('mssh ')
+		time.sleep(1)
+		assert printed(session, '') == 'mssh split-ok'
+	finally:
+		session.close()
+
+
+def test_picker_ready_cut_by_the_wait_still_counts(home):
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash', command=split_ready_engine(home, 'pick')))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		time.sleep(1)
+		assert printed(session, '') == 'mssh split-ok'
+	finally:
+		session.close()
+
+
 def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
 	# as Ctrl-C in the editor: the line and ^C stay on screen, a fresh prompt below
 	env, home = home
