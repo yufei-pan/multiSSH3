@@ -573,11 +573,23 @@ def assign_roles(words, spec, current=None):
 # what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
 _HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
 
+# what separates the hosts of a hosts argument for mssh
+_HOST_SEPARATORS = ',\n\r\t;|/& '
+
 def split_hosts(text):
 	'''Split a hosts argument into host words, on the separators mssh accepts.'''
-	for separator in ',\n\r\t;|/&':
+	for separator in _HOST_SEPARATORS:
 		text = text.replace(separator, ' ')
 	return text.split()
+
+def _host_cut(text):
+	'''Where the last host word of a hosts text starts: after its last separator (as split_hosts splits).'''
+	return max(text.rfind(separator) for separator in _HOST_SEPARATORS) + 1
+
+def _last_host_start(text):
+	'''Where the name of the last host of a hosts text starts: after its last separator and its "user@".'''
+	cut = _host_cut(text)
+	return text.rfind('@', cut) + 1 or cut
 
 def words_as_typed(command):
 	'''
@@ -826,9 +838,7 @@ def _fold_start(slot, option, prefix, value_start, quoted, command_prefix, mode)
 	if slot == SLOT_OPTION:
 		return 0
 	if slot == SLOT_HOSTS or (slot == SLOT_VALUE and option.dest == 'skip_hosts'):
-		head, comma, segment = prefix[value_start:].rpartition(',')
-		user, at, _ = segment.rpartition('@')
-		return value_start + len(head + comma + user + at)
+		return value_start + _last_host_start(prefix[value_start:])
 	if slot == SLOT_VALUE:
 		return value_start + _path_start(prefix[value_start:])
 	if mode in PATH_MODES or not quoted:
@@ -4137,8 +4147,7 @@ class Engine(object):
 	def usage(self, context, value, knowledges=None):
 		'''(times used, last used unix time) of a value of the current slot, over all knowledge (or the given knowledges).'''
 		if context.slot == SLOT_HOSTS:
-			segment = value.rpartition(',')[2].rpartition('@')[2]
-			features = ['h:' + value, 't:' + segment]
+			features = ['h:' + value, 't:' + value[_last_host_start(value):]]
 		elif context.slot == SLOT_VALUE:
 			features = ['v:{}={}'.format(context.option.dest, value)]
 		elif context.slot == SLOT_OPTION:
@@ -4308,8 +4317,8 @@ class Engine(object):
 				users.add(os.environ['USER'])
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase, start))
 		elif dest == 'skip_hosts':
-			# the members that can complete the host being typed (after its "," and "user@")
-			prefix = word.rpartition(',')[2].rpartition('@')[2]
+			# the members that can complete the host being typed (after the last separator and "user@")
+			prefix = word[start:]
 			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase, start))
@@ -4359,16 +4368,18 @@ class Engine(object):
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
 		'''Candidates for a hosts argument whose text so far is text: complete its last host.'''
-		head, comma, segment = text.rpartition(',')
-		user, at, host_prefix = segment.rpartition('@')
-		lead = head + comma + user + at
+		cut = _host_cut(text)
+		start = _last_host_start(text)
+		lead, host_prefix = text[:start], text[start:]
+		user = text[cut:start - 1] if start > cut else ''
 		icase = context.icase
 		scores = {}
 		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2).items():
 			scores[feature[2:]] = score
 		out = []
-		if not comma and not at:
-			for feature, score in score_features(self.knowledges, 'h:' + segment, context.features, deadline, icase, 2).items():
+		if not start:
+			# one host typed: whole hosts arguments used before
+			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		# with icase only the lookups match the host typed in any case: the names found stay apart (mssh's aliases,

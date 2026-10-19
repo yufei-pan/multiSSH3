@@ -519,6 +519,9 @@ def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
 @pytest.mark.parametrize('before, start', [
 	('mssh --no_wa', 0), ('mssh gp', 0), ('mssh a,root@no', len('a,root@')), ('mssh -u ro', 0),
 	('mssh web[1-3] -X web1,we', len('web1,')), ('mssh web[1-3] -X=root@we', len('-X=root@')),
+	# every separator mssh splits hosts on
+	('mssh web[1-3] -X web1/we', len('web1/')), ('mssh web[1-3] -X "web1 root@we', len('web1 root@')),
+	('mssh "a;b|c&d\te f', len('a;b|c&d\te ')),
 	('mssh -f /data/pro', len('/data/')), ('mssh -hf=/etc/ho', len('-hf=/etc/')),
 	('mssh h cat /srv/Data/o', len('/srv/Data/')), ('mssh h "cat /srv/Data/o', len('cat /srv/Data/')),
 	('mssh h systemctl STATUS ', 0), ('mssh h "systemctl STATUS ', len('systemctl STATUS ')),
@@ -545,6 +548,11 @@ def test_icase_hosts_after_x_match_only_the_host_typed_in_any_case():
 	assert 'WEB1,web2' not in texts(query('mssh web[1-3] -X web1,we', knowledges=knowledges, flags=ICASE))
 	assert 'ROOT@web1' not in texts(query('mssh web[1-3] -X root@we', knowledges=knowledges, flags=ICASE))
 	assert 'WEB1,web2' in texts(query('mssh web[1-3] -X WEB1,We', knowledges=knowledges, flags=ICASE))
+	# hosts split on "/", ";", "|", "&" and whitespace too
+	knowledges = [memory([line(NOW, '-su -X=WEB1/web2', 'web[1-3]', '"uptime"'), line(NOW - 1, '-su', 'WEB1 web2', '"uptime"')])]
+	assert 'WEB1/web2' not in texts(query('mssh web[1-3] -X web1/we', knowledges=knowledges, flags=ICASE))
+	assert 'WEB1 web2' not in texts(query('mssh "web1 we', word='web1 we', knowledges=knowledges, flags=ICASE))
+	assert 'WEB1/web2' in texts(query('mssh web[1-3] -X WEB1/We', knowledges=knowledges, flags=ICASE))
 
 
 def test_prefix_ranges_match_in_any_case_from_start_on():
