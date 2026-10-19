@@ -240,7 +240,7 @@ def test_braces_the_shell_expands_make_mssh_run_a_host_as_the_command(engine, sh
 
 @pytest.mark.skipif(shutil.which('bash') is None, reason='needs bash')
 @pytest.mark.parametrize('word', ['node{1,2}', 'gpu{01..16}', 'node{1..16}', 'n{001..12}', 'n{10..8}', 'n{010..8}',
-	'rack[1-2]-n{1..3}', 'n{a..c}', 'n{1..10..3}', 'n{1,2}-{a,b}', 'a,n{1..3}', 'a,n{1,2}'])
+	'rack[1-2]-n{1..3}', 'n{a..c}', 'n{1..10..3}', 'n{1,2}-{a,b}', 'a,n{1..3}', 'a,n{1,2}', 'a/n{1,2}'])
 def test_what_a_brace_warning_suggests_gives_mssh_the_hosts_the_shell_made(engine, tmp_path, word):
 	message, = [message for _, kind, message in warnings_if_all_unknown(engine, 'mssh {} uptime'.format(word)) if kind == 'range']
 	meant = message.rsplit('did you mean ', 1)[1][:-1]
@@ -255,6 +255,9 @@ def test_a_brace_warning_lists_the_hosts_beside_the_braces_once(engine):
 	# login1 is also checked on its own
 	assert warnings_if_all_unknown(engine, 'mssh login1,n{1,2} uptime') == [('login1', 'unknown', 'login1: unknown host'), ('login1,n{1,2}', 'range',
 		'login1,n{1,2}: the shell makes 2 words of this; mssh would run login1,n2 as the command — did you mean login1,n1,n2?')]
+	# split as mssh splits hosts: login1/n1,login1/n2 named login1 twice
+	assert [message for _, kind, message in warnings_if_all_unknown(engine, 'mssh login1/n{1,2} uptime') if kind == 'range'] == [
+		'login1/n{1,2}: the shell makes 2 words of this; mssh would run login1/n2 as the command — did you mean login1,n1,n2?']
 
 
 def test_a_brace_warning_without_a_suggestion(engine):
