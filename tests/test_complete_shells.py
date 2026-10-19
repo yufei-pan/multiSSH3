@@ -374,6 +374,19 @@ def test_bash_ignoring_case_keeps_the_text_before_its_word_as_typed(tmp_path):
 		session.close()
 
 
+def test_bash_ignoring_case_keeps_the_hosts_before_the_last_one_of_x_as_typed(tmp_path):
+	# -X's history was matched whole in any case: web1,webx became WEB1,webX, root@webz ROOT@webz
+	history = ['179000000{}\t/x/multiSSH3.py\t-su -X={}\tweb[1-3]\t"uptime"'.format(number, value)
+		for number, value in enumerate(('WEB1,webX', 'ROOT@webz'))]
+	session = ignoring_case(tmp_path, history)
+	try:
+		assert session.line_after('mssh web[1-3] -X web1,webx') == 'mssh web[1-3] -X web1,webx'
+		assert session.line_after('mssh web[1-3] -X root@webz') == 'mssh web[1-3] -X root@webz'
+		assert session.line_after('mssh web[1-3] -X WEB1,webx') == 'mssh web[1-3] -X WEB1,webX '
+	finally:
+		session.close()
+
+
 def test_bash_minding_case_keeps_delegated_words_in_their_case_whatever_nocasematch_says(tmp_path):
 	# with completion-ignore-case off and the shell's nocasematch on, a command's completion offering Storage-x
 	# for stor must not reach readline, which, minding case, would cut the word back to their common start

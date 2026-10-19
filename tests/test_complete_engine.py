@@ -34,6 +34,10 @@ def texts(response):
 	return [candidate.text for candidate in response.candidates]
 
 
+def texts_of(candidates):
+	return [candidate.text for candidate in candidates]
+
+
 def query(before, after='', word=None, shell='bash', knowledges=None, hosts=None, flags=None):
 	if word is None:
 		word = '' if before.endswith(' ') else before.split(' ')[-1]
@@ -549,6 +553,37 @@ def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
 	assert texts(query('mssh h /opt/tool/r', knowledges=knowledges, flags=ICASE)) == []
 	assert texts(query('mssh h /Opt/Tool/R', knowledges=knowledges, flags=ICASE)) == ['/Opt/Tool/run.sh']
 	assert texts(query('mssh h CAT /srv', knowledges=knowledges, flags=ICASE)) == []
+
+
+@pytest.mark.parametrize('before, start', [
+	('mssh --no_wa', 0), ('mssh gp', 0), ('mssh a,root@no', len('a,root@')), ('mssh -u ro', 0),
+	('mssh web[1-3] -X web1,we', len('web1,')), ('mssh web[1-3] -X=root@we', len('-X=root@')),
+	('mssh -f /data/pro', len('/data/')), ('mssh -hf=/etc/ho', len('-hf=/etc/')),
+	('mssh h cat /srv/Data/o', len('/srv/Data/')), ('mssh h "cat /srv/Data/o', len('cat /srv/Data/')),
+	('mssh h systemctl STATUS ', 0), ('mssh h "systemctl STATUS ', len('systemctl STATUS ')),
+	('mssh -f x h /srv/my dir/fi', len('dir/')),
+])
+def test_where_matching_in_any_case_starts_is_worked_out_once(before, start):
+	# the last host after "," and "@", a path's last part, the command word being completed: no earlier text
+	assert mc.parse_context(before, '', SPEC).fold_start == start
+
+
+def test_frame_drops_candidates_matching_earlier_text_in_any_case():
+	# whatever a provider found: the text before where matching in any case starts must be as typed
+	engine = mc.Engine(SPEC, [], None)
+	request = mc.Request('bash', 'mssh web[1-3] -X web1,we', '', 'web1,we', flags=ICASE)
+	context = mc.parse_context(request.before, request.after, SPEC)
+	context.icase = mc.UNICODE_CASE
+	candidates = [mc.Candidate(text, '', 'history', 1.0) for text in ('WEB1,web2', 'web1,WEB3', 'web1,web2')]
+	assert texts_of(engine._frame(candidates, context, request)) == ['web1,WEB3', 'web1,web2']
+
+
+def test_icase_hosts_after_x_match_only_the_host_typed_in_any_case():
+	# -X's history matched the whole value in any case: web1,we was offered WEB1,web2, root@we ROOT@web1
+	knowledges = [memory([line(NOW, '-su -X=WEB1,web2', 'web[1-3]', '"uptime"'), line(NOW - 1, '-su -X=ROOT@web1', 'web[1-3]', '"uptime"')])]
+	assert 'WEB1,web2' not in texts(query('mssh web[1-3] -X web1,we', knowledges=knowledges, flags=ICASE))
+	assert 'ROOT@web1' not in texts(query('mssh web[1-3] -X root@we', knowledges=knowledges, flags=ICASE))
+	assert 'WEB1,web2' in texts(query('mssh web[1-3] -X WEB1,We', knowledges=knowledges, flags=ICASE))
 
 
 def test_prefix_ranges_match_in_any_case_from_start_on():

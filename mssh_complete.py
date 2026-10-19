@@ -721,10 +721,12 @@ class Context(object):
 	command_words / command_word_index / command_prefix: the remote command words up to the
 		cursor, the index of the current one, and the text in front of them inside a quoted word
 	mode: plain, push, sync, gather or ipmi; features: features of every other slot
-	icase: the word is matched in any case (bash's completion-ignore-case, request flag icase=1)
+	fold_start: where in prefix matching in any case may start: the host after the last "," and "@",
+		a path's last part, the command word being completed; what comes before is matched as typed
+	icase: how the word is matched in any case (a CaseFold: bash's completion-ignore-case), or None
 	'''
 	__slots__ = ('slot', 'option', 'prefix', 'value_start', 'open_quote', 'quoted', 'hosts', 'options',
-		'command_words', 'command_word_index', 'command_prefix', 'mode', 'features', 'icase')
+		'command_words', 'command_word_index', 'command_prefix', 'mode', 'features', 'fold_start', 'icase')
 
 	def __init__(self, **values):
 		for name in self.__slots__:
@@ -808,11 +810,33 @@ def parse_context(before, after, spec):
 			command_word_index = len(typed)
 			command_prefix = ''
 	options, hosts, commands = _collect(words, roles, skip)
+	mode = _mode(option.dest for option, _ in options)
 	return Context(slot=slot, option=option, prefix=prefix, value_start=value_start,
 		open_quote=cursor.open_quote, quoted=cursor.current.quoted, hosts=hosts, options=options,
 		command_words=command_words, command_word_index=command_word_index, command_prefix=command_prefix,
-		mode=_mode(option.dest for option, _ in options),
-		features=make_features(options, hosts, _join_commands(commands)))
+		mode=mode, features=make_features(options, hosts, _join_commands(commands)),
+		fold_start=_fold_start(slot, option, prefix, value_start, cursor.current.quoted, command_prefix, mode))
+
+def _fold_start(slot, option, prefix, value_start, quoted, command_prefix, mode):
+	'''
+	Where in prefix matching in any case may start (Context.fold_start), as readline matches: the last
+	host of a hosts list (after "," and "user@"), the last part of a path (readline's file names), the
+	command word being completed; never the words, hosts or directories before it.
+	'''
+	if slot == SLOT_OPTION:
+		return 0
+	if slot == SLOT_HOSTS or (slot == SLOT_VALUE and option.dest == 'skip_hosts'):
+		head, comma, segment = prefix[value_start:].rpartition(',')
+		user, at, _ = segment.rpartition('@')
+		return value_start + len(head + comma + user + at)
+	if slot == SLOT_VALUE:
+		return value_start + _path_start(prefix[value_start:])
+	if mode in PATH_MODES or not quoted:
+		return _path_start(prefix)
+	# a quoted command: its current word, unless where it starts is unknown
+	if command_prefix is None:
+		return len(prefix)
+	return len(command_prefix) + _path_start(prefix[len(command_prefix):])
 
 #%% ------------ History ----------------
 class HistoryEntry(object):
@@ -4235,7 +4259,8 @@ class Engine(object):
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
 			full = lead + candidate.text
-			if not _starts(full, prefix, context.icase) or full in seen:
+			# whatever found it: only from fold_start on may it differ from the word in case
+			if not _starts(full, prefix, context.icase, context.fold_start) or full in seen:
 				continue
 			rest = full[len(prefix):]
 			if literal:
@@ -4288,9 +4313,9 @@ class Engine(object):
 			return []
 		lead = 'v:{}='.format(dest)
 		icase = context.icase
-		# of a value only the part after its last "/" is matched in any case, as readline matches a file name
-		# (the directories typed stay as typed); values that are no paths have no "/"
-		start = _path_start(word)
+		# in any case from fold_start on: the last host of -X, a path's last part (values that are no paths
+		# have no "/")
+		start = context.fold_start - context.value_start
 		out = [Candidate(feature[len(lead):], 'used before', 'history', score)
 			for feature, score in score_features(self.knowledges, lead + word, context.features, deadline, icase, len(lead) + start).items()]
 		if dest in PATH_DESTS:
@@ -4435,24 +4460,23 @@ class Engine(object):
 		if word.count('#') % 2 == 1:
 			at = word.rfind('#')
 			for magic in MAGIC_STRINGS:
-				if _starts(magic, word[at:], icase):
+				if _starts(magic, word[at:], icase, max(0, context.fold_start - at)):
 					out.append(Candidate(word[:at] + magic, 'replaced per host', 'magic', 1e6))
-		# only the word being completed is matched in any case, and of a path in it only the last part, as
-		# readline matches a file name: the words typed before it and the directories stay as typed
+		# only the word being completed is matched in any case, and of a path in it only the last part
+		# (fold_start): the words typed before it and the directories stay as typed
 		if context.mode in PATH_MODES:
-			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2 + _path_start(word)).items():
+			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2 + context.fold_start).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
 		elif context.quoted:
 			# whole commands, the current word last
-			start = len(word) if context.command_prefix is None else len(context.command_prefix)
-			start += _path_start(word[start:])
-			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase, 2 + start).items():
+			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase, 2 + context.fold_start).items():
 				out.append(Candidate(feature[2:], '', 'history', score))
 		elif context.command_words:
 			typed = context.command_words[:-1]
 			partial = context.command_words[-1]
-			# a word holding whitespace would make mssh run each command word as its own command
-			start = _path_start(partial)
+			# a word holding whitespace would make mssh run each command word as its own command; the
+			# current word, unquoted, is the whole prefix
+			start = context.fold_start
 			if not typed:
 				for feature, score in score_features(self.knowledges, 'p:' + partial, context.features, deadline, icase, 2 + start).items():
 					if _joinable(feature[2:]):
