@@ -528,29 +528,52 @@ def test_an_ascii_terminal_gets_ascii_messages(engine, monkeypatch):
 	({'LC_CTYPE': 'C.utf8'}, False),
 	({'LC_CTYPE': 'UTF-8'}, False),
 	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
+	# as bash takes them (bash 4.2, 4.4 and 5.2 on glibc): LC_CTYPE=UTF-8 (macOS over ssh) is no locale
+	# here, and bash keeps LANG's; a LANG or LC_ALL the C library has not leaves C, whatever LC_CTYPE says
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}, True),
+	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'xx_YY.UTF-8'}, True),
+	({'LANG': 'xx_YY.UTF-8', 'LC_CTYPE': 'en_US.UTF-8'}, False),
+	({'LC_ALL': 'xx_YY.UTF-8', 'LANG': 'en_US.UTF-8'}, False),
+	({'LC_CTYPE': 'en_US.UTF-8'}, True),
+	({'LC_CTYPE': 'en_US.UTF-8', 'LC_MESSAGES': 'xx_YY.UTF-8'}, False),
+	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8', 'LC_MESSAGES': 'xx_YY.UTF-8'}, True),
+	({'LANG': 'xx_YY.UTF-8'}, False),
 ])
-def test_a_utf8_terminal_is_told_by_the_locale_variables(monkeypatch, variables, unicode):
+def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(monkeypatch, variables, unicode):
 	# as a C library with these locales takes them (en_US: ISO-8859-1)
-	system = {'en_US.UTF-8': (True, False), 'C.utf8': (True, False), 'C.UTF-8': (True, False), 'en_US': (False, False)}
-	monkeypatch.setattr(mc, '_locale_traits', lambda name: (False, False) if name in ('', 'C', 'POSIX') else system.get(name))
-	for name in ('LC_ALL', 'LC_CTYPE', 'LANG'):
+	system = {'en_US.UTF-8': 'UTF-8', 'C.utf8': 'UTF-8', 'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1'}
+	monkeypatch.setattr(mc, '_locale_codeset', lambda name: 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else system.get(name))
+	monkeypatch.setattr(mc, '_SHELL_UTF8', None)
+	for name in ('LC_ALL', 'LC_CTYPE', 'LANG', 'LC_MESSAGES'):
 		monkeypatch.delenv(name, raising=False)
 	for name, value in variables.items():
 		monkeypatch.setenv(name, value)
 	assert mc._unicode_terminal() is unicode
 
 
+@pytest.mark.parametrize('flag', ['1', '0'])
+def test_a_request_of_bash_says_the_locale_it_runs_in(monkeypatch, flag):
+	# measured by the glue in the shell: it holds against the variables
+	monkeypatch.setattr(mc, '_SHELL_UTF8', None)
+	monkeypatch.setenv('LANG', 'C' if flag == '1' else 'C.UTF-8')
+	mc._note_shell_locale(mc.Request('bash', 'mssh ', '', '', flags={'utf8': flag}))
+	assert mc._unicode_terminal() is (flag == '1')
+	mc._note_shell_locale(mc.Request('zsh', 'mssh ', '', '', flags={'utf8': '1' if flag == '0' else '0'}))
+	assert mc._unicode_terminal() is (flag == '1')
+
+
 def test_a_utf8_locale_the_system_lacks_gets_ascii(monkeypatch):
 	# the shell runs in C there, and TAB in any case compares so too
-	if mc._locale_traits('xx_YY.UTF-8') is not None:
+	if mc._locale_codeset('xx_YY.UTF-8') is not None:
 		pytest.skip('this C library takes any locale name (musl)')
+	monkeypatch.setattr(mc, '_SHELL_UTF8', None)
 	for name in ('LC_ALL', 'LC_CTYPE'):
 		monkeypatch.delenv(name, raising=False)
 	monkeypatch.setenv('LANG', 'xx_YY.UTF-8')
 	assert mc._unicode_terminal() is False
 
 
-@pytest.mark.parametrize('lang, unicode', [('C', False), ('POSIX', False), (None, False), ('C.UTF-8', mc._locale_utf8('C.UTF-8'))])
+@pytest.mark.parametrize('lang, unicode', [('C', False), ('POSIX', False), (None, False), ('C.UTF-8', mc._utf8_codeset(mc._locale_codeset('C.UTF-8')))])
 def test_a_c_locale_gets_ascii_whatever_python_makes_of_it(lang, unicode):
 	# Python 3.7+ starts a C locale as C.UTF-8 (PEP 538) and 3.15 always in UTF-8 mode: its own encoding
 	# says UTF-8 where the shell shows the bytes of a ⚠ as \M-b\M-^Z\M-. C.UTF-8 draws Unicode where the

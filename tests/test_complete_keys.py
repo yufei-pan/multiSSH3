@@ -111,6 +111,24 @@ def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home):
 		session.close()
 
 
+def test_bash_picker_draws_in_the_locale_bash_runs_in(home):
+	# macOS's ssh sends LC_CTYPE=UTF-8, no locale on Linux: bash keeps LANG's, C.UTF-8, and the picker
+	# draws in Unicode as the shell can show it (it read LC_CTYPE and drew in ASCII)
+	from complete_shell_harness import bash_locale
+	env, home = home
+	env = dict(env, LANG='C.UTF-8', LC_CTYPE='UTF-8')
+	if bash_locale(env) != (True, False):
+		pytest.skip('no C.UTF-8 here, or UTF-8 is a locale')
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		assert 'type to filter \u00b7' in session.read_until('type to filter \u00b7'.encode('utf-8'), 10)
+	finally:
+		session.close()
+
+
 def test_bash_ctrl_r_cancel_keeps_the_line(home):
 	env, home = home
 	session = bash_session(home, env, glue_file(home, 'bash'))

@@ -44,6 +44,16 @@ def require_shell(name):
 		pytest.skip('{} is not installed'.format(name))
 	return path
 
+def bash_locale(env):
+	"""
+	How bash takes the locale the variables of env name, measured as bash's glue measures it: (utf8,
+	turkic), whether it counts a two-byte UTF-8 character as one and lowers I to another letter than i.
+	"""
+	script = "u=$'\\xc3\\xa9'; i=I; t=1; [[ ${i,,} == i ]] && t=0; echo \"$(( ${#u} == 1 )) $t\""
+	output = subprocess.run([require_shell('bash'), '-c', script], env=env, stdout=subprocess.PIPE,
+		stderr=subprocess.DEVNULL, timeout=30).stdout.split()
+	return output[0] == b'1', output[1] == b'1'
+
 def make_home(tmp_path, history_lines=()):
 	'''
 	A private HOME and XDG_RUNTIME_DIR holding the given mssh history, its fixed times aged. Returns (env, home).

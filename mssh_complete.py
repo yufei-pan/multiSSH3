@@ -1117,71 +1117,50 @@ class CaseFold(object):
 
 UNICODE_CASE = CaseFold()
 _CASE_KINDS = {(False, False): UNICODE_CASE}   # (ascii, turkic) -> CaseFold, sharing what each learned
-_LOCALES = {}                                  # locale name -> _locale_traits(name)
-# the languages whose locales may lower I to the dotless i: only theirs are asked how they lower it.
-# glibc's are tr_* and those copying tr_TR's case table, which are taken so when that cannot be asked
-_TURKIC_LANGUAGES = frozenset(('tr', 'az', 'crh', 'ku', 'tt'))
-_TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
 
-def case_fold(name):
+def case_fold(flags):
 	"""
-	The CaseFold of the locale bash's glue names (its LC_ALL, else LC_CTYPE, else LANG; empty: C), as the C
-	library takes it: one it does not have leaves the shell in C. None (a glue that does not say) compares
-	as a UTF-8 locale.
+	The CaseFold for a request's flags utf8 and turkic: bash's glue measures them in the running shell
+	(whether bash counts a two-byte UTF-8 character as one, whether it lowers I to another letter than
+	i), and readline compares in the locale bash runs in, whatever the variables name. A glue that sends
+	neither compares as a UTF-8 locale.
 	"""
-	if name is None:
+	if 'utf8' not in flags:
 		return UNICODE_CASE
-	utf8, turkic = _locale_traits(name) or (False, False)
-	kind = (not utf8, turkic)
+	kind = (flags.get('utf8') != '1', flags.get('turkic') == '1')
 	fold = _CASE_KINDS.get(kind)
 	if fold is None:
 		fold = _CASE_KINDS[kind] = CaseFold(*kind)
 	return fold
 
-def _locale_traits(name):
+_CODESETS = {}   # locale name -> _locale_codeset(name)
+
+def _locale_codeset(name):
 	"""
-	How the C library takes the locale named name: (utf8, turkic), or None when it has no such locale (a
-	shell then runs in C). utf8: its codeset is UTF-8; turkic: it lowers I to a dotless i, not to i. C, POSIX
-	and '' are C without asking; another name is asked once (setlocale, nl_langinfo, and how it lowers I),
-	and the process's own locale put back. The engine runs where the shell runs: the same locales are there.
+	The codeset of the locale named name as the C library has it ('UTF-8', 'ISO-8859-9', ...), None when
+	it has no such locale. Asked once per name (setlocale, nl_langinfo), the process's locale put back.
+	C, POSIX and '' are C without asking.
 	"""
 	if name in ('', 'C', 'POSIX'):
-		return False, False
-	if name in _LOCALES:
-		return _LOCALES[name]
-	traits = None
-	try:
-		import _locale
-		saved = _locale.setlocale(_locale.LC_CTYPE)
+		return 'ANSI_X3.4-1968'
+	if name not in _CODESETS:
+		codeset = None
 		try:
-			_locale.setlocale(_locale.LC_CTYPE, name)
-			utf8 = _locale.nl_langinfo(_locale.CODESET).lower().replace('-', '').replace('_', '') == 'utf8'
-			traits = utf8, _lowers_i_dotless(name, utf8)
-		finally:
-			_locale.setlocale(_locale.LC_CTYPE, saved)
-	except Exception:
-		# not there (the shell runs in C), or no setlocale or nl_langinfo to ask
-		traits = None
-	_LOCALES[name] = traits
-	return traits
+			import _locale
+			saved = _locale.setlocale(_locale.LC_CTYPE)
+			try:
+				_locale.setlocale(_locale.LC_CTYPE, name)
+				codeset = _locale.nl_langinfo(_locale.CODESET)
+			finally:
+				_locale.setlocale(_locale.LC_CTYPE, saved)
+		except Exception:
+			# not there, or no setlocale or nl_langinfo to ask
+			codeset = None
+		_CODESETS[name] = codeset
+	return _CODESETS[name]
 
-def _locale_utf8(name):
-	"""Whether the locale named name is a UTF-8 one the C library has: TAB's matching and the picker's drawing agree."""
-	traits = _locale_traits(name)
-	return bool(traits) and traits[0]
-
-def _lowers_i_dotless(name, utf8):
-	"""Whether the locale named name, now set, lowers I to something else than i (Turkish: a dotless i)."""
-	base, _, modifier = name.partition('@')
-	language = base.partition('.')[0]
-	if language.partition('_')[0] not in _TURKIC_LANGUAGES:
-		return False
-	try:
-		import ctypes
-		libc = ctypes.CDLL(None)
-		return (libc.towlower(ord('I')) if utf8 else libc.tolower(ord('I'))) != ord('i')
-	except Exception:
-		return language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
+def _utf8_codeset(codeset):
+	return (codeset or '').lower().replace('-', '').replace('_', '') == 'utf8'
 
 def _starts(text, prefix, icase=None, start=0):
 	"""
@@ -3599,7 +3578,7 @@ class Engine(object):
 		if context is None:
 			return response
 		# how readline compares characters ignoring case, in the shell's locale (bash's glue says which)
-		context.icase = case_fold(request.flags.get('lc')) if request.flags.get('icase') == '1' else None
+		context.icase = case_fold(request.flags) if request.flags.get('icase') == '1' else None
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
@@ -5034,21 +5013,55 @@ def _age(seconds):
 			return '{}{}'.format(int(seconds // size), unit)
 	return 'now'
 
+# whether bash runs in a UTF-8 locale, as a request from its glue says (flag utf8); None: not said
+_SHELL_UTF8 = None
+
+def _note_shell_locale(request):
+	'''Take the locale bash runs in from a request of its glue, for drawing and messages (_unicode_terminal).'''
+	global _SHELL_UTF8
+	if request.shell == 'bash' and 'utf8' in request.flags:
+		_SHELL_UTF8 = request.flags['utf8'] == '1'
+
 def _unicode_terminal():
 	'''
-	Whether the shell's locale is UTF-8, told by LC_ALL, LC_CTYPE and LANG, and taken as the C library has
-	it (_locale_utf8, as for TAB in any case: a locale the system lacks leaves the shell in C). Python's own
+	Whether the shell runs in a UTF-8 locale: as bash's glue measured it when a request said so, else
+	from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them (_locale_variables_utf8). Python's own
 	encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538),
 	and 3.15 always runs in UTF-8 mode.
 	'''
-	environ = os.environ
+	if _SHELL_UTF8 is not None:
+		return _SHELL_UTF8
+	return _locale_variables_utf8(os.environ)
+
+# the locale categories besides LC_CTYPE: with LANG unset, bash keeps C if the C library refuses any
+_OTHER_CATEGORIES = ('LC_NUMERIC', 'LC_TIME', 'LC_COLLATE', 'LC_MONETARY', 'LC_MESSAGES', 'LC_PAPER', 'LC_NAME',
+	'LC_ADDRESS', 'LC_TELEPHONE', 'LC_MEASUREMENT', 'LC_IDENTIFICATION')
+
+def _locale_variables_utf8(environ):
+	'''
+	Whether bash runs in a UTF-8 locale with these variables, resolved as bash does (bash 4.2, 4.4 and 5.2
+	on glibc, checked): LC_ALL if set, C if the C library refuses it; else LANG if set, which it must take
+	(else C), LC_CTYPE taking over if it takes that; else LC_CTYPE, C if it refuses any LC_ variable set.
+	A missing locale is C: ASCII.
+	'''
+	def utf8(name):
+		return _utf8_codeset(_locale_codeset(name))
 	if environ.get('LC_ALL'):
-		return _locale_utf8(environ['LC_ALL'])
+		return utf8(environ['LC_ALL'])
+	lang = environ.get('LANG')
 	ctype = environ.get('LC_CTYPE')
-	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not _locale_utf8(environ.get('LANG') or ''):
-		# what Python sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not (lang and utf8(lang)):
+		# what Python 3.7 sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
 		return False
-	return _locale_utf8(ctype or environ.get('LANG') or '')
+	if lang:
+		if _locale_codeset(lang) is None:
+			return False
+		if ctype and _locale_codeset(ctype) is not None:
+			return utf8(ctype)
+		return utf8(lang)
+	if any(environ.get(name) and _locale_codeset(environ[name]) is None for name in _OTHER_CATEGORIES):
+		return False
+	return bool(ctype) and utf8(ctype)
 
 class Picker(object):
 	'''
@@ -6109,6 +6122,15 @@ _mssh_complete_guard() {
 	return $_mssh_complete_rc
 }
 
+_mssh_complete_read_locale() {
+	# how bash, and readline with it, takes characters in the locale it runs in, as request flags: utf8=1
+	# when it counts a two-byte UTF-8 character as one, turkic=1 when it lowers I to another letter than i
+	# (Turkish: a dotless i). Whatever LC_ALL, LC_CTYPE and LANG name, this is the locale bash took
+	local u=$'\xc3\xa9' i=I turkic=1
+	[[ ${i,,} == i ]] && turkic=0
+	_mssh_complete_locale="utf8=$(( ${#u} == 1 )) turkic=$turkic"
+}
+
 _mssh_complete_operator() {
 	# run "$@", the shell's own code (a command's completion function, the binding ours took over), in
 	# the shell's nocasematch; the glue's comes back after
@@ -6187,7 +6209,7 @@ _mssh_complete() {
 }
 
 _mssh_complete_tab() {
-	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0
+	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0 _mssh_complete_locale
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A seen=()
@@ -6199,19 +6221,19 @@ _mssh_complete_tab() {
 	fi
 	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
 	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
-	flags="nosort=0 ble=$ble term=${TERM-}"
+	_mssh_complete_read_locale
+	flags="nosort=0 ble=$ble term=${TERM-} $_mssh_complete_locale"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		flags="nosort=1 ${flags#nosort=0 }"
 	fi
 	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
 	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
-	# lc: the locale bash runs in (its variables, exported or not), which says how readline lowers letters.
 	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
 	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" resp < <(
 		{
 			local icase=0
 			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && icase=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase lc=${LC_ALL:-${LC_CTYPE:-${LANG-}}}" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
@@ -6296,7 +6318,9 @@ _mssh_complete_is_mssh() {
 
 _mssh_complete_request() {
 	# print a request with flags $1 for the line $2 (before the cursor) $3 (after it), then the history tail
-	printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$1 term=${TERM-}" "$2" "$3" ''
+	local _mssh_complete_locale
+	_mssh_complete_read_locale
+	printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$1 term=${TERM-} $_mssh_complete_locale" "$2" "$3" ''
 	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 }
 
@@ -8658,6 +8682,7 @@ def _cmd_query():
 	except ValueError as e:
 		_debug('bad request: {}'.format(e))
 		return 1
+	_note_shell_locale(request)
 	try:
 		response = answer(request, deadline)
 	except Exception as e:
@@ -8723,6 +8748,7 @@ def _cmd_pick():
 		request = parse_request(data)
 	except ValueError:
 		return 2
+	_note_shell_locale(request)
 	if ghost_style(os.environ.get('TERM', '')) is None:
 		return 2
 	now = time.time()

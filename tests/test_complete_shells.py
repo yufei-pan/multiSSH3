@@ -11,8 +11,8 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, REPO, aged, bash_session, build_index, fish_complete, fish_session, make_home,
-	require_shell, without_command, zsh_session)
+from complete_shell_harness import (ENGINE, REPO, aged, bash_locale, bash_session, build_index, fish_complete, fish_session,
+	make_home, require_shell, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -68,12 +68,12 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
-def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options='', lang=None):
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options='', lang=None, ctype=None):
 	'''
 	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
 	only files (no other file names among the candidates), with commands found first on its PATH, and
-	env_lines in ~/hosts.env (aliases), shell options (set -e), and LANG=lang if given (the index is built in
-	the tests' own).
+	env_lines in ~/hosts.env (aliases), shell options (set -e), and LANG=lang, LC_CTYPE=ctype if given (the
+	index is built in the tests' own).
 	'''
 	env, home = make_home(tmp_path, history)
 	(home / 'hosts').write_text(hosts, encoding='utf-8')
@@ -91,6 +91,8 @@ def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), e
 	env = dict(env, PATH=str(found) + os.pathsep + env['PATH'])
 	if lang is not None:
 		env['LANG'] = lang
+	if ctype is not None:
+		env['LC_CTYPE'] = ctype
 	extra = "cd '{}'; {}".format(work, options)
 	if on:
 		extra = "bind 'set completion-ignore-case on'; " + extra
@@ -275,23 +277,18 @@ def test_bash_ignoring_case_lowers_letters_as_its_locale_does(tmp_path):
 		session.close()
 
 
-def locale_here(name):
-	'''Whether the C library here has the locale named name.'''
-	import locale
-	saved = locale.setlocale(locale.LC_CTYPE)
-	try:
-		locale.setlocale(locale.LC_CTYPE, name)
-		return True
-	except locale.Error:
-		return False
-	finally:
-		locale.setlocale(locale.LC_CTYPE, saved)
+def taken_by_bash(lang, ctype=None):
+	'''(utf8, turkic): how bash here takes LANG=lang (and LC_CTYPE=ctype), as its glue measures it.'''
+	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': lang}
+	if ctype is not None:
+		env['LC_CTYPE'] = ctype
+	return bash_locale(env)
 
 
 @pytest.mark.parametrize('lang', ['xx_YY.UTF-8', 'tr_XX.UTF-8'])
 def test_bash_ignoring_case_in_a_locale_this_system_lacks_runs_as_in_c(tmp_path, lang):
 	# bash runs in C in a locale the system has not, whatever its name says: \u0130stanbul is no word for i
-	if locale_here(lang):
+	if taken_by_bash(lang)[0]:
 		pytest.skip('this C library takes any locale name')
 	session = ignoring_case(tmp_path, [], '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n', lang=lang)
 	try:
@@ -302,18 +299,30 @@ def test_bash_ignoring_case_in_a_locale_this_system_lacks_runs_as_in_c(tmp_path,
 
 @pytest.mark.parametrize('lang, typed, line', [
 	('tr_TR.UTF-8', 'mssh i', 'mssh \u0130stanbul '), ('tr_TR.UTF-8', 'mssh I', 'mssh Ix1 '),
-	('tr_TR.ISO-8859-9', 'mssh i', 'mssh ix2 '), ('tr_TR.ISO-8859-9', 'mssh I', 'mssh Ix1 ')])
+	('tr_TR.ISO-8859-9', 'mssh i', 'mssh ix2 '), ('tr_TR.ISO-8859-9', 'mssh I', 'mssh Ix1 '),
+	# glibc's alias of tr_TR.ISO-8859-9
+	('turkish', 'mssh i', 'mssh ix2 ')])
 def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
 	# in UTF-8 readline lowers I to the dotless i and the I with a dot to i; in ISO-8859-9 I and i match only
 	# themselves (it lowers I to a dotless i that is no ASCII letter, and the I with a dot reaches it as two bytes)
-	if not locale_here(lang):
-		pytest.skip('no {} locale here'.format(lang))
-	if not mc._locale_traits(lang)[1]:
-		pytest.skip('this C library does not lower I to the dotless i in {} (musl)'.format(lang))
+	utf8, turkic = taken_by_bash(lang)
+	if not turkic or utf8 != ('UTF-8' in lang):
+		pytest.skip('bash here lowers I to i in {} (not there, or musl)'.format(lang))
 	hosts = '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n' + ('10.0.0.3 ix2\n' if 'UTF-8' not in lang else '')
 	session = ignoring_case(tmp_path, [], hosts, lang=lang)
 	try:
 		assert session.line_after(typed) == line
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_in_the_locale_bash_takes_from_lang_over_a_bad_lc_ctype(tmp_path):
+	# macOS's ssh sends LC_CTYPE=UTF-8, no locale on Linux: bash keeps LANG's, a UTF-8 one, and so does TAB
+	if taken_by_bash('C.UTF-8', 'UTF-8') != (True, False):
+		pytest.skip('no C.UTF-8 here, or UTF-8 is a locale')
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u00c9clair\n', lang='C.UTF-8', ctype='UTF-8')
+	try:
+		assert session.line_after('mssh \u00e9') == 'mssh \u00c9clair '
 	finally:
 		session.close()
 

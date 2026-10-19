@@ -343,55 +343,16 @@ def test_text_is_matched_as_its_characters_are(ascii, turkic):
 			assert mc._starts(char + 'x', typed, fold) == (char in fold.variants(typed)), (char, typed)
 
 
-# how the C library here takes some locale names: (utf8, turkic), None for one it has not
-SYSTEM_LOCALES = {'en_US.UTF-8': (True, False), 'en_US': (False, False), 'tr_TR.UTF-8': (True, True),
-	'tr_TR.ISO-8859-9': (False, True), 'de_DE.UTF-8': None, 'tr_XX.UTF-8': None}
-
-
-@pytest.fixture
-def locales(monkeypatch):
-	monkeypatch.setattr(mc, '_locale_traits', lambda name: (False, False) if name in ('', 'C', 'POSIX') else SYSTEM_LOCALES[name])
-
-
-@pytest.mark.parametrize('name, ascii, turkic', [
-	(None, False, False), ('en_US.UTF-8', False, False), ('en_US', True, False), ('C', True, False), ('', True, False),
-	('tr_TR.UTF-8', False, True), ('tr_TR.ISO-8859-9', True, True), ('de_DE.UTF-8', True, False), ('tr_XX.UTF-8', True, False)])
-def test_case_folds_as_the_locale_of_the_shell_is_taken(locales, name, ascii, turkic):
-	# readline lowers characters as the shell's locale says: towlower in a UTF-8 one, where Turkish lowers I to
-	# the dotless i and the I with a dot to i; tolower on bytes elsewhere, where only ASCII letters reach the
-	# engine as letters. A locale the C library does not have leaves the shell in C, whatever its name says.
-	# None: a glue that does not say
-	fold = mc.case_fold(name)
+@pytest.mark.parametrize('flags, ascii, turkic', [
+	({}, False, False), ({'utf8': '1', 'turkic': '0'}, False, False), ({'utf8': '0', 'turkic': '0'}, True, False),
+	({'utf8': '1', 'turkic': '1'}, False, True), ({'utf8': '0', 'turkic': '1'}, True, True)])
+def test_case_folds_as_bash_takes_its_locale(flags, ascii, turkic):
+	# bash's glue measures how bash counts and lowers characters, which is how readline compares them:
+	# towlower in a UTF-8 locale, where a Turkish one lowers I to the dotless i and the I with a dot to i;
+	# tolower on bytes elsewhere, where only ASCII letters reach the engine as letters. Without the flags
+	# (a glue before them): as a UTF-8 locale
+	fold = mc.case_fold(dict(flags, icase='1'))
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
-
-
-def test_locales_are_taken_as_the_c_library_has_them():
-	import locale
-	before = locale.setlocale(locale.LC_CTYPE)
-	assert mc._locale_traits('C') == mc._locale_traits('POSIX') == mc._locale_traits('') == (False, False)
-	# the process's own locale is one the C library has; asking leaves the process's locale as it was
-	assert mc._locale_traits(before) is not None
-	assert mc._locale_traits(before) == mc._locale_traits(before)
-	if mc._locale_traits('xx_YY.UTF-8') is not None:
-		pytest.skip('this C library takes any locale name (musl)')
-	assert mc._locale_traits('xx_YY.UTF-8') is None and mc._locale_traits('tr_XX.UTF-8') is None
-	assert locale.setlocale(locale.LC_CTYPE) == before
-
-
-@pytest.mark.parametrize('name, traits', [('tr_TR.UTF-8', (True, True)), ('tr_TR.ISO-8859-9', (False, True)), ('C.UTF-8', (True, False))])
-def test_turkish_locales_are_told_by_how_they_lower_i(name, traits):
-	import locale
-	saved = locale.setlocale(locale.LC_CTYPE)
-	try:
-		locale.setlocale(locale.LC_CTYPE, name)
-	except locale.Error:
-		pytest.skip('no {} locale here'.format(name))
-	finally:
-		locale.setlocale(locale.LC_CTYPE, saved)
-	if name.startswith('tr') and mc._locale_traits('xx_YY.UTF-8') is not None:
-		# and so does its bash's readline
-		pytest.skip('this C library takes any locale name as UTF-8 and lowers I to i in all (musl)')
-	assert mc._locale_traits(name) == traits
 
 
 def test_case_folds_letters_as_ascii_and_turkish_locales_do():
@@ -408,16 +369,16 @@ def test_case_folds_letters_as_ascii_and_turkish_locales_do():
 	assert not mc._starts('Ix', 'i', turkish8) and not mc._starts('ix', 'I', turkish8) and mc._starts('Ax', 'a', turkish8)
 
 
-def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path, locales):
+def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path):
 	table = _host_table(tmp_path, ['\u0130stanbul', 'Ix1', 'ix2', '\u00c9cole', '\u00e9t\u00e91'])
-	def found(word, lc):
-		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags={'icase': '1', 'lc': lc})))
-	assert found('i', 'en_US.UTF-8') == ['Ix1', 'ix2', '\u0130stanbul']
-	assert found('i', 'C') == ['Ix1', 'ix2'] and found('i', 'de_DE.UTF-8') == ['Ix1', 'ix2']
-	assert found('\u00e9', 'C') == ['\u00e9t\u00e91'] and found('\u00e9', 'en_US.UTF-8') == ['\u00c9cole', '\u00e9t\u00e91']
-	assert found('i', 'tr_TR.UTF-8') == ['ix2', '\u0130stanbul'] and found('I', 'tr_TR.UTF-8') == ['Ix1']
-	assert found('i', 'tr_TR.ISO-8859-9') == ['ix2'] and found('I', 'tr_TR.ISO-8859-9') == ['Ix1']
-	assert found('I', 'tr_XX.UTF-8') == ['Ix1', 'ix2']
+	utf8, ascii, turkish, turkish8 = ({'utf8': '1', 'turkic': '0'}, {'utf8': '0', 'turkic': '0'},
+		{'utf8': '1', 'turkic': '1'}, {'utf8': '0', 'turkic': '1'})
+	def found(word, flags):
+		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags=dict(flags, icase='1'))))
+	assert found('i', utf8) == ['Ix1', 'ix2', '\u0130stanbul'] and found('i', ascii) == ['Ix1', 'ix2']
+	assert found('\u00e9', ascii) == ['\u00e9t\u00e91'] and found('\u00e9', utf8) == ['\u00c9cole', '\u00e9t\u00e91']
+	assert found('i', turkish) == ['ix2', '\u0130stanbul'] and found('I', turkish) == ['Ix1']
+	assert found('i', turkish8) == ['ix2'] and found('I', turkish8) == ['Ix1']
 
 
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
