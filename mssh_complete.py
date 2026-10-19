@@ -1132,12 +1132,17 @@ def case_fold(flags):
 	"""
 	The CaseFold for a request's flags utf8 and turkic: bash's glue measures them in the running shell
 	(whether bash counts a two-byte UTF-8 character as one, whether it lowers I to another letter than
-	i), and readline compares in the locale bash runs in, whatever the variables name. A glue that sends
-	neither compares as a UTF-8 locale.
+	i), and readline compares in the locale bash runs in, whatever the variables name. A glue sourced
+	before those flags (a shell still running it) sends the locale's name, lc=: the C library says what
+	that is (a locale it has not is C; Turkish lowering is not told). A glue sending neither compares as
+	a UTF-8 locale.
 	"""
-	if 'utf8' not in flags:
+	if 'utf8' in flags:
+		kind = (flags['utf8'] != '1', flags.get('turkic') == '1')
+	elif 'lc' in flags:
+		kind = (not _utf8_codeset(_locale_codeset(flags['lc'])), False)
+	else:
 		return UNICODE_CASE
-	kind = (flags.get('utf8') != '1', flags.get('turkic') == '1')
 	fold = _CASE_KINDS.get(kind)
 	if fold is None:
 		fold = _CASE_KINDS[kind] = CaseFold(*kind)

@@ -355,6 +355,15 @@ def test_case_folds_as_bash_takes_its_locale(flags, ascii, turkic):
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
 
 
+@pytest.mark.parametrize('lc, ascii', [('C.UTF-8', False), ('en_US', True), ('C', True), ('', True), ('xx_YY.UTF-8', True)])
+def test_case_folds_as_an_older_glue_says(monkeypatch, lc, ascii):
+	# a shell still running the glue it sourced before (tmux) sends the locale's name, lc=, not utf8 and
+	# turkic: the C library says what it is (a locale it has not is C)
+	monkeypatch.setattr(mc, '_locale_codeset', lambda name: {'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1'}.get(name, 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else None))
+	fold = mc.case_fold({'icase': '1', 'lc': lc})
+	assert (fold.ascii, fold.turkic) == (ascii, False)
+
+
 def test_case_folds_letters_as_ascii_and_turkish_locales_do():
 	ascii, turkish, turkish8 = mc.CaseFold(ascii=True), mc.CaseFold(turkic=True), mc.CaseFold(ascii=True, turkic=True)
 	assert ascii.variants('a') == 'Aa' and ascii.variants('\u00e9') == '\u00e9' and ascii.variants('\u0130') == '\u0130'
