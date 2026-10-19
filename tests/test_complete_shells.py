@@ -374,6 +374,33 @@ def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tm
 		session.close()
 
 
+@pytest.mark.parametrize('setting', ['on', 'off'])
+def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting):
+	# Ctrl-C cut the Ctrl-R binding the glue took over (a slow one) short, inside the glue: its note of the
+	# shell's setting stayed, and the next glue call put that back over what the shell set in between.
+	# bash defers Ctrl-C while a completion function runs (TAB is not cut short); bind -x commands it cuts
+	env, home = make_home(tmp_path, [])
+	pre = '''shopt -{} nocasematch
+_slow() {{ local i; for ((i = 0; i < 3000000; i++)); do :; done; }}
+bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, pre=pre)
+	try:
+		session.send('true\r')
+		session.read_until(b'@@READY@@')
+		session.send('echo a\x12')
+		time.sleep(1.0)
+		session.send('\x03')
+		session.read_until(b'@@READY@@')
+		assert nocasematch(session) == setting
+		other = 'off' if setting == 'on' else 'on'
+		session.send('shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
+		assert nocasematch(session) == other
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('icase', ['on', 'off'])
 def test_bash_a_completion_turning_nocasematch_on_leaves_the_shell_as_it_was(tmp_path, icase):
 	# a command's completion function that turns nocasematch on and leaves it so: the glue, which runs it,

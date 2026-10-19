@@ -6141,9 +6141,9 @@ _mssh_complete_guard() {
 	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
 	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
 	# completion function). The shell's setting comes back on every return, also after a command's
-	# completion function changed it, and at the next call after a Ctrl-C cut one short;
-	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's code
-	# runs inside it
+	# completion function changed it; after a Ctrl-C cut a call short, at the next prompt
+	# (_mssh_complete_heal), else at the next call. _mssh_complete_operator runs the shell's own code in
+	# it. Its variables are prefixed: the shell's code runs inside it
 	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
 	if [[ -z $_mssh_complete_outer && -n ${_mssh_complete_held-} ]] && (( _mssh_complete_held )); then
 		shopt -s nocasematch
@@ -6171,6 +6171,19 @@ _mssh_complete_read_locale() {
 	local u=$'\xc3\xa9' g=$'\xa1\xa1' i=I turkic=1
 	[[ ${i,,} == i ]] && turkic=0
 	_mssh_complete_locale="utf8=$(( ${#u} == 1 && ${#g} == 2 )) turkic=$turkic"
+}
+
+_mssh_complete_heal() {
+	# PROMPT_COMMAND (ble.sh: PRECMD): a glue call a Ctrl-C cut short left nocasematch off; the shell's
+	# setting comes back before the next command line is read, so none runs without it
+	local status=$?
+	if [[ -n ${_mssh_complete_held-} ]]; then
+		if (( _mssh_complete_held )); then
+			shopt -s nocasematch
+		fi
+		_mssh_complete_held=
+	fi
+	return $status
 }
 
 _mssh_complete_operator() {
@@ -6805,6 +6818,7 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		blehook PRECMD+=_mssh_complete_ble_warn_reset
 	}
 	_mssh_complete_ble_warnings
+	blehook PRECMD+=_mssh_complete_heal
 elif [[ $- == *i* ]]; then
 	# readline counts READLINE_POINT in bytes before bash 5
 	_mssh_complete_bytes=0
@@ -6862,6 +6876,7 @@ elif [[ $- == *i* ]]; then
 		return $status
 	}
 	[[ ${PROMPT_COMMAND-} == *_mssh_complete_keys\;* ]] || PROMPT_COMMAND="_mssh_complete_keys;${PROMPT_COMMAND-}"
+	[[ ${PROMPT_COMMAND-} == *_mssh_complete_heal\;* ]] || PROMPT_COMMAND="_mssh_complete_heal;${PROMPT_COMMAND-}"
 fi
 '''
 
