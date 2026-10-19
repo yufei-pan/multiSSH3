@@ -6227,7 +6227,14 @@ _mssh_complete_delegate() {
 	lead=${lead%"$word"}
 	for item in ${found[@]+"${found[@]}"}; do
 		item=$prefix$item
-		[[ -n $lead && $item == "$lead"* ]] && item=${item:${#lead}}
+		if [[ -n $lead && $item == "$lead"* ]]; then
+			item=${item:${#lead}}
+		elif [[ -n $lead ]] && (( ${_mssh_complete_icase-0} )) && [[ ${item,,} == "${lead,,}"* ]]; then
+			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
+			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)
+			_mssh_complete_dropped=1
+			continue
+		fi
 		kept+=("$item")
 	done
 	if (( ${_mssh_complete_icase-0} )); then
@@ -6246,7 +6253,7 @@ _mssh_complete() {
 }
 
 _mssh_complete_tab() {
-	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0 _mssh_complete_locale
+	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0 _mssh_complete_locale _mssh_complete_dropped=0
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A seen=()
@@ -6319,6 +6326,9 @@ _mssh_complete_tab() {
 		seen[x$item]=1
 		COMPREPLY+=("$item")
 	done
+	if (( ${#COMPREPLY[@]} == 0 && _mssh_complete_dropped )); then
+		compopt +o default +o bashdefault 2>/dev/null || :
+	fi
 	# readline ignoring case cannot tell apart words differing only in case and stops at their common start:
 	# when they alone are left (the engine's, a command's own and file names), the one starting with the word
 	# in its case goes in, else the first. test's = compares exactly, whatever nocasematch says

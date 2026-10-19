@@ -375,10 +375,13 @@ def test_bash_a_completion_turning_nocasematch_on_leaves_the_shell_as_it_was(tmp
 def test_bash_ignoring_case_keeps_the_text_before_its_word_as_typed(tmp_path):
 	# bash's word stops at ":": the delegated host:file continues HOST:fi only if HOST: is as typed, else
 	# file went in after the HOST: typed, a name no file has
-	session = ignoring_case(tmp_path, [], files=['host:file'])
+	session = ignoring_case(tmp_path, [], files=['host:file', 'Fi:fa.txt'])
 	try:
 		assert session.line_after('mssh h nosuchcmd HOST:fi') == 'mssh h nosuchcmd HOST:fi'
 		assert session.line_after('mssh h nosuchcmd host:FI') == 'mssh h nosuchcmd host:file '
+		# nor does a word whose text before bash's word differs from it only in case: it came twice
+		# (fi:Fi:fa.txt), and readline's own file names put it twice too
+		assert session.line_after('mssh h nosuchcmd fi:f') == 'mssh h nosuchcmd fi:f'
 	finally:
 		session.close()
 
