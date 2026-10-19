@@ -396,8 +396,9 @@ def test_asking_the_c_library_about_a_locale_leaves_the_process_locale_as_it_was
 	for name in ('C.UTF-8', 'en_US.UTF-8', 'tr_TR.ISO-8859-9', 'xx_YY.UTF-8', before):
 		mc._locale_codeset(name)
 		assert locale.setlocale(locale.LC_CTYPE) == before, name
-	# the process's own locale is one the C library has; asked once
-	assert mc._locale_codeset(before) is not None and before in mc._CODESETS
+	# the process's own locale is one the C library has; asked once (C, POSIX and '' are not asked)
+	assert mc._locale_codeset(before) is not None
+	assert before in mc._CODESETS or before in ('C', 'POSIX', '')
 	assert mc._locale_codeset('C') == mc._locale_codeset('POSIX') == mc._locale_codeset('')
 
 

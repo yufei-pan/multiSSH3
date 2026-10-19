@@ -289,11 +289,16 @@ def test_a_sequence_too_long_to_count_in_a_word(engine):
 
 
 def test_a_failing_brace_warning_leaves_the_other_warnings(engine, monkeypatch):
-	def fail(token, shell):
+	ran = []
+
+	def fail(*args):
+		# however it is called: a call of the wrong shape raised a TypeError before it ran, which passed too
+		ran.append(args)
 		raise ValueError('odd braces')
 	monkeypatch.setattr(mc, '_brace_split', fail)
 	seed(engine, gpu017='invalid')
 	assert warnings(engine, 'mssh gpu017,n{1,2} uptime')[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
+	assert ran
 
 
 def test_braces_the_shell_leaves_alone_are_checked_as_hosts(engine):
