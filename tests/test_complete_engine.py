@@ -591,10 +591,16 @@ def test_hosts_split_where_mssh_splits_them():
 	assert mc._last_host_start('a b\u00a0root@we') == (len('a b\u00a0'), len('a b\u00a0root@'))
 
 
-def test_a_host_separator_is_mssh_s_punctuation_or_what_str_split_splits_on():
-	# every code point: mssh replaces , ; | / & with spaces and splits with str.split()
+def test_hosts_are_split_as_mssh_splits_them_at_every_code_point():
+	# against mssh's own split: a change of its separators fails here. Each code point between two letters
 	everything = ''.join(map(chr, range(0x110000)))
-	assert mc._host_separators().findall(everything) == [char for char in everything if char in ',;|/&' or char.isspace()]
+	text = 'x'.join(everything)
+	split = multiSSH3._split_host_str(text)
+	word, cut = mc._host_patterns()
+	assert mc.split_hosts(text) == split and word.findall(text) == split
+	# the cut stops after a code point exactly where a host word cannot hold it
+	assert [char for char in everything if cut.match('a' + char + 'b')] == [char for char in everything if not word.fullmatch(char)]
+	assert len(split) == 35
 
 
 def test_frame_drops_candidates_matching_earlier_text_in_any_case():
