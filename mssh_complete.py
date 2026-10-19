@@ -5043,21 +5043,45 @@ def _unicode_terminal():
 	'''
 	Whether the shell runs in a UTF-8 locale, from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them
 	(_locale_variables_utf8): for what bash's glue has not measured (Engine.unicode). Python's own encoding
-	says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 there (PEP 538), and 3.15
-	always runs in UTF-8 mode.
+	says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 in os.environ there (PEP
+	538), and 3.15 always runs in UTF-8 mode. The variables are read as the process was started with them
+	(_exec_environ), which that change leaves alone; where they cannot be, os.environ's C.UTF-8 beside a
+	LANG that is not UTF-8 may be Python's and draws ASCII.
 	'''
-	return _locale_variables_utf8(os.environ)
+	started = _exec_environ()
+	if started is not None:
+		return _locale_variables_utf8(started)
+	return _locale_variables_utf8(os.environ, coerced=True)
+
+def _exec_environ():
+	'''
+	The environment this process was started with, as Linux keeps it in /proc/self/environ (setenv,
+	which Python's PEP 538 uses, does not change it); None where there is none.
+	'''
+	try:
+		with open('/proc/self/environ', 'rb') as f:
+			data = f.read()
+	except (IOError, OSError):
+		return None
+	environ = {}
+	for item in data.split(b'\0'):
+		name, sep, value = item.partition(b'=')
+		if sep:
+			environ[name.decode('utf-8', 'surrogateescape')] = value.decode('utf-8', 'surrogateescape')
+	return environ
 
 # the locale categories besides LC_CTYPE: with LANG unset, bash keeps C if the C library refuses any
 _OTHER_CATEGORIES = ('LC_NUMERIC', 'LC_TIME', 'LC_COLLATE', 'LC_MONETARY', 'LC_MESSAGES', 'LC_PAPER', 'LC_NAME',
 	'LC_ADDRESS', 'LC_TELEPHONE', 'LC_MEASUREMENT', 'LC_IDENTIFICATION')
 
-def _locale_variables_utf8(environ):
+def _locale_variables_utf8(environ, coerced=False):
 	'''
 	Whether bash runs in a UTF-8 locale with these variables, resolved as bash does (bash 4.2, 4.4 and 5.2
 	on glibc, checked): LC_ALL if set, C if the C library refuses it; else LANG if set, which it must take
 	(else C), LC_CTYPE taking over if it takes that; else LC_CTYPE, C if it refuses any LC_ variable set.
-	A missing locale is C: ASCII.
+	A missing locale is C: ASCII. coerced: environ may be os.environ after Python's PEP 538, which sets
+	LC_CTYPE to C.UTF-8 where it was C, UTF-8 or a missing locale; beside a LANG that is not UTF-8 that
+	cannot be told from the operator's own C.UTF-8, and draws ASCII (unreadable is worse than plain)
 	'''
 	def utf8(name):
 		return _utf8_codeset(_locale_codeset(name))
@@ -5065,8 +5089,7 @@ def _locale_variables_utf8(environ):
 		return utf8(environ['LC_ALL'])
 	lang = environ.get('LANG')
 	ctype = environ.get('LC_CTYPE')
-	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and (not lang or lang in ('C', 'POSIX') or _locale_codeset(lang) is None):
-		# what Python 3.7 sets where LC_CTYPE was C (or the operator did, beside a LANG that leaves C)
+	if coerced and ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not (lang and utf8(lang)):
 		return False
 	if lang:
 		if _locale_codeset(lang) is None:
