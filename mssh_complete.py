@@ -735,8 +735,9 @@ class Context(object):
 	command_words / command_word_index / command_prefix: the remote command words up to the
 		cursor, the index of the current one, and the text in front of them inside a quoted word
 	mode: plain, push, sync, gather or ipmi; features: features of every other slot
-	fold_start: where in prefix matching in any case may start: the host after the last "," and "@",
-		a path's last part, the command word being completed; what comes before is matched as typed
+	fold_start: where in prefix matching in any case may start: the last host, after mssh's last host
+		separator (_host_separator) and "user@", a path's last part, the command word being completed;
+		what comes before is matched as typed
 	icase: how the word is matched in any case (a CaseFold: bash's completion-ignore-case), or None
 	'''
 	__slots__ = ('slot', 'option', 'prefix', 'value_start', 'open_quote', 'quoted', 'hosts', 'options',
@@ -834,8 +835,9 @@ def parse_context(before, after, spec):
 def _fold_start(slot, option, prefix, value_start, quoted, command_prefix, mode):
 	'''
 	Where in prefix matching in any case may start (Context.fold_start), as readline matches: the last
-	host of a hosts list (after "," and "user@"), the last part of a path (readline's file names), the
-	command word being completed; never the words, hosts or directories before it.
+	host of a hosts list (after mssh's last host separator and "user@": _last_host_start), the last part
+	of a path (readline's file names), the command word being completed; never the words, hosts or
+	directories before it.
 	'''
 	if slot == SLOT_OPTION:
 		return 0
@@ -3082,7 +3084,7 @@ def _closed_brackets(text):
 			inside = False
 	return not inside
 
-def _brace_split(token, shell, unicode=False):
+def _brace_split(token, shell, unicode):
 	'''
 	The warning for a hosts word the shell makes several words of by brace expansion (node{1,2},
 	gpu{01..16}): mssh takes the first as its hosts and runs the second as the command. It says
@@ -3614,11 +3616,17 @@ class Engine(object):
 		self.no_effect = []
 		# whether bash runs in a UTF-8 locale, as its glue measured it (request flag utf8), None if not said
 		self.shell_utf8 = None
+		self._unicode = None
 
 	@property
 	def unicode(self):
-		'''Whether to write in Unicode (messages, the picker): as bash's glue measured its locale, else as the variables say.'''
-		return _unicode_terminal() if self.shell_utf8 is None else self.shell_utf8
+		'''
+		Whether to write in Unicode (messages, the picker): as bash's glue measured its locale, else as the
+		variables say; worked out at the first use, after engine_for set shell_utf8.
+		'''
+		if self._unicode is None:
+			self._unicode = _unicode_terminal() if self.shell_utf8 is None else self.shell_utf8
+		return self._unicode
 
 	def query(self, request, deadline=None):
 		ghost = request.flags.get('ghost') == '1'
@@ -4537,6 +4545,14 @@ class Engine(object):
 		return out
 
 #%% ------------ Protocol ----------------
+def parse_flags(text):
+	'''A request's flags, space-separated key=value words, as a dict (a word without "=" has the value '').'''
+	flags = {}
+	for flag in text.split():
+		key, _, value = flag.partition('=')
+		flags[key] = value
+	return flags
+
 def parse_request(data):
 	'''
 	Parse a request: MSSHC1\\0shell\\0version\\0flags\\0before\\0after\\0word\\0 then history lines.
@@ -4548,10 +4564,7 @@ def parse_request(data):
 	parts = text.split('\0', 7)
 	if len(parts) < 8 or parts[0] != PROTOCOL:
 		raise ValueError('not an {} request'.format(PROTOCOL))
-	flags = {}
-	for flag in parts[3].split():
-		key, _, value = flag.partition('=')
-		flags[key] = value
+	flags = parse_flags(parts[3])
 	history = [line for line in parts[7].split('\n') if line.strip()]
 	return Request(parts[1], parts[4], parts[5], parts[6], parts[2], flags, history)
 
@@ -8990,7 +9003,7 @@ def editor_completions(engine, before):
 
 def _cmd_edit(args):
 	'''
-	mssh-complete edit [--expand] TEXT: the plain-bash editor for an mssh line.
+	mssh-complete edit [--expand] [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line.
 
 	The prompt to redraw is in $MSSH_COMPLETE_PROMPT (PS1 itself with --expand); stdin holds the
 	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
@@ -9006,7 +9019,7 @@ def _cmd_edit(args):
 	parser.add_argument('--flags', default='')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
-	flags = dict(flag.partition('=')[::2] for flag in options.flags.split())
+	flags = parse_flags(options.flags)
 	started = time.monotonic()
 	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
 	history = []

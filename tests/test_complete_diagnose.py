@@ -1406,3 +1406,19 @@ def test_the_oracle_covers_every_reading():
 	# -qc: -q then -c, an abbreviation of -ci that Python 3.11 reads again (when mssh takes abbreviations)
 	unsure = ['-qc'] if abbreviations else []
 	assert [word for word, verdict in zip(ORACLE_WORDS, verdicts) if verdict == 'unsure'] == unsure
+
+
+def test_the_engine_works_out_whether_to_write_unicode_once(monkeypatch):
+	# diagnose asks for every message: the variables are resolved at the first use only
+	calls = []
+	monkeypatch.setattr(mc, '_unicode_terminal', lambda: calls.append(1) or True)
+	engine = mc.Engine(SPEC, [], None)
+	assert [engine.unicode for _ in range(3)] == [True] * 3 and len(calls) == 1
+	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'utf8': '0'}), directory=None).unicode is False and len(calls) == 1
+
+
+def test_request_flags_are_read_one_way():
+	# the request's flags field and edit --flags
+	assert mc.parse_flags('nosort=1 icase=1  ble=0 term=xterm-256color odd x=a=b') == {
+		'nosort': '1', 'icase': '1', 'ble': '0', 'term': 'xterm-256color', 'odd': '', 'x': 'a=b'}
+	assert mc.parse_request(b'MSSHC1\0bash\x005.2\0utf8=1 turkic=0\0mssh \0\0\0').flags == {'utf8': '1', 'turkic': '0'}
