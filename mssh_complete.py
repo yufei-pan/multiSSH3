@@ -570,27 +570,30 @@ def assign_roles(words, spec, current=None):
 			roles.append((ROLE_COMMAND, None))
 	return roles
 
-# what separates hosts in a hosts argument for mssh besides whitespace (which str.split() splits on)
-_HOST_PUNCTUATION = frozenset(',;|/&')
+_HOST_SEPARATORS = None
 
-def _host_separator(char):
-	'''Whether char separates hosts for mssh: one of _HOST_PUNCTUATION, or any whitespace str.split() splits on.'''
-	return char in _HOST_PUNCTUATION or char.isspace()
+def _host_separators():
+	'''
+	The pattern of one character that separates hosts in a hosts argument for mssh, compiled at the first
+	use: its punctuation (, ; | / &), which it replaces with spaces, and any whitespace str.split() splits
+	on (\\s takes what str.isspace() does: checked over every code point on Python 3.6 and 3.14).
+	'''
+	global _HOST_SEPARATORS
+	if _HOST_SEPARATORS is None:
+		import re
+		_HOST_SEPARATORS = re.compile('[,;|/&\\s]')
+	return _HOST_SEPARATORS
 
 def split_hosts(text):
-	'''Split a hosts argument into host words, as mssh does: on its punctuation, then on any whitespace.'''
-	for separator in _HOST_PUNCTUATION:
-		text = text.replace(separator, ' ')
-	return text.split()
+	'''Split a hosts argument into host words, as mssh does: on its punctuation and on any whitespace.'''
+	return [word for word in _host_separators().split(text) if word]
 
 def _last_host_start(text):
 	'''
 	(cut, start) for the last host of a hosts text: where its word starts (after the last separator, as
 	split_hosts splits) and where its name does (after "user@").
 	'''
-	cut = len(text)
-	while cut and not _host_separator(text[cut - 1]):
-		cut -= 1
+	cut = len(text) - len(_host_separators().split(text)[-1])
 	return cut, text.rfind('@', cut) + 1 or cut
 
 def words_as_typed(command):
@@ -736,7 +739,7 @@ class Context(object):
 		cursor, the index of the current one, and the text in front of them inside a quoted word
 	mode: plain, push, sync, gather or ipmi; features: features of every other slot
 	fold_start: where in prefix matching in any case may start: the last host, after mssh's last host
-		separator (_host_separator) and "user@", a path's last part, the command word being completed;
+		separator (_host_separators) and "user@", a path's last part, the command word being completed;
 		what comes before is matched as typed
 	icase: how the word is matched in any case (a CaseFold: bash's completion-ignore-case), or None
 	'''
@@ -2019,7 +2022,7 @@ def build_index(directory, now=None, mssh=None):
 	def add(name, source, address=''):
 		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
 		# systemd's ssh config) is never one host
-		if not name or not safe_field(name) or any(_host_separator(char) for char in name):
+		if not name or not safe_field(name) or _host_separators().search(name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -2817,17 +2820,14 @@ def _host_parts(token):
 	exact = token.raw == text and token.start >= 0
 	parts = []
 	position = 0
-	while position < len(text):
-		if _host_separator(text[position]):
-			position += 1
-			continue
-		end = position
-		while end < len(text) and not _host_separator(text[end]):
-			end += 1
-		user, _, name = text[position:end].rpartition('@')
-		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
-		parts.append((user, name.strip('$'), span))
-		position = end
+	# each separator is one character: a piece ends where the next starts, less one
+	for piece in _host_separators().split(text):
+		end = position + len(piece)
+		if piece:
+			user, _, name = piece.rpartition('@')
+			span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
+			parts.append((user, name.strip('$'), span))
+		position = end + 1
 	return parts
 
 def _run_name(host, typed_user, line_user, own_user=''):
@@ -3001,10 +3001,8 @@ def _without_shell_expansions(token, shell, users=False):
 	blanked = list(text)
 	kept = False
 	position = 0
-	while position < len(text):
-		end = position
-		while end < len(text) and not _host_separator(text[end]):
-			end += 1
+	for piece in _host_separators().split(text):
+		end = position + len(piece)
 		at = text.rfind('@', position, end)
 		# the shell rewrites a piece of the host, or only of its user@
 		user_only = any(expanded[position:end]) and at >= 0 and not any(expanded[at:end])

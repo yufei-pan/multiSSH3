@@ -591,6 +591,12 @@ def test_hosts_split_where_mssh_splits_them():
 	assert mc._last_host_start('a b\u00a0root@we') == (len('a b\u00a0'), len('a b\u00a0root@'))
 
 
+def test_a_host_separator_is_mssh_s_punctuation_or_what_str_split_splits_on():
+	# every code point: mssh replaces , ; | / & with spaces and splits with str.split()
+	everything = ''.join(map(chr, range(0x110000)))
+	assert mc._host_separators().findall(everything) == [char for char in everything if char in ',;|/&' or char.isspace()]
+
+
 def test_frame_drops_candidates_matching_earlier_text_in_any_case():
 	# whatever a provider found: the text before where matching in any case starts must be as typed
 	engine = mc.Engine(SPEC, [], None)
