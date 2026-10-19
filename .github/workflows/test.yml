@@ -21,6 +21,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zsh fish bash-completion
+      # The runners leave zsh's function directories writable by others: compinit (Ubuntu's /etc/zsh/zshrc
+      # runs it) would stop to ask about them and take a test's first key as the answer. compaudit lists
+      # them, and is run again to fail here should any stay.
+      - run: |
+          insecure=$(zsh -c 'autoload -Uz compaudit && compaudit' | grep '^/' || true)
+          [ -z "$insecure" ] || sudo chmod g-w,o-w $insecure
+          zsh -c 'autoload -Uz compaudit && compaudit'
       - run: python -m pip install "pytest<9"
       - run: python -m pytest -q
   # setup-python no longer ships 3.6, the oldest Python multiSSH3 supports: it runs in a container
