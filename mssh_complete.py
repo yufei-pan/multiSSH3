@@ -1191,7 +1191,7 @@ def _measured_utf8(request):
 	older glue's lc= names no locale), None where it says nothing.
 	"""
 	measured = _shell_locale(request.flags) if request.shell == 'bash' else None
-	return None if measured is None else bool(measured) and measured[0]
+	return measured and measured[0]
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
