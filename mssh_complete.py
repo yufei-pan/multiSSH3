@@ -1127,23 +1127,60 @@ _CASE_KINDS = {(False, False): UNICODE_CASE}   # (ascii, turkic) -> CaseFold, sh
 
 def case_fold(flags):
 	"""
-	The CaseFold for a request's flags utf8 and turkic: bash's glue measures them in the running shell
-	(whether bash counts a two-byte UTF-8 character as one, whether it lowers I to another letter than
-	i), and readline compares in the locale bash runs in, whatever the variables name. A glue sourced
-	before those flags (a shell still running it) sends the locale's name, lc=: the C library says what
-	that is (a locale it has not is C; Turkish lowering is not told). A glue sending neither compares as
-	a UTF-8 locale.
+	How a request with icase=1 is matched in any case: a CaseFold, or None for not at all.
+
+	This glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
+	UTF-8 character as one, whether it lowers I to another letter than i): readline compares in the
+	locale bash runs in, whatever the variables name. Older glues get what their own engine did, as an
+	installed glue file stays until mssh --completion install runs again: main's between 6.36 and the
+	measure (never released) sent the locale's name, lc=, read through the C library (_named_locale), no
+	matching in any case where it names no locale; 6.36's sent icase alone, read once per shell, and its
+	engine matched in the case typed.
 	"""
 	if 'utf8' in flags:
 		kind = (flags['utf8'] != '1', flags.get('turkic') == '1')
 	elif 'lc' in flags:
-		kind = (not _utf8_codeset(_locale_codeset(flags['lc'])), False)
+		named = _named_locale(flags['lc'])
+		if named is None:
+			return None
+		kind = (not named[0], named[1])
 	else:
-		return UNICODE_CASE
+		return None
 	fold = _CASE_KINDS.get(kind)
 	if fold is None:
 		fold = _CASE_KINDS[kind] = CaseFold(*kind)
 	return fold
+
+# glibc's locales copying tr_TR's case table (lowering I to the dotless i), besides tr_*
+_TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
+
+def _named_locale(name):
+	"""
+	(utf8, turkic) of the locale an older glue named (lc=), as the C library has it, or None when it has
+	no such locale (bash then runs in C, or, for an LC_CTYPE it refused, in LANG's, which lc= did not say).
+	turkic as the name says, by glibc's Turkish case table.
+	"""
+	codeset = _locale_codeset(name)
+	if codeset is None:
+		return None
+	base, _, modifier = name.partition('@')
+	language = base.partition('.')[0]
+	turkic = language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
+	return _utf8_codeset(codeset), turkic
+
+def _measured_utf8(request):
+	"""
+	Whether bash runs in a UTF-8 locale, as a request of its glue says (utf8=, or an older glue's lc=:
+	ASCII where that names no locale), None where it says nothing (zsh, fish, 6.36's glue).
+	"""
+	if request.shell != 'bash':
+		return None
+	if 'utf8' in request.flags:
+		return request.flags['utf8'] == '1'
+	if 'lc' in request.flags:
+		named = _named_locale(request.flags['lc'])
+		return named is not None and named[0]
+	return None
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
@@ -4588,9 +4625,8 @@ def engine_for(request, directory=Ellipsis, now=None, deadline=None):
 		history = request.history[::-1] if request.shell == 'fish' else request.history
 		knowledges.append(shell_history_knowledge(history, spec))
 	engine = Engine(spec, knowledges, HostTable(index), users)
-	if request.shell == 'bash' and 'utf8' in request.flags:
-		# the locale bash runs in, as its glue measured it
-		engine.shell_utf8 = request.flags['utf8'] == '1'
+	# the locale bash runs in, as its glue measured it
+	engine.shell_utf8 = _measured_utf8(request)
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	engine.directory = directory
 	engine.flag_sets, engine.flag_defaults = flags

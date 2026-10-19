@@ -292,7 +292,8 @@ def test_aliases_and_unavailable_hosts(tmp_path):
 # bash with readline's completion-ignore-case on sends icase=1: readline takes a candidate whose case differs
 # from the word, so every lookup matches the word in any case, and a candidate keeps its own spelling
 
-ICASE = {'icase': '1'}
+# as bash's glue sends it in a UTF-8 locale, with the locale it measured
+ICASE = {'icase': '1', 'utf8': '1', 'turkic': '0'}
 
 
 def test_prefix_ranges_find_every_spelling_differing_only_in_case():
@@ -344,24 +345,47 @@ def test_text_is_matched_as_its_characters_are(ascii, turkic):
 
 
 @pytest.mark.parametrize('flags, ascii, turkic', [
-	({}, False, False), ({'utf8': '1', 'turkic': '0'}, False, False), ({'utf8': '0', 'turkic': '0'}, True, False),
+	({'utf8': '1', 'turkic': '0'}, False, False), ({'utf8': '0', 'turkic': '0'}, True, False),
 	({'utf8': '1', 'turkic': '1'}, False, True), ({'utf8': '0', 'turkic': '1'}, True, True)])
 def test_case_folds_as_bash_takes_its_locale(flags, ascii, turkic):
 	# bash's glue measures how bash counts and lowers characters, which is how readline compares them:
 	# towlower in a UTF-8 locale, where a Turkish one lowers I to the dotless i and the I with a dot to i;
-	# tolower on bytes elsewhere, where only ASCII letters reach the engine as letters. Without the flags
-	# (a glue before them): as a UTF-8 locale
+	# tolower on bytes elsewhere, where only ASCII letters reach the engine as letters
 	fold = mc.case_fold(dict(flags, icase='1'))
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
 
 
-@pytest.mark.parametrize('lc, ascii', [('C.UTF-8', False), ('en_US', True), ('C', True), ('', True), ('xx_YY.UTF-8', True)])
-def test_case_folds_as_an_older_glue_says(monkeypatch, lc, ascii):
-	# a shell still running the glue it sourced before (tmux) sends the locale's name, lc=, not utf8 and
-	# turkic: the C library says what it is (a locale it has not is C)
-	monkeypatch.setattr(mc, '_locale_codeset', lambda name: {'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1'}.get(name, 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else None))
+# how the C library here takes some locale names
+OLD_GLUE_CODESETS = {'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1', 'tr_TR.UTF-8': 'UTF-8', 'tr_TR.ISO-8859-9': 'ISO-8859-9',
+	'az_AZ.UTF-8': 'UTF-8', 'tt_RU.UTF-8@iqtelif': 'UTF-8', 'tt_RU.UTF-8': 'UTF-8'}
+
+
+@pytest.fixture
+def old_glue_locales(monkeypatch):
+	monkeypatch.setattr(mc, '_locale_codeset', lambda name: OLD_GLUE_CODESETS.get(name, 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else None))
+
+
+@pytest.mark.parametrize('lc, folded, unicode', [
+	('C.UTF-8', (False, False), True), ('en_US', (True, False), False), ('C', (True, False), False), ('', (True, False), False),
+	('tr_TR.UTF-8', (False, True), True), ('tr_TR.ISO-8859-9', (True, True), False), ('az_AZ.UTF-8', (False, True), True),
+	('tt_RU.UTF-8@iqtelif', (False, True), True), ('tt_RU.UTF-8', (False, False), True),
+	# a locale the C library has not (macOS's LC_CTYPE=UTF-8 included): bash may run in LANG's, which lc did
+	# not say; no matching in any case, as 6.36 did none, and ASCII
+	('UTF-8', None, False), ('xx_YY.UTF-8', None, False)])
+def test_a_glue_sending_the_locale_name_folds_and_draws_by_it(old_glue_locales, lc, folded, unicode):
+	# lc=: the glue of main between 6.36 and its measure (never released), in a shell still running it
 	fold = mc.case_fold({'icase': '1', 'lc': lc})
-	assert (fold.ascii, fold.turkic) == (ascii, False)
+	assert (None if fold is None else (fold.ascii, fold.turkic)) == folded
+	# one answer for drawing too: the picker and warnings write ASCII where lc says C or names no locale
+	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'icase': '1', 'lc': lc}), directory=None).unicode is unicode
+
+
+def test_a_glue_of_6_36_gets_no_matching_in_any_case():
+	# 6.36's glue sends icase from a value read once per shell, and nothing of the locale; 6.36's engine
+	# matched in the case typed, and so does this one for it (an installed glue file stays until reinstalled)
+	assert mc.case_fold({'icase': '1'}) is None
+	assert texts(query('mssh LOG', flags={'icase': '1'})) == []
+	assert texts(query('mssh LOG', flags=ICASE)) == ['login1']
 
 
 def test_asking_the_c_library_about_a_locale_leaves_the_process_locale_as_it_was(monkeypatch):

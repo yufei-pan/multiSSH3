@@ -137,8 +137,8 @@ def main():
 		path = subprocess.run(engine + ['rebuild'], env=env, stdout=subprocess.PIPE, check=True).stdout.decode().strip()
 		print('rebuild: {:.0f} ms, index {:.1f} MB'.format((time.monotonic() - started) * 1000, os.path.getsize(path) / 1e6))
 		queries = [(line, '') for line in ('mssh ', 'mssh node0', 'mssh node00042 "', 'mssh -u ', 'mssh ', "mssh -u root node1 'nvid")]
-		# bash with completion-ignore-case on: every lookup in any case
-		queries += [(line, ' icase=1') for line in ('mssh ', 'mssh NODE0', "mssh -u root node1 'NVID")]
+		# bash with completion-ignore-case on, in a UTF-8 locale as its glue measures it: every lookup in any case
+		queries += [(line, ' icase=1 utf8=1 turkic=0') for line in ('mssh ', 'mssh NODE0', "mssh -u root node1 'NVID")]
 		for line, flags in queries:
 			word = '' if line.endswith((' ', '"')) else line.split(' ')[-1].lstrip("'")
 			request = 'MSSHC1\0bash\x005.2\0nosort=1{}\0{}\0\0{}\0'.format(flags, line, word).encode()
