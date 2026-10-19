@@ -6323,42 +6323,46 @@ _mssh_complete_operator() {
 
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
-	# result, then the remote command words. The results land in _mssh_complete_delegated.
-	local word=$1 cword=$2 prefix=$3 cmd spec func item lead
+	# result, then the remote command words. The results land in _mssh_complete_delegated. Its variables
+	# are prefixed, as _mssh_complete_tab's: the command's completion function runs inside it, and sees and
+	# sets the variables of the functions that call it (one written without local sets word, cur, ...)
+	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
+	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
-	local -a words=("$@") found=() kept=()
-	local cur=${words[cword]-}
-	cmd=${words[0]-}
+	local -a _mssh_complete_words=("$@") _mssh_complete_results=() _mssh_complete_kept=()
+	local _mssh_complete_current=${_mssh_complete_words[_mssh_complete_cword]-}
+	_mssh_complete_cmd=${_mssh_complete_words[0]-}
 	_mssh_complete_delegated=()
-	if [[ $cword -eq 0 ]]; then
-		while IFS= read -r item; do
-			found+=("$item")
-		done < <(compgen -c -- "$cur" 2>/dev/null || :)
+	if [[ $_mssh_complete_cword -eq 0 ]]; then
+		while IFS= read -r _mssh_complete_item; do
+			_mssh_complete_results+=("$_mssh_complete_item")
+		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
 	else
-		if ! complete -p -- "$cmd" >/dev/null 2>&1; then
+		if ! complete -p -- "$_mssh_complete_cmd" >/dev/null 2>&1; then
 			# the loaders source the command's completion file: the shell's code, in the shell's setting
 			if declare -F _comp_load >/dev/null 2>&1; then
-				_mssh_complete_operator _comp_load "$cmd" >/dev/null 2>&1 || :
+				_mssh_complete_operator _comp_load "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			elif declare -F __load_completion >/dev/null 2>&1; then
-				_mssh_complete_operator __load_completion "$cmd" >/dev/null 2>&1 || :
+				_mssh_complete_operator __load_completion "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			elif declare -F _completion_loader >/dev/null 2>&1; then
-				_mssh_complete_operator _completion_loader "$cmd" >/dev/null 2>&1 || :
+				_mssh_complete_operator _completion_loader "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			fi
 		fi
-		spec=$(complete -p -- "$cmd" 2>/dev/null) || spec=
-		if [[ $spec =~ \ -F\ ([^ ]+) ]]; then
-			func=${BASH_REMATCH[1]}
-			local -a COMP_WORDS=("${words[@]}")
-			local COMP_CWORD=$cword COMP_LINE="${words[*]}" COMP_POINT
+		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_cmd" 2>/dev/null) || _mssh_complete_spec=
+		if [[ $_mssh_complete_spec =~ \ -F\ ([^ ]+) ]]; then
+			_mssh_complete_func=${BASH_REMATCH[1]}
+			local -a COMP_WORDS=("${_mssh_complete_words[@]}")
+			local COMP_CWORD=$_mssh_complete_cword COMP_LINE="${_mssh_complete_words[*]}" COMP_POINT
 			COMP_POINT=${#COMP_LINE}
 			local -a COMPREPLY=()
-			_mssh_complete_operator "$func" "$cmd" "$cur" "${words[cword-1]}" >/dev/null 2>&1 || :
-			found=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
+			_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
+				"${_mssh_complete_words[_mssh_complete_cword-1]}" >/dev/null 2>&1 || :
+			_mssh_complete_results=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
 		else
-			while IFS= read -r item; do
-				found+=("$item")
-			done < <(compgen -f -- "$cur" 2>/dev/null || :)
+			while IFS= read -r _mssh_complete_item; do
+				_mssh_complete_results+=("$_mssh_complete_item")
+			done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)
 		fi
 	fi
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
@@ -6366,27 +6370,27 @@ _mssh_complete_delegate() {
 	# The word itself in any case when the engine matched so (_mssh_complete_icase), as compgen and
 	# readline do (stor gives Storage-File): lowered, as nocasematch compares (bash 4.2 to 5.3, Turkish
 	# locales too), with no setting to change and so no window for a Ctrl-C between it and its note
-	lead=$prefix$cur
-	lead=${lead%"$word"}
-	for item in ${found[@]+"${found[@]}"}; do
-		item=$prefix$item
-		if [[ -n $lead && $item == "$lead"* ]]; then
-			item=${item:${#lead}}
-		elif [[ -n $lead ]] && (( ${_mssh_complete_icase-0} )) && [[ ${item,,} == "${lead,,}"* ]]; then
+	_mssh_complete_fold=${_mssh_complete_icase-0}
+	_mssh_complete_lead=$_mssh_complete_prefix$_mssh_complete_current
+	_mssh_complete_lead=${_mssh_complete_lead%"$_mssh_complete_word"}
+	for _mssh_complete_item in ${_mssh_complete_results[@]+"${_mssh_complete_results[@]}"}; do
+		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
+		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
+			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
+		elif [[ -n $_mssh_complete_lead ]] && (( _mssh_complete_fold )) && [[ ${_mssh_complete_item,,} == "${_mssh_complete_lead,,}"* ]]; then
 			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
 			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)
 			_mssh_complete_dropped=1
 			continue
 		fi
-		kept+=("$item")
+		_mssh_complete_kept+=("$_mssh_complete_item")
 	done
-	# declared here, after the command's completion function ran: it must not see them
-	local typed=$word one
-	(( ${_mssh_complete_icase-0} )) && typed=${word,,}
-	for item in ${kept[@]+"${kept[@]}"}; do
-		one=$item
-		(( ${_mssh_complete_icase-0} )) && one=${item,,}
-		[[ $one == "$typed"* ]] && _mssh_complete_delegated+=("$item")
+	_mssh_complete_typed=$_mssh_complete_word
+	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
+	for _mssh_complete_item in ${_mssh_complete_kept[@]+"${_mssh_complete_kept[@]}"}; do
+		_mssh_complete_compared=$_mssh_complete_item
+		(( _mssh_complete_fold )) && _mssh_complete_compared=${_mssh_complete_item,,}
+		[[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]] && _mssh_complete_delegated+=("$_mssh_complete_item")
 	done
 	return 0
 }
@@ -6397,10 +6401,12 @@ _mssh_complete() {
 }
 
 _mssh_complete_tab() {
-	local cur=$2 resp line item one flags ble=0 files=0 dirs=0 ended=0 delegate=0 _mssh_complete_locale _mssh_complete_dropped=0
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
-	local -a reply=() raws=() delegate_fields=() _mssh_complete_fields=() _mssh_complete_delegated=()
-	local -A seen=()
+	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
+	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
+	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
+	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
+	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
+	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
 	else
@@ -6408,67 +6414,71 @@ _mssh_complete_tab() {
 		_mssh_complete_after=${COMP_LINE:COMP_POINT}
 	fi
 	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
-	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && ble=1
+	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && _mssh_complete_ble=1
 	_mssh_complete_read_locale
-	flags="nosort=0 ble=$ble term=${TERM-} $_mssh_complete_locale"
+	_mssh_complete_flags="nosort=0 ble=$_mssh_complete_ble term=${TERM-} $_mssh_complete_locale"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
-		flags="nosort=1 ${flags#nosort=0 }"
+		_mssh_complete_flags="nosort=1 ${_mssh_complete_flags#nosort=0 }"
 	fi
 	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
 	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
 	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
-	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" resp < <(
+	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
 		{
 			local icase=0
 			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && icase=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$flags icase=$icase" "$_mssh_complete_before" "$_mssh_complete_after" "$cur"
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$icase" "$_mssh_complete_before" "$_mssh_complete_after" "$_mssh_complete_cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
-	[[ $resp == MSSHC1$'\n'* ]] || return 0
-	while IFS= read -r line; do
-		case ${line:0:1} in
+	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || return 0
+	while IFS= read -r _mssh_complete_line; do
+		case ${_mssh_complete_line:0:1} in
 			D)
-				for item in ${line:2}; do
-					case $item in
-						nospace|filenames|nosort) compopt -o "$item" 2>/dev/null || : ;;
+				for _mssh_complete_item in ${_mssh_complete_line:2}; do
+					case $_mssh_complete_item in
+						nospace|filenames|nosort) compopt -o "$_mssh_complete_item" 2>/dev/null || : ;;
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
-						files) files=1 ;;
-						dirs) dirs=1 ;;
+						files) _mssh_complete_files=1 ;;
+						dirs) _mssh_complete_dirs=1 ;;
 						icase) _mssh_complete_icase=1 ;;
 					esac
 				done
 				;;
 			C)
 				# text, description, group, and the unescaped text when escaping changed it
-				_mssh_complete_split "${line:2}"
-				reply+=("${_mssh_complete_fields[0]}")
-				raws+=("${_mssh_complete_fields[3]-${_mssh_complete_fields[0]}}")
+				_mssh_complete_split "${_mssh_complete_line:2}"
+				_mssh_complete_reply+=("${_mssh_complete_fields[0]}")
+				_mssh_complete_raws+=("${_mssh_complete_fields[3]-${_mssh_complete_fields[0]}}")
 				;;
-			X) _mssh_complete_split "${line:2}" ; delegate_fields=("${_mssh_complete_fields[@]}") ; delegate=1 ;;
-			E) ended=1 ;;
+			X)
+				_mssh_complete_split "${_mssh_complete_line:2}"
+				_mssh_complete_xfields=("${_mssh_complete_fields[@]}")
+				_mssh_complete_delegating=1
+				;;
+			E) _mssh_complete_ended=1 ;;
 		esac
-	done <<< "$resp"
-	(( ended )) || return 0
-	if (( delegate )) && (( ${#delegate_fields[@]} >= 3 )); then
-		_mssh_complete_delegate "$cur" "${delegate_fields[@]}"
+	done <<< "$_mssh_complete_resp"
+	(( _mssh_complete_ended )) || return 0
+	if (( _mssh_complete_delegating )) && (( ${#_mssh_complete_xfields[@]} >= 3 )); then
+		_mssh_complete_delegate "$_mssh_complete_cur" "${_mssh_complete_xfields[@]}"
 		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped
 		if [[ $(compopt 2>/dev/null) == *' -o filenames '* ]]; then
-			reply=(${raws[@]+"${raws[@]}"})
+			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
 		fi
-		reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
+		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
 	fi
-	if (( files || dirs )); then
+	if (( _mssh_complete_files || _mssh_complete_dirs )); then
 		compopt -o filenames 2>/dev/null || :
-		while IFS= read -r item; do
-			reply+=("$item")
-		done < <(if (( files )); then compgen -f -- "$cur"; else compgen -d -- "$cur"; fi 2>/dev/null || :)
+		while IFS= read -r _mssh_complete_item; do
+			_mssh_complete_reply+=("$_mssh_complete_item")
+		done < <(if (( _mssh_complete_files )); then compgen -f -- "$_mssh_complete_cur"; else compgen -d -- "$_mssh_complete_cur"; fi 2>/dev/null || :)
 	fi
 	COMPREPLY=()
-	for item in ${reply[@]+"${reply[@]}"}; do
-		[[ -n ${seen[x$item]-} ]] && continue
-		seen[x$item]=1
-		COMPREPLY+=("$item")
+	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
+		[[ -n ${_mssh_complete_seen[x$_mssh_complete_item]-} ]] && continue
+		_mssh_complete_seen[x$_mssh_complete_item]=1
+		COMPREPLY+=("$_mssh_complete_item")
 	done
 	if (( ${#COMPREPLY[@]} == 0 && _mssh_complete_dropped )); then
 		compopt +o default +o bashdefault 2>/dev/null || :
@@ -6477,18 +6487,18 @@ _mssh_complete_tab() {
 	# when they alone are left (the engine's, a command's own and file names), the one starting with the word
 	# in its case goes in, else the first. test's = compares exactly, whatever nocasematch says
 	if (( _mssh_complete_icase && ${#COMPREPLY[@]} > 1 )); then
-		one=${COMPREPLY[0]}
-		for item in "${COMPREPLY[@]}"; do
-			if [ "${item,,}" != "${one,,}" ]; then
-				one=
+		_mssh_complete_one=${COMPREPLY[0]}
+		for _mssh_complete_item in "${COMPREPLY[@]}"; do
+			if [ "${_mssh_complete_item,,}" != "${_mssh_complete_one,,}" ]; then
+				_mssh_complete_one=
 				break
 			fi
-			if [ "${item:0:${#cur}}" = "$cur" ] && [ "${one:0:${#cur}}" != "$cur" ]; then
-				one=$item
+			if [ "${_mssh_complete_item:0:${#_mssh_complete_cur}}" = "$_mssh_complete_cur" ] && [ "${_mssh_complete_one:0:${#_mssh_complete_cur}}" != "$_mssh_complete_cur" ]; then
+				_mssh_complete_one=$_mssh_complete_item
 			fi
 		done
-		if [ -n "$one" ]; then
-			COMPREPLY=("$one")
+		if [ -n "$_mssh_complete_one" ]; then
+			COMPREPLY=("$_mssh_complete_one")
 		fi
 	fi
 	return 0
@@ -6643,19 +6653,20 @@ _mssh_complete_ctrl_r() {
 }
 
 _mssh_complete_ctrl_r_key() {
-	local keymap=$1 previous
-	bind -m "$keymap" '"\C-x\C-y": ""'
+	# prefixed: the binding taken over runs inside
+	local _mssh_complete_keymap=$1 _mssh_complete_binding
+	bind -m "$_mssh_complete_keymap" '"\C-x\C-y": ""'
 	_mssh_complete_is_mssh "$READLINE_LINE" && _mssh_complete_pick && return 0
-	previous=_mssh_complete_previous_${keymap//-/_}
-	previous=${!previous-}
-	case $previous in
-		x:*) _mssh_complete_operator eval "${previous#x:}" ;;
+	_mssh_complete_binding=_mssh_complete_previous_${_mssh_complete_keymap//-/_}
+	_mssh_complete_binding=${!_mssh_complete_binding-}
+	case $_mssh_complete_binding in
+		x:*) _mssh_complete_operator eval "${_mssh_complete_binding#x:}" ;;
 		?*)
 			# put the previous binding back while it runs (a reverse search repeats with Ctrl-R
 			# only when Ctrl-R is bound to it); the next prompt takes Ctrl-R back
-			bind -m "$keymap" "$previous"
-			bind -m "$keymap" '"\C-x\C-y": "\C-r"'
-			_mssh_complete_unarmed="${_mssh_complete_unarmed-} $keymap"
+			bind -m "$_mssh_complete_keymap" "$_mssh_complete_binding"
+			bind -m "$_mssh_complete_keymap" '"\C-x\C-y": "\C-r"'
+			_mssh_complete_unarmed="${_mssh_complete_unarmed-} $_mssh_complete_keymap"
 			[[ ${PROMPT_COMMAND-} == *_mssh_complete_rearm\;* ]] || PROMPT_COMMAND="_mssh_complete_rearm;${PROMPT_COMMAND-}"
 			;;
 	esac
@@ -6717,7 +6728,7 @@ _mssh_complete_run_edit() {
 	local _mssh_complete_locale
 	_mssh_complete_read_locale
 	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" ${expand[@]+"${expand[@]}"} -- "$READLINE_LINE " 2>/dev/null
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" ${_mssh_complete_edit_args[@]+"${_mssh_complete_edit_args[@]}"} -- "$READLINE_LINE " 2>/dev/null
 	return "${PIPESTATUS[1]}"
 }
 
@@ -6727,20 +6738,21 @@ _mssh_complete_space() {
 }
 
 _mssh_complete_space_key() {
-	local shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
+	# prefixed: the prompt's expansions run inside (_mssh_complete_prompt)
+	local _mssh_complete_shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
-	local -a expand=()
+	local -a _mssh_complete_edit_args=()
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
 		mssh|mssh3|multissh|multissh3|multiSSH3)
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
 				_mssh_complete_prompt
-				(( _mssh_complete_expand )) && expand=(--expand)
+				(( _mssh_complete_expand )) && _mssh_complete_edit_args=(--expand)
 				_mssh_complete_start _mssh_complete_run_edit
 				if (( _mssh_complete_status == 130 )); then
 					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
-					shown=${_mssh_complete_ps1##*$'\n'}
-					printf '\r%s%s ^C\e[J\r\n' "${shown//[$'\001\002']/}" "$READLINE_LINE"
+					_mssh_complete_shown=${_mssh_complete_ps1##*$'\n'}
+					printf '\r%s%s ^C\e[J\r\n' "${_mssh_complete_shown//[$'\001\002']/}" "$READLINE_LINE"
 					READLINE_LINE= READLINE_POINT=0
 					return 0
 				fi
@@ -6785,8 +6797,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		if _mssh_complete_is_mssh "$_ble_edit_str" && ble/widget/.EDIT_COMMAND _mssh_complete_pick; then
 			return 0
 		fi
-		local previous=_mssh_complete_previous_$_ble_decode_keymap
-		[[ -n ${!previous-} ]] && _mssh_complete_operator builtin eval -- "_mssh_complete_ble_call ${!previous}"
+		# prefixed: the widget taken over runs inside
+		local _mssh_complete_binding=_mssh_complete_previous_$_ble_decode_keymap
+		[[ -n ${!_mssh_complete_binding-} ]] && _mssh_complete_operator builtin eval -- "_mssh_complete_ble_call ${!_mssh_complete_binding}"
 		return 0
 	}
 
@@ -7017,74 +7030,88 @@ _mssh() {
 		_default "$@"
 		return
 	fi
-	# the options the completion system runs completion functions in, the operator's own among them
-	local -A compsys_options
-	compsys_options=("${(@kv)options}")
+	# the options the completion system runs completion functions in, the operator's own among them.
+	# Every variable is prefixed: a command's completion function runs below (_normal), and sees and sets
+	# the variables of the functions that call it
+	local -A _mssh_complete_compsys_options
+	_mssh_complete_compsys_options=("${(@kv)options}")
 	emulate -L zsh
-	local before after flags resp chunk line item name fd kind rest
-	local -F end
-	local -i remaining files=0 nodefault=0 delegate=0 dcword start matches=$compstate[nmatches]
-	local -a fields texts shown dwords
-	before="${(j: :)words[1,CURRENT-1]} ${compstate[quote]}$PREFIX"
-	after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
-	flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM"
-	exec {fd}< <(
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_flags _mssh_complete_resp _mssh_complete_chunk
+	local _mssh_complete_line _mssh_complete_item _mssh_complete_name _mssh_complete_qfd _mssh_complete_kind _mssh_complete_rest
+	local -F _mssh_complete_end
+	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0
+	local -i _mssh_complete_dcword _mssh_complete_offset _mssh_complete_matches=$compstate[nmatches]
+	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_dwords
+	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} ${compstate[quote]}$PREFIX"
+	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
+	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM"
+	exec {_mssh_complete_qfd}< <(
 		{
-			print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$flags"$'\0'"$before"$'\0'"$after"$'\0'"$PREFIX"$'\0'
+			print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$_mssh_complete_flags"$'\0'"$_mssh_complete_before"$'\0'"$_mssh_complete_after"$'\0'"$PREFIX"$'\0'
 			fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null
 	)
 	_mssh_complete_keep_terminal
-	(( end = EPOCHREALTIME + ${MSSH_COMPLETE_TIMEOUT:-0.3} ))
-	resp=
+	(( _mssh_complete_end = EPOCHREALTIME + ${MSSH_COMPLETE_TIMEOUT:-0.3} ))
+	_mssh_complete_resp=
 	while true; do
-		(( remaining = (end - EPOCHREALTIME) * 100 ))
-		(( remaining > 0 )) || break
-		zselect -t $remaining -r $fd || break
-		sysread -i $fd chunk || break
-		resp+=$chunk
-		[[ $resp == *$'\0' ]] && break
+		(( _mssh_complete_remaining = (_mssh_complete_end - EPOCHREALTIME) * 100 ))
+		(( _mssh_complete_remaining > 0 )) || break
+		zselect -t $_mssh_complete_remaining -r $_mssh_complete_qfd || break
+		sysread -i $_mssh_complete_qfd _mssh_complete_chunk || break
+		_mssh_complete_resp+=$_mssh_complete_chunk
+		[[ $_mssh_complete_resp == *$'\0' ]] && break
 	done
-	exec {fd}<&-
+	exec {_mssh_complete_qfd}<&-
 	# no answer (the engine failed, was too slow, or speaks another protocol) offers nothing
-	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n'$'\0' ]] || resp=
-	for line in "${(@f)${resp%$'\0'}}"; do
-		kind=${line[1]}
-		rest=${line[3,-1]}
-		case $kind in
+	[[ $_mssh_complete_resp == MSSHC1$'\n'*$'\n'E$'\n'$'\0' ]] || _mssh_complete_resp=
+	for _mssh_complete_line in "${(@f)${_mssh_complete_resp%$'\0'}}"; do
+		_mssh_complete_kind=${_mssh_complete_line[1]}
+		_mssh_complete_rest=${_mssh_complete_line[3,-1]}
+		case $_mssh_complete_kind in
 			(D)
-				for item in ${=rest}; do
-					[[ $item == (files|dirs) ]] && files=1
-					[[ $item == nodefault ]] && nodefault=1
+				for _mssh_complete_item in ${=_mssh_complete_rest}; do
+					[[ $_mssh_complete_item == (files|dirs) ]] && _mssh_complete_files=1
+					[[ $_mssh_complete_item == nodefault ]] && _mssh_complete_nodefault=1
 				done
 				;;
 			(C)
-				fields=("${(@ps:\t:)rest}")
-				texts+=("$fields[1]")
-				if [[ -n $fields[2] ]]; then shown+=("$fields[1]  -- $fields[2]"); else shown+=("$fields[1]"); fi
+				_mssh_complete_fields=("${(@ps:\t:)_mssh_complete_rest}")
+				_mssh_complete_texts+=("$_mssh_complete_fields[1]")
+				if [[ -n $_mssh_complete_fields[2] ]]; then
+					_mssh_complete_listed+=("$_mssh_complete_fields[1]  -- $_mssh_complete_fields[2]")
+				else
+					_mssh_complete_listed+=("$_mssh_complete_fields[1]")
+				fi
 				;;
-			(X) fields=("${(@ps:\t:)rest}"); delegate=1; dcword=$fields[1]; dwords=("${(@)fields[3,-1]}") ;;
+			(X)
+				_mssh_complete_fields=("${(@ps:\t:)_mssh_complete_rest}")
+				_mssh_complete_delegating=1
+				_mssh_complete_dcword=$_mssh_complete_fields[1]
+				_mssh_complete_dwords=("${(@)_mssh_complete_fields[3,-1]}")
+				;;
 		esac
 	done
 	# the completion functions below run in those options again: under zsh's defaults _arguments misreads
 	# its specs, and a glob in _files that matches nothing aborts the completion
-	for name in ${(k)compsys_options}; do
-		[[ $options[$name] == $compsys_options[$name] ]] || options[$name]=$compsys_options[$name]
+	for _mssh_complete_name in ${(k)_mssh_complete_compsys_options}; do
+		[[ $options[$_mssh_complete_name] == $_mssh_complete_compsys_options[$_mssh_complete_name] ]] ||
+			options[$_mssh_complete_name]=$_mssh_complete_compsys_options[$_mssh_complete_name]
 	done
-	(( ${#texts} )) && compadd -V mssh -l -d shown -- "${texts[@]}"
-	(( files )) && _files
-	if (( delegate )); then
+	(( ${#_mssh_complete_texts} )) && compadd -V mssh -l -d _mssh_complete_listed -- "${_mssh_complete_texts[@]}"
+	(( _mssh_complete_files )) && _files
+	if (( _mssh_complete_delegating )); then
 		[[ -n $compstate[quote] ]] && compset -q
-		(( start = CURRENT - dcword ))
-		if (( start >= 1 )); then
-			words=("${(@)words[start,-1]}")
-			(( CURRENT = CURRENT - start + 1 ))
+		(( _mssh_complete_offset = CURRENT - _mssh_complete_dcword ))
+		if (( _mssh_complete_offset >= 1 )); then
+			words=("${(@)words[_mssh_complete_offset,-1]}")
+			(( CURRENT = CURRENT - _mssh_complete_offset + 1 ))
 			_normal
 		fi
 	fi
 	# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
 	# -o default), unless the engine said there is nothing to offer here (nodefault: a password)
-	(( compstate[nmatches] > matches || nodefault )) || _default "$@"
+	(( compstate[nmatches] > _mssh_complete_matches || _mssh_complete_nodefault )) || _default "$@"
 	return 0
 }
 
@@ -7148,34 +7175,35 @@ _mssh_complete_request() {
 _mssh_complete_ctrl_r() {
 	# Ctrl-R: the picker on mssh lines, else the widget Ctrl-R had
 	emulate -L zsh
-	local resp line text= cursor= st
+	# prefixed: the widget taken over runs inside
+	local _mssh_complete_resp _mssh_complete_line _mssh_complete_text= _mssh_complete_cursor= _mssh_complete_st
 	if _mssh_complete_is_mssh "$BUFFER"; then
 		# Ctrl-C while the picker starts stops it (130), and keeps the line: without a trap of its own
 		# (local: emulate -L), zsh would end the widget and drop the line
 		trap : INT
-		resp=$(_mssh_complete_request 'pick=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_start_pick 2>/dev/null)
-		st=$?
-		if (( st == 0 )) && [[ $resp == MSSHC1$'\n'*$'\n'E ]]; then
-			for line in "${(@f)resp}"; do
-				if [[ $line == 'L '* ]]; then
-					cursor=${${line#L }%%$'\t'*}
-					text=${line#*$'\t'}
+		_mssh_complete_resp=$(_mssh_complete_request 'pick=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_start_pick 2>/dev/null)
+		_mssh_complete_st=$?
+		if (( _mssh_complete_st == 0 )) && [[ $_mssh_complete_resp == MSSHC1$'\n'*$'\n'E ]]; then
+			for _mssh_complete_line in "${(@f)_mssh_complete_resp}"; do
+				if [[ $_mssh_complete_line == 'L '* ]]; then
+					_mssh_complete_cursor=${${_mssh_complete_line#L }%%$'\t'*}
+					_mssh_complete_text=${_mssh_complete_line#*$'\t'}
 				fi
 			done
-			if [[ $cursor == <-> ]]; then
-				BUFFER=$text
-				CURSOR=$cursor
+			if [[ $_mssh_complete_cursor == <-> ]]; then
+				BUFFER=$_mssh_complete_text
+				CURSOR=$_mssh_complete_cursor
 			fi
 		fi
 		zle reset-prompt
-		if (( st <= 1 )); then
+		if (( _mssh_complete_st <= 1 )); then
 			# the menu was drawn over the reason line, which zsh does not draw again: show it (the
 			# redraw hook asks anew only when a finished word changed; that answer replaces it)
 			[[ -n ${_mssh_complete_warn_reason-} ]] && zle -M -- "$_mssh_complete_warn_reason"
 			return 0
 		fi
 		# Ctrl-C while it started: the line stays as it is. Too slow (124): what Ctrl-R did before
-		(( st == 130 )) && return 0
+		(( _mssh_complete_st == 130 )) && return 0
 	fi
 	[[ -n $_mssh_complete_previous ]] && zle $_mssh_complete_previous
 	return 0
@@ -7347,16 +7375,17 @@ _mssh_complete_accept() {
 	# end of the line, take all of it (one word for the word widgets); else do the usual
 	emulate -L zsh
 	setopt extended_glob
-	local take
-	local -a words
+	# prefixed: the widget it falls back to runs inside
+	local _mssh_complete_take
+	local -a _mssh_complete_words
 	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
-		take=$_mssh_complete_shown
+		_mssh_complete_take=$_mssh_complete_shown
 		if [[ $WIDGET == *forward-word ]]; then
 			# the first shell word, escapes and quotes kept with it
-			words=(${(z)take})
-			take=${words[1]:+${(M)take##[[:space:]]#}${words[1]}}
+			_mssh_complete_words=(${(z)_mssh_complete_take})
+			_mssh_complete_take=${_mssh_complete_words[1]:+${(M)_mssh_complete_take##[[:space:]]#}${_mssh_complete_words[1]}}
 		fi
-		BUFFER+=${take:-$_mssh_complete_shown}
+		BUFFER+=${_mssh_complete_take:-$_mssh_complete_shown}
 		CURSOR=$#BUFFER
 		return 0
 	fi

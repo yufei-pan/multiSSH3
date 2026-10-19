@@ -212,6 +212,26 @@ def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
 		session.close()
 
 
+# every name the bash glue's functions used unprefixed while the shell's code ran: a command's completion
+# function sees and sets the variables of the functions that call it (dynamic scoping)
+BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '
+	'word cword prefix cmd spec func lead words found kept typed keymap previous shown expand')
+
+
+@pytest.mark.parametrize('on', [True, False])
+def test_bash_a_completion_function_setting_names_of_its_own_leaves_the_glue_alone(tmp_path, on):
+	# a completion written without local (for word in "${COMP_WORDS[@]}") set the glue's word, and nothing
+	# was offered; files='a b' made the glue's (( files || dirs )) a syntax error
+	options = '_zzclob() {{ {}; COMPREPLY=(alpha alpine); }}; complete -F _zzclob zzclob'.format(
+		' '.join("{}='a b'".format(name) for name in BASH_GLUE_NAMES.split()))
+	session = ignoring_case(tmp_path, [], on=on, options=options)
+	try:
+		assert session.line_after('mssh h zzclob al') == 'mssh h zzclob alp'
+		assert b'syntax error' not in session.output and b'bash: ' not in session.output
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('options', ['', 'set -e', 'set -u'])
 def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing_only_in_case(tmp_path, options):
 	# the history's storage-file and the file Storage-File, both offered, kept readline from completing
@@ -800,6 +820,25 @@ def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
 		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
 		assert session.line_after('ls dots/') == 'ls dots/.zzhidden '
 		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+def test_zsh_a_completion_function_setting_names_of_its_own_leaves_the_glue_alone(setup):
+	# zsh scopes as bash does: a completion setting matches made _mssh think nothing was offered, and file
+	# names came in beside the command's words (alzzfile)
+	env, home = setup
+	(home / 'alzzfile').write_text('')
+	names = ('before after flags resp chunk line item name fd kind rest fields texts shown dwords compsys_options',
+		'end remaining files delegate dcword start matches')
+	clobber = (' '.join("{}='a b'".format(name) for name in names[0].split()) + '; '
+		+ ' '.join('{}=1000'.format(name) for name in names[1].split()) + ' nodefault=0')
+	extra = '_zzclob() {{ {}; compadd alpha alpine }}\ncompdef _zzclob zzclob'.format(clobber)
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=extra)
+	try:
+		assert session.line_after('zzclob al') == 'zzclob alp'
+		assert session.line_after('mssh h zzclob al') == 'mssh h zzclob alp'
 		assert b'_mssh:' not in session.output
 	finally:
 		session.close()
