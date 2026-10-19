@@ -6224,12 +6224,13 @@ _mssh_complete_slice() {
 }
 
 _mssh_complete_split() {
-	# split $1 on tabs into _mssh_complete_fields, keeping empty fields
-	local _mssh_complete_text=$1
+	# split $1 on tabs (or on $2) into _mssh_complete_fields, keeping empty fields, whatever IFS the shell
+	# has (not IFS=' ' read -a <<<: with the shell's IFS empty, bash 4.2 read " emacs vi-insert" as one word)
+	local _mssh_complete_text=$1 _mssh_complete_separator=${2-$'\t'}
 	_mssh_complete_fields=()
-	while [[ $_mssh_complete_text == *$'\t'* ]]; do
-		_mssh_complete_fields+=("${_mssh_complete_text%%$'\t'*}")
-		_mssh_complete_text=${_mssh_complete_text#*$'\t'}
+	while [[ $_mssh_complete_text == *"$_mssh_complete_separator"* ]]; do
+		_mssh_complete_fields+=("${_mssh_complete_text%%"$_mssh_complete_separator"*}")
+		_mssh_complete_text=${_mssh_complete_text#*"$_mssh_complete_separator"}
 	done
 	_mssh_complete_fields+=("$_mssh_complete_text")
 }
@@ -6421,7 +6422,6 @@ _mssh_complete_tab() {
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
-	local -a _mssh_complete_directives=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
@@ -6451,9 +6451,8 @@ _mssh_complete_tab() {
 	while IFS= read -r _mssh_complete_line; do
 		case ${_mssh_complete_line:0:1} in
 			D)
-				# split on spaces, whatever IFS the shell has (an IFS for read alone)
-				IFS=' ' read -r -a _mssh_complete_directives <<< "${_mssh_complete_line:2}"
-				for _mssh_complete_item in ${_mssh_complete_directives[@]+"${_mssh_complete_directives[@]}"}; do
+				_mssh_complete_split "${_mssh_complete_line:2}" ' '
+				for _mssh_complete_item in "${_mssh_complete_fields[@]}"; do
 					case $_mssh_complete_item in
 						nospace|filenames|nosort) compopt -o "$_mssh_complete_item" 2>/dev/null || : ;;
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
@@ -6698,11 +6697,10 @@ _mssh_complete_rearm() {
 
 _mssh_complete_rearm_now() {
 	local _mssh_complete_status=$1 _mssh_complete_keymap
-	local -a _mssh_complete_keymaps=()
-	# split on spaces, whatever IFS the shell has
-	IFS=' ' read -r -a _mssh_complete_keymaps <<< "${_mssh_complete_unarmed-}"
-	for _mssh_complete_keymap in ${_mssh_complete_keymaps[@]+"${_mssh_complete_keymaps[@]}"}; do
-		_mssh_complete_arm "$_mssh_complete_keymap"
+	local -a _mssh_complete_fields=()
+	_mssh_complete_split "${_mssh_complete_unarmed-}" ' '
+	for _mssh_complete_keymap in "${_mssh_complete_fields[@]}"; do
+		[[ -n $_mssh_complete_keymap ]] && _mssh_complete_arm "$_mssh_complete_keymap"
 	done
 	_mssh_complete_unarmed=
 	PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_rearm;/}
