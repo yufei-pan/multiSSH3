@@ -841,6 +841,55 @@ def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
 		session.close()
 
 
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_completion_reads_the_engine_s_answer_whatever_ifs_the_shell_has(setup, shell, ifs):
+	# the directives were split with the shell's IFS: with IFS=$'\n' "D files nodefault" was one word, and
+	# none of them counted (file names for a password, none for -f)
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	start = bash_session if shell == 'bash' else zsh_session
+	session = start(home, env, glue_file(home, shell), extra='IFS=' + ifs)
+	try:
+		assert session.line_after('mssh gp') == ('mssh gpu[01-16] ' if shell == 'bash' else 'mssh gpu\\[01-16\\] ')
+		assert session.line_after('mssh -p zz') == 'mssh -p zz'
+		assert session.line_after('mssh -f zzf') == 'mssh -f zzfile_unique '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
+def test_bash_ignoring_case_reads_the_engine_s_answer_whatever_ifs_the_shell_has(tmp_path, ifs):
+	# the icase directive: delegated words in another case are kept (Storage-File for stor)
+	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-x"']
+	session = ignoring_case(tmp_path, history, files=['Storage-File'], options='IFS=' + ifs)
+	try:
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':', "''"])
+def test_bash_glue_joins_and_splits_its_own_lists_whatever_ifs_the_shell_has(tmp_path, ifs):
+	# COMP_LINE joined the words with IFS's first character; the keymaps to arm again were split with it
+	script = ('. "$1"; exec 3>&1; IFS=' + ifs + '; _zzline() { printf "line[%s]\\n" "$COMP_LINE" >&3; }; complete -F _zzline zzcmd; '
+		'_mssh_complete_guard _mssh_complete_delegate b 2 "" zzcmd a b >/dev/null; '
+		'_mssh_complete_arm() { printf "arm[%s]\\n" "$1"; }; _mssh_complete_unarmed=" emacs vi-insert"; _mssh_complete_rearm_now 0')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().splitlines() == ['line[zzcmd a b]', 'arm[emacs]', 'arm[vi-insert]'], output
+
+
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
+def test_zsh_glue_splits_the_autosuggestion_strategies_whatever_ifs_the_shell_has(tmp_path, ifs):
+	# outside the completion system (which sets IFS for itself): a strategy list written as one string
+	script = ('source "$1"; IFS=' + ifs + '; ZSH_AUTOSUGGEST_STRATEGY="history completion"; _mssh_complete_zas_strategy; '
+		'print -rl -- $ZSH_AUTOSUGGEST_STRATEGY')
+	output = subprocess.run([require_shell('zsh'), '-f', '-c', script, 'probe', str(glue_file(tmp_path, 'zsh'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().splitlines() == ['mssh', 'history', 'completion'], output
+
+
 # a command whose completion is built on _arguments, as most of zsh's are
 ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
 

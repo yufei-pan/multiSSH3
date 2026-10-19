@@ -6363,7 +6363,10 @@ _mssh_complete_delegate() {
 		if [[ $_mssh_complete_rest =~ $_mssh_complete_pattern ]]; then
 			_mssh_complete_func=${BASH_REMATCH[1]}
 			local -a COMP_WORDS=("${_mssh_complete_words[@]}")
-			local COMP_CWORD=$_mssh_complete_cword COMP_LINE="${_mssh_complete_words[*]}" COMP_POINT
+			local COMP_CWORD=$_mssh_complete_cword COMP_LINE COMP_POINT
+			# the words joined by spaces, whatever IFS the shell has
+			printf -v COMP_LINE '%s ' "${_mssh_complete_words[@]}"
+			COMP_LINE=${COMP_LINE% }
 			COMP_POINT=${#COMP_LINE}
 			local -a COMPREPLY=()
 			_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
@@ -6416,6 +6419,7 @@ _mssh_complete_tab() {
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
+	local -a _mssh_complete_directives=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
@@ -6445,7 +6449,9 @@ _mssh_complete_tab() {
 	while IFS= read -r _mssh_complete_line; do
 		case ${_mssh_complete_line:0:1} in
 			D)
-				for _mssh_complete_item in ${_mssh_complete_line:2}; do
+				# split on spaces, whatever IFS the shell has (an IFS for read alone)
+				IFS=' ' read -r -a _mssh_complete_directives <<< "${_mssh_complete_line:2}"
+				for _mssh_complete_item in ${_mssh_complete_directives[@]+"${_mssh_complete_directives[@]}"}; do
 					case $_mssh_complete_item in
 						nospace|filenames|nosort) compopt -o "$_mssh_complete_item" 2>/dev/null || : ;;
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
@@ -6689,13 +6695,16 @@ _mssh_complete_rearm() {
 }
 
 _mssh_complete_rearm_now() {
-	local status=$1 keymap
-	for keymap in ${_mssh_complete_unarmed-}; do
-		_mssh_complete_arm "$keymap"
+	local _mssh_complete_status=$1 _mssh_complete_keymap
+	local -a _mssh_complete_keymaps=()
+	# split on spaces, whatever IFS the shell has
+	IFS=' ' read -r -a _mssh_complete_keymaps <<< "${_mssh_complete_unarmed-}"
+	for _mssh_complete_keymap in ${_mssh_complete_keymaps[@]+"${_mssh_complete_keymaps[@]}"}; do
+		_mssh_complete_arm "$_mssh_complete_keymap"
 	done
 	_mssh_complete_unarmed=
 	PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_rearm;/}
-	return $status
+	return $_mssh_complete_status
 }
 
 _mssh_complete_arm() {
@@ -6855,7 +6864,10 @@ if [[ -n ${BLE_VERSION-} ]]; then
 			[[ -n $text ]] || return 1
 			ble/complete/auto-complete/enter h 0 "$text" '' "$_ble_edit_str$text"
 		}
-		[[ " ${_ble_complete_auto_source[*]-} " == *' mssh '* ]] || _ble_complete_auto_source=(mssh ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"})
+		# joined by spaces, whatever IFS the shell has
+		local _mssh_complete_listed
+		printf -v _mssh_complete_listed ' %s ' ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"}
+		[[ $_mssh_complete_listed == *' mssh '* ]] || _ble_complete_auto_source=(mssh ${_ble_complete_auto_source[@]+"${_ble_complete_auto_source[@]}"})
 	}
 	blehook/eval-after-load complete '_mssh_complete_guard _mssh_complete_ble_source'
 
@@ -6965,7 +6977,9 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		function ble/highlight/layer:mssh/getg {
 			ble/highlight/layer:{selection}/getg mssh "$@"
 		}
-		[[ " ${_ble_highlight_layer_list[*]} " == *' mssh '* ]] || ble/array#insert-before _ble_highlight_layer_list region mssh
+		local _mssh_complete_listed
+		printf -v _mssh_complete_listed ' %s ' ${_ble_highlight_layer_list[@]+"${_ble_highlight_layer_list[@]}"}
+		[[ $_mssh_complete_listed == *' mssh '* ]] || ble/array#insert-before _ble_highlight_layer_list region mssh
 		blehook PRECMD+=_mssh_complete_ble_warn_reset
 	}
 	_mssh_complete_ble_warnings
@@ -7082,7 +7096,8 @@ _mssh() {
 		_mssh_complete_rest=${_mssh_complete_line[3,-1]}
 		case $_mssh_complete_kind in
 			(D)
-				for _mssh_complete_item in ${=_mssh_complete_rest}; do
+				# split on spaces, whatever IFS the shell has
+				for _mssh_complete_item in ${(s: :)_mssh_complete_rest}; do
 					[[ $_mssh_complete_item == (files|dirs) ]] && _mssh_complete_files=1
 					[[ $_mssh_complete_item == nodefault ]] && _mssh_complete_nodefault=1
 				done
@@ -7619,7 +7634,8 @@ _mssh_complete_setup() {
 _mssh_complete_zas_strategy() {
 	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
 	emulate -L zsh
-	(( ${${=ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${=ZSH_AUTOSUGGEST_STRATEGY:-history})
+	# split on spaces, whatever IFS the shell has
+	(( ${${(s: :)ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${(s: :)ZSH_AUTOSUGGEST_STRATEGY:-history})
 }
 
 if [[ -o interactive ]]; then
