@@ -407,6 +407,50 @@ bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
 		session.close()
 
 
+@pytest.mark.parametrize('prompt_command', ['kept', 'replaced'])
+def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back_its_nocasematch(tmp_path, prompt_command):
+	# a Ctrl-C landing in the glue's own code, while it holds nocasematch off for a shell that has it on:
+	# here Ctrl-R's picker expanding the prompt, a slow $(...) in PS1. The shell gets nocasematch back at
+	# the next prompt (PROMPT_COMMAND's heal, 'kept'), or at the next glue call when PROMPT_COMMAND was
+	# replaced
+	env, home = make_home(tmp_path, [])
+	major = subprocess.run([require_shell('bash'), '-c', 'echo ${BASH_VERSINFO[0]}'], env=env, stdout=subprocess.PIPE).stdout
+	if int(major) < 5:
+		# 4.4 ends the picker's start without the engine, 4.2 does not expand PS1 there
+		pytest.skip('bash 4 runs a bind -x command to its end on Ctrl-C: no cut lands in the glue')
+	armed = tmp_path / 'armed'
+	never = tmp_path / 'never'
+	os.mkfifo(str(never))
+	# the prompt's command: once armed, says so and waits on a pipe nobody writes to, until Ctrl-C
+	(tmp_path / 'zzwait').write_text('#!/bin/sh\n[ -e {0} ] || exit 0\nmv {0} {0}.taken\nprintf "@@WAIT""@@\\n" >&2\nread x < {1}\n'.format(armed, never))
+	(tmp_path / 'zzwait').chmod(0o755)
+	# an engine noting what it was asked: the picker must not start, the cut came first
+	asked = tmp_path / 'asked'
+	(tmp_path / 'zzengine').write_text('#!/bin/sh\necho "$1" >> {}\nexit 1\n'.format(asked))
+	(tmp_path / 'zzengine').chmod(0o755)
+	glue = glue_file(home, 'bash', command=str(tmp_path / 'zzengine'))
+	extra = "PS1='$({})@@READY@@ '".format(tmp_path / 'zzwait')
+	session = bash_session(home, env, glue, bash_completion=False, pre='shopt -s nocasematch', extra=extra)
+	try:
+		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
+		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
+		session.read_until(b'@@READY@@')
+		armed.write_text('')
+		session.send('mssh h\x12')
+		assert '@@WAIT@@' in session.read_until(b'@@WAIT@@')
+		session.send('\x03')
+		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
+		session.read_until(b'@@ALIVE@@', 15)
+		session.read_until(b'@@READY@@')
+		assert not asked.exists(), asked.read_text()
+		if prompt_command == 'kept':
+			assert nocasematch(session) == 'on'
+		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('icase', ['on', 'off'])
 def test_bash_a_completion_turning_nocasematch_on_leaves_the_shell_as_it_was(tmp_path, icase):
 	# a command's completion function that turns nocasematch on and leaves it so: the glue, which runs it,
