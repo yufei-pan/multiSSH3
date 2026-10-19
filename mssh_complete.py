@@ -6370,15 +6370,14 @@ _mssh_complete_delegate() {
 		fi
 		kept+=("$item")
 	done
-	if (( ${_mssh_complete_icase-0} )); then
-		for item in ${kept[@]+"${kept[@]}"}; do
-			[[ ${item,,} == "${word,,}"* ]] && _mssh_complete_delegated+=("$item")
-		done
-	else
-		for item in ${kept[@]+"${kept[@]}"}; do
-			[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
-		done
-	fi
+	# declared here, after the command's completion function ran: it must not see them
+	local typed=$word one
+	(( ${_mssh_complete_icase-0} )) && typed=${word,,}
+	for item in ${kept[@]+"${kept[@]}"}; do
+		one=$item
+		(( ${_mssh_complete_icase-0} )) && one=${item,,}
+		[[ $one == "$typed"* ]] && _mssh_complete_delegated+=("$item")
+	done
 	return 0
 }
 
