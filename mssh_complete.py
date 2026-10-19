@@ -5063,8 +5063,8 @@ def _locale_variables_utf8(environ):
 		return utf8(environ['LC_ALL'])
 	lang = environ.get('LANG')
 	ctype = environ.get('LC_CTYPE')
-	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and not (lang and utf8(lang)):
-		# what Python 3.7 sets for a C locale (or the operator did, beside a LANG that is not UTF-8)
+	if ctype in ('C.UTF-8', 'C.utf8', 'UTF-8') and (not lang or lang in ('C', 'POSIX') or _locale_codeset(lang) is None):
+		# what Python 3.7 sets where LC_CTYPE was C (or the operator did, beside a LANG that leaves C)
 		return False
 	if lang:
 		if _locale_codeset(lang) is None:

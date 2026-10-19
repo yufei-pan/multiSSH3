@@ -538,10 +538,15 @@ def test_an_ascii_terminal_gets_ascii_messages(engine, monkeypatch):
 	({'LC_CTYPE': 'en_US.UTF-8', 'LC_MESSAGES': 'xx_YY.UTF-8'}, False),
 	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8', 'LC_MESSAGES': 'xx_YY.UTF-8'}, True),
 	({'LANG': 'xx_YY.UTF-8'}, False),
+	# C.UTF-8 set by the operator beside a LANG that is no C locale: Python adds nothing there, bash runs UTF-8
+	({'LANG': 'en_US', 'LC_CTYPE': 'C.UTF-8'}, True),
+	({'LANG': 'tr_TR.ISO-8859-9', 'LC_CTYPE': 'C.UTF-8'}, True),
+	({'LANG': 'xx_YY.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, False),
+	({'LANG': 'POSIX', 'LC_CTYPE': 'C.UTF-8'}, False),
 ])
 def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(monkeypatch, variables, unicode):
 	# as a C library with these locales takes them (en_US: ISO-8859-1)
-	system = {'en_US.UTF-8': 'UTF-8', 'C.utf8': 'UTF-8', 'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1'}
+	system = {'en_US.UTF-8': 'UTF-8', 'C.utf8': 'UTF-8', 'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1', 'tr_TR.ISO-8859-9': 'ISO-8859-9'}
 	monkeypatch.setattr(mc, '_locale_codeset', lambda name: 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else system.get(name))
 	# every variable the rule reads: one left from the tests' own environment (LC_TIME=en_GB.UTF-8) changed it
 	for name in ('LC_ALL', 'LC_CTYPE', 'LANG') + mc._OTHER_CATEGORIES:
