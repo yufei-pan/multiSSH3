@@ -6223,13 +6223,13 @@ _mssh_complete_slice() {
 
 _mssh_complete_split() {
 	# split $1 on tabs into _mssh_complete_fields, keeping empty fields
-	local text=$1
+	local _mssh_complete_text=$1
 	_mssh_complete_fields=()
-	while [[ $text == *$'\t'* ]]; do
-		_mssh_complete_fields+=("${text%%$'\t'*}")
-		text=${text#*$'\t'}
+	while [[ $_mssh_complete_text == *$'\t'* ]]; do
+		_mssh_complete_fields+=("${_mssh_complete_text%%$'\t'*}")
+		_mssh_complete_text=${_mssh_complete_text#*$'\t'}
 	done
-	_mssh_complete_fields+=("$text")
+	_mssh_complete_fields+=("$_mssh_complete_text")
 }
 
 _mssh_complete_guard() {
@@ -6273,9 +6273,9 @@ _mssh_complete_read_locale() {
 	# when it counts a two-byte UTF-8 character as one and two bytes that are none as two (GB18030, GBK,
 	# EUC-KR, EUC-JP and Big5 count both as one), turkic=1 when it lowers I to another letter than i
 	# (Turkish: a dotless i). Whatever LC_ALL, LC_CTYPE and LANG name, this is the locale bash took
-	local u=$'\xc3\xa9' g=$'\xa1\xa1' i=I turkic=1
-	[[ ${i,,} == i ]] && turkic=0
-	_mssh_complete_locale="utf8=$(( ${#u} == 1 && ${#g} == 2 )) turkic=$turkic"
+	local _mssh_complete_two_bytes=$'\xc3\xa9' _mssh_complete_gb_pair=$'\xa1\xa1' _mssh_complete_capital=I _mssh_complete_turkic=1
+	[[ ${_mssh_complete_capital,,} == i ]] && _mssh_complete_turkic=0
+	_mssh_complete_locale="utf8=$(( ${#_mssh_complete_two_bytes} == 1 && ${#_mssh_complete_gb_pair} == 2 )) turkic=$_mssh_complete_turkic"
 }
 
 _mssh_complete_heal() {
@@ -6283,10 +6283,10 @@ _mssh_complete_heal() {
 	# setting it had made; the shell's comes back, at the prompt before the next command line is read.
 	# Where the setting is no longer what the glue left, the shell changed it since: it stays. Left
 	# alike by the shell (shopt -u after a cut that left it off) it cannot be told, and comes back
-	local status=$? now=0
+	local _mssh_complete_heal_status=$? _mssh_complete_now=0
 	if [[ -n ${_mssh_complete_held-} ]]; then
-		shopt -q nocasematch && now=1
-		if (( now == ${_mssh_complete_left:-0} )); then
+		shopt -q nocasematch && _mssh_complete_now=1
+		if (( _mssh_complete_now == ${_mssh_complete_left:-0} )); then
 			if (( _mssh_complete_held )); then
 				shopt -s nocasematch
 			else
@@ -6296,7 +6296,7 @@ _mssh_complete_heal() {
 		_mssh_complete_held=
 		_mssh_complete_left=
 	fi
-	return $status
+	return $_mssh_complete_heal_status
 }
 
 _mssh_complete_operator() {
@@ -6439,9 +6439,9 @@ _mssh_complete_tab() {
 	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
 	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
 		{
-			local icase=0
-			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && icase=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$icase" "$_mssh_complete_before" "$_mssh_complete_after" "$_mssh_complete_cur"
+			local _mssh_complete_ignoring=0
+			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_before" "$_mssh_complete_after" "$_mssh_complete_cur"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
@@ -6562,26 +6562,26 @@ _mssh_complete_cut() {
 
 _mssh_complete_set() {
 	# READLINE_LINE=$1 with the cursor after its first $2 characters
-	local head=${1:0:$2}
+	local _mssh_complete_head=${1:0:$2}
 	READLINE_LINE=$1
 	(( _mssh_complete_bytes )) && local LC_ALL=C
-	READLINE_POINT=${#head}
+	READLINE_POINT=${#_mssh_complete_head}
 }
 
 _mssh_complete_apply() {
 	# apply a pick or edit response ($1): the line, the cursor, and _mssh_complete_action / _keys
-	local line text= cursor=
+	local _mssh_complete_line _mssh_complete_text= _mssh_complete_cursor=
 	_mssh_complete_action=
 	_mssh_complete_keys=
 	[[ $1 == MSSHC1$'\n'* && $1 == *$'\n'E ]] || return 1
-	while IFS= read -r line; do
-		case ${line:0:2} in
-			'L ') cursor=${line:2}; cursor=${cursor%%$'\t'*}; text=${line#*$'\t'} ;;
-			'K ') _mssh_complete_action=${line:2}; _mssh_complete_action=${_mssh_complete_action%%$'\t'*}; _mssh_complete_keys=${line#*$'\t'} ;;
+	while IFS= read -r _mssh_complete_line; do
+		case ${_mssh_complete_line:0:2} in
+			'L ') _mssh_complete_cursor=${_mssh_complete_line:2}; _mssh_complete_cursor=${_mssh_complete_cursor%%$'\t'*}; _mssh_complete_text=${_mssh_complete_line#*$'\t'} ;;
+			'K ') _mssh_complete_action=${_mssh_complete_line:2}; _mssh_complete_action=${_mssh_complete_action%%$'\t'*}; _mssh_complete_keys=${_mssh_complete_line#*$'\t'} ;;
 		esac
 	done <<< "$1"
-	[[ $cursor =~ ^[0-9]+$ ]] || return 1
-	_mssh_complete_set "$text" "$cursor"
+	[[ $_mssh_complete_cursor =~ ^[0-9]+$ ]] || return 1
+	_mssh_complete_set "$_mssh_complete_text" "$_mssh_complete_cursor"
 }
 
 _mssh_complete_start() {
@@ -6590,15 +6590,15 @@ _mssh_complete_start() {
 	# terminal, then as long as the operator takes. Sets _mssh_complete_resp to its answer and
 	# _mssh_complete_status to its exit status, 124 when it was not ready in time, 130 when Ctrl-C
 	# came first. An engine ready too late finds nobody reading and leaves the terminal alone.
-	local line= rest= got=142 waited=0 tenths=20 trapped= _mssh_complete_interrupted=0
+	local _mssh_complete_line= _mssh_complete_rest= _mssh_complete_got=142 _mssh_complete_waited=0 _mssh_complete_tenths=20 _mssh_complete_trapped= _mssh_complete_interrupted=0
 	_mssh_complete_resp=
 	_mssh_complete_status=124
 	# in tenths of a second: bash counts in integers
-	[[ ${MSSH_COMPLETE_START_TIMEOUT:-2} =~ ^([0-9]*)\.?([0-9]?)[0-9]*$ ]] && tenths=$(( 10#0${BASH_REMATCH[1]} * 10 + 10#0${BASH_REMATCH[2]} ))
+	[[ ${MSSH_COMPLETE_START_TIMEOUT:-2} =~ ^([0-9]*)\.?([0-9]?)[0-9]*$ ]] && _mssh_complete_tenths=$(( 10#0${BASH_REMATCH[1]} * 10 + 10#0${BASH_REMATCH[2]} ))
 	if [[ -z ${BLE_VERSION-} ]]; then
 		# Ctrl-C while waiting comes back here (bash would drop the line, and wait for an engine that
 		# does not die of it); ble.sh reads Ctrl-C as a key
-		trapped=$(trap -p INT)
+		_mssh_complete_trapped=$(trap -p INT)
 		trap '_mssh_complete_interrupted=1' INT
 	fi
 	{
@@ -6606,36 +6606,36 @@ _mssh_complete_start() {
 		# per call, and a read that times out partway through a line loses what it read of it (bash 4.2
 		# drops it, later ones keep it for the next read to write over); the rest of the line, written
 		# with its first byte, is there without waiting
-		while (( got > 128 && !_mssh_complete_interrupted && waited++ < tenths )); do
-			IFS= read -r -t 0.1 -n 1 line && got=0 || got=$?
+		while (( _mssh_complete_got > 128 && !_mssh_complete_interrupted && _mssh_complete_waited++ < _mssh_complete_tenths )); do
+			IFS= read -r -t 0.1 -n 1 _mssh_complete_line && _mssh_complete_got=0 || _mssh_complete_got=$?
 		done
-		if (( got == 0 )) && [[ -n $line ]]; then
-			IFS= read -r rest || :
-			line+=$rest
+		if (( _mssh_complete_got == 0 )) && [[ -n $_mssh_complete_line ]]; then
+			IFS= read -r _mssh_complete_rest || :
+			_mssh_complete_line+=$_mssh_complete_rest
 		fi
-		(( got > 128 )) || IFS= read -r -d '' rest || :
+		(( _mssh_complete_got > 128 )) || IFS= read -r -d '' _mssh_complete_rest || :
 	} < <("$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
 	if [[ -z ${BLE_VERSION-} ]]; then
-		if [[ -n $trapped ]]; then eval "$trapped"; else trap - INT; fi
+		if [[ -n $_mssh_complete_trapped ]]; then eval "$_mssh_complete_trapped"; else trap - INT; fi
 	fi
-	if [[ $line == ready ]]; then
+	if [[ $_mssh_complete_line == ready ]]; then
 		# it had the terminal: as cancelled unless it says otherwise
 		_mssh_complete_status=1
 	elif (( _mssh_complete_interrupted )); then
 		_mssh_complete_status=130
 		return 0
-	elif (( got > 128 )); then
+	elif (( _mssh_complete_got > 128 )); then
 		return 0
 	else
-		rest=$line$'\n'$rest
+		_mssh_complete_rest=$_mssh_complete_line$'\n'$_mssh_complete_rest
 	fi
-	rest=${rest%$'\n'}
-	line=${rest##*$'\n'}
-	if [[ $line =~ ^S\ ([0-9]+)$ ]]; then
+	_mssh_complete_rest=${_mssh_complete_rest%$'\n'}
+	_mssh_complete_line=${_mssh_complete_rest##*$'\n'}
+	if [[ $_mssh_complete_line =~ ^S\ ([0-9]+)$ ]]; then
 		_mssh_complete_status=${BASH_REMATCH[1]}
-		rest=${rest%"$line"}
+		_mssh_complete_rest=${_mssh_complete_rest%"$_mssh_complete_line"}
 	fi
-	_mssh_complete_resp=${rest%$'\n'}
+	_mssh_complete_resp=${_mssh_complete_rest%$'\n'}
 	return 0
 }
 
@@ -6720,22 +6720,22 @@ _mssh_complete_arm() {
 _mssh_complete_previous() {
 	# the Ctrl-R binding of readline keymap $1, as a bind argument or x:<shell command> (bind -x),
 	# into _mssh_complete_found; fails when it is unbound or cannot be told (bind -x before bash 4.3)
-	local line
+	local _mssh_complete_line
 	_mssh_complete_found=
-	while IFS= read -r line; do
+	while IFS= read -r _mssh_complete_line; do
 		# bind -X prints '"\C-r": "command"', from bash 5.3 on '"\C-r" "command"'
-		[[ $line == '"\C-r": "'*'"' || $line == '"\C-r" "'*'"' ]] || continue
-		line=${line#'"\C-r"'}
-		line=${line#:}
-		line=${line#' "'}
-		line=${line%'"'}
-		line=${line//'\"'/'"'}
-		_mssh_complete_found=x:${line//'\\'/'\'}
+		[[ $_mssh_complete_line == '"\C-r": "'*'"' || $_mssh_complete_line == '"\C-r" "'*'"' ]] || continue
+		_mssh_complete_line=${_mssh_complete_line#'"\C-r"'}
+		_mssh_complete_line=${_mssh_complete_line#:}
+		_mssh_complete_line=${_mssh_complete_line#' "'}
+		_mssh_complete_line=${_mssh_complete_line%'"'}
+		_mssh_complete_line=${_mssh_complete_line//'\"'/'"'}
+		_mssh_complete_found=x:${_mssh_complete_line//'\\'/'\'}
 		return 0
 	done < <(bind -m "$1" -X 2>/dev/null || :)
-	while IFS= read -r line; do
-		if [[ $line == '"\C-r": '* ]]; then
-			_mssh_complete_found=$line
+	while IFS= read -r _mssh_complete_line; do
+		if [[ $_mssh_complete_line == '"\C-r": '* ]]; then
+			_mssh_complete_found=$_mssh_complete_line
 			return 0
 		fi
 	done < <(bind -m "$1" -s 2>/dev/null; bind -m "$1" -p 2>/dev/null || :)
@@ -6824,14 +6824,14 @@ if [[ -n ${BLE_VERSION-} ]]; then
 
 	_mssh_complete_ble_bind() {
 		# take Ctrl-R in ble.sh keymap $1 when its binding is a widget or a command
-		local line
-		while IFS= read -r line; do
+		local _mssh_complete_line
+		while IFS= read -r _mssh_complete_line; do
 			# the key is the fourth word: a command bound with -x or -c is printed quoted after it, and may
 			# hold " -f C-r " itself. The keymap is printed quoted ('emacs'), or not by other versions
-			case $line in
+			case $_mssh_complete_line in
 				"ble-bind -m '$1' -"[fxc]" C-r "*|"ble-bind -m $1 -"[fxc]" C-r "*)
-					[[ $line == *mssh-complete/ctrl-r* ]] && return 0
-					printf -v "_mssh_complete_previous_$1" '%s' "${line#ble-bind }"
+					[[ $_mssh_complete_line == *mssh-complete/ctrl-r* ]] && return 0
+					printf -v "_mssh_complete_previous_$1" '%s' "${_mssh_complete_line#ble-bind }"
 					ble-bind -m "$1" -f C-r mssh-complete/ctrl-r
 					return 0
 					;;
@@ -6851,18 +6851,18 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		_mssh_complete_ble_ghost() {
 			((_ble_edit_ind == ${#_ble_edit_str})) || return 1
 			_mssh_complete_is_mssh "$_ble_edit_str" || return 1
-			local request=$_ble_base_run/$$.mssh-complete.request answer=$_ble_base_run/$$.mssh-complete.answer line text= status
+			local _mssh_complete_request_file=$_ble_base_run/$$.mssh-complete.request _mssh_complete_answer_file=$_ble_base_run/$$.mssh-complete.answer _mssh_complete_line _mssh_complete_text= _mssh_complete_sync_status
 			# >|: the files are written again for every question, which > refuses under noclobber
-			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' >| "$request" 2>/dev/null || return 1
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
-			status=$?
-			((status == 148)) && return 148
-			((status == 0)) || return 1
-			while IFS= read -r line; do
-				[[ $line == 'G '* ]] && text=${line#*$'\t'}
-			done < "$answer"
-			[[ -n $text ]] || return 1
-			ble/complete/auto-complete/enter h 0 "$text" '' "$_ble_edit_str$text"
+			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' >| "$_mssh_complete_request_file" 2>/dev/null || return 1
+			ble/util/conditional-sync '_mssh_complete_engine query < "$_mssh_complete_request_file" >| "$_mssh_complete_answer_file" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			_mssh_complete_sync_status=$?
+			((_mssh_complete_sync_status == 148)) && return 148
+			((_mssh_complete_sync_status == 0)) || return 1
+			while IFS= read -r _mssh_complete_line; do
+				[[ $_mssh_complete_line == 'G '* ]] && _mssh_complete_text=${_mssh_complete_line#*$'\t'}
+			done < "$_mssh_complete_answer_file"
+			[[ -n $_mssh_complete_text ]] || return 1
+			ble/complete/auto-complete/enter h 0 "$_mssh_complete_text" '' "$_ble_edit_str$_mssh_complete_text"
 		}
 		# joined by spaces, whatever IFS the shell has
 		local _mssh_complete_listed
@@ -6877,11 +6877,11 @@ if [[ -n ${BLE_VERSION-} ]]; then
 
 	_mssh_complete_ble_warn_watch() {
 		# the finished words of the line ($1) changed: ask for warnings when ble.sh is idle
-		local before=${1::_ble_edit_ind} after=${1:_ble_edit_ind} key
+		local _mssh_complete_line_before=${1::_ble_edit_ind} _mssh_complete_line_after=${1:_ble_edit_ind} _mssh_complete_key
 		# the line without the word at the cursor, which is still being typed
-		key=${before%"${before##*[[:space:]]}"}$'\1'${after#"${after%%[[:space:]]*}"}
-		[[ $key == "$_mssh_complete_warn_key" ]] && return 0
-		_mssh_complete_warn_key=$key
+		_mssh_complete_key=${_mssh_complete_line_before%"${_mssh_complete_line_before##*[[:space:]]}"}$'\1'${_mssh_complete_line_after#"${_mssh_complete_line_after%%[[:space:]]*}"}
+		[[ $_mssh_complete_key == "$_mssh_complete_warn_key" ]] && return 0
+		_mssh_complete_warn_key=$_mssh_complete_key
 		# while the prober works, ask again 0.3, 1 and 3 seconds after this answer
 		_mssh_complete_warn_delays=(300 700 2000)
 		ble/util/idle.cancel _mssh_complete_ble_warn_ask
@@ -6894,38 +6894,38 @@ if [[ -n ${BLE_VERSION-} ]]; then
 	}
 
 	_mssh_complete_ble_warn_asked() {
-		local request=$_ble_base_run/$$.mssh-complete.warn.request answer=$_ble_base_run/$$.mssh-complete.warn.answer
-		local line reason= pending=0 status start
-		local -a ranges=() starts=()
+		local _mssh_complete_request_file=$_ble_base_run/$$.mssh-complete.warn.request _mssh_complete_answer_file=$_ble_base_run/$$.mssh-complete.warn.answer
+		local _mssh_complete_line _mssh_complete_reason= _mssh_complete_pending=0 _mssh_complete_sync_status _mssh_complete_start
+		local -a _mssh_complete_ranges=() _mssh_complete_starts=()
 		if _mssh_complete_is_mssh "$_ble_edit_str"; then
 			# >| for noclobber, as for the grey text
-			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" >| "$request" 2>/dev/null || return 0
-			ble/util/conditional-sync '_mssh_complete_engine query < "$request" >| "$answer" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
-			status=$?
-			if ((status == 148)); then
+			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" >| "$_mssh_complete_request_file" 2>/dev/null || return 0
+			ble/util/conditional-sync '_mssh_complete_engine query < "$_mssh_complete_request_file" >| "$_mssh_complete_answer_file" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			_mssh_complete_sync_status=$?
+			if ((_mssh_complete_sync_status == 148)); then
 				# typing interrupted: ask again at the next redraw
 				_mssh_complete_warn_key=
 				return 0
 			fi
-			((status == 0)) || return 0
-			while IFS= read -r line; do
-				case $line in
+			((_mssh_complete_sync_status == 0)) || return 0
+			while IFS= read -r _mssh_complete_line; do
+				case $_mssh_complete_line in
 					'W '*)
-						_mssh_complete_split "${line:2}"
+						_mssh_complete_split "${_mssh_complete_line:2}"
 						# one mark per start, in order
-						starts[_mssh_complete_fields[0]]=${_mssh_complete_fields[1]} ;;
-					'R '*) reason=${line:2} ;;
-					'D '*) [[ " ${line:2} " == *' pending '* ]] && pending=1 ;;
+						_mssh_complete_starts[_mssh_complete_fields[0]]=${_mssh_complete_fields[1]} ;;
+					'R '*) _mssh_complete_reason=${_mssh_complete_line:2} ;;
+					'D '*) [[ " ${_mssh_complete_line:2} " == *' pending '* ]] && _mssh_complete_pending=1 ;;
 				esac
-			done < "$answer"
-			for start in "${!starts[@]}"; do
-				ranges+=("$start" "${starts[start]}")
+			done < "$_mssh_complete_answer_file"
+			for _mssh_complete_start in "${!_mssh_complete_starts[@]}"; do
+				_mssh_complete_ranges+=("$_mssh_complete_start" "${_mssh_complete_starts[_mssh_complete_start]}")
 			done
 		fi
-		_mssh_complete_warn_ranges=(${ranges[@]+"${ranges[@]}"})
+		_mssh_complete_warn_ranges=(${_mssh_complete_ranges[@]+"${_mssh_complete_ranges[@]}"})
 		ble/textarea#invalidate
-		_mssh_complete_ble_warn_info "$reason"
-		if ((pending && ${#_mssh_complete_warn_delays[@]})); then
+		_mssh_complete_ble_warn_info "$_mssh_complete_reason"
+		if ((_mssh_complete_pending && ${#_mssh_complete_warn_delays[@]})); then
 			ble/util/idle.push --sleep "${_mssh_complete_warn_delays[0]}" _mssh_complete_ble_warn_ask
 			_mssh_complete_warn_delays=("${_mssh_complete_warn_delays[@]:1}")
 		fi
@@ -6934,13 +6934,13 @@ if [[ -n ${BLE_VERSION-} ]]; then
 	_mssh_complete_ble_warn_info() {
 		# the reason line under the prompt, kept as ble.sh's default info and drawn now (as
 		# ble/edit/info/immediate-show does), the cursor left where it was
-		local ret pos
+		local ret _mssh_complete_position
 		ble/edit/info/set-default text "$1"
 		[[ $_ble_edit_info_scene == default ]] && ble/edit/info/.rendering-enabled || return 0
 		ble/canvas/panel/save-position
-		pos=$ret
+		_mssh_complete_position=$ret
 		ble/edit/info#panel::render "$_ble_edit_info_panel"
-		ble/canvas/panel/load-position "$pos"
+		ble/canvas/panel/load-position "$_mssh_complete_position"
 		ble/util/buffer.flush
 	}
 
@@ -6967,10 +6967,10 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		function ble/highlight/layer:mssh/update {
 			_mssh_complete_guard _mssh_complete_ble_warn_watch "$1"
 			local -a sel=(${_mssh_complete_warn_ranges[@]+"${_mssh_complete_warn_ranges[@]}"}) gflags=()
-			local ret i
+			local ret _mssh_complete_index
 			ble/color/face2g mssh_warning
-			for ((i = 0; i < ${#sel[@]} / 2; i++)); do
-				gflags[i]=$ret
+			for ((_mssh_complete_index = 0; _mssh_complete_index < ${#sel[@]} / 2; _mssh_complete_index++)); do
+				gflags[_mssh_complete_index]=$ret
 			done
 			ble/highlight/layer:{selection}/update mssh "$@"
 		}
@@ -6996,23 +6996,23 @@ elif [[ $- == *i* ]]; then
 	}
 
 	_mssh_complete_take_keys() {
-		local status=$1 keymap line previous
+		local _mssh_complete_keys_status=$1 _mssh_complete_keymap _mssh_complete_line _mssh_complete_binding
 		PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_keys;/}
-		[[ -o emacs || -o vi ]] || return $status
-		for keymap in emacs vi-insert; do
+		[[ -o emacs || -o vi ]] || return $_mssh_complete_keys_status
+		for _mssh_complete_keymap in emacs vi-insert; do
 			# take Ctrl-R only when its binding can be called back (and is not already ours)
-			if _mssh_complete_previous "$keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
-				printf -v "_mssh_complete_previous_${keymap//-/_}" '%s' "$_mssh_complete_found"
+			if _mssh_complete_previous "$_mssh_complete_keymap" && [[ $_mssh_complete_found != *'\C-x\C-y"' ]]; then
+				printf -v "_mssh_complete_previous_${_mssh_complete_keymap//-/_}" '%s' "$_mssh_complete_found"
 				# a Ctrl-R bound with bind -x (fzf, atuin) is unbound first: when a bind replaces a bind -x
 				# key, bash 5.1 drops the command of another bind -x key (our hook key, or the operator's)
-				[[ $_mssh_complete_found == x:* ]] && bind -m "$keymap" -r '\C-r'
+				[[ $_mssh_complete_found == x:* ]] && bind -m "$_mssh_complete_keymap" -r '\C-r'
 				# "$_" last: bash sets $_ to a command's last argument, so it keeps the operator's $_
-				if [[ $keymap == emacs ]]; then
+				if [[ $_mssh_complete_keymap == emacs ]]; then
 					bind -m emacs -x '"\C-x\C-o": _mssh_complete_ctrl_r emacs "$_"'
 				else
 					bind -m vi-insert -x '"\C-x\C-q": _mssh_complete_ctrl_r vi-insert "$_"'
 				fi
-				_mssh_complete_arm "$keymap"
+				_mssh_complete_arm "$_mssh_complete_keymap"
 			fi
 		done
 		# the mssh line editor, entered with a space after an mssh name; only over a plain space key and
@@ -7020,17 +7020,17 @@ elif [[ $- == *i* ]]; then
 		if [[ ${MSSH_COMPLETE_EDITOR-} == 1 ]] && (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 			# what space does, read without grep: the operator's grep alias or function (colours, line
 			# numbers) or GREP_OPTIONS would change what it prints
-			previous=
-			while IFS= read -r line; do
-				if [[ $line == '" ": '* ]]; then
-					previous=${line#'" ": '}
+			_mssh_complete_binding=
+			while IFS= read -r _mssh_complete_line; do
+				if [[ $_mssh_complete_line == '" ": '* ]]; then
+					_mssh_complete_binding=${_mssh_complete_line#'" ": '}
 				fi
 			done < <(bind -m emacs -p 2>/dev/null || :)
 			# space is ours already when the rc file is sourced again: keep the binding it had before
-			if [[ -z $previous && $(bind -m emacs -s 2>/dev/null) == *'" ": "\C-x\C-t\C-x\C-y"'* ]]; then
-				previous=${_mssh_complete_space_previous:-self-insert}
+			if [[ -z $_mssh_complete_binding && $(bind -m emacs -s 2>/dev/null) == *'" ": "\C-x\C-t\C-x\C-y"'* ]]; then
+				_mssh_complete_binding=${_mssh_complete_space_previous:-self-insert}
 			fi
-			_mssh_complete_space_previous=$previous
+			_mssh_complete_space_previous=$_mssh_complete_binding
 			case $_mssh_complete_space_previous in
 				self-insert|magic-space)
 					bind -m emacs -x '"\C-x\C-t": _mssh_complete_space "$_"'
@@ -7038,7 +7038,7 @@ elif [[ $- == *i* ]]; then
 					;;
 			esac
 		fi
-		return $status
+		return $_mssh_complete_keys_status
 	}
 	[[ ${PROMPT_COMMAND-} == *_mssh_complete_keys\;* ]] || PROMPT_COMMAND="_mssh_complete_keys;${PROMPT_COMMAND-}"
 	[[ ${PROMPT_COMMAND-} == *_mssh_complete_heal\;* ]] || PROMPT_COMMAND="_mssh_complete_heal;${PROMPT_COMMAND-}"
@@ -7150,9 +7150,9 @@ _mssh_complete_register() {
 	# name by hand stays.
 	emulate -L zsh
 	(( $+functions[compdef] )) && [[ ${(t)_comps} == association* ]] || return 0
-	local name
-	for name in mssh mssh3 multissh multissh3 multiSSH3; do
-		(( $+_comps[$name] )) || compdef _mssh $name
+	local _mssh_complete_name
+	for _mssh_complete_name in mssh mssh3 multissh multissh3 multiSSH3; do
+		(( $+_comps[$_mssh_complete_name] )) || compdef _mssh $_mssh_complete_name
 	done
 }
 
@@ -7171,9 +7171,9 @@ _mssh_complete_start_pick() {
 	# the terminal, then as long as the operator takes. 124 when too slow, 130 on Ctrl-C while it
 	# starts: see START_SCRIPT in mssh_complete.py
 	emulate -L zsh
-	local limit=${MSSH_COMPLETE_START_TIMEOUT:-2}
-	[[ $limit == (<->|<->.<->|.<->) ]] || limit=2
-	command sh -c "$_mssh_complete_start_script" sh "$limit" @ENGINE@ pick
+	local _mssh_complete_limit=${MSSH_COMPLETE_START_TIMEOUT:-2}
+	[[ $_mssh_complete_limit == (<->|<->.<->|.<->) ]] || _mssh_complete_limit=2
+	command sh -c "$_mssh_complete_start_script" sh "$_mssh_complete_limit" @ENGINE@ pick
 }
 
 _mssh_complete_keep_terminal() {
@@ -7239,11 +7239,11 @@ _mssh_complete_ctrl_r() {
 _mssh_complete_take_ctrl_r() {
 	# bind Ctrl-R to the picker, keeping the widget it had for other lines
 	emulate -L zsh
-	local -a binding
-	binding=(${(z)"$(bindkey '^R')"})
-	[[ $binding[2] == _mssh_complete_ctrl_r ]] && return 0
-	[[ -n $binding[2] && $binding[2] != undefined-key ]] || return 0
-	typeset -g _mssh_complete_previous=$binding[2]
+	local -a _mssh_complete_binding
+	_mssh_complete_binding=(${(z)"$(bindkey '^R')"})
+	[[ $_mssh_complete_binding[2] == _mssh_complete_ctrl_r ]] && return 0
+	[[ -n $_mssh_complete_binding[2] && $_mssh_complete_binding[2] != undefined-key ]] || return 0
+	typeset -g _mssh_complete_previous=$_mssh_complete_binding[2]
 	zle -N _mssh_complete_ctrl_r
 	bindkey '^R' _mssh_complete_ctrl_r
 	# an incremental search repeats on Ctrl-R only when Ctrl-R is bound to it
@@ -7257,25 +7257,25 @@ _zsh_autosuggest_strategy_mssh() {
 	emulate -L zsh
 	zmodload zsh/zselect zsh/system zsh/datetime 2>/dev/null || return 0
 	_mssh_complete_is_mssh "$1" || return 0
-	local fd resp= chunk line limit=${MSSH_COMPLETE_TIMEOUT:-0.3}
-	local -F end
-	local -i remaining
+	local _mssh_complete_qfd _mssh_complete_resp= _mssh_complete_chunk _mssh_complete_line _mssh_complete_limit=${MSSH_COMPLETE_TIMEOUT:-0.3}
+	local -F _mssh_complete_end
+	local -i _mssh_complete_remaining
 	# synchronous zsh-autosuggestions waits for the strategy while the operator types
-	(( ${+ZSH_AUTOSUGGEST_USE_ASYNC} )) || limit=0.05
-	exec {fd}< <(_mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
+	(( ${+ZSH_AUTOSUGGEST_USE_ASYNC} )) || _mssh_complete_limit=0.05
+	exec {_mssh_complete_qfd}< <(_mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
 	_mssh_complete_keep_terminal
-	(( end = EPOCHREALTIME + limit ))
+	(( _mssh_complete_end = EPOCHREALTIME + _mssh_complete_limit ))
 	while true; do
-		(( remaining = (end - EPOCHREALTIME) * 100 ))
-		(( remaining > 0 )) || break
-		zselect -t $remaining -r $fd || break
-		sysread -i $fd chunk || break
-		resp+=$chunk
+		(( _mssh_complete_remaining = (_mssh_complete_end - EPOCHREALTIME) * 100 ))
+		(( _mssh_complete_remaining > 0 )) || break
+		zselect -t $_mssh_complete_remaining -r $_mssh_complete_qfd || break
+		sysread -i $_mssh_complete_qfd _mssh_complete_chunk || break
+		_mssh_complete_resp+=$_mssh_complete_chunk
 	done
-	exec {fd}<&-
-	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
-	for line in "${(@f)resp}"; do
-		[[ $line == 'G '* ]] && typeset -g suggestion="$1${line#*$'\t'}"
+	exec {_mssh_complete_qfd}<&-
+	[[ $_mssh_complete_resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for _mssh_complete_line in "${(@f)_mssh_complete_resp}"; do
+		[[ $_mssh_complete_line == 'G '* ]] && typeset -g suggestion="$1${_mssh_complete_line#*$'\t'}"
 	done
 	return 0
 }
@@ -7316,18 +7316,18 @@ _mssh_complete_ghost_cancel() {
 _mssh_complete_ghost_ready() {
 	# zle -F handler: the engine answered the query for the buffer in _mssh_complete_asked
 	emulate -L zsh
-	local fd=$1 resp= chunk line text=
-	while sysread -i $fd chunk 2>/dev/null; do
-		resp+=$chunk
+	local _mssh_complete_qfd=$1 _mssh_complete_resp= _mssh_complete_chunk _mssh_complete_line _mssh_complete_text=
+	while sysread -i $_mssh_complete_qfd _mssh_complete_chunk 2>/dev/null; do
+		_mssh_complete_resp+=$_mssh_complete_chunk
 	done
-	zle -F $fd
-	exec {fd}<&-
+	zle -F $_mssh_complete_qfd
+	exec {_mssh_complete_qfd}<&-
 	_mssh_complete_fd=
-	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
-	for line in "${(@f)resp}"; do
-		[[ $line == 'G '* ]] && text=${line#*$'\t'}
+	[[ $_mssh_complete_resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for _mssh_complete_line in "${(@f)_mssh_complete_resp}"; do
+		[[ $_mssh_complete_line == 'G '* ]] && _mssh_complete_text=${_mssh_complete_line#*$'\t'}
 	done
-	[[ -n $text ]] && zle _mssh_complete_ghost_answer -- "$text"
+	[[ -n $_mssh_complete_text ]] && zle _mssh_complete_ghost_answer -- "$_mssh_complete_text"
 	return 0
 }
 
@@ -7342,7 +7342,7 @@ _mssh_complete_ghost_answer() {
 _mssh_complete_ghost_redraw() {
 	# line-pre-redraw hook: keep the grey text in step with the buffer
 	emulate -L zsh
-	local last=$_mssh_complete_last full
+	local _mssh_complete_prior=$_mssh_complete_last _mssh_complete_full
 	if (( ${+functions[_zsh_autosuggest_start]} )); then
 		# zsh-autosuggestions loaded after the first prompt (zinit turbo, zsh-defer): mssh becomes
 		# its first strategy, and once it has wrapped the widgets its grey text replaces ours
@@ -7352,7 +7352,7 @@ _mssh_complete_ghost_redraw() {
 			return 0
 		fi
 	fi
-	if [[ $BUFFER == "$last" ]]; then
+	if [[ $BUFFER == "$_mssh_complete_prior" ]]; then
 		if (( CURSOR != $#BUFFER )); then
 			_mssh_complete_ghost_clear
 		elif [[ -n $_mssh_complete_shown && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_drawn}} ]]; then
@@ -7363,10 +7363,10 @@ _mssh_complete_ghost_redraw() {
 	fi
 	_mssh_complete_last=$BUFFER
 	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
-		full=$last$_mssh_complete_shown
-		if [[ $BUFFER == "$last"?* && $full == "$BUFFER"?* ]]; then
+		_mssh_complete_full=$_mssh_complete_prior$_mssh_complete_shown
+		if [[ $BUFFER == "$_mssh_complete_prior"?* && $_mssh_complete_full == "$BUFFER"?* ]]; then
 			# typed (or took) the next characters of the grey text: show the rest without a new query
-			_mssh_complete_ghost_show "${full#"$BUFFER"}"
+			_mssh_complete_ghost_show "${_mssh_complete_full#"$BUFFER"}"
 			return 0
 		fi
 	fi
@@ -7429,7 +7429,7 @@ _mssh_complete_ghost_setup() {
 	is-at-least 5.3 || return 0
 	[[ -n $TERM && $TERM != dumb ]] || return 0
 	zmodload zsh/zleparameter zsh/system 2>/dev/null || return 0
-	local widget key
+	local _mssh_complete_widget _mssh_complete_key
 	typeset -g _mssh_complete_fd= _mssh_complete_asked= _mssh_complete_last= _mssh_complete_shown= _mssh_complete_drawn=
 	typeset -g _mssh_complete_style=fg=8
 	[[ $TERM == *256col* ]] && _mssh_complete_style=fg=244
@@ -7439,14 +7439,14 @@ _mssh_complete_ghost_setup() {
 	zle -N _mssh_complete_ghost_finish
 	add-zle-hook-widget line-pre-redraw _mssh_complete_ghost_redraw
 	add-zle-hook-widget line-finish _mssh_complete_ghost_finish
-	for widget in forward-char vi-forward-char end-of-line vi-end-of-line forward-word emacs-forward-word vi-forward-word; do
-		[[ -n ${widgets[$widget]} && ${widgets[$widget]} != user:_mssh_complete_accept ]] || continue
-		zle -A $widget _mssh_complete_orig_$widget
-		zle -N $widget _mssh_complete_accept
+	for _mssh_complete_widget in forward-char vi-forward-char end-of-line vi-end-of-line forward-word emacs-forward-word vi-forward-word; do
+		[[ -n ${widgets[$_mssh_complete_widget]} && ${widgets[$_mssh_complete_widget]} != user:_mssh_complete_accept ]] || continue
+		zle -A $_mssh_complete_widget _mssh_complete_orig_$_mssh_complete_widget
+		zle -N $_mssh_complete_widget _mssh_complete_accept
 	done
 	# Ctrl-Right and Alt-Right take a word, unless they are bound already
-	for key in '^[[1;5C' '^[[1;3C'; do
-		[[ $(bindkey "$key" 2>/dev/null) == *undefined-key* ]] && bindkey "$key" forward-word
+	for _mssh_complete_key in '^[[1;5C' '^[[1;3C'; do
+		[[ $(bindkey "$_mssh_complete_key" 2>/dev/null) == *undefined-key* ]] && bindkey "$_mssh_complete_key" forward-word
 	done
 }
 
@@ -7462,14 +7462,14 @@ _mssh_complete_warn_unmark() {
 _mssh_complete_warn_mark() {
 	# draw the last answer's marks: only the word at the cursor changed since, so the marks after it
 	# move with the end of the line
-	local span
-	local -i start end
-	for span in "${_mssh_complete_warn_marks[@]}"; do
-		start=${span% *} end=${span#* }
-		if (( start >= _mssh_complete_warn_cursor )); then
-			(( start += $#BUFFER - _mssh_complete_warn_length, end += $#BUFFER - _mssh_complete_warn_length ))
+	local _mssh_complete_span
+	local -i _mssh_complete_from _mssh_complete_to
+	for _mssh_complete_span in "${_mssh_complete_warn_marks[@]}"; do
+		_mssh_complete_from=${_mssh_complete_span% *} _mssh_complete_to=${_mssh_complete_span#* }
+		if (( _mssh_complete_from >= _mssh_complete_warn_cursor )); then
+			(( _mssh_complete_from += $#BUFFER - _mssh_complete_warn_length, _mssh_complete_to += $#BUFFER - _mssh_complete_warn_length ))
 		fi
-		region_highlight+=("$start $end $_mssh_complete_warn_style")
+		region_highlight+=("$_mssh_complete_from $_mssh_complete_to $_mssh_complete_warn_style")
 	done
 	# the style as zsh reports it (fg=red,underline), to find the marks again
 	(( $#_mssh_complete_warn_marks )) && _mssh_complete_warn_drawn=${region_highlight[-1]#<-> <-> }
@@ -7508,14 +7508,14 @@ _mssh_complete_warn_redraw() {
 	emulate -L zsh
 	setopt extended_glob
 	# the line without the word at the cursor, which is still being typed
-	local key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
-	if [[ $key == "$_mssh_complete_warn_key" ]]; then
+	local _mssh_complete_key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
+	if [[ $_mssh_complete_key == "$_mssh_complete_warn_key" ]]; then
 		# zsh-syntax-highlighting empties region_highlight after each key before zsh 5.9 (and before its
 		# 0.8, on any zsh): mark again
 		[[ -n $_mssh_complete_warn_drawn && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}} ]] && _mssh_complete_warn_mark
 		return 0
 	fi
-	_mssh_complete_warn_key=$key
+	_mssh_complete_warn_key=$_mssh_complete_key
 	_mssh_complete_warn_cancel
 	# the marks shown stay until the answer, but no longer redrawn: they were placed for other words
 	_mssh_complete_warn_marks=()
@@ -7531,25 +7531,25 @@ _mssh_complete_warn_redraw() {
 _mssh_complete_warn_ready() {
 	# zle -F handler: the engine answered the query for warnings
 	emulate -L zsh
-	local fd=$1 resp= chunk line reason= pending=0
-	local -a marks fields
-	while sysread -i $fd chunk 2>/dev/null; do
-		resp+=$chunk
+	local _mssh_complete_qfd=$1 _mssh_complete_resp= _mssh_complete_chunk _mssh_complete_line _mssh_complete_reason= _mssh_complete_pending=0
+	local -a _mssh_complete_marks _mssh_complete_fields
+	while sysread -i $_mssh_complete_qfd _mssh_complete_chunk 2>/dev/null; do
+		_mssh_complete_resp+=$_mssh_complete_chunk
 	done
-	zle -F $fd
-	exec {fd}<&-
+	zle -F $_mssh_complete_qfd
+	exec {_mssh_complete_qfd}<&-
 	_mssh_complete_warn_fd=
-	[[ $resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
-	for line in "${(@f)resp}"; do
-		case $line in
+	[[ $_mssh_complete_resp == MSSHC1$'\n'*$'\n'E$'\n' ]] || return 0
+	for _mssh_complete_line in "${(@f)_mssh_complete_resp}"; do
+		case $_mssh_complete_line in
 			('W '*)
-				fields=("${(@ps:\t:)${line#W }}")
-				marks+=("${fields[1]} ${fields[2]}") ;;
-			('R '*) reason=${line#R } ;;
-			('D '*) [[ " ${line#D } " == *' pending '* ]] && pending=1 ;;
+				_mssh_complete_fields=("${(@ps:\t:)${_mssh_complete_line#W }}")
+				_mssh_complete_marks+=("${_mssh_complete_fields[1]} ${_mssh_complete_fields[2]}") ;;
+			('R '*) _mssh_complete_reason=${_mssh_complete_line#R } ;;
+			('D '*) [[ " ${_mssh_complete_line#D } " == *' pending '* ]] && _mssh_complete_pending=1 ;;
 		esac
 	done
-	zle _mssh_complete_warn_answer -- "$pending" "$reason" "${marks[@]}"
+	zle _mssh_complete_warn_answer -- "$_mssh_complete_pending" "$_mssh_complete_reason" "${_mssh_complete_marks[@]}"
 	return 0
 }
 
@@ -7562,24 +7562,24 @@ _mssh_complete_warn_answer() {
 		_mssh_complete_warn_ask 0
 		return 0
 	fi
-	local pending=$1 reason=$2 style=underline,fg=red
+	local _mssh_complete_pending=$1 _mssh_complete_reason=$2 _mssh_complete_face=underline,fg=red
 	shift 2
-	[[ -n ${NO_COLOR-} ]] && style=underline
-	(( _mssh_complete_memo )) && style+=' memo=mssh-warn'
+	[[ -n ${NO_COLOR-} ]] && _mssh_complete_face=underline
+	(( _mssh_complete_memo )) && _mssh_complete_face+=' memo=mssh-warn'
 	_mssh_complete_warn_unmark
 	_mssh_complete_warn_marks=("$@")
-	_mssh_complete_warn_style=$style
+	_mssh_complete_warn_style=$_mssh_complete_face
 	_mssh_complete_warn_length=$#BUFFER _mssh_complete_warn_cursor=$CURSOR
 	_mssh_complete_warn_mark
 	# one zle -M in a widget: after a second one zsh draws the line a row too high
-	if [[ -n $reason ]]; then
-		_mssh_complete_warn_reason=$reason
-		zle -M -- "$reason"
+	if [[ -n $_mssh_complete_reason ]]; then
+		_mssh_complete_warn_reason=$_mssh_complete_reason
+		zle -M -- "$_mssh_complete_reason"
 	elif [[ -n $_mssh_complete_warn_reason ]]; then
 		_mssh_complete_warn_reason=
 		zle -M ''
 	fi
-	if (( pending && $#_mssh_complete_warn_delays )); then
+	if (( _mssh_complete_pending && $#_mssh_complete_warn_delays )); then
 		_mssh_complete_warn_ask $_mssh_complete_warn_delays[1]
 		shift _mssh_complete_warn_delays
 	fi

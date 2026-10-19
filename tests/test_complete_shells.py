@@ -258,8 +258,9 @@ def test_bash_delegation_finds_the_completion_of_a_full_path_by_its_last_part(tm
 		session.close()
 
 
-# every name the bash glue's functions used unprefixed while the shell's code ran: a command's completion
-# function sees and sets the variables of the functions that call it (dynamic scoping)
+# names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
+# sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
+# every glue function to the prefix
 BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '
 	'word cword prefix cmd spec func lead words found kept typed keymap previous shown expand')
 
@@ -749,6 +750,63 @@ def test_bash_glue_has_no_comment_inside_a_command_or_process_substitution():
 	assert comments_in_substitutions('a "$(b\n# c\nd)"\n') == [2]
 	assert comments_in_substitutions("# readline's (\nx=${#y} z=$(( 10#1 + (2) )) w=$(echo '#(' \"#\" $'\\'#') v=$(a)#b\n") == []
 	assert comments_in_substitutions("f() {\n\t# it's ( not inside\n\tx=$(a; b)\n}\n# (\ny=<(c\n# in\n)\n") == [7]
+
+
+# the variables a glue function may declare unprefixed: names a callee's convention needs
+GLUE_LOCAL_EXCEPTIONS = {
+	# bash's completion interface, handed to a command's completion function; a locale for one function
+	# (its whole point); ble.sh's conventions: its functions return in ret, layer:{selection}/update
+	# reads sel and gflags
+	'bash': {'COMP_WORDS', 'COMP_CWORD', 'COMP_LINE', 'COMP_POINT', 'COMPREPLY', 'LC_ALL', 'ret', 'sel', 'gflags'},
+	# what zsh's pattern matching sets, kept from the shell's own
+	'zsh': {'MATCH', 'MBEGIN', 'MEND', 'match', 'mbegin', 'mend'},
+}
+
+
+def glue_locals(text, shell):
+	'''(line number, function, name) of every variable a function of a glue declares local.'''
+	import shlex
+	found = []
+	function = None
+	for number, line in enumerate(text.splitlines(), 1):
+		head = re.match(r'\s*(?:function\s+(\S+)\s*\{|([\w/:.-]+)\s*\(\)\s*\{)', line)
+		if head:
+			function = head.group(1) or head.group(2)
+		if line.lstrip().startswith('#'):
+			continue
+		declared = re.match(r'\s*(?:\(\(.*\)\)\s*&&\s*)?(local|typeset|declare|integer|float)\s(.*)', line)
+		if not declared:
+			continue
+		try:
+			words = shlex.split(declared.group(2))
+		except ValueError:
+			# a line continued on the next (declare -F a b \)
+			words = declared.group(2).split()
+		flags = ''.join(word.lstrip('-+') for word in words if word[:1] in '-+')
+		# globals; bash's declare -F and -f look functions up
+		if 'g' in flags or (shell == 'bash' and set(flags) & set('Ffp')):
+			continue
+		for word in words:
+			name = re.match(r'([A-Za-z_]\w*)(?:=|\[|$)', word)
+			if name:
+				found.append((number, function, name.group(1)))
+	return found
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_every_variable_a_glue_function_declares_is_prefixed(shell):
+	# the shell's code runs inside the glue's functions (completion functions, the bindings taken over,
+	# a DEBUG trap under set -T), and bash and zsh scope dynamically: it sees and sets their variables
+	# the glue as the shell reads it: render_glue wraps zsh's in an eval string
+	text = mc._GLUES[shell].replace('@ENGINE@', 'engine').replace('@START@', "''")
+	declared = glue_locals(text, shell)
+	assert len(declared) > 50
+	assert [(number, function, name) for number, function, name in declared
+		if not name.startswith('_mssh_complete_') and name not in GLUE_LOCAL_EXCEPTIONS[shell]] == []
+	# the parser finds names wherever a declaration holds them, and skips globals and function lookups
+	assert [name for _, _, name in glue_locals("f() {\n\tlocal a b=1 -i c\n\t(( x )) && local LC_ALL=C\n\tlocal -a d=(\"$@\") e=() f\n}", shell)] == [
+		'a', 'b', 'c', 'LC_ALL', 'd', 'e', 'f']
+	assert glue_locals("f() {\n\ttypeset -g x=1\n\t# local y\n}", shell) == []
 
 
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
