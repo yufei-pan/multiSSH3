@@ -379,35 +379,26 @@ def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp
 
 
 @pytest.mark.parametrize('icase', ['on', 'off'])
-def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tmp_path, icase):
-	# with the shell's nocasematch on, the glue read "complete -f zzrun" as "complete -F zzrun" and ran zzrun,
-	# the remote command, here as its completion function; every test of the glue's own compares exactly
-	history = ['1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"']
-	session = ignoring_case(tmp_path, history, on=icase == 'on', commands=['zzrun'], options='shopt -s nocasematch; complete -f zzrun')
-	ran = tmp_path / 'zzrun-ran'
-	(tmp_path / 'bin' / 'zzrun').write_text('#!/bin/sh\necho "$@" > {}\n'.format(ran))
-	try:
-		assert session.line_after('mssh h zzrun ab') == 'mssh h zzrun ab'
-		assert not ran.exists(), ran.read_text()
-		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
-		assert nocasematch(session) == 'on'
-	finally:
-		session.close()
-
-
 @pytest.mark.parametrize('setting', ['on', 'off'])
-def test_bash_a_completion_file_a_loader_sources_cannot_turn_the_glue_s_tests_to_any_case(tmp_path, setting):
-	# bash-completion's loaders source a command's completion file at its first TAB: the shell's code, which
-	# ran in the glue's setting. A file turning nocasematch on left the glue's own tests ignoring case:
-	# complete -p's -f read as -F, and zzrun, the remote command, ran here as its completion function
+@pytest.mark.parametrize('arrives', ['registered', 'loaded'])
+def test_bash_tab_runs_no_command_complete_f_names_and_gives_file_names(tmp_path, arrives, setting, icase):
+	# with nocasematch on, the glue read "complete -f zzrun" as "complete -F zzrun" and ran zzrun, the remote
+	# command, here as its completion function: with the shell's setting on (registered), and with the
+	# completion file a loader sources at the first TAB turning it on (loaded: bash-completion's loaders run
+	# the shell's code, which ran in the glue's setting). Every test of the glue's own compares exactly, and
+	# the shell keeps its setting
 	history = ['1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"']
-	completion = tmp_path / 'zzrun.bash'
-	completion.write_text('shopt -s nocasematch\ncomplete -f zzrun\n')
-	options = "_completion_loader() {{ [[ $1 == zzrun ]] && . '{}'; }}; shopt -{} nocasematch".format(completion, 's' if setting == 'on' else 'u')
-	session = ignoring_case(tmp_path, history, commands=['zzrun'], options=options)
+	if arrives == 'registered':
+		options = 'complete -f zzrun'
+	else:
+		completion = tmp_path / 'zzrun.bash'
+		completion.write_text('shopt -s nocasematch\ncomplete -f zzrun\n')
+		options = "_completion_loader() {{ [[ $1 == zzrun ]] && . '{}'; }}".format(completion)
+	options += '; shopt -{} nocasematch'.format('s' if setting == 'on' else 'u')
+	session = ignoring_case(tmp_path, history, on=icase == 'on', commands=['zzrun'], options=options)
 	ran = tmp_path / 'zzrun-ran'
-	(tmp_path / 'bin' / 'zzrun').write_text('#!/bin/sh\necho "$@" > {}\n'.format(ran))
 	try:
+		(tmp_path / 'bin' / 'zzrun').write_text('#!/bin/sh\necho "$@" > {}\n'.format(ran))
 		assert session.line_after('mssh h zzrun ab') == 'mssh h zzrun ab'
 		assert not ran.exists(), ran.read_text()
 		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
