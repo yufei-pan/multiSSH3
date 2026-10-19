@@ -242,6 +242,22 @@ def test_bash_delegation_reads_the_function_of_a_command_whatever_its_name(tmp_p
 	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
 
 
+@pytest.mark.parametrize('spec', [
+	'complete -F _zzreal zzgit',
+	# a loader registers the command's last part (bash-completion's do)
+	'_completion_loader() { [[ ${1##*/} == zzgit ]] && complete -F _zzreal zzgit; }',
+])
+def test_bash_delegation_finds_the_completion_of_a_full_path_by_its_last_part(tmp_path, spec):
+	# as bash does: the word as typed, then its last part; file names came instead
+	options = '_zzreal() { COMPREPLY=(zzalpha zzalpine); }; ' + spec
+	session = ignoring_case(tmp_path, [], on=False, files=['zzfile'], options=options)
+	try:
+		assert session.line_after('mssh h /usr/local/bin/zzgit zz') == 'mssh h /usr/local/bin/zzgit zzalp'
+		assert session.line_after('mssh h zzgit zz') == 'mssh h zzgit zzalp'
+	finally:
+		session.close()
+
+
 # every name the bash glue's functions used unprefixed while the shell's code ran: a command's completion
 # function sees and sets the variables of the functions that call it (dynamic scoping)
 BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '

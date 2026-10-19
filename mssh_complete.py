@@ -6332,9 +6332,13 @@ _mssh_complete_delegate() {
 			_mssh_complete_results+=("$_mssh_complete_item")
 		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
 	else
+		# the command's completion as bash finds it: by the word as typed, else by its last part (a full
+		# path's command: bash-completion registers that)
 		_mssh_complete_named=$_mssh_complete_cmd
+		complete -p -- "$_mssh_complete_named" >/dev/null 2>&1 || _mssh_complete_named=${_mssh_complete_cmd##*/}
 		if ! complete -p -- "$_mssh_complete_named" >/dev/null 2>&1; then
-			# the loaders source the command's completion file: the shell's code, in the shell's setting
+			# the loaders source the command's completion file: the shell's code, in the shell's setting. They
+			# get the word as typed, as from bash itself
 			if declare -F _comp_load >/dev/null 2>&1; then
 				_mssh_complete_operator _comp_load "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			elif declare -F __load_completion >/dev/null 2>&1; then
@@ -6342,6 +6346,8 @@ _mssh_complete_delegate() {
 			elif declare -F _completion_loader >/dev/null 2>&1; then
 				_mssh_complete_operator _completion_loader "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			fi
+			_mssh_complete_named=$_mssh_complete_cmd
+			complete -p -- "$_mssh_complete_named" >/dev/null 2>&1 || _mssh_complete_named=${_mssh_complete_cmd##*/}
 		fi
 		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_named" 2>/dev/null) || _mssh_complete_spec=
 		# bash prints -F last, right before the name (single-quoted from bash 5.2 where it needs it), after
