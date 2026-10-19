@@ -11,8 +11,8 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, REPO, aged, bash_session, build_index, fish_complete, fish_session, make_home,
-	require_shell, without_command, zsh_session)
+from complete_shell_harness import (ENGINE, REPO, aged, bash_locale, bash_session, build_index, fish_complete, fish_session,
+	make_home, require_shell, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -68,12 +68,12 @@ def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 		session.close()
 
 
-def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options='', lang=None):
+def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), env_lines='', options='', lang=None, ctype=None):
 	'''
 	A bash with completion-ignore-case on (off with on False), no bash-completion, in a directory holding
 	only files (no other file names among the candidates), with commands found first on its PATH, and
-	env_lines in ~/hosts.env (aliases), shell options (set -e), and LANG=lang if given (the index is built in
-	the tests' own).
+	env_lines in ~/hosts.env (aliases), shell options (set -e), and LANG=lang, LC_CTYPE=ctype if given (the
+	index is built in the tests' own).
 	'''
 	env, home = make_home(tmp_path, history)
 	(home / 'hosts').write_text(hosts, encoding='utf-8')
@@ -91,6 +91,8 @@ def ignoring_case(tmp_path, history, hosts='', on=True, files=(), commands=(), e
 	env = dict(env, PATH=str(found) + os.pathsep + env['PATH'])
 	if lang is not None:
 		env['LANG'] = lang
+	if ctype is not None:
+		env['LC_CTYPE'] = ctype
 	extra = "cd '{}'; {}".format(work, options)
 	if on:
 		extra = "bind 'set completion-ignore-case on'; " + extra
@@ -210,6 +212,90 @@ def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
 		session.close()
 
 
+@pytest.mark.parametrize('spec, completed', [
+	# bash prints the quoted arguments of -G, -W, -P, -S, -X and -C before -F: a " -F " inside one names no
+	# function (touch ran, making the files zzsvc and zz here)
+	('complete -W "start -F touch stop" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -C "echo -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -X "!*.c -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	# no function: file names. Nor where the quoted argument ends with a -F and a quoted word (bash 5.2
+	# quotes a function name so)
+	('complete -W "start -F touch x" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -W "start -F \'touch\'" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -X "! -F \'touch\'" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -C "echo -F \'touch\'" zzsvc', 'mssh h zzsvc zzfile '),
+	('complete -W "a -F \'touch\'" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+])
+def test_bash_delegation_runs_the_function_bash_prints_last(tmp_path, spec, completed):
+	options = '_zzreal() { COMPREPLY=(zzalpha zzalpine); }; ' + spec
+	session = ignoring_case(tmp_path, [], on=False, files=['zzfile'], options=options)
+	try:
+		assert session.line_after('mssh h zzsvc zz') == completed
+		assert sorted(os.listdir(str(tmp_path / 'work'))) == ['zzfile']
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('name', ['zzplain', 'zz svc', "zz's", 'zz$b', 'zz"q', '/opt/zz bin/zzgit', "'", '\\'])
+def test_bash_delegation_reads_the_function_of_a_command_whatever_its_name(tmp_path, name):
+	# complete -p prints the name as it is before bash 5.2, single-quoted from 5.2 where it needs it
+	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha zzalpine); }; complete -F _zzreal -- "$2"; '
+		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" "$2" zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), name],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
+
+
+@pytest.mark.parametrize('function', ['zz^f', 'zz%f', 'zz@f', '_zzplain'])
+def test_bash_delegation_runs_a_completion_function_whatever_its_name(tmp_path, function):
+	# from bash 5.2 complete -p single-quotes a function name holding a shell metacharacter (-F 'zz^f')
+	script = ('. "$1"; eval "function $2 { COMPREPLY=(zzalpha zzalpine); }"; complete -F "$2" zzsvc; '
+		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), function],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
+
+
+@pytest.mark.parametrize('spec', [
+	'complete -F _zzreal zzgit',
+	# a loader registers the command's last part (bash-completion's do)
+	'_completion_loader() { [[ ${1##*/} == zzgit ]] && complete -F _zzreal zzgit; }',
+])
+def test_bash_delegation_finds_the_completion_of_a_full_path_by_its_last_part(tmp_path, spec):
+	# as bash does: the word as typed, then its last part; file names came instead
+	options = '_zzreal() { COMPREPLY=(zzalpha zzalpine); }; ' + spec
+	session = ignoring_case(tmp_path, [], on=False, files=['zzfile'], options=options)
+	try:
+		assert session.line_after('mssh h /usr/local/bin/zzgit zz') == 'mssh h /usr/local/bin/zzgit zzalp'
+		assert session.line_after('mssh h zzgit zz') == 'mssh h zzgit zzalp'
+	finally:
+		session.close()
+
+
+# names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
+# sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
+# every glue function to the prefix
+BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '
+	'word cword prefix cmd spec func lead words found kept typed keymap previous shown expand')
+
+
+@pytest.mark.parametrize('on', [True, False])
+def test_bash_a_completion_function_setting_names_of_its_own_leaves_the_glue_alone(tmp_path, on):
+	# a completion written without local (for word in "${COMP_WORDS[@]}") set the glue's word, and nothing
+	# was offered; files='a b' made the glue's (( files || dirs )) a syntax error
+	options = '_zzclob() {{ {}; COMPREPLY=(alpha alpine); }}; complete -F _zzclob zzclob'.format(
+		' '.join("{}='a b'".format(name) for name in BASH_GLUE_NAMES.split()))
+	session = ignoring_case(tmp_path, [], on=on, options=options)
+	try:
+		# what the shell printed for the TAB alone (CentOS 7's bash warns of a missing locale at its start)
+		start = len(session.output)
+		assert session.line_after('mssh h zzclob al') == 'mssh h zzclob alp'
+		assert b'syntax error' not in session.output[start:] and b'bash: ' not in session.output[start:]
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('options', ['', 'set -e', 'set -u'])
 def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing_only_in_case(tmp_path, options):
 	# the history's storage-file and the file Storage-File, both offered, kept readline from completing
@@ -226,7 +312,8 @@ def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing
 def nocasematch(session):
 	'''Whether the running bash has nocasematch on: 'on' or 'off' (None if it does not say).'''
 	start = len(session.output)
-	session.send('shopt -q nocasematch && echo "@@NOCASE""=on@@" || echo "@@NOCASE""=off@@"\r')
+	# a space first: bash 4 can drop the first key after a Ctrl-C cut a binding short
+	session.send(' shopt -q nocasematch && echo "@@NOCASE""=on@@" || echo "@@NOCASE""=off@@"\r')
 	deadline = time.monotonic() + 10
 	while time.monotonic() < deadline:
 		found = re.search(rb'@@NOCASE=(on|off)@@', session.output[start:])
@@ -275,23 +362,18 @@ def test_bash_ignoring_case_lowers_letters_as_its_locale_does(tmp_path):
 		session.close()
 
 
-def locale_here(name):
-	'''Whether the C library here has the locale named name.'''
-	import locale
-	saved = locale.setlocale(locale.LC_CTYPE)
-	try:
-		locale.setlocale(locale.LC_CTYPE, name)
-		return True
-	except locale.Error:
-		return False
-	finally:
-		locale.setlocale(locale.LC_CTYPE, saved)
+def taken_by_bash(lang, ctype=None):
+	'''(utf8, turkic): how bash here takes LANG=lang (and LC_CTYPE=ctype), as its glue measures it.'''
+	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': lang}
+	if ctype is not None:
+		env['LC_CTYPE'] = ctype
+	return bash_locale(env)
 
 
 @pytest.mark.parametrize('lang', ['xx_YY.UTF-8', 'tr_XX.UTF-8'])
 def test_bash_ignoring_case_in_a_locale_this_system_lacks_runs_as_in_c(tmp_path, lang):
 	# bash runs in C in a locale the system has not, whatever its name says: \u0130stanbul is no word for i
-	if locale_here(lang):
+	if taken_by_bash(lang)[0]:
 		pytest.skip('this C library takes any locale name')
 	session = ignoring_case(tmp_path, [], '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n', lang=lang)
 	try:
@@ -302,18 +384,45 @@ def test_bash_ignoring_case_in_a_locale_this_system_lacks_runs_as_in_c(tmp_path,
 
 @pytest.mark.parametrize('lang, typed, line', [
 	('tr_TR.UTF-8', 'mssh i', 'mssh \u0130stanbul '), ('tr_TR.UTF-8', 'mssh I', 'mssh Ix1 '),
-	('tr_TR.ISO-8859-9', 'mssh i', 'mssh ix2 '), ('tr_TR.ISO-8859-9', 'mssh I', 'mssh Ix1 ')])
+	('tr_TR.ISO-8859-9', 'mssh i', 'mssh ix2 '), ('tr_TR.ISO-8859-9', 'mssh I', 'mssh Ix1 '),
+	# glibc's alias of tr_TR.ISO-8859-9
+	('turkish', 'mssh i', 'mssh ix2 ')])
 def test_bash_ignoring_case_in_a_turkish_locale(tmp_path, lang, typed, line):
 	# in UTF-8 readline lowers I to the dotless i and the I with a dot to i; in ISO-8859-9 I and i match only
 	# themselves (it lowers I to a dotless i that is no ASCII letter, and the I with a dot reaches it as two bytes)
-	if not locale_here(lang):
-		pytest.skip('no {} locale here'.format(lang))
-	if not mc._locale_traits(lang)[1]:
-		pytest.skip('this C library does not lower I to the dotless i in {} (musl)'.format(lang))
+	utf8, turkic = taken_by_bash(lang)
+	if not turkic or utf8 != ('UTF-8' in lang):
+		pytest.skip('bash here lowers I to i in {} (not there, or musl)'.format(lang))
 	hosts = '10.0.0.1 \u0130stanbul\n10.0.0.2 Ix1\n' + ('10.0.0.3 ix2\n' if 'UTF-8' not in lang else '')
 	session = ignoring_case(tmp_path, [], hosts, lang=lang)
 	try:
 		assert session.line_after(typed) == line
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('lang', ['zh_CN.GB18030', 'ko_KR.EUC-KR'])
+def test_bash_ignoring_case_in_a_two_byte_locale_that_is_not_utf8(tmp_path, lang):
+	# a two-byte UTF-8 character is one there too: these were taken for UTF-8 (\u00c9clair offered for the
+	# bytes of \u00e9 typed, which the locale reads as another character)
+	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': lang}
+	if bash_locale(env, multibyte=True) != (False, False, True):
+		pytest.skip('no {} locale here'.format(lang))
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u00c9clair\n10.0.0.2 Ix1\n', lang=lang)
+	try:
+		assert session.line_after('mssh \u00e9') == 'mssh \u00e9'
+		assert session.line_after('mssh i') == 'mssh Ix1 '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_in_the_locale_bash_takes_from_lang_over_a_bad_lc_ctype(tmp_path):
+	# macOS's ssh sends LC_CTYPE=UTF-8, no locale on Linux: bash keeps LANG's, a UTF-8 one, and so does TAB
+	if taken_by_bash('C.UTF-8', 'UTF-8') != (True, False):
+		pytest.skip('no C.UTF-8 here, or UTF-8 is a locale')
+	session = ignoring_case(tmp_path, [], '10.0.0.1 \u00c9clair\n', lang='C.UTF-8', ctype='UTF-8')
+	try:
+		assert session.line_after('mssh \u00e9') == 'mssh \u00c9clair '
 	finally:
 		session.close()
 
@@ -329,6 +438,216 @@ def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp
 		assert session.line_after('mssh h "nosuchcmd /zzsrv/data/o') == 'mssh h "nosuchcmd /zzsrv/data/o'
 		assert session.line_after('mssh h /zzopt/tool/r') == 'mssh h /zzopt/tool/r'
 		assert session.line_after('mssh h /Zzopt/Tool/R') == 'mssh h /Zzopt/Tool/run.sh '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('icase', ['on', 'off'])
+# registered with the shell's setting off: no nocasematch anywhere, nothing for the test to find
+@pytest.mark.parametrize('arrives, setting', [('registered', 'on'), ('loaded', 'on'), ('loaded', 'off')])
+def test_bash_tab_runs_no_command_complete_f_names_and_gives_file_names(tmp_path, arrives, setting, icase):
+	# with nocasematch on, the glue read "complete -f zzrun" as "complete -F zzrun" and ran zzrun, the remote
+	# command, here as its completion function: with the shell's setting on (registered), and with the
+	# completion file a loader sources at the first TAB turning it on (loaded: bash-completion's loaders run
+	# the shell's code, which ran in the glue's setting). Every test of the glue's own compares exactly, and
+	# the shell keeps its setting
+	history = ['1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"']
+	if arrives == 'registered':
+		options = 'complete -f zzrun'
+	else:
+		completion = tmp_path / 'zzrun.bash'
+		completion.write_text('shopt -s nocasematch\ncomplete -f zzrun\n')
+		options = "_completion_loader() {{ [[ $1 == zzrun ]] && . '{}'; }}".format(completion)
+	options += '; shopt -{} nocasematch'.format('s' if setting == 'on' else 'u')
+	session = ignoring_case(tmp_path, history, on=icase == 'on', commands=['zzrun'], options=options)
+	ran = tmp_path / 'zzrun-ran'
+	try:
+		(tmp_path / 'bin' / 'zzrun').write_text('#!/bin/sh\necho "$@" > {}\n'.format(ran))
+		assert session.line_after('mssh h zzrun ab') == 'mssh h zzrun ab'
+		assert not ran.exists(), ran.read_text()
+		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
+		assert nocasematch(session) == setting
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('setting, prompt_command', [('on', 'kept'), ('on', 'replaced'), ('off', 'replaced')])
+def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting, prompt_command):
+	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function is cut too):
+	# here the Ctrl-R binding the glue took over, a slow one, with the glue's note of the shell's
+	# nocasematch left. The shell then sets it the other way, and TAB must leave that: the note came back
+	# at the next glue call (round 5's heal at the next prompt fixed that only where PROMPT_COMMAND
+	# still holds it, 'kept'). With 'off' nothing came back before; it guards the note of an off setting
+	env, home = make_home(tmp_path, [])
+	pre = '''shopt -{} nocasematch
+_slow() {{ printf '@@SLOW''@@\\n'; local end=$((SECONDS + 2)); while (( SECONDS < end )); do :; done; }}
+bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, pre=pre)
+	try:
+		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
+		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
+		session.read_until(b'@@READY@@')
+		session.send('echo a\x12')
+		session.read_until(b'@@SLOW@@')
+		session.send('\x03')
+		# the binding is over once a command runs; bash 4 kept the line and drops a key: cancel, clear, a space
+		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
+		session.read_until(b'@@ALIVE@@', 15)
+		session.read_until(b'@@READY@@')
+		other = 'off' if setting == 'on' else 'on'
+		session.send(' shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
+		assert nocasematch(session) == other
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('prompt_command', ['kept', 'replaced'])
+def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back_its_nocasematch(tmp_path, prompt_command):
+	# a Ctrl-C landing in the glue's own code, while it holds nocasematch off for a shell that has it on:
+	# here Ctrl-R's picker expanding the prompt, a slow $(...) in PS1. The shell gets nocasematch back at
+	# the next prompt (PROMPT_COMMAND's heal, 'kept'), or at the next glue call when PROMPT_COMMAND was
+	# replaced
+	env, home = make_home(tmp_path, [])
+	major = subprocess.run([require_shell('bash'), '-c', 'echo ${BASH_VERSINFO[0]}'], env=env, stdout=subprocess.PIPE).stdout
+	if int(major) < 5:
+		# 4.4 ends the picker's start without the engine, 4.2 does not expand PS1 there
+		pytest.skip('bash 4 runs a bind -x command to its end on Ctrl-C: no cut lands in the glue')
+	armed = tmp_path / 'armed'
+	never = tmp_path / 'never'
+	os.mkfifo(str(never))
+	# the prompt's command: once armed, says so and waits on a pipe nobody writes to, until Ctrl-C
+	(tmp_path / 'zzwait').write_text('#!/bin/sh\n[ -e {0} ] || exit 0\nmv {0} {0}.taken\nprintf "@@WAIT""@@\\n" >&2\nread x < {1}\n'.format(armed, never))
+	(tmp_path / 'zzwait').chmod(0o755)
+	# an engine noting what it was asked: the picker must not start, the cut came first
+	asked = tmp_path / 'asked'
+	(tmp_path / 'zzengine').write_text('#!/bin/sh\necho "$1" >> {}\nexit 1\n'.format(asked))
+	(tmp_path / 'zzengine').chmod(0o755)
+	glue = glue_file(home, 'bash', command=str(tmp_path / 'zzengine'))
+	extra = "PS1='$({})@@READY@@ '".format(tmp_path / 'zzwait')
+	session = bash_session(home, env, glue, bash_completion=False, pre='shopt -s nocasematch', extra=extra)
+	try:
+		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
+		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
+		session.read_until(b'@@READY@@')
+		armed.write_text('')
+		session.send('mssh h\x12')
+		assert '@@WAIT@@' in session.read_until(b'@@WAIT@@')
+		session.send('\x03')
+		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
+		session.read_until(b'@@ALIVE@@', 15)
+		session.read_until(b'@@READY@@')
+		assert not asked.exists(), asked.read_text()
+		if prompt_command == 'kept':
+			assert nocasematch(session) == 'on'
+		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
+		assert nocasematch(session) == 'on'
+	finally:
+		session.close()
+
+
+CUT_PROBE = r'''
+. "$1"
+# a command's completion function, for the delegate path, and one a loader registers at the first TAB
+_zzstand() { COMPREPLY=(Alpha alpine beta); }
+complete -F _zzstand zzcmd
+_completion_loader() { [[ $1 == zzlazy ]] && complete -F _zzstand zzlazy; }
+# the probe writes to fd 3: command substitutions in the glue take its stdout
+exec 3>&1
+_probe() {
+	# before each command of the glue's and of the stand-in's: what the heal makes of a cut landing
+	# there (in a subshell: the call goes on)
+	case ${FUNCNAME[1]-} in _mssh_complete_*|_zzstand|_completion_loader) ;; *) return 0 ;; esac
+	local got
+	got=$(trap - DEBUG; _mssh_complete_heal; shopt -q nocasematch && echo on || echo off)
+	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got" >&3
+}
+shopt -$2 nocasematch
+set -T
+trap _probe DEBUG
+eval "$3"
+trap - DEBUG
+printf 'delegated: %s\n' "${_mssh_complete_delegated[*]-}"
+'''
+
+
+@pytest.mark.parametrize('setting', ['on', 'off'])
+@pytest.mark.parametrize('call, delegated', [
+	# the shell's code run by the glue (a delegated completion, the Ctrl-R binding it took over)
+	('_mssh_complete_guard _mssh_complete_operator true', ''),
+	# a glue call made from there (ble.sh's hooks)
+	('_mssh_complete_guard _mssh_complete_operator _mssh_complete_guard true', ''),
+	# a command's completion function, run and its words filtered by the word typed: in any case, and as typed
+	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'Alpha alpine'),
+	('_mssh_complete_icase=0 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'alpine'),
+	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzlazy al', 'Alpha alpine'),
+])
+def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call, delegated):
+	# a cut between turning nocasematch off and noting it left the glue's off where its note said the
+	# shell's on: the heal took that for the shell's doing and kept it off. A cut can land before any
+	# command of a call (a completion function too, where it runs a command); the heal from there must
+	# give the shell back its setting
+	glue = glue_file(tmp_path, 'bash')
+	output = subprocess.run([require_shell('bash'), '-c', CUT_PROBE, 'probe', str(glue), 's' if setting == 'on' else 'u', call],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	lines = output.stdout.decode().splitlines()
+	assert lines[-1:] == ['delegated: ' + delegated], output
+	assert len(lines) > 20, output
+	assert [line for line in lines[:-1] if not line.endswith('-> ' + setting)] == []
+
+
+@pytest.mark.parametrize('icase', ['on', 'off'])
+def test_bash_a_completion_turning_nocasematch_on_leaves_the_shell_as_it_was(tmp_path, icase):
+	# a command's completion function that turns nocasematch on and leaves it so: the glue, which runs it,
+	# gives the shell back the setting it had before
+	options = '_leaky() { shopt -s nocasematch; COMPREPLY=(storage-y); }; complete -F _leaky leaky'
+	session = ignoring_case(tmp_path, [], on=icase == 'on', options=options)
+	try:
+		assert session.line_after('mssh h leaky stor') == 'mssh h leaky storage-y '
+		assert nocasematch(session) == 'off'
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_text_before_its_word_as_typed(tmp_path):
+	# bash's word stops at ":": the delegated host:file continues HOST:fi only if HOST: is as typed, else
+	# file went in after the HOST: typed, a name no file has
+	session = ignoring_case(tmp_path, [], files=['host:file', 'Fi:fa.txt'])
+	try:
+		assert session.line_after('mssh h nosuchcmd HOST:fi') == 'mssh h nosuchcmd HOST:fi'
+		assert session.line_after('mssh h nosuchcmd host:FI') == 'mssh h nosuchcmd host:file '
+		# nor does a word whose text before bash's word differs from it only in case: it came twice
+		# (fi:Fi:fa.txt), and readline's own file names put it twice too
+		assert session.line_after('mssh h nosuchcmd fi:f') == 'mssh h nosuchcmd fi:f'
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_hosts_before_the_last_one_of_x_as_typed(tmp_path):
+	# -X's history was matched whole in any case: web1,webx became WEB1,webX, root@webz ROOT@webz
+	history = ['179000000{}\t/x/multiSSH3.py\t-su -X={}\tweb[1-3]\t"uptime"'.format(number, value)
+		for number, value in enumerate(('WEB1,webX', 'ROOT@webz'))]
+	session = ignoring_case(tmp_path, history)
+	try:
+		assert session.line_after('mssh web[1-3] -X web1,webx') == 'mssh web[1-3] -X web1,webx'
+		assert session.line_after('mssh web[1-3] -X root@webz') == 'mssh web[1-3] -X root@webz'
+		assert session.line_after('mssh web[1-3] -X WEB1,webx') == 'mssh web[1-3] -X WEB1,webX '
+	finally:
+		session.close()
+
+
+def test_bash_ignoring_case_keeps_the_hosts_before_the_last_one_as_typed_whatever_separates_them(tmp_path):
+	# mssh splits hosts on "/", ";", "|", "&" and whitespace too: web1/webx became WEB1/webX
+	history = ['179000000{}\t/x/multiSSH3.py\t-su -X={}\tweb[1-3]\t"uptime"'.format(number, value)
+		for number, value in enumerate(("WEB1/webX", "'WEB1 webY'", "'WEB1\u00a0webZ'"))]
+	session = ignoring_case(tmp_path, history)
+	try:
+		assert session.line_after('mssh web[1-3] -X web1/webx') == 'mssh web[1-3] -X web1/webx'
+		assert session.line_after('mssh web[1-3] -X "web1 weby') == 'mssh web[1-3] -X "web1 weby'
+		# any whitespace str.split() splits on, a no-break space too
+		assert session.line_after('mssh web[1-3] -X "web1\u00a0webz') == 'mssh web[1-3] -X "web1\u00a0webz'
+		assert session.line_after('mssh web[1-3] -X WEB1/webx') == 'mssh web[1-3] -X WEB1/webX '
 	finally:
 		session.close()
 
@@ -450,6 +769,63 @@ def test_bash_glue_has_no_comment_inside_a_command_or_process_substitution():
 	assert comments_in_substitutions("f() {\n\t# it's ( not inside\n\tx=$(a; b)\n}\n# (\ny=<(c\n# in\n)\n") == [7]
 
 
+# the variables a glue function may declare unprefixed: names a callee's convention needs
+GLUE_LOCAL_EXCEPTIONS = {
+	# bash's completion interface, handed to a command's completion function; a locale for one function
+	# (its whole point); ble.sh's conventions: its functions return in ret, layer:{selection}/update
+	# reads sel and gflags
+	'bash': {'COMP_WORDS', 'COMP_CWORD', 'COMP_LINE', 'COMP_POINT', 'COMPREPLY', 'LC_ALL', 'ret', 'sel', 'gflags'},
+	# what zsh's pattern matching sets, kept from the shell's own
+	'zsh': {'MATCH', 'MBEGIN', 'MEND', 'match', 'mbegin', 'mend'},
+}
+
+
+def glue_locals(text, shell):
+	'''(line number, function, name) of every variable a function of a glue declares local.'''
+	import shlex
+	found = []
+	function = None
+	for number, line in enumerate(text.splitlines(), 1):
+		head = re.match(r'\s*(?:function\s+(\S+)\s*\{|([\w/:.-]+)\s*\(\)\s*\{)', line)
+		if head:
+			function = head.group(1) or head.group(2)
+		if line.lstrip().startswith('#'):
+			continue
+		declared = re.match(r'\s*(?:\(\(.*\)\)\s*&&\s*)?(local|typeset|declare|integer|float)\s(.*)', line)
+		if not declared:
+			continue
+		try:
+			words = shlex.split(declared.group(2))
+		except ValueError:
+			# a line continued on the next (declare -F a b \)
+			words = declared.group(2).split()
+		flags = ''.join(word.lstrip('-+') for word in words if word[:1] in '-+')
+		# globals; bash's declare -F and -f look functions up
+		if 'g' in flags or (shell == 'bash' and set(flags) & set('Ffp')):
+			continue
+		for word in words:
+			name = re.match(r'([A-Za-z_]\w*)(?:=|\[|$)', word)
+			if name:
+				found.append((number, function, name.group(1)))
+	return found
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_every_variable_a_glue_function_declares_is_prefixed(shell):
+	# the shell's code runs inside the glue's functions (completion functions, the bindings taken over,
+	# a DEBUG trap under set -T), and bash and zsh scope dynamically: it sees and sets their variables
+	# the glue as the shell reads it: render_glue wraps zsh's in an eval string
+	text = mc._GLUES[shell].replace('@ENGINE@', 'engine').replace('@START@', "''")
+	declared = glue_locals(text, shell)
+	assert len(declared) > 50
+	assert [(number, function, name) for number, function, name in declared
+		if not name.startswith('_mssh_complete_') and name not in GLUE_LOCAL_EXCEPTIONS[shell]] == []
+	# the parser finds names wherever a declaration holds them, and skips globals and function lookups
+	assert [name for _, _, name in glue_locals("f() {\n\tlocal a b=1 -i c\n\t(( x )) && local LC_ALL=C\n\tlocal -a d=(\"$@\") e=() f\n}", shell)] == [
+		'a', 'b', 'c', 'LC_ALL', 'd', 'e', 'f']
+	assert glue_locals("f() {\n\ttypeset -g x=1\n\t# local y\n}", shell) == []
+
+
 def test_bash_tab_inside_an_ansi_c_quote_keeps_the_command(tmp_path):
 	# in $'...' a backslash starts an escape: zzfmt "%s\n" x must not be offered there as it is
 	# (zzfmt: a name no local command starts with, as the first word is also completed as a command)
@@ -540,6 +916,67 @@ def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
 		session.close()
 
 
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_completion_reads_the_engine_s_answer_whatever_ifs_the_shell_has(setup, shell, ifs):
+	# the directives were split with the shell's IFS: with IFS=$'\n' "D files nodefault" was one word, and
+	# none of them counted (file names for a password, none for -f)
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	start = bash_session if shell == 'bash' else zsh_session
+	session = start(home, env, glue_file(home, shell), extra='IFS=' + ifs)
+	try:
+		assert session.line_after('mssh gp') == ('mssh gpu[01-16] ' if shell == 'bash' else 'mssh gpu\\[01-16\\] ')
+		assert session.line_after('mssh -p zz') == 'mssh -p zz'
+		assert session.line_after('mssh -f zzf') == 'mssh -f zzfile_unique '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
+def test_bash_ignoring_case_reads_the_engine_s_answer_whatever_ifs_the_shell_has(tmp_path, ifs):
+	# the icase directive: delegated words in another case are kept (Storage-File for stor)
+	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-x"']
+	session = ignoring_case(tmp_path, history, files=['Storage-File'], options='IFS=' + ifs)
+	try:
+		assert session.line_after('mssh h nosuchcmd stor') == 'mssh h nosuchcmd storage-'
+	finally:
+		session.close()
+
+
+def test_bash_glue_splitter_takes_an_empty_separator_for_a_tab(tmp_path):
+	# ${2-...} kept an empty separator, which every remainder holds: the loop never ended
+	script = '. "$1"; _mssh_complete_split $\'a b\\tc\' ""; printf "%s|" "${_mssh_complete_fields[@]}"'
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+	assert output.stdout.decode() == 'a b|c|', output
+
+
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':', "''"])
+def test_bash_glue_joins_and_splits_its_own_lists_whatever_ifs_the_shell_has(tmp_path, ifs):
+	# COMP_LINE joined the words with IFS's first character; the keymaps to arm again were split with it
+	script = ('. "$1"; exec 3>&1; IFS=' + ifs + '; _zzline() { printf "line[%s]\\n" "$COMP_LINE" >&3; }; complete -F _zzline zzcmd; '
+		'_mssh_complete_guard _mssh_complete_delegate b 2 "" zzcmd a b >/dev/null; '
+		'_mssh_complete_arm() { printf "arm[%s]\\n" "$1"; }; _mssh_complete_unarmed=" emacs vi-insert"; _mssh_complete_rearm_now 0')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().splitlines() == ['line[zzcmd a b]', 'arm[emacs]', 'arm[vi-insert]'], output
+
+
+@pytest.mark.parametrize('strategy, strategies', [
+	# zsh-autosuggestions' own form, a list written as one string, none set
+	('(history completion)', ['history', 'completion']), ('"history completion"', ['history', 'completion']), ('', ['history'])])
+@pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
+def test_zsh_glue_splits_the_autosuggestion_strategies_whatever_ifs_the_shell_has(tmp_path, ifs, strategy, strategies):
+	# outside the completion system (which sets IFS for itself): (s: :) joined an array with IFS first, and
+	# (history completion) became one strategy history:completion, which does not exist
+	script = ('source "$1"; IFS=' + ifs + '; ' + ('ZSH_AUTOSUGGEST_STRATEGY=' + strategy if strategy else 'unset ZSH_AUTOSUGGEST_STRATEGY')
+		+ '; _mssh_complete_zas_strategy; print -r -- "${(j:|:)ZSH_AUTOSUGGEST_STRATEGY}"')
+	output = subprocess.run([require_shell('zsh'), '-f', '-c', script, 'probe', str(glue_file(tmp_path, 'zsh'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode() == '|'.join(['mssh'] + strategies) + '\n', output
+
+
 # a command whose completion is built on _arguments, as most of zsh's are
 ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
 
@@ -556,6 +993,29 @@ def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
 		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
 		assert session.line_after('ls dots/') == 'ls dots/.zzhidden '
 		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		assert b'_mssh:' not in session.output
+	finally:
+		session.close()
+
+
+def test_zsh_a_completion_function_setting_names_of_its_own_leaves_the_glue_alone(setup):
+	# zsh scopes as bash does. A completion setting matches made _mssh think nothing was offered, and file
+	# names came in beside the command's words (alzzfile); one setting nodefault and offering nothing kept
+	# out the file names zsh offers then (zzfile_unique). Each sets the other name as the glue had it
+	env, home = setup
+	(home / 'alzzfile').write_text('')
+	(home / 'zzfile_unique').write_text('')
+	names = ('before after flags resp chunk line item name fd kind rest fields texts shown dwords compsys_options',
+		'end remaining files delegate dcword start')
+	clobber = (' '.join("{}='a b'".format(name) for name in names[0].split()) + '; '
+		+ ' '.join('{}=1000'.format(name) for name in names[1].split()))
+	extra = ('_zzclob() {{ {0}; matches=1000 nodefault=0; compadd alpha alpine }}\ncompdef _zzclob zzclob\n'
+		'_zzquiet() {{ {0}; matches=0 nodefault=1 }}\ncompdef _zzquiet zzquiet').format(clobber)
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=extra)
+	try:
+		assert session.line_after('zzclob al') == 'zzclob alp'
+		assert session.line_after('mssh h zzclob al') == 'mssh h zzclob alp'
+		assert session.line_after('mssh h zzquiet zz') == 'mssh h zzquiet zzfile_unique '
 		assert b'_mssh:' not in session.output
 	finally:
 		session.close()

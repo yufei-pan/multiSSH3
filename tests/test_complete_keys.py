@@ -13,7 +13,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, aged, bash_session, blesh_session, build_index, fish_session, make_home,
+from complete_shell_harness import (ENGINE, aged, bash_locale, bash_session, blesh_session, build_index, fish_session, make_home,
 	require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
@@ -107,6 +107,43 @@ def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home):
 		session.send('\x12')
 		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
 		assert words(printed(session, '\r')) == PICKED
+	finally:
+		session.close()
+
+
+def test_bash_picker_draws_in_the_locale_bash_runs_in(home):
+	# macOS's ssh sends LC_CTYPE=UTF-8, no locale on Linux: bash keeps LANG's, C.UTF-8, and the picker
+	# draws in Unicode as the shell can show it (it read LC_CTYPE and drew in ASCII)
+	from complete_shell_harness import bash_locale
+	env, home = home
+	env = dict(env, LANG='C.UTF-8', LC_CTYPE='UTF-8')
+	if bash_locale(env) != (True, False):
+		pytest.skip('no C.UTF-8 here, or UTF-8 is a locale')
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		assert 'type to filter \u00b7' in session.read_until('type to filter \u00b7'.encode('utf-8'), 10)
+	finally:
+		session.close()
+
+
+C_SHELL = 'LC_ALL=C   # not exported: bash runs in C, mssh-complete sees the exported LANG=C.UTF-8'
+
+
+def test_bash_picker_draws_in_the_locale_bash_measured_not_the_exported_one(home):
+	# the exported variables say UTF-8, the shell runs in C: the picker draws in ASCII
+	env, home = home
+	env = dict(env, LANG='C.UTF-8')
+	if bash_locale(env) != (True, False):
+		pytest.skip('no C.UTF-8 here')
+	session = bash_session(home, env, glue_file(home, 'bash'), extra=C_SHELL)
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.3)
+		session.send('\x12')
+		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
 	finally:
 		session.close()
 
@@ -303,7 +340,7 @@ def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
 		session.close()
 
 
-@pytest.mark.parametrize('option', ['set -e', 'set -u', 'set -o pipefail'])
+@pytest.mark.parametrize('option', ['set -e', 'set -u', 'set -o pipefail', 'shopt -s nocasematch'])
 def test_bash_shell_options_do_not_break_ctrl_r_or_the_editor(home, option):
 	env, home = home
 	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + option)
@@ -324,6 +361,13 @@ def test_bash_shell_options_do_not_break_ctrl_r_or_the_editor(home, option):
 		assert '@@RAN[xy]@@' in session.read_until(b'@@RAN[xy]@@', 10)
 		session.send('echo "[alive]"\r')
 		assert '[alive]\r\n' in session.read_until(b'[alive]\r\n', 10)
+		# the option is still the operator's
+		name = {'set -e': 'errexit', 'set -u': 'nounset'}.get(option, option.split()[-1])
+		start = len(session.output)
+		session.send('if shopt -qo {0} 2>/dev/null || shopt -q {0} 2>/dev/null; then echo "@@OPT""=on@@"; else echo "@@OPT""=off@@"; fi\r'.format(name))
+		session.read_until(b'@@OPT=o', 10)
+		session.read_until(b'@@READY@@', 5)
+		assert '@@OPT=on@@' in session.output[start:].decode('utf-8', 'replace')
 	finally:
 		session.close()
 
@@ -459,6 +503,39 @@ def test_editor_keys_after_ctrl_r_go_to_the_picker_then_the_editor(home):
 		assert '@@RAN' not in session.output.decode('utf-8', 'replace')
 	finally:
 		session.close()
+
+
+def test_editor_draws_in_the_locale_bash_measured_not_the_exported_one(home):
+	# the editor is told the locale bash runs in: its picker (Ctrl-R) draws in ASCII where the shell runs in
+	# C, whatever the exported variables say (it drew in Unicode, from them)
+	env, home = home
+	env = dict(env, LANG='C.UTF-8')
+	if bash_locale(env) != (True, False):
+		pytest.skip('no C.UTF-8 here')
+	if bash_version(env) < 44:
+		pytest.skip('the mssh line editor needs bash 4.4 or later')
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + C_SHELL)
+	try:
+		session.send('mssh ')
+		time.sleep(0.5)
+		session.send('gpu[01-16] \x12')
+		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
+	finally:
+		session.close()
+
+
+def test_editor_keeps_passwords_out_of_the_debug_log(home):
+	# make_home turns the log on for every shell test, and a failed test's report carries it
+	from pathlib import Path
+	env, home = home
+	session = editor_session(env, home)
+	try:
+		session.send('mssh -p hunter2 host1 uptime\r')
+		assert '@@RAN[-p hunter2 host1 uptime]@@' in session.read_until(b'@@RAN[-p hunter2 host1 uptime]@@', 15)
+	finally:
+		session.close()
+	log = (Path(env['XDG_RUNTIME_DIR']) / 'multiSSH3' / 'complete.log').read_text()
+	assert "-p *** host1 uptime" in log and 'hunter2' not in log
 
 
 def test_editor_runs_pasted_lines_in_order(home):
@@ -852,9 +929,12 @@ def test_blesh_keeps_suggesting_and_warning_with_noclobber(home):
 		session.close()
 
 
-def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
+@pytest.mark.parametrize('pre', ['', "ble-bind -m emacs -x C-a 'echo -f C-r zz'"])
+def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, pre):
+	# ble-bind -P quotes a command bound with -x: a " -f C-r " inside one (here of C-a, listed first) is
+	# not Ctrl-R's binding
 	env, home = home
-	session = blesh_session(home, env, glue_file(home, 'bash'))
+	session = blesh_session(home, env, glue_file(home, 'bash'), pre=pre)
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)

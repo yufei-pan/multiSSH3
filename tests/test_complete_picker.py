@@ -1,4 +1,5 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
+import sys
 import time
 
 import pytest
@@ -761,3 +762,60 @@ def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
 		assert len(items) == 10
 		return len(parsed)
 	assert parses(2000) == parses(20)
+
+
+@pytest.mark.parametrize('line', [
+	'mssh -p hunter2 web1 uptime', 'mssh -phunter2 web1 uptime', 'mssh -p=hunter2 web1 uptime',
+	'mssh --password hunter2 web1 uptime', 'mssh --password=hunter2 web1 uptime', 'mssh --pass hunter2 web1 uptime',
+	'mssh -qp hunter2 web1 uptime', 'mssh -qphunter2 web1 uptime', 'mssh -ip hunter2 -M bmc1 power status',
+	"mssh --ipmi_password='hunter2' -M bmc1 power status", 'mssh web1 -p hunter2 uptime'])
+def test_the_debug_log_shows_a_line_without_its_passwords(line):
+	# make_home turns the log on for every shell test, and a failed test's report carries it
+	masked = mc._without_passwords(line, SPEC)
+	assert 'hunter2' not in masked and '***' in masked
+	assert masked.replace('***', '') == line.replace('hunter2', '').replace("''", '')
+	assert mc._without_passwords('mssh -u root web1 uptime', SPEC) == 'mssh -u root web1 uptime'
+
+
+class _Steps(object):
+	'''What _cmd_edit and _cmd_pick do, in order: saying ready, taking the terminal, logging.'''
+	def __init__(self, monkeypatch):
+		self.done = []
+		steps = self
+
+		class FakeTerminal(object):
+			def __init__(self, *args):
+				pass
+
+			def __enter__(self):
+				steps.done.append('terminal taken')
+				return self
+
+			def __exit__(self, *args):
+				return False
+		monkeypatch.setattr(mc, 'Terminal', FakeTerminal)
+		monkeypatch.setattr(mc, '_ready', lambda: steps.done.append('ready') or True)
+		monkeypatch.setattr(mc, '_debug', lambda message: steps.done.append(message.split(' ')[0] + ' ' + message.split(' ')[1]))
+
+
+@pytest.mark.parametrize('command', ['edit', 'pick'])
+def test_nothing_comes_between_ready_and_taking_the_terminal(tmp_path, monkeypatch, command):
+	# keys typed after "ready" and before the terminal is raw are echoed by it: no log line between them
+	import io
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	for name, value in env.items():
+		monkeypatch.setenv(name, value)
+	steps = _Steps(monkeypatch)
+	if command == 'edit':
+		monkeypatch.setattr(mc.LineEditor, 'run', lambda self, term, prompt, style=None: ('pass', b''))
+		monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(b'')))
+		monkeypatch.setattr(sys, 'stdout', io.TextIOWrapper(io.BytesIO()))
+		mc._cmd_edit(['--ready', '--', 'mssh '])
+	else:
+		monkeypatch.setattr(mc.Picker, 'run', lambda self, term, line=None, before=None: 'cancel')
+		monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(READY_PICK)))
+		mc._cmd_pick()
+	ready = steps.done.index('ready')
+	assert steps.done[ready + 1] == 'terminal taken', steps.done
+	assert '{}: ready'.format(command) in steps.done[ready + 2:], steps.done

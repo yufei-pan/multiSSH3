@@ -34,6 +34,10 @@ def texts(response):
 	return [candidate.text for candidate in response.candidates]
 
 
+def texts_of(candidates):
+	return [candidate.text for candidate in candidates]
+
+
 def query(before, after='', word=None, shell='bash', knowledges=None, hosts=None, flags=None):
 	if word is None:
 		word = '' if before.endswith(' ') else before.split(' ')[-1]
@@ -288,7 +292,8 @@ def test_aliases_and_unavailable_hosts(tmp_path):
 # bash with readline's completion-ignore-case on sends icase=1: readline takes a candidate whose case differs
 # from the word, so every lookup matches the word in any case, and a candidate keeps its own spelling
 
-ICASE = {'icase': '1'}
+# as bash's glue sends it in a UTF-8 locale, with the locale it measured
+ICASE = {'icase': '1', 'utf8': '1', 'turkic': '0'}
 
 
 def test_prefix_ranges_find_every_spelling_differing_only_in_case():
@@ -339,55 +344,62 @@ def test_text_is_matched_as_its_characters_are(ascii, turkic):
 			assert mc._starts(char + 'x', typed, fold) == (char in fold.variants(typed)), (char, typed)
 
 
-# how the C library here takes some locale names: (utf8, turkic), None for one it has not
-SYSTEM_LOCALES = {'en_US.UTF-8': (True, False), 'en_US': (False, False), 'tr_TR.UTF-8': (True, True),
-	'tr_TR.ISO-8859-9': (False, True), 'de_DE.UTF-8': None, 'tr_XX.UTF-8': None}
-
-
-@pytest.fixture
-def locales(monkeypatch):
-	monkeypatch.setattr(mc, '_locale_traits', lambda name: (False, False) if name in ('', 'C', 'POSIX') else SYSTEM_LOCALES[name])
-
-
-@pytest.mark.parametrize('name, ascii, turkic', [
-	(None, False, False), ('en_US.UTF-8', False, False), ('en_US', True, False), ('C', True, False), ('', True, False),
-	('tr_TR.UTF-8', False, True), ('tr_TR.ISO-8859-9', True, True), ('de_DE.UTF-8', True, False), ('tr_XX.UTF-8', True, False)])
-def test_case_folds_as_the_locale_of_the_shell_is_taken(locales, name, ascii, turkic):
-	# readline lowers characters as the shell's locale says: towlower in a UTF-8 one, where Turkish lowers I to
-	# the dotless i and the I with a dot to i; tolower on bytes elsewhere, where only ASCII letters reach the
-	# engine as letters. A locale the C library does not have leaves the shell in C, whatever its name says.
-	# None: a glue that does not say
-	fold = mc.case_fold(name)
+@pytest.mark.parametrize('flags, ascii, turkic', [
+	({'utf8': '1', 'turkic': '0'}, False, False), ({'utf8': '0', 'turkic': '0'}, True, False),
+	({'utf8': '1', 'turkic': '1'}, False, True), ({'utf8': '0', 'turkic': '1'}, True, True)])
+def test_case_folds_as_bash_takes_its_locale(flags, ascii, turkic):
+	# bash's glue measures how bash counts and lowers characters, which is how readline compares them:
+	# towlower in a UTF-8 locale, where a Turkish one lowers I to the dotless i and the I with a dot to i;
+	# tolower on bytes elsewhere, where only ASCII letters reach the engine as letters
+	fold = mc.case_fold(dict(flags, icase='1'))
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
 
 
-def test_locales_are_taken_as_the_c_library_has_them():
+# how the C library here takes some locale names
+OLD_GLUE_CODESETS = {'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1', 'tr_TR.UTF-8': 'UTF-8', 'tr_TR.ISO-8859-9': 'ISO-8859-9',
+	'az_AZ.UTF-8': 'UTF-8', 'tt_RU.UTF-8@iqtelif': 'UTF-8', 'tt_RU.UTF-8': 'UTF-8'}
+
+
+@pytest.fixture
+def old_glue_locales(monkeypatch):
+	monkeypatch.setattr(mc, '_locale_codeset', lambda name: OLD_GLUE_CODESETS.get(name, 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else None))
+
+
+@pytest.mark.parametrize('lc, folded, unicode', [
+	('C.UTF-8', (False, False), True), ('en_US', (True, False), False), ('C', (True, False), False), ('', (True, False), False),
+	('tr_TR.UTF-8', (False, True), True), ('tr_TR.ISO-8859-9', (True, True), False), ('az_AZ.UTF-8', (False, True), True),
+	('tt_RU.UTF-8@iqtelif', (False, True), True), ('tt_RU.UTF-8', (False, False), True),
+	# a locale the C library has not (macOS's LC_CTYPE=UTF-8 included): bash may run in LANG's, which lc did
+	# not say; no matching in any case, as 6.36 did none, and ASCII
+	('UTF-8', None, False), ('xx_YY.UTF-8', None, False)])
+def test_a_glue_sending_the_locale_name_folds_and_draws_by_it(old_glue_locales, lc, folded, unicode):
+	# lc=: the glue of main between 6.36 and its measure (never released), in a shell still running it
+	fold = mc.case_fold({'icase': '1', 'lc': lc})
+	assert (None if fold is None else (fold.ascii, fold.turkic)) == folded
+	# one answer for drawing too: the picker and warnings write ASCII where lc says C or names no locale
+	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'icase': '1', 'lc': lc}), directory=None).unicode is unicode
+
+
+def test_a_glue_of_6_36_gets_no_matching_in_any_case():
+	# 6.36's glue sends icase from a value read once per shell, and nothing of the locale; 6.36's engine
+	# matched in the case typed, and so does this one for it (an installed glue file stays until reinstalled)
+	assert mc.case_fold({'icase': '1'}) is None
+	assert texts(query('mssh LOG', flags={'icase': '1'})) == []
+	assert texts(query('mssh LOG', flags=ICASE)) == ['login1']
+
+
+def test_asking_the_c_library_about_a_locale_leaves_the_process_locale_as_it_was(monkeypatch):
+	# _locale_codeset sets LC_CTYPE to the name to ask nl_langinfo, then puts back what it was
 	import locale
+	monkeypatch.setattr(mc, '_CODESETS', {})
 	before = locale.setlocale(locale.LC_CTYPE)
-	assert mc._locale_traits('C') == mc._locale_traits('POSIX') == mc._locale_traits('') == (False, False)
-	# the process's own locale is one the C library has; asking leaves the process's locale as it was
-	assert mc._locale_traits(before) is not None
-	assert mc._locale_traits(before) == mc._locale_traits(before)
-	if mc._locale_traits('xx_YY.UTF-8') is not None:
-		pytest.skip('this C library takes any locale name (musl)')
-	assert mc._locale_traits('xx_YY.UTF-8') is None and mc._locale_traits('tr_XX.UTF-8') is None
-	assert locale.setlocale(locale.LC_CTYPE) == before
-
-
-@pytest.mark.parametrize('name, traits', [('tr_TR.UTF-8', (True, True)), ('tr_TR.ISO-8859-9', (False, True)), ('C.UTF-8', (True, False))])
-def test_turkish_locales_are_told_by_how_they_lower_i(name, traits):
-	import locale
-	saved = locale.setlocale(locale.LC_CTYPE)
-	try:
-		locale.setlocale(locale.LC_CTYPE, name)
-	except locale.Error:
-		pytest.skip('no {} locale here'.format(name))
-	finally:
-		locale.setlocale(locale.LC_CTYPE, saved)
-	if name.startswith('tr') and mc._locale_traits('xx_YY.UTF-8') is not None:
-		# and so does its bash's readline
-		pytest.skip('this C library takes any locale name as UTF-8 and lowers I to i in all (musl)')
-	assert mc._locale_traits(name) == traits
+	for name in ('C.UTF-8', 'en_US.UTF-8', 'tr_TR.ISO-8859-9', 'xx_YY.UTF-8', before):
+		mc._locale_codeset(name)
+		assert locale.setlocale(locale.LC_CTYPE) == before, name
+	# the process's own locale is one the C library has; asked once (C, POSIX and '' are not asked)
+	assert mc._locale_codeset(before) is not None
+	assert before in mc._CODESETS or before in ('C', 'POSIX', '')
+	assert mc._locale_codeset('C') == mc._locale_codeset('POSIX') == mc._locale_codeset('')
 
 
 def test_case_folds_letters_as_ascii_and_turkish_locales_do():
@@ -404,16 +416,16 @@ def test_case_folds_letters_as_ascii_and_turkish_locales_do():
 	assert not mc._starts('Ix', 'i', turkish8) and not mc._starts('ix', 'I', turkish8) and mc._starts('Ax', 'a', turkish8)
 
 
-def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path, locales):
+def test_icase_matches_letters_as_the_shell_locale_lowers_them(tmp_path):
 	table = _host_table(tmp_path, ['\u0130stanbul', 'Ix1', 'ix2', '\u00c9cole', '\u00e9t\u00e91'])
-	def found(word, lc):
-		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags={'icase': '1', 'lc': lc})))
-	assert found('i', 'en_US.UTF-8') == ['Ix1', 'ix2', '\u0130stanbul']
-	assert found('i', 'C') == ['Ix1', 'ix2'] and found('i', 'de_DE.UTF-8') == ['Ix1', 'ix2']
-	assert found('\u00e9', 'C') == ['\u00e9t\u00e91'] and found('\u00e9', 'en_US.UTF-8') == ['\u00c9cole', '\u00e9t\u00e91']
-	assert found('i', 'tr_TR.UTF-8') == ['ix2', '\u0130stanbul'] and found('I', 'tr_TR.UTF-8') == ['Ix1']
-	assert found('i', 'tr_TR.ISO-8859-9') == ['ix2'] and found('I', 'tr_TR.ISO-8859-9') == ['Ix1']
-	assert found('I', 'tr_XX.UTF-8') == ['Ix1', 'ix2']
+	utf8, ascii, turkish, turkish8 = ({'utf8': '1', 'turkic': '0'}, {'utf8': '0', 'turkic': '0'},
+		{'utf8': '1', 'turkic': '1'}, {'utf8': '0', 'turkic': '1'})
+	def found(word, flags):
+		return sorted(texts(query('mssh ' + word, knowledges=[], hosts=table, flags=dict(flags, icase='1'))))
+	assert found('i', utf8) == ['Ix1', 'ix2', '\u0130stanbul'] and found('i', ascii) == ['Ix1', 'ix2']
+	assert found('\u00e9', ascii) == ['\u00e9t\u00e91'] and found('\u00e9', utf8) == ['\u00c9cole', '\u00e9t\u00e91']
+	assert found('i', turkish) == ['ix2', '\u0130stanbul'] and found('I', turkish) == ['Ix1']
+	assert found('i', turkish8) == ['ix2'] and found('I', turkish8) == ['Ix1']
 
 
 def test_icase_hosts_from_the_index_match_in_any_case(tmp_path):
@@ -549,6 +561,68 @@ def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
 	assert texts(query('mssh h /opt/tool/r', knowledges=knowledges, flags=ICASE)) == []
 	assert texts(query('mssh h /Opt/Tool/R', knowledges=knowledges, flags=ICASE)) == ['/Opt/Tool/run.sh']
 	assert texts(query('mssh h CAT /srv', knowledges=knowledges, flags=ICASE)) == []
+
+
+@pytest.mark.parametrize('before, start', [
+	('mssh --no_wa', 0), ('mssh gp', 0), ('mssh a,root@no', len('a,root@')), ('mssh -u ro', 0),
+	('mssh web[1-3] -X web1,we', len('web1,')), ('mssh web[1-3] -X=root@we', len('-X=root@')),
+	# every separator mssh splits hosts on
+	('mssh web[1-3] -X web1/we', len('web1/')), ('mssh web[1-3] -X "web1 root@we', len('web1 root@')),
+	('mssh "a;b|c&d\te f', len('a;b|c&d\te ')),
+	# every whitespace character str.split() splits on, as mssh splits hosts
+	('mssh "a\u00a0b\x0bc\x1fd\x85e\u2003f', len('a\u00a0b\x0bc\x1fd\x85e\u2003')),
+	('mssh web[1-3] -X "web1\u00a0root@we', len('web1\u00a0root@')),
+	('mssh -f /data/pro', len('/data/')), ('mssh -hf=/etc/ho', len('-hf=/etc/')),
+	('mssh h cat /srv/Data/o', len('/srv/Data/')), ('mssh h "cat /srv/Data/o', len('cat /srv/Data/')),
+	('mssh h systemctl STATUS ', 0), ('mssh h "systemctl STATUS ', len('systemctl STATUS ')),
+	('mssh -f x h /srv/my dir/fi', len('dir/')),
+])
+def test_where_matching_in_any_case_starts_is_worked_out_once(before, start):
+	# the last host after "," and "@", a path's last part, the command word being completed: no earlier text
+	assert mc.parse_context(before, '', SPEC).fold_start == start
+
+
+def test_hosts_split_where_mssh_splits_them():
+	text = 'a,b/c;d|e&f g\th\x0bi\x0cj\x1ck\x85l\u00a0m\u2003n'
+	assert mc.split_hosts(text) == list('abcdefghijklmn')
+	for cut in range(1, len(text)):
+		if text[cut - 1] not in 'abcdefghijklmn':
+			assert mc._last_host_start(text[:cut] + 'x') == (cut, cut), repr(text[:cut])
+	assert mc._last_host_start('a b\u00a0root@we') == (len('a b\u00a0'), len('a b\u00a0root@'))
+
+
+def test_hosts_are_split_as_mssh_splits_them_at_every_code_point():
+	# against mssh's own split: a change of its separators fails here. Each code point between two letters
+	everything = ''.join(map(chr, range(0x110000)))
+	text = 'x'.join(everything)
+	split = multiSSH3._split_host_str(text)
+	word, cut = mc._host_patterns()
+	assert len(split) > 1 and mc.split_hosts(text) == split and word.findall(text) == split
+	# the cut stops after a code point exactly where a host word cannot hold it
+	assert [char for char in everything if cut.match('a' + char + 'b')] == [char for char in everything if not word.fullmatch(char)]
+
+
+def test_frame_drops_candidates_matching_earlier_text_in_any_case():
+	# whatever a provider found: the text before where matching in any case starts must be as typed
+	engine = mc.Engine(SPEC, [], None)
+	request = mc.Request('bash', 'mssh web[1-3] -X web1,we', '', 'web1,we', flags=ICASE)
+	context = mc.parse_context(request.before, request.after, SPEC)
+	context.icase = mc.UNICODE_CASE
+	candidates = [mc.Candidate(text, '', 'history', 1.0) for text in ('WEB1,web2', 'web1,WEB3', 'web1,web2')]
+	assert texts_of(engine._frame(candidates, context, request)) == ['web1,WEB3', 'web1,web2']
+
+
+def test_icase_hosts_after_x_match_only_the_host_typed_in_any_case():
+	# -X's history matched the whole value in any case: web1,we was offered WEB1,web2, root@we ROOT@web1
+	knowledges = [memory([line(NOW, '-su -X=WEB1,web2', 'web[1-3]', '"uptime"'), line(NOW - 1, '-su -X=ROOT@web1', 'web[1-3]', '"uptime"')])]
+	assert 'WEB1,web2' not in texts(query('mssh web[1-3] -X web1,we', knowledges=knowledges, flags=ICASE))
+	assert 'ROOT@web1' not in texts(query('mssh web[1-3] -X root@we', knowledges=knowledges, flags=ICASE))
+	assert 'WEB1,web2' in texts(query('mssh web[1-3] -X WEB1,We', knowledges=knowledges, flags=ICASE))
+	# hosts split on "/", ";", "|", "&" and whitespace too
+	knowledges = [memory([line(NOW, '-su -X=WEB1/web2', 'web[1-3]', '"uptime"'), line(NOW - 1, '-su', 'WEB1 web2', '"uptime"')])]
+	assert 'WEB1/web2' not in texts(query('mssh web[1-3] -X web1/we', knowledges=knowledges, flags=ICASE))
+	assert 'WEB1 web2' not in texts(query('mssh "web1 we', word='web1 we', knowledges=knowledges, flags=ICASE))
+	assert 'WEB1/web2' in texts(query('mssh web[1-3] -X WEB1/We', knowledges=knowledges, flags=ICASE))
 
 
 def test_prefix_ranges_match_in_any_case_from_start_on():
