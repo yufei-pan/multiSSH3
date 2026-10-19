@@ -610,8 +610,11 @@ def test_a_utf8_terminal_is_told_by_the_variables_the_engine_was_started_with(sy
 
 @pytest.mark.parametrize('ctype', [None, 'C', 'C.UTF-8'])
 @pytest.mark.parametrize('isolated, variables', [
-	# as this file is run (-I), and as the mssh-complete script pip or uv makes runs it, which reads the environment
-	(True, {}), (False, {}), (False, {'PYTHONUTF8': '0'}), (False, {'PYTHONUTF8': '1'}), (False, {'PYTHONCOERCECLOCALE': '0'})])
+	# as this file is run (-I, which ignores the variables), and as the mssh-complete script pip or uv makes runs
+	# it, which reads them (an empty PYTHONUTF8 is none)
+	(True, {}), (True, {'PYTHONUTF8': '0'}), (True, {'PYTHONUTF8': '1'}),
+	(False, {}), (False, {'PYTHONUTF8': '0'}), (False, {'PYTHONUTF8': '1'}), (False, {'PYTHONUTF8': ''}),
+	(False, {'PYTHONCOERCECLOCALE': '0'})])
 def test_without_the_started_environment_python_s_utf8_mode_tells_a_changed_lc_ctype(ctype, isolated, variables):
 	# no /proc/self/environ (macOS, the BSDs): os.environ, where Python 3.7+ set LC_CTYPE=C.UTF-8 where
 	# it took C (PEP 538), and then runs in UTF-8 mode, which says so unless PYTHONUTF8 set the mode
@@ -641,7 +644,7 @@ def test_without_the_started_environment_python_s_utf8_mode_tells_a_changed_lc_c
 		# told apart only where UTF-8 mode is off: not where the system has no C.UTF-8 (Python runs in C,
 		# in UTF-8 mode), not from 3.15 (always in UTF-8 mode), not where PYTHONUTF8 set the mode
 		expected = (mc._locale_codeset('C.UTF-8') is not None and sys.version_info < (3, 15)
-			and (isolated or 'PYTHONUTF8' not in variables))
+			and (isolated or not variables.get('PYTHONUTF8')))
 	assert unicode == str(expected)
 
 
