@@ -120,8 +120,14 @@ def test_names_mssh_cannot_take_as_one_host_are_not_collected(home):
 	assert {'.host', 'good-name', 'good.dot', 'known1'} <= names
 	assert [name for name in names if set(name) & set(',;|/& \t\r\n')] == []
 	assert not names & {'unix/*', 'vsock/*', '!neg', 'neg', 'web?'}
-	response = mc.answer(mc.Request('bash', 'mssh machine/', '', ''), directory=directory, now=NOW)
-	assert [candidate.text for candidate in response.candidates] == []
+	# after machine/ comes another host, as after a comma (bash's word is empty there): never one named
+	# machine/... as a whole
+	after = {}
+	for separator in '/,':
+		after[separator] = [candidate.text for candidate in mc.answer(mc.Request('bash', 'mssh machine' + separator, '', ''),
+			directory=directory, now=NOW).candidates]
+	assert after['/'] == after[','] and '.host' in after['/']
+	assert [text for text in after['/'] if set(text) & set(',;|/& \t\r\n')] == []
 
 
 def test_ssh_config_lines_in_the_index_are_split_as_ssh_splits_them(home):

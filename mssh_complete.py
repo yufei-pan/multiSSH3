@@ -573,9 +573,6 @@ def assign_roles(words, spec, current=None):
 # what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
 _HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
 
-# what separates the hosts of a hosts argument for mssh
-_HOST_SEPARATORS = ',\n\r\t;|/& '
-
 def split_hosts(text):
 	'''Split a hosts argument into host words, on the separators mssh accepts.'''
 	for separator in _HOST_SEPARATORS:
