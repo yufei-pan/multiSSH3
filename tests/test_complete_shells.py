@@ -228,7 +228,8 @@ def test_bash_ignoring_case_puts_in_one_of_its_own_and_delegated_words_differing
 def nocasematch(session):
 	'''Whether the running bash has nocasematch on: 'on' or 'off' (None if it does not say).'''
 	start = len(session.output)
-	session.send('shopt -q nocasematch && echo "@@NOCASE""=on@@" || echo "@@NOCASE""=off@@"\r')
+	# a space first: bash 4 can drop the first key after a Ctrl-C cut a binding short
+	session.send(' shopt -q nocasematch && echo "@@NOCASE""=on@@" || echo "@@NOCASE""=off@@"\r')
 	deadline = time.monotonic() + 10
 	while time.monotonic() < deadline:
 		found = re.search(rb'@@NOCASE=(on|off)@@', session.output[start:])
@@ -378,19 +379,23 @@ def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tm
 def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting):
 	# Ctrl-C cut the Ctrl-R binding the glue took over (a slow one) short, inside the glue: its note of the
 	# shell's setting stayed, and the next glue call put that back over what the shell set in between.
-	# bash defers Ctrl-C while a completion function runs (TAB is not cut short); bind -x commands it cuts
+	# bash defers Ctrl-C while a completion function runs (TAB is not cut short); bash 5 cuts bind -x
+	# commands short, bash 4 lets them end
 	env, home = make_home(tmp_path, [])
 	pre = '''shopt -{} nocasematch
-_slow() {{ local i; for ((i = 0; i < 3000000; i++)); do :; done; }}
+_slow() {{ local end=$((SECONDS + 2)); while (( SECONDS < end )); do :; done; }}
 bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
 	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, pre=pre)
 	try:
 		session.send('true\r')
 		session.read_until(b'@@READY@@')
 		session.send('echo a\x12')
-		time.sleep(1.0)
+		time.sleep(0.8)
 		session.send('\x03')
-		session.read_until(b'@@READY@@')
+		# the binding ends; then no key prefix left pending (bash 4 kept the line), the line cleared
+		time.sleep(2.5)
+		session.send('\x07\x15')
+		time.sleep(0.3)
 		assert nocasematch(session) == setting
 		other = 'off' if setting == 'on' else 'on'
 		session.send('shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
