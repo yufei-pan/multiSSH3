@@ -568,6 +568,9 @@ def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
 	# every separator mssh splits hosts on
 	('mssh web[1-3] -X web1/we', len('web1/')), ('mssh web[1-3] -X "web1 root@we', len('web1 root@')),
 	('mssh "a;b|c&d\te f', len('a;b|c&d\te ')),
+	# every whitespace character str.split() splits on, as mssh splits hosts
+	('mssh "a\u00a0b\x0bc\x1fd\x85e\u2003f', len('a\u00a0b\x0bc\x1fd\x85e\u2003')),
+	('mssh web[1-3] -X "web1\u00a0root@we', len('web1\u00a0root@')),
 	('mssh -f /data/pro', len('/data/')), ('mssh -hf=/etc/ho', len('-hf=/etc/')),
 	('mssh h cat /srv/Data/o', len('/srv/Data/')), ('mssh h "cat /srv/Data/o', len('cat /srv/Data/')),
 	('mssh h systemctl STATUS ', 0), ('mssh h "systemctl STATUS ', len('systemctl STATUS ')),
@@ -576,6 +579,15 @@ def test_icase_command_words_keep_the_directories_of_a_path_as_typed():
 def test_where_matching_in_any_case_starts_is_worked_out_once(before, start):
 	# the last host after "," and "@", a path's last part, the command word being completed: no earlier text
 	assert mc.parse_context(before, '', SPEC).fold_start == start
+
+
+def test_hosts_split_where_mssh_splits_them():
+	text = 'a,b/c;d|e&f g\th\x0bi\x0cj\x1ck\x85l\u00a0m\u2003n'
+	assert mc.split_hosts(text) == list('abcdefghijklmn')
+	for cut in range(1, len(text)):
+		if text[cut - 1] not in 'abcdefghijklmn':
+			assert mc._last_host_start(text[:cut] + 'x') == (cut, cut), repr(text[:cut])
+	assert mc._last_host_start('a b\u00a0root@we') == (len('a b\u00a0'), len('a b\u00a0root@'))
 
 
 def test_frame_drops_candidates_matching_earlier_text_in_any_case():

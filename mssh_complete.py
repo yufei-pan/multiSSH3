@@ -570,23 +570,28 @@ def assign_roles(words, spec, current=None):
 			roles.append((ROLE_COMMAND, None))
 	return roles
 
-# what separates hosts in a hosts argument, as split_hosts (mssh's own separators) and spaces
-_HOST_SEPARATORS = frozenset(',\n\r\t;|/& ')
+# what separates hosts in a hosts argument for mssh besides whitespace (which str.split() splits on)
+_HOST_PUNCTUATION = frozenset(',;|/&')
+
+def _host_separator(char):
+	'''Whether char separates hosts for mssh: one of _HOST_PUNCTUATION, or any whitespace str.split() splits on.'''
+	return char in _HOST_PUNCTUATION or char.isspace()
 
 def split_hosts(text):
-	'''Split a hosts argument into host words, on the separators mssh accepts.'''
-	for separator in _HOST_SEPARATORS:
+	'''Split a hosts argument into host words, as mssh does: on its punctuation, then on any whitespace.'''
+	for separator in _HOST_PUNCTUATION:
 		text = text.replace(separator, ' ')
 	return text.split()
 
-def _host_cut(text):
-	'''Where the last host word of a hosts text starts: after its last separator (as split_hosts splits).'''
-	return max(text.rfind(separator) for separator in _HOST_SEPARATORS) + 1
-
 def _last_host_start(text):
-	'''Where the name of the last host of a hosts text starts: after its last separator and its "user@".'''
-	cut = _host_cut(text)
-	return text.rfind('@', cut) + 1 or cut
+	'''
+	(cut, start) for the last host of a hosts text: where its word starts (after the last separator, as
+	split_hosts splits) and where its name does (after "user@").
+	'''
+	cut = len(text)
+	while cut and not _host_separator(text[cut - 1]):
+		cut -= 1
+	return cut, text.rfind('@', cut) + 1 or cut
 
 def words_as_typed(command):
 	'''
@@ -835,7 +840,7 @@ def _fold_start(slot, option, prefix, value_start, quoted, command_prefix, mode)
 	if slot == SLOT_OPTION:
 		return 0
 	if slot == SLOT_HOSTS or (slot == SLOT_VALUE and option.dest == 'skip_hosts'):
-		return value_start + _last_host_start(prefix[value_start:])
+		return value_start + _last_host_start(prefix[value_start:])[1]
 	if slot == SLOT_VALUE:
 		return value_start + _path_start(prefix[value_start:])
 	if mode in PATH_MODES or not quoted:
@@ -2011,7 +2016,7 @@ def build_index(directory, now=None, mssh=None):
 	def add(name, source, address=''):
 		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
 		# systemd's ssh config) is never one host
-		if not name or not safe_field(name) or any(char in _HOST_SEPARATORS for char in name):
+		if not name or not safe_field(name) or any(_host_separator(char) for char in name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -2810,11 +2815,11 @@ def _host_parts(token):
 	parts = []
 	position = 0
 	while position < len(text):
-		if text[position] in _HOST_SEPARATORS:
+		if _host_separator(text[position]):
 			position += 1
 			continue
 		end = position
-		while end < len(text) and text[end] not in _HOST_SEPARATORS:
+		while end < len(text) and not _host_separator(text[end]):
 			end += 1
 		user, _, name = text[position:end].rpartition('@')
 		span = (token.start + position, token.start + end) if exact else (token.start, token.start + len(token.raw))
@@ -2995,7 +3000,7 @@ def _without_shell_expansions(token, shell, users=False):
 	position = 0
 	while position < len(text):
 		end = position
-		while end < len(text) and text[end] not in _HOST_SEPARATORS:
+		while end < len(text) and not _host_separator(text[end]):
 			end += 1
 		at = text.rfind('@', position, end)
 		# the shell rewrites a piece of the host, or only of its user@
@@ -4196,7 +4201,7 @@ class Engine(object):
 	def usage(self, context, value, knowledges=None):
 		'''(times used, last used unix time) of a value of the current slot, over all knowledge (or the given knowledges).'''
 		if context.slot == SLOT_HOSTS:
-			features = ['h:' + value, 't:' + value[_last_host_start(value):]]
+			features = ['h:' + value, 't:' + value[_last_host_start(value)[1]:]]
 		elif context.slot == SLOT_VALUE:
 			features = ['v:{}={}'.format(context.option.dest, value)]
 		elif context.slot == SLOT_OPTION:
@@ -4417,8 +4422,7 @@ class Engine(object):
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
 		'''Candidates for a hosts argument whose text so far is text: complete its last host.'''
-		cut = _host_cut(text)
-		start = _last_host_start(text)
+		cut, start = _last_host_start(text)
 		lead, host_prefix = text[:start], text[start:]
 		user = text[cut:start - 1] if start > cut else ''
 		icase = context.icase

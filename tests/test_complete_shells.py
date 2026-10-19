@@ -449,11 +449,13 @@ def test_bash_ignoring_case_keeps_the_hosts_before_the_last_one_of_x_as_typed(tm
 def test_bash_ignoring_case_keeps_the_hosts_before_the_last_one_as_typed_whatever_separates_them(tmp_path):
 	# mssh splits hosts on "/", ";", "|", "&" and whitespace too: web1/webx became WEB1/webX
 	history = ['179000000{}\t/x/multiSSH3.py\t-su -X={}\tweb[1-3]\t"uptime"'.format(number, value)
-		for number, value in enumerate(("WEB1/webX", "'WEB1 webY'"))]
+		for number, value in enumerate(("WEB1/webX", "'WEB1 webY'", "'WEB1\u00a0webZ'"))]
 	session = ignoring_case(tmp_path, history)
 	try:
 		assert session.line_after('mssh web[1-3] -X web1/webx') == 'mssh web[1-3] -X web1/webx'
 		assert session.line_after('mssh web[1-3] -X "web1 weby') == 'mssh web[1-3] -X "web1 weby'
+		# any whitespace str.split() splits on, a no-break space too
+		assert session.line_after('mssh web[1-3] -X "web1\u00a0webz') == 'mssh web[1-3] -X "web1\u00a0webz'
 		assert session.line_after('mssh web[1-3] -X WEB1/webx') == 'mssh web[1-3] -X WEB1/webX '
 	finally:
 		session.close()
