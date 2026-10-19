@@ -6228,12 +6228,14 @@ _mssh_complete_guard() {
 	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
 	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
 	# completion function). The shell's setting comes back on every return, also after a command's
-	# completion function changed it; after a Ctrl-C cut a call short (bash 5 cuts bind -x commands), at
-	# the next prompt (_mssh_complete_heal), else at the next call, unless the shell changed it since.
+	# completion function changed it; after a Ctrl-C cut a call short (bash 5 cuts bind -x commands, and
+	# every bash a completion function running a command), at the next prompt (_mssh_complete_heal), else
+	# at the next call, unless the shell changed it since.
 	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's
 	# code runs inside it. _mssh_complete_held: the shell's setting while a call runs; _mssh_complete_left:
 	# the setting the glue last made, noted before the glue turns the shell's off and after it puts the
-	# shell's back: a cut between the two finds the shell's setting where the note differs, which the heal keeps
+	# shell's back: a cut between the two finds the shell's setting where the note differs, which the heal
+	# keeps. The glue never switches between two settings of its own, where no order would do
 	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
 	if [[ -z $_mssh_complete_outer ]]; then
 		_mssh_complete_heal || :
@@ -6345,7 +6347,8 @@ _mssh_complete_delegate() {
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
 	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word, as typed.
 	# The word itself in any case when the engine matched so (_mssh_complete_icase), as compgen and
-	# readline do (stor gives Storage-File): nocasematch on for that test alone
+	# readline do (stor gives Storage-File): lowered, as nocasematch compares (bash 4.2 to 5.3, Turkish
+	# locales too), with no setting to change and so no window for a Ctrl-C between it and its note
 	lead=$prefix$cur
 	lead=${lead%"$word"}
 	for item in ${found[@]+"${found[@]}"}; do
@@ -6361,14 +6364,14 @@ _mssh_complete_delegate() {
 		kept+=("$item")
 	done
 	if (( ${_mssh_complete_icase-0} )); then
-		shopt -s nocasematch
-		_mssh_complete_left=1
+		for item in ${kept[@]+"${kept[@]}"}; do
+			[[ ${item,,} == "${word,,}"* ]] && _mssh_complete_delegated+=("$item")
+		done
+	else
+		for item in ${kept[@]+"${kept[@]}"}; do
+			[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
+		done
 	fi
-	for item in ${kept[@]+"${kept[@]}"}; do
-		[[ $item == "$word"* ]] && _mssh_complete_delegated+=("$item")
-	done
-	shopt -u nocasematch
-	_mssh_complete_left=0
 	return 0
 }
 

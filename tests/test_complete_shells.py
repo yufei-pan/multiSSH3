@@ -377,7 +377,7 @@ def test_bash_tab_under_nocasematch_runs_no_command_complete_gives_file_names(tm
 
 @pytest.mark.parametrize('setting, prompt_command', [('on', 'kept'), ('on', 'replaced'), ('off', 'replaced')])
 def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting, prompt_command):
-	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function always ends):
+	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function is cut too):
 	# here the Ctrl-R binding the glue took over, a slow one, with the glue's note of the shell's
 	# nocasematch left. The shell then sets it the other way, and TAB must leave that: the note came back
 	# at the next glue call (round 5's heal at the next prompt fixed that only where PROMPT_COMMAND
@@ -453,38 +453,50 @@ def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back
 
 CUT_PROBE = r'''
 . "$1"
+# a command's completion function, for the delegate path
+_zzstand() { COMPREPLY=(Alpha alpine beta); }
+complete -F _zzstand zzcmd
+# the probe writes to fd 3: command substitutions in the glue take its stdout
+exec 3>&1
 _probe() {
-	# before each command of the glue's: what the heal makes of a cut landing there (in a subshell: the call goes on)
-	case ${FUNCNAME[1]-} in _mssh_complete_*) ;; *) return 0 ;; esac
+	# before each command of the glue's and of the stand-in's: what the heal makes of a cut landing
+	# there (in a subshell: the call goes on)
+	case ${FUNCNAME[1]-} in _mssh_complete_*|_zzstand) ;; *) return 0 ;; esac
 	local got
 	got=$(trap - DEBUG; _mssh_complete_heal; shopt -q nocasematch && echo on || echo off)
-	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got"
+	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got" >&3
 }
 shopt -$2 nocasematch
 set -T
 trap _probe DEBUG
 eval "$3"
 trap - DEBUG
+printf 'delegated: %s\n' "${_mssh_complete_delegated[*]-}"
 '''
 
 
 @pytest.mark.parametrize('setting', ['on', 'off'])
-@pytest.mark.parametrize('call', [
+@pytest.mark.parametrize('call, delegated', [
 	# the shell's code run by the glue (a delegated completion, the Ctrl-R binding it took over)
-	'_mssh_complete_guard _mssh_complete_operator true',
+	('_mssh_complete_guard _mssh_complete_operator true', ''),
 	# a glue call made from there (ble.sh's hooks)
-	'_mssh_complete_guard _mssh_complete_operator _mssh_complete_guard true',
+	('_mssh_complete_guard _mssh_complete_operator _mssh_complete_guard true', ''),
+	# a command's completion function, run and its words filtered by the word typed: in any case, and as typed
+	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'Alpha alpine'),
+	('_mssh_complete_icase=0 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'alpine'),
 ])
-def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call):
+def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call, delegated):
 	# a cut between turning nocasematch off and noting it left the glue's off where its note said the
 	# shell's on: the heal took that for the shell's doing and kept it off. A cut can land before any
-	# command of a call; the heal from there must give the shell back its setting
+	# command of a call (a completion function too, where it runs a command); the heal from there must
+	# give the shell back its setting
 	glue = glue_file(tmp_path, 'bash')
 	output = subprocess.run([require_shell('bash'), '-c', CUT_PROBE, 'probe', str(glue), 's' if setting == 'on' else 'u', call],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	lines = output.stdout.decode().splitlines()
+	assert lines[-1:] == ['delegated: ' + delegated], output
 	assert len(lines) > 20, output
-	assert [line for line in lines if not line.endswith('-> ' + setting)] == []
+	assert [line for line in lines[:-1] if not line.endswith('-> ' + setting)] == []
 
 
 @pytest.mark.parametrize('icase', ['on', 'off'])
