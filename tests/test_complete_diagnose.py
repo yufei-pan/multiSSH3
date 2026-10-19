@@ -624,8 +624,8 @@ def test_a_c_locale_gets_ascii_whatever_python_makes_of_it(lang, ctype, unicode)
 	# Python 3.7+ starts a C locale as C.UTF-8 (PEP 538), LC_CTYPE=C.UTF-8 in os.environ, and 3.15 always in
 	# UTF-8 mode: its own encoding says UTF-8 where the shell shows the bytes of a ⚠ as \M-b\M-^Z\M-.
 	# C.UTF-8 draws Unicode where the system has it (not CentOS 7's glibc 2.17)
-	if lang == 'tr_TR.ISO-8859-9' and mc._locale_codeset(lang) is None:
-		pytest.skip('no tr_TR.ISO-8859-9 locale here')
+	if lang == 'tr_TR.ISO-8859-9' and mc._locale_codeset(lang) != 'ISO-8859-9':
+		pytest.skip('no tr_TR.ISO-8859-9 locale here (musl takes every name as UTF-8)')
 	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin')}
 	if lang is not None:
 		env['LANG'] = lang
