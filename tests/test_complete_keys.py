@@ -929,9 +929,12 @@ def test_blesh_keeps_suggesting_and_warning_with_noclobber(home):
 		session.close()
 
 
-def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
+@pytest.mark.parametrize('pre', ['', "ble-bind -m emacs -x C-a 'echo -f C-r zz'"])
+def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, pre):
+	# ble-bind -P quotes a command bound with -x: a " -f C-r " inside one (here of C-a, listed first) is
+	# not Ctrl-R's binding
 	env, home = home
-	session = blesh_session(home, env, glue_file(home, 'bash'))
+	session = blesh_session(home, env, glue_file(home, 'bash'), pre=pre)
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)

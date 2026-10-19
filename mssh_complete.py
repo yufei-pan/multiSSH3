@@ -6320,6 +6320,7 @@ _mssh_complete_delegate() {
 	# sets the variables of the functions that call it (one written without local sets word, cur, ...)
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
+	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_pattern
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
 	local -a _mssh_complete_words=("$@") _mssh_complete_results=() _mssh_complete_kept=()
@@ -6331,7 +6332,8 @@ _mssh_complete_delegate() {
 			_mssh_complete_results+=("$_mssh_complete_item")
 		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
 	else
-		if ! complete -p -- "$_mssh_complete_cmd" >/dev/null 2>&1; then
+		_mssh_complete_named=$_mssh_complete_cmd
+		if ! complete -p -- "$_mssh_complete_named" >/dev/null 2>&1; then
 			# the loaders source the command's completion file: the shell's code, in the shell's setting
 			if declare -F _comp_load >/dev/null 2>&1; then
 				_mssh_complete_operator _comp_load "$_mssh_complete_cmd" >/dev/null 2>&1 || :
@@ -6341,8 +6343,18 @@ _mssh_complete_delegate() {
 				_mssh_complete_operator _completion_loader "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			fi
 		fi
-		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_cmd" 2>/dev/null) || _mssh_complete_spec=
-		if [[ $_mssh_complete_spec =~ \ -F\ ([^ ]+) ]]; then
+		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_named" 2>/dev/null) || _mssh_complete_spec=
+		# bash prints -F last, right before the name (single-quoted from bash 5.2 where it needs it), after
+		# the single-quoted arguments of -G, -W, -P, -S, -X and -C, which may hold " -F " themselves
+		_mssh_complete_quoted="'${_mssh_complete_named//\'/\'\\\'\'}'"
+		_mssh_complete_rest=
+		if [[ $_mssh_complete_spec == *" $_mssh_complete_named" ]]; then
+			_mssh_complete_rest=${_mssh_complete_spec% "$_mssh_complete_named"}
+		elif [[ $_mssh_complete_spec == *" $_mssh_complete_quoted" ]]; then
+			_mssh_complete_rest=${_mssh_complete_spec% "$_mssh_complete_quoted"}
+		fi
+		_mssh_complete_pattern=" -F ([^ ']+)\$"
+		if [[ $_mssh_complete_rest =~ $_mssh_complete_pattern ]]; then
 			_mssh_complete_func=${BASH_REMATCH[1]}
 			local -a COMP_WORDS=("${_mssh_complete_words[@]}")
 			local COMP_CWORD=$_mssh_complete_cword COMP_LINE="${_mssh_complete_words[*]}" COMP_POINT
@@ -6799,8 +6811,10 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		# take Ctrl-R in ble.sh keymap $1 when its binding is a widget or a command
 		local line
 		while IFS= read -r line; do
+			# the key is the fourth word: a command bound with -x or -c is printed quoted after it, and may
+			# hold " -f C-r " itself. The keymap is printed quoted ('emacs'), or not by other versions
 			case $line in
-				*' -f C-r '*|*' -x C-r '*|*' -c C-r '*)
+				"ble-bind -m '$1' -"[fxc]" C-r "*|"ble-bind -m $1 -"[fxc]" C-r "*)
 					[[ $line == *mssh-complete/ctrl-r* ]] && return 0
 					printf -v "_mssh_complete_previous_$1" '%s' "${line#ble-bind }"
 					ble-bind -m "$1" -f C-r mssh-complete/ctrl-r

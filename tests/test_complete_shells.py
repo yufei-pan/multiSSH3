@@ -212,6 +212,36 @@ def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
 		session.close()
 
 
+@pytest.mark.parametrize('spec, completed', [
+	# bash prints the quoted arguments of -G, -W, -P, -S, -X and -C before -F: a " -F " inside one names no
+	# function (touch ran, making the files zzsvc and zz here)
+	('complete -W "start -F touch stop" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -C "echo -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -X "!*.c -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	# no function: file names
+	('complete -W "start -F touch x" zzsvc', 'mssh h zzsvc zzfile '),
+])
+def test_bash_delegation_runs_the_function_bash_prints_last(tmp_path, spec, completed):
+	options = '_zzreal() { COMPREPLY=(zzalpha zzalpine); }; ' + spec
+	session = ignoring_case(tmp_path, [], on=False, files=['zzfile'], options=options)
+	try:
+		assert session.line_after('mssh h zzsvc zz') == completed
+		assert sorted(os.listdir(str(tmp_path / 'work'))) == ['zzfile']
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('name', ['zzplain', 'zz svc', "zz's", 'zz$b', 'zz"q', '/opt/zz bin/zzgit'])
+def test_bash_delegation_reads_the_function_of_a_command_whatever_its_name(tmp_path, name):
+	# complete -p prints the name as it is before bash 5.2, single-quoted from 5.2 where it needs it
+	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha zzalpine); }; complete -F _zzreal -- "$2"; '
+		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" "$2" zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), name],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
+
+
 # every name the bash glue's functions used unprefixed while the shell's code ran: a command's completion
 # function sees and sets the variables of the functions that call it (dynamic scoping)
 BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '
