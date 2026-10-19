@@ -1434,6 +1434,11 @@ def test_the_engine_works_out_whether_to_write_unicode_once(monkeypatch):
 	engine = mc.Engine(SPEC, [], None)
 	assert [engine.unicode for _ in range(3)] == [True] * 3 and len(calls) == 1
 	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'utf8': '0'}), directory=None).unicode is False and len(calls) == 1
+	# bash's measure holds whenever it is set: also after the variables were worked out
+	engine.shell_utf8 = False
+	assert engine.unicode is False and len(calls) == 1
+	engine.shell_utf8 = None
+	assert engine.unicode is True and len(calls) == 1
 
 
 def test_request_flags_are_read_one_way():

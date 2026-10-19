@@ -3616,16 +3616,19 @@ class Engine(object):
 		self.no_effect = []
 		# whether bash runs in a UTF-8 locale, as its glue measured it (request flag utf8), None if not said
 		self.shell_utf8 = None
+		# _unicode_terminal(), once asked
 		self._unicode = None
 
 	@property
 	def unicode(self):
 		'''
 		Whether to write in Unicode (messages, the picker): as bash's glue measured its locale, else as the
-		variables say; worked out at the first use, after engine_for set shell_utf8.
+		variables say, which are worked out at the first use and kept.
 		'''
+		if self.shell_utf8 is not None:
+			return self.shell_utf8
 		if self._unicode is None:
-			self._unicode = _unicode_terminal() if self.shell_utf8 is None else self.shell_utf8
+			self._unicode = _unicode_terminal()
 		return self._unicode
 
 	def query(self, request, deadline=None):
