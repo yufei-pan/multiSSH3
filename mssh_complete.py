@@ -2037,11 +2037,11 @@ def build_index(directory, now=None, mssh=None):
 	features, record_rows, postings, fweights, fcounts, flast = serialize_knowledge(memory)
 	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
 	hosts = {}
+	host_word, _ = _host_patterns()
 	def add(name, source, address=''):
 		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
 		# systemd's ssh config) is never one host
-		word, _ = _host_patterns()
-		if not name or not safe_field(name) or not word.fullmatch(name):
+		if not name or not safe_field(name) or not host_word.fullmatch(name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
