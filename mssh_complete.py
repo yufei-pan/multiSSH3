@@ -4313,12 +4313,15 @@ class Engine(object):
 			return []
 		base = prefix[:len(prefix) - len(word)]
 		lead = prefix[:context.value_start]
+		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
+		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
+		# typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''
+		fold_start = max(context.fold_start, len(base))
 		out = []
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
 			full = lead + candidate.text
-			# whatever found it: only from fold_start on may it differ from the word in case
-			if not _starts(full, prefix, context.icase, context.fold_start) or full in seen:
+			if not _starts(full, prefix, context.icase, fold_start) or full in seen:
 				continue
 			rest = full[len(prefix):]
 			if literal:

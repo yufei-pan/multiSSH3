@@ -624,6 +624,25 @@ def test_bash_ignoring_case_keeps_the_text_before_its_word_as_typed(tmp_path):
 		session.close()
 
 
+def test_bash_ignoring_case_keeps_the_text_before_its_word_as_typed_for_the_engine_s_words_too(tmp_path):
+	# the engine's own candidates (history) as the delegated ones above: bash replaces its word alone, and
+	# the text before it as typed stayed with the candidate's rest, naming nothing (HOST:file, fi:fa.txt,
+	# /data/A:bc, cc=gcc)
+	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd host:file"', '1790000001\t/x/multiSSH3.py\t-su\th\t"cat Fi:fa.txt"',
+		'1790000002\t/x/multiSSH3.py\t-su -f=/data/a:bc\th\t"uptime"', '1790000003\t/x/multiSSH3.py\t-su\th\t"make CC=gcc"']
+	session = ignoring_case(tmp_path, history)
+	try:
+		assert session.line_after('mssh h nosuchcmd HOST:fi') == 'mssh h nosuchcmd HOST:fi'
+		assert session.line_after('mssh h cat fi:f') == 'mssh h cat fi:f'
+		assert session.line_after('mssh -f /data/A:b') == 'mssh -f /data/A:b'
+		assert session.line_after('mssh h make cc=Gc') == 'mssh h make cc=Gc'
+		# bash's word itself in any case
+		assert session.line_after('mssh h nosuchcmd host:FI') == 'mssh h nosuchcmd host:file '
+		assert session.line_after('mssh h make CC=GC') == 'mssh h make CC=gcc '
+	finally:
+		session.close()
+
+
 def test_bash_ignoring_case_keeps_the_hosts_before_the_last_one_of_x_as_typed(tmp_path):
 	# -X's history was matched whole in any case: web1,webx became WEB1,webX, root@webz ROOT@webz
 	history = ['179000000{}\t/x/multiSSH3.py\t-su -X={}\tweb[1-3]\t"uptime"'.format(number, value)
