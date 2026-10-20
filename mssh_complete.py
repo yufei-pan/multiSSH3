@@ -9010,7 +9010,7 @@ def _claim_terminal():
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		_debug('pick: the shell went on ({!r}): leaving the terminal alone'.format(e))
+		_debug('pick: the claim on the terminal failed, the shell went on ({!r}): the terminal is left alone'.format(e))
 		return False
 
 def _cmd_pick():
@@ -9040,7 +9040,10 @@ def _cmd_pick():
 		line = before = None
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
-		if not _claim_terminal() or (request.flags.get('ready') == '1' and not _ready()):
+		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
+		if not _claim_terminal():
+			return 2
+		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 			return 2
 		with Terminal() as term:

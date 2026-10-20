@@ -842,6 +842,24 @@ def test_the_debug_log_shows_a_line_without_its_passwords(line):
 	assert mc._without_passwords('mssh -u root web1 uptime', SPEC) == 'mssh -u root web1 uptime'
 
 
+def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
+	# zsh and fish make the claim: when the shell went on, its own line said so, and a second blamed "ready",
+	# which zsh never asked for
+	import io
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	claim = tmp_path / 'claim'
+	claim.mkdir()
+	for name, value in dict(env, MSSH_COMPLETE_CLAIM=str(claim)).items():
+		monkeypatch.setenv(name, value)
+	logged = []
+	monkeypatch.setattr(mc, '_debug', lambda message: logged.append(message() if callable(message) else message))
+	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK)))
+	assert mc._cmd_pick() == 2
+	logged = [message for message in logged if message.startswith('pick:')]
+	assert len(logged) == 1 and 'claim' in logged[0] and 'ready' not in logged[0], logged
+
+
 class _Steps(object):
 	'''What _cmd_edit and _cmd_pick do, in order: saying ready, taking the terminal, logging.'''
 	def __init__(self, monkeypatch):
