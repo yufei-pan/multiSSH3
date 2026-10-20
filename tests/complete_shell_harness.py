@@ -58,6 +58,15 @@ def bash_locale(env, multibyte=False):
 	measured = output[0] == b'1', output[1] == b'1'
 	return measured + (output[2] == b'1',) if multibyte else measured
 
+# make_home turns the engine's debug log on (a failing test's report carries it); the tests this marks run
+# with it off too, as mssh ships, so the path that writes no log runs in the pty suites
+WITH_AND_WITHOUT_DEBUG_LOG = pytest.mark.parametrize('debug', ['1', '0'], ids=['debug-log', 'no-debug-log'])
+
+def debug_log_size(env):
+	'''How much the engine's debug log holds now (0 when there is none).'''
+	path = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
+	return os.path.getsize(path) if os.path.exists(path) else 0
+
 def make_home(tmp_path, history_lines=()):
 	'''
 	A private HOME and XDG_RUNTIME_DIR holding the given mssh history, its fixed times aged. Returns (env, home).

@@ -13,8 +13,8 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, aged, bash_locale, bash_session, blesh_session, build_index, fish_session, make_home,
-	require_shell, without_command, zsh_session)
+from complete_shell_harness import (ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
+	debug_log_size, fish_session, make_home, require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
 	'1790000100\t/x/multiSSH3.py\t-su -u=root\tstorage1\t"df -h /data"',
@@ -98,8 +98,11 @@ def bash_version(env):
 
 # ---------------------------------------------------------------- plain bash: Ctrl-R
 
-def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home):
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home, debug):
 	env, home = home
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	session = bash_session(home, env, glue_file(home, 'bash'))
 	try:
 		session.send('mssh gpu[01-16] ')
@@ -109,6 +112,8 @@ def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home):
 		assert words(printed(session, '\r')) == PICKED
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def test_bash_picker_draws_in_the_locale_bash_runs_in(home):
@@ -580,8 +585,11 @@ def test_editor_space_keeps_magic_space_when_the_glue_loads_again(home):
 		session.close()
 
 
-def test_editor_shows_and_accepts_the_suggestion(home):
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_editor_shows_and_accepts_the_suggestion(home, debug):
 	env, home = home
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gp')
@@ -589,6 +597,8 @@ def test_editor_shows_and_accepts_the_suggestion(home):
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def test_editor_marks_an_unknown_host_and_says_why(home):
@@ -628,8 +638,11 @@ def test_editor_marks_an_mssh_option_ending_the_line_before_enter(home):
 		session.close()
 
 
-def test_editor_enter_runs_what_was_typed(home):
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_editor_enter_runs_what_was_typed(home, debug):
 	env, home = home
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gp')
@@ -638,6 +651,8 @@ def test_editor_enter_runs_what_was_typed(home):
 		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@', 10)
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def test_editor_keeps_a_burst_of_type_ahead(home):
@@ -1363,8 +1378,11 @@ def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 		session.close()
 
 
-def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, debug):
 	env, home = home
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh gpu[01-16] ')
@@ -1376,6 +1394,8 @@ def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home):
 		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def test_zsh_picker_draws_again_when_the_terminal_is_resized(home):
@@ -1476,8 +1496,11 @@ def test_fish_space_still_expands_abbreviations(home):
 		session.close()
 
 
-def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home, debug):
 	env, home = home
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	pre = "bind \\cr 'commandline -r FISHPREV'"
 	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)
 	try:
@@ -1490,6 +1513,8 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home):
 		assert printed(session, 'ls\x12') == 'FISHPREV'
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def slow_start_session(shell, env, home, delay, deaf=False, **env_options):

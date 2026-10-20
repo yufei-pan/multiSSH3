@@ -11,8 +11,8 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, REPO, aged, bash_locale, bash_session, build_index, fish_complete, fish_session,
-	make_home, require_shell, without_command, zsh_session)
+from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, build_index,
+	debug_log_size, fish_complete, fish_session, make_home, require_shell, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -33,9 +33,12 @@ def glue_file(home, shell, command=ENGINE):
 	return path
 
 
+@WITH_AND_WITHOUT_DEBUG_LOG
 @pytest.mark.parametrize('bash_completion', [True, False])
-def test_bash_completes_in_a_real_shell(setup, bash_completion):
+def test_bash_completes_in_a_real_shell(setup, bash_completion, debug):
 	env, home = setup
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion)
 	try:
 		assert session.line_after('mssh gp') == 'mssh gpu[01-16] '
@@ -47,6 +50,8 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion):
 		assert session.line_after('mssh h "date; fakecmd al') == 'mssh h "date; fakecmd alpha" '
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def test_bash_ignoring_case_completes_in_any_case(tmp_path):
@@ -884,8 +889,11 @@ def test_bash_falls_back_to_file_names_when_the_engine_is_slow(setup):
 		session.close()
 
 
-def test_zsh_completes_in_a_real_shell(setup):
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_zsh_completes_in_a_real_shell(setup, debug):
 	env, home = setup
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
 	session = zsh_session(home, env, glue_file(home, 'zsh'))
 	try:
 		assert session.line_after('mssh gp') == 'mssh gpu\\[01-16\\] '
@@ -895,6 +903,8 @@ def test_zsh_completes_in_a_real_shell(setup):
 		assert session.line_after('mssh h fakecmd al') == 'mssh h fakecmd alpha '
 	finally:
 		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 @pytest.mark.parametrize('engine', ['sleep 5', 'exit 1', r"printf 'MSSHC9\nE\n\0'"], ids=['slow', 'failing', 'other-protocol'])
