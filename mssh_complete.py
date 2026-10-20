@@ -1735,7 +1735,7 @@ def _traceback():
 	return traceback.format_exc().rstrip()
 
 def _debug(message):
-	'''Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB).'''
+	'''Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8 whatever the locale.'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
 		return
 	directory = cache_dir()
@@ -1752,9 +1752,9 @@ def _debug(message):
 	except OSError:
 		pass
 	try:
-		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a') as f:
+		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='replace') as f:
 			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
-	except OSError:
+	except (OSError, ValueError):
 		pass
 
 #%% ------------ Index sources ----------------

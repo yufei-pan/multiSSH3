@@ -643,6 +643,41 @@ def test_pick_and_edit_leave_the_terminal_alone_when_nobody_waits_any_more(tmp_p
 		os.close(master)
 
 
+# the engine run with a function of its replaced first: python -I -c CODE REPO ARGS...
+PATCHED_ENGINE = ('import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; '
+	'exec(sys.argv[2]); sys.exit(mc.main(sys.argv[3:]))')
+
+
+def patched_engine(patch, ascii_locale=False):
+	'''The engine command with patch run first (python code, mc the module); ascii_locale: in C, not in UTF-8 mode.'''
+	import os
+	return [sys.executable, '-I'] + (['-X', 'utf8=0'] if ascii_locale else []) + ['-c', PATCHED_ENGINE, os.path.dirname(mc.__file__), patch]
+
+
+def pty_pair():
+	import pty
+	return pty.openpty()
+
+
+def test_a_debug_message_the_locale_cannot_write_still_lets_pick_fall_back(tmp_path):
+	# in C, not in UTF-8 mode (Python 3.6 there), the log took the locale's encoding: the failure message,
+	# quoting "— … ⚠", raised writing it, and pick ended 1 (cancelled) for 2 (do what Ctrl-R did)
+	import os
+	import subprocess
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	env = dict(env, LC_ALL='C')
+	env.pop('LANG', None)
+	# escapes in the code: an ASCII locale takes the command line's bytes as surrogates
+	patch = 'def boom(*args): raise RuntimeError("\\u26a0 \\u2014 \\u2026")\nmc.picker_items = boom'
+	result = subprocess.run(patched_engine(patch, ascii_locale=True) + ['pick'], input=READY_PICK.replace(b' ready=1', b''), env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, timeout=60)
+	assert (result.returncode, result.stdout, result.stderr) == (2, b'', b'')
+	log = open(os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log'), encoding='utf-8').read()
+	# Python 3.6 shows the exception as RuntimeError('...',)
+	assert "pick failed: RuntimeError('\u26a0 \u2014 \u2026'" in log
+
+
 CLAIM_PICK = b'\0'.join([b'MSSHC1', b'zsh', b'5.9', b'pick=1 nul=0 term=xterm', b'mssh gpu[01-16] ', b'', b'', b''])
 
 
