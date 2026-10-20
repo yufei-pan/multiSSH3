@@ -1735,9 +1735,18 @@ def _traceback():
 	return traceback.format_exc().rstrip()
 
 def _debug(message):
-	'''Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8 whatever the locale.'''
+	'''
+	Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8
+	whatever the locale. message may be a function making it, called only then: what it costs (and a
+	failure making it) is the log's alone.
+	'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
 		return
+	if callable(message):
+		try:
+			message = message()
+		except Exception as e:
+			message = 'cannot make a debug message: {!r}'.format(e)
 	directory = cache_dir()
 	if directory is None:
 		return
@@ -9171,7 +9180,7 @@ def _cmd_edit(args):
 	try:
 		with term:
 			# logged once the terminal is taken, as pick does: keys typed before that are echoed by it
-			_debug('edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
+			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
 		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
@@ -9183,7 +9192,9 @@ def _cmd_edit(args):
 	except OSError as e:
 		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
-	_debug('edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor, time.monotonic() - started))
+	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
+	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
+		time.monotonic() - started))
 	return 0
 
 def _cmd_rebuild(args):

@@ -654,6 +654,36 @@ def patched_engine(patch, ascii_locale=False):
 	return [sys.executable, '-I'] + (['-X', 'utf8=0'] if ascii_locale else []) + ['-c', PATCHED_ENGINE, os.path.dirname(mc.__file__), patch]
 
 
+@pytest.mark.parametrize('debug', ['1', '0'])
+def test_edit_delivers_its_answer_whatever_its_debug_messages_do(tmp_path, debug):
+	# _without_passwords made the editor's debug messages, debug on or off: raising before the editor ran it
+	# fell back to pass, and after the answer was written it made the exit status 1, so the glue dropped the line
+	import os
+	import subprocess
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	env['MSSH_COMPLETE_DEBUG'] = debug
+	master, slave = pty_pair()
+	read_end, write_end = os.pipe()
+	name = os.ttyname(slave)
+	patch = 'def boom(*args): raise RuntimeError("boom")\nmc._without_passwords = boom'
+	process = subprocess.Popen(patched_engine(patch) + ['edit', '--ready', '--', 'mssh '], stdin=subprocess.DEVNULL, stdout=write_end,
+		stderr=subprocess.PIPE, env=env, start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
+	os.close(write_end)
+	os.close(slave)
+	try:
+		assert terminal_output(read_end, 10.0, until=b'\n') == b'ready\n'
+		assert b'mssh ' in terminal_output(master, 10.0, until=b'mssh ')
+		os.write(master, b'h\r')
+		assert process.wait(20) == 0, process.stderr.read()
+		# the line the editor made, and Enter handed back to readline (the fallback hands back no key)
+		assert terminal_output(read_end, 2.0) == b'MSSHC1\nL 6\tmssh h\nK pass\t\\C-m\nE\n'
+	finally:
+		process.kill()
+		os.close(master)
+		os.close(read_end)
+
+
 def pty_pair():
 	import pty
 	return pty.openpty()
@@ -830,7 +860,11 @@ class _Steps(object):
 				return False
 		monkeypatch.setattr(mc, 'Terminal', FakeTerminal)
 		monkeypatch.setattr(mc, '_ready', lambda: steps.done.append('ready') or True)
-		monkeypatch.setattr(mc, '_debug', lambda message: steps.done.append(message.split(' ')[0] + ' ' + message.split(' ')[1]))
+		def debug(message):
+			# a message, or a function making it (_debug calls it only when debugging)
+			message = message() if callable(message) else message
+			steps.done.append(message.split(' ')[0] + ' ' + message.split(' ')[1])
+		monkeypatch.setattr(mc, '_debug', debug)
 
 
 @pytest.mark.parametrize('command', ['edit', 'pick'])
