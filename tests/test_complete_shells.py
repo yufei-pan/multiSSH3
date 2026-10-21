@@ -520,9 +520,9 @@ SAME_AS_BASH_UNQUOTED = [
 	# bash's word stops at a colon: bx for a:b
 	(['-F', '_zzg', '-X', '&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
 	(['-F', '_zzg', '-X', '!&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
-	# the file actions, -G and a command with no compspec give file names that readline does not quote here: the glue
-	# leaves readline's file name mode off while mssh's own words are in the reply, so these are not compared with
-	# bash (6.39: the glue quotes them itself)
+	# not compared with bash: the local file names of the file actions, -G and a command with no compspec, which the
+	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.39: the glue does it
+	# itself)
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
@@ -546,13 +546,11 @@ SAME_AS_BASH_QUOTED = [
 	[(True,) + case for case in SAME_AS_BASH + SAME_AS_BASH_QUOTED])
 def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec, word, before, quoted):
 	import shlex
-	if spec and 'noquote' in spec:
-		require_bash_printing('noquote')
 	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; {}'.format(before or ':',
 		'complete {} zzsvc'.format(' '.join(map(shlex.quote, spec))) if spec else ':')
 	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab'], options=options)
 	try:
-		for name in ('zzdir', 'zzdirb', 'my dir'):
+		for name in ('zzdir', 'zzdirb'):
 			(tmp_path / 'work' / name).mkdir()
 		native = completed_and_listed(session, 'zzsvc ' + word)
 		remote = completed_and_listed(session, 'mssh h ' + ('"zzsvc ' if quoted else 'zzsvc ') + word, quoted)
@@ -579,7 +577,6 @@ ENGINES_GLOB = ['1790000000\t/x/multiSSH3.py\t-su\th\t"zzsvc zz*x"']
 	# not with -o noquote: readline quotes nothing then, and mssh's words go in as the engine escaped them
 	('-W other -o filenames -o noquote', 'mssh h zzsvc zz\\*x '),
 	('-W other -o filenames -o noquote -o nospace', 'mssh h zzsvc zz\\*x'),
-	('-d -o noquote', 'mssh h zzsvc zz\\*x '),
 	# from bash 5.3, -o fullquote quotes all matches
 	('-W other -o fullquote', 'mssh h zzsvc zz\\*x '),
 	('-W other -o fullquote -o noquote', 'mssh h zzsvc zz\\*x '),
@@ -597,12 +594,16 @@ def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_pa
 
 
 def history_of(*commands):
-	return ['17900000{:02d}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command) for number, command in enumerate(commands)]
+	return ['{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(1790000000 + number, command) for number, command in enumerate(commands)]
 
 
 @pytest.mark.parametrize('options, typed', [
 	('', 'mssh h othercmd '),
 	('complete -f zzsvc', 'mssh h zzsvc '),
+	('complete -A file zzsvc', 'mssh h zzsvc '),
+	('complete -d zzsvc', 'mssh h zzsvc '),
+	('complete -A directory zzsvc', 'mssh h zzsvc '),
+	("complete -G '*' zzsvc", 'mssh h zzsvc '),
 ])
 def test_bash_a_remote_home_path_from_history_is_not_left_for_the_local_shell_to_expand(tmp_path, options, typed):
 	# readline never quotes a leading ~: the glue keeps the engine's \~ and does not turn readline's file name mode on

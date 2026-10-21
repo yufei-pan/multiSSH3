@@ -382,13 +382,21 @@ def test_an_engine_file_that_is_gone_ends_with_status_2(tmp_path):
 	assert b'cannot open file' in result.stderr and b'No such file or directory' in result.stderr
 
 
-_COMPLETION_PATH_SCRIPT = '''
-import contextlib, importlib.util, io, os, sys
+# loads a module from its path, as the two loaders do, so that its own directory is on no sys.path
+_LOAD_BY_PATH = '''
+import importlib.util, sys
+def load(name, path):
+	spec = importlib.util.spec_from_file_location(name, path)
+	module = importlib.util.module_from_spec(spec)
+	sys.modules[name] = module
+	spec.loader.exec_module(module)
+	return module
+'''
+
+_COMPLETION_PATH_SCRIPT = _LOAD_BY_PATH + '''
+import contextlib, io, os
 here = os.path.dirname(sys.argv[1])
-spec = importlib.util.spec_from_file_location('multiSSH3', sys.argv[1])
-mssh = importlib.util.module_from_spec(spec)
-sys.modules['multiSSH3'] = mssh
-spec.loader.exec_module(mssh)
+mssh = load('multiSSH3', sys.argv[1])
 before = list(sys.path)
 with contextlib.redirect_stdout(io.StringIO()) as glue:
 	status = mssh._completion_command(['bash'])
@@ -405,12 +413,8 @@ def test_mssh_completion_loads_the_mssh_complete_beside_it_by_path(tmp_path):
 	assert result.stdout.split() == [b'0', b'True', b'True', b'True'], result.stderr.decode('utf-8', 'replace')
 
 
-_COMPLETION_ALONE_SCRIPT = '''
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location('multiSSH3', sys.argv[1])
-mssh = importlib.util.module_from_spec(spec)
-sys.modules['multiSSH3'] = mssh
-spec.loader.exec_module(mssh)
+_COMPLETION_ALONE_SCRIPT = _LOAD_BY_PATH + '''
+mssh = load('multiSSH3', sys.argv[1])
 print(mssh._completion_command(['bash']), 'mssh_complete' in sys.modules)
 '''
 
@@ -423,13 +427,9 @@ def test_mssh_completion_without_mssh_complete_beside_it_says_so(tmp_path):
 	assert b'autocomplete needs mssh_complete.py next to ' in result.stderr
 
 
-_IMPORT_FAILS_SCRIPT = '''
-import importlib.util, sys
+_IMPORT_FAILS_SCRIPT = _LOAD_BY_PATH + '''
 name, path = sys.argv[1:3]
-spec = importlib.util.spec_from_file_location(name, path)
-module = importlib.util.module_from_spec(spec)
-sys.modules[name] = module
-spec.loader.exec_module(module)
+module = load(name, path)
 sys.path[:0] = sys.argv[3:]
 try:
 	module._completion_command(['bash']) if name == 'multiSSH3' else module._import_mssh()
@@ -474,6 +474,7 @@ def test_the_engine_survives_a_multissh3_that_took_itself_out_of_sys_modules(tmp
 
 
 def test_the_engine_reports_an_import_error_of_an_installed_multissh3_as_it_is(tmp_path):
+	# already so before 6.38 (the engine's installed branch never caught it): kept beside mssh's case above
 	out, err = import_fails(tmp_path, 'mssh_complete', 'import zz_no_such_module\n', installed=True)
 	assert out.startswith('ModuleNotFoundError') and 'zz_no_such_module' in out, (out, err)
 
