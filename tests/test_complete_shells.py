@@ -554,6 +554,8 @@ SAME_AS_BASH_QUOTED = [
 	[(True,) + case for case in SAME_AS_BASH + SAME_AS_BASH_QUOTED])
 def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec, word, before, quoted):
 	import shlex
+	if spec and 'noquote' in spec:
+		require_bash_printing('noquote')
 	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; {}'.format(before or ':',
 		'complete {} zzsvc'.format(' '.join(map(shlex.quote, spec))) if spec else ':')
 	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab'], options=options)
@@ -565,6 +567,15 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 		assert remote == ('mssh h ' + native[0], native[1])
 	finally:
 		session.close()
+
+
+def require_bash_printing(option):
+	"""Skip unless this bash prints `complete -o option` back, which the glue reads a compspec by: bash 4.2 refuses noquote, 4.3
+	and 4.4 take it and never print it (nor 4.4 nosort), and fullquote is new in bash 5.3."""
+	output = subprocess.run([require_shell('bash'), '-c', 'complete -o {} -W x zzq && complete -p zzq'.format(option)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+	if option.encode() not in output:
+		pytest.skip('this bash does not print complete -o {}'.format(option))
 
 
 ENGINES_GLOB = ['1790000000\t/x/multiSSH3.py\t-su\th\t"zzsvc zz*x"']
@@ -583,9 +594,9 @@ ENGINES_GLOB = ['1790000000\t/x/multiSSH3.py\t-su\th\t"zzsvc zz*x"']
 	('-W other -o fullquote -o filenames', 'mssh h zzsvc zz\\*x '),
 ])
 def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_path, options, completed):
-	if 'fullquote' in options and subprocess.run([require_shell('bash'), '-c', 'complete -o fullquote -W x zzq'],
-			stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode:
-		pytest.skip('this bash has no complete -o fullquote (bash 5.3)')
+	for option in ('noquote', 'fullquote'):
+		if option in options:
+			require_bash_printing(option)
 	session = ignoring_case(tmp_path, ENGINES_GLOB, on=False, options='complete {} zzsvc'.format(options))
 	try:
 		assert session.line_after('mssh h zzsvc zz') == completed
