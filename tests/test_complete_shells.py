@@ -297,6 +297,15 @@ def test_bash_delegation_finds_the_completion_of_a_full_path_by_its_last_part(tm
 		session.close()
 
 
+@pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
+def test_bash_the_glue_puts_the_shells_ifs_back_after_a_call(tmp_path, shell_ifs):
+	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha); }; complete -F _zzreal zzsvc; ' + shell_ifs + '; '
+		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "[%s][%s]" "${IFS+set}" "$IFS"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode() == {'IFS=:': '[set][:]', 'IFS=': '[set][]', 'unset IFS': '[][]'}[shell_ifs], output
+
+
 # names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
 # sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
 # every glue function to the prefix
@@ -817,7 +826,7 @@ GLUE_LOCAL_EXCEPTIONS = {
 	# bash's completion interface, handed to a command's completion function; a locale for one function
 	# (its whole point); ble.sh's conventions: its functions return in ret, layer:{selection}/update
 	# reads sel and gflags
-	'bash': {'COMP_WORDS', 'COMP_CWORD', 'COMP_LINE', 'COMP_POINT', 'COMPREPLY', 'LC_ALL', 'ret', 'sel', 'gflags'},
+	'bash': {'COMP_WORDS', 'COMP_CWORD', 'COMP_LINE', 'COMP_POINT', 'COMPREPLY', 'LC_ALL', 'IFS', 'ret', 'sel', 'gflags'},
 	# what zsh's pattern matching sets, kept from the shell's own
 	'zsh': {'MATCH', 'MBEGIN', 'MEND', 'match', 'mbegin', 'mend'},
 }

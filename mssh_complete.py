@@ -6236,8 +6236,8 @@ _mssh_complete_slice() {
 }
 
 _mssh_complete_split() {
-	# split $1 on tabs (or on $2 when not empty) into _mssh_complete_fields, keeping empty fields, whatever IFS the shell
-	# has (not IFS=' ' read -a <<<: with the shell's IFS empty, bash 4.2 read " emacs vi-insert" as one word)
+	# split $1 on tabs (or on $2 when not empty) into _mssh_complete_fields, keeping empty fields: read -a
+	# would make a run of tabs one separator (a tab is IFS whitespace)
 	local _mssh_complete_text=$1 _mssh_complete_separator=${2:-$'\t'}
 	_mssh_complete_fields=()
 	while [[ $_mssh_complete_text == *"$_mssh_complete_separator"* ]]; do
@@ -6247,22 +6247,32 @@ _mssh_complete_split() {
 	_mssh_complete_fields+=("$_mssh_complete_text")
 }
 
+# bash's default IFS: space, tab, newline
+_mssh_complete_default_ifs=$' \t\n'
+
 _mssh_complete_guard() {
 	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
 	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
 	# completion function). The shell's setting comes back on every return, also after a command's
 	# completion function changed it; after a Ctrl-C cut a call short (bash 5 cuts bind -x commands, and
 	# every bash a completion function running a command), at the next prompt (_mssh_complete_heal), else
-	# at the next call, unless the shell changed it since.
-	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's
-	# code runs inside it. _mssh_complete_held: the shell's setting while a call runs; _mssh_complete_left:
-	# the setting the glue last made, noted before the glue turns the shell's off and after it puts the
-	# shell's back: a cut between the two finds the shell's setting where the note differs, which the heal
-	# keeps. The glue never switches between two settings of its own, where no order would do
+	# at the next call, unless the shell changed it since. It runs it with IFS at bash's default too (space,
+	# tab, newline), for the glue's splits and joins whatever the shell's: a local, which a return and a cut
+	# alike unwind.
+	# _mssh_complete_operator runs the shell's own code in its setting and its IFS. Its variables are
+	# prefixed: the shell's code runs inside it. _mssh_complete_held: the shell's setting while a call runs;
+	# _mssh_complete_left: the setting the glue last made, noted before the glue turns the shell's off and
+	# after it puts the shell's back: a cut between the two finds the shell's setting where the note
+	# differs, which the heal keeps. The glue never switches between two settings of its own, where no
+	# order would do
 	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
 	if [[ -z $_mssh_complete_outer ]]; then
 		_mssh_complete_heal || :
+		# the shell's IFS, and whether it has one: unset, it is no empty one ("${a[*]}" joins with spaces)
+		local _mssh_complete_ifs=${IFS-} _mssh_complete_ifs_set=0
+		[[ -n ${IFS+1} ]] && _mssh_complete_ifs_set=1
 	fi
+	local IFS=$_mssh_complete_default_ifs
 	shopt -q nocasematch && _mssh_complete_was=1
 	# the shell's setting, as the outermost call found it (one inside is called with it off, or as ble.sh set it)
 	local _mssh_complete_nocase=${_mssh_complete_outer:-$_mssh_complete_was}
@@ -6316,8 +6326,13 @@ _mssh_complete_heal() {
 
 _mssh_complete_operator() {
 	# run "$@", the shell's own code (a command's completion function, the binding ours took over), in
-	# the shell's nocasematch; the glue's comes back after
+	# the shell's nocasematch and its IFS (the one the guard noted: called without the guard, IFS stays as it
+	# is); the glue's come back after, the local IFS unwinding on a return and on a cut alike
 	local _mssh_complete_rc=0
+	case ${_mssh_complete_ifs_set-} in
+		1) local IFS=$_mssh_complete_ifs ;;
+		0) local IFS; unset IFS ;;
+	esac
 	if (( ${_mssh_complete_nocase:-0} )); then
 		shopt -s nocasematch
 		_mssh_complete_left=1
