@@ -923,6 +923,30 @@ def test_pick_falls_back_when_the_failure_cannot_be_shown(tmp_path, monkeypatch)
 	assert mc._cmd_pick() == 2
 
 
+@pytest.mark.parametrize('command, broken, status', [('edit', 'engine_for', 3), ('edit', 'Terminal', 3), ('query', 'answer', 1)])
+def test_a_failure_that_cannot_be_shown_keeps_the_fallback_status(tmp_path, monkeypatch, command, broken, status):
+	# edit's "editor cannot start" and query's "query failed" made their message even with the log off
+	import io
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	for name, value in env.items():
+		monkeypatch.setenv(name, value)
+	monkeypatch.delenv('MSSH_COMPLETE_DEBUG', raising=False)
+
+	class Unshowable(Exception):
+		def __repr__(self):
+			raise RuntimeError('no repr')
+
+	def fail(*args, **kwargs):
+		raise Unshowable()
+	monkeypatch.setattr(mc, broken, fail)
+	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK if command == 'query' else b'')))
+	if command == 'edit':
+		assert mc._cmd_edit(['--', 'mssh ']) == status
+	else:
+		assert mc._cmd_query() == status
+
+
 class _Steps(object):
 	'''What _cmd_edit and _cmd_pick do, in order: saying ready, taking the terminal, logging.'''
 	def __init__(self, monkeypatch):

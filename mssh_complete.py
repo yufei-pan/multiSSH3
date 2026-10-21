@@ -2323,7 +2323,7 @@ def _spawn_detached(directory, lock_name, command):
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
-		_debug('cannot start {}: {!r}'.format(command, e))
+		_debug(lambda: 'cannot start {}: {!r}'.format(command, e))
 		try:
 			os.unlink(lock)
 		except OSError:
@@ -2339,7 +2339,7 @@ def _load_index(path):
 	try:
 		return NsvIndex.load(path)
 	except (OSError, IndexCorrupt, ValueError) as e:
-		_debug('index not usable: {!r}'.format(e))
+		_debug(lambda: 'index not usable: {!r}'.format(e))
 		return None
 
 def load_for_query(directory, now, deadline=None):
@@ -2698,7 +2698,7 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 				with guard:
 					retry.append(host)
 			else:
-				_debug('probing {} failed: {!r}'.format(host, e))
+				_debug(lambda: 'probing {} failed: {!r}'.format(host, e))
 			return
 		with guard:
 			states[host] = state
@@ -3718,7 +3718,7 @@ class Engine(object):
 					if pending:
 						response.directives.add('pending')
 				except Exception as e:
-					_debug('diagnostics failed: {!r}'.format(e))
+					_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 			return response
 		context = parse_context(request.before, request.after, self.spec)
 		response = Response(context)
@@ -3803,7 +3803,7 @@ class Engine(object):
 					split = _brace_split(token, request.shell, self.unicode)
 				except Exception as e:
 					# a word of odd braces must not cost the line its other warnings
-					_debug('brace warning failed: {!r}'.format(e))
+					_debug(lambda: 'brace warning failed: {!r}'.format(e))
 					split = None
 				if split is not None:
 					found.append(split)
@@ -3822,7 +3822,7 @@ class Engine(object):
 				pending = True
 				spawn_probe(self.directory)
 			except OSError as e:
-				_debug('cannot queue hosts: {!r}'.format(e))
+				_debug(lambda: 'cannot queue hosts: {!r}'.format(e))
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
 		return found, pending
 
@@ -5535,7 +5535,7 @@ def picker_warnings(engine, request):
 	try:
 		found, _ = engine.diagnose(Request(request.shell, request.before, request.after, ''))
 	except Exception as e:
-		_debug('diagnostics failed: {!r}'.format(e))
+		_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 		return []
 	return [item.message for item in found[:3]]
 
@@ -5989,7 +5989,7 @@ class LineEditor(object):
 		try:
 			ghost = self.suggest(self.text)
 		except Exception as e:
-			_debug('suggestion failed: {!r}'.format(e))
+			_debug(lambda: 'suggestion failed: {!r}'.format(e))
 		self.ghost = ghost.text if ghost is not None else ''
 		self._ghost_for = self.text
 
@@ -6110,7 +6110,7 @@ class LineEditor(object):
 		try:
 			found, pending = self.diagnose(self.text, self.cursor)
 		except Exception as e:
-			_debug('warnings failed: {!r}'.format(e))
+			_debug(lambda: 'warnings failed: {!r}'.format(e))
 			found, pending = [], False
 		self.marks = [(item.start, item.end) for item in found if 0 <= item.start < item.end <= len(self.text)]
 		self.reason = reason_line(found, self.unicode)
@@ -8904,7 +8904,7 @@ def prepare_index():
 	try:
 		return 'built the completion index ' + build_index(directory)
 	except Exception as e:
-		_debug('install: rebuild failed: {!r}'.format(e))
+		_debug(lambda: 'install: rebuild failed: {!r}'.format(e))
 		return 'could not build the completion index now ({}): the first TAB tries again'.format(e)
 
 def completion_command(values):
@@ -9265,12 +9265,12 @@ def _cmd_query():
 	try:
 		request = parse_request(data)
 	except ValueError as e:
-		_debug('bad request: {}'.format(e))
+		_debug(lambda: 'bad request: {}'.format(e))
 		return 1
 	try:
 		response = answer(request, deadline)
 	except Exception as e:
-		_debug('query failed: {!r}'.format(e))
+		_debug(lambda: 'query failed: {!r}'.format(e))
 		return 1
 	sys.stdout.buffer.write(format_response(response, nul=request.flags.get('nul', '1') != '0'))
 	sys.stdout.buffer.flush()
@@ -9400,7 +9400,7 @@ def _cmd_pick():
 		sys.stdout.buffer.write('MSSHC1\nL {}\t{}\nE\n'.format(cursor, line).encode('utf-8', 'surrogateescape'))
 		sys.stdout.buffer.flush()
 	except OSError as e:
-		_debug('pick: the answer did not reach the shell: {!r}'.format(e))
+		_debug(lambda: 'pick: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	return 0
 
@@ -9483,7 +9483,7 @@ def _cmd_edit(args):
 		engine = engine_for(Request('bash', options.text, '', '', flags=flags, history=history))
 		term = Terminal()
 	except Exception as e:
-		_debug('editor cannot start: {!r}'.format(e))
+		_debug(lambda: 'editor cannot start: {!r}'.format(e))
 		return 3
 	cache = {}
 
@@ -9530,7 +9530,7 @@ def _cmd_edit(args):
 		sys.stdout.buffer.write(out.encode('utf-8', 'surrogateescape'))
 		sys.stdout.buffer.flush()
 	except OSError as e:
-		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
+		_debug(lambda: 'edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
 	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
@@ -9552,7 +9552,7 @@ def _cmd_rebuild(args):
 		print(path)
 		return 0
 	except Exception as e:
-		_debug('rebuild failed: {!r}'.format(e))
+		_debug(lambda: 'rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
 		return 1
 	finally:
@@ -9572,7 +9572,7 @@ def _cmd_probe(args):
 		run_probe(directory, lock, owner=owner)
 		return 0
 	except Exception as e:
-		_debug('probe failed: {!r}'.format(e))
+		_debug(lambda: 'probe failed: {!r}'.format(e))
 		return 1
 	finally:
 		if lock:
