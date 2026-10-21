@@ -1,4 +1,5 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
+import re
 import sys
 import time
 
@@ -855,6 +856,36 @@ def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
 	assert len(logged) == 1 and 'claim' in logged[0] and 'ready' not in logged[0], logged
 	# how slowly the picker started is what explains a lost claim
 	assert 's in' in logged[0] and 'went on' in logged[0], logged
+
+
+def test_a_refused_claim_logs_the_time_since_the_shell_launched_the_picker(tmp_path, monkeypatch):
+	# python starting and loading the module come before the picker's own clock and are what use up the
+	# shell's timeout: the launch is the creation of the file the answer goes to (START_SCRIPT)
+	import io
+	import os
+	claim = tmp_path / 'claim'
+	claim.mkdir()
+	answer = tmp_path / 'answer'
+	answer.write_bytes(b'')
+	os.utime(str(answer), (time.time() - 1.9, time.time() - 1.9))
+	logged = []
+	monkeypatch.setattr(mc, '_debug', lambda message: logged.append(message() if callable(message) else message))
+	monkeypatch.setenv('MSSH_COMPLETE_CLAIM', str(claim))
+	real = mc._launch_age
+	with open(str(answer), 'ab') as f:
+		with monkeypatch.context() as patch:
+			patch.setattr(mc, '_launch_age', lambda fd=1: real(f.fileno()))
+			assert mc._claim_terminal(time.monotonic()) is False
+	assert len(logged) == 1 and 'went on' in logged[0], logged
+	match = re.search(r'([0-9.]+) s into the picker, ([0-9.]+) s since the shell launched it', logged[0])
+	assert match and float(match.group(1)) < 0.5 and 1.8 < float(match.group(2)) < 5, logged
+	# stdout that is no file (bash's pipe) tells nothing
+	read, write = os.pipe()
+	try:
+		assert mc._launch_age(write) is None
+	finally:
+		os.close(read)
+		os.close(write)
 
 
 @pytest.mark.parametrize('error', [PermissionError(13, 'Permission denied'), OSError(30, 'Read-only file system'), OSError(28, 'No space left on device')])

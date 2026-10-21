@@ -13,6 +13,7 @@ building the index (`mssh-complete rebuild`) imports multiSSH3.
 import math
 import os
 import sys
+import stat
 import time
 from bisect import bisect_left
 
@@ -9299,6 +9300,24 @@ def _ready():
 	except OSError:
 		return False
 
+def _launch_age(fd=1):
+	'''
+	Seconds since the shell's glue started the picker, None where that cannot be told.
+
+	START_SCRIPT makes the file the picker's answer goes to just before it starts the picker, and
+	nothing is written to it until the picker is done: when fd (the picker's stdout) is that file, its
+	modification time is the launch. This counts what the picker's own clock cannot, python starting
+	and loading this file, which is most of what a shell's MSSH_COMPLETE_START_TIMEOUT is spent on.
+	It is the wall clock against the file system's, so a few milliseconds are rounding.
+	'''
+	try:
+		status = os.fstat(fd)
+		if not stat.S_ISREG(status.st_mode):
+			return None
+		return max(0.0, time.time() - status.st_mtime)
+	except OSError:
+		return None
+
 def _claim_terminal(started=None):
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
@@ -9308,6 +9327,8 @@ def _claim_terminal(started=None):
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
 	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
 	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
+	Both times are given: since the picker's command ran, and since the shell launched it (_launch_age,
+	which includes starting python).
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -9316,12 +9337,17 @@ def _claim_terminal(started=None):
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		took = '' if started is None else ', {:.3f} s in'.format(time.monotonic() - started)
+		def took():
+			if started is None:
+				return ''
+			age = _launch_age()
+			return ', {:.3f} s into the picker{}'.format(time.monotonic() - started,
+				'' if age is None else ', {:.3f} s since the shell launched it'.format(age))
 		if isinstance(e, (FileExistsError, FileNotFoundError)):
 			# the shell claimed it first (its directory is there), or cleaned its directory up
-			_debug('pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took, e))
+			_debug(lambda: 'pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took(), e))
 		else:
-			_debug('pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took, e))
+			_debug(lambda: 'pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took(), e))
 		return False
 
 def _cmd_pick():
