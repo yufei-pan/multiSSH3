@@ -1,4 +1,5 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
+import re
 import sys
 import time
 
@@ -857,6 +858,36 @@ def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
 	assert 's in' in logged[0] and 'went on' in logged[0], logged
 
 
+def test_a_refused_claim_logs_the_time_since_the_shell_launched_the_picker(tmp_path, monkeypatch):
+	# python starting and loading the module come before the picker's own clock and are what use up the
+	# shell's timeout: the launch is the creation of the file the answer goes to (START_SCRIPT)
+	import io
+	import os
+	claim = tmp_path / 'claim'
+	claim.mkdir()
+	answer = tmp_path / 'answer'
+	answer.write_bytes(b'')
+	os.utime(str(answer), (time.time() - 1.9, time.time() - 1.9))
+	logged = []
+	monkeypatch.setattr(mc, '_debug', lambda message: logged.append(message() if callable(message) else message))
+	monkeypatch.setenv('MSSH_COMPLETE_CLAIM', str(claim))
+	real = mc._launch_age
+	with open(str(answer), 'ab') as f:
+		with monkeypatch.context() as patch:
+			patch.setattr(mc, '_launch_age', lambda fd=1: real(f.fileno()))
+			assert mc._claim_terminal(time.monotonic()) is False
+	assert len(logged) == 1 and 'went on' in logged[0], logged
+	match = re.search(r'([0-9.]+) s into the picker, ([0-9.]+) s since the shell launched it', logged[0])
+	assert match and float(match.group(1)) < 0.5 and 1.8 < float(match.group(2)) < 5, logged
+	# stdout that is no file (bash's pipe) tells nothing
+	read, write = os.pipe()
+	try:
+		assert mc._launch_age(write) is None
+	finally:
+		os.close(read)
+		os.close(write)
+
+
 @pytest.mark.parametrize('error', [PermissionError(13, 'Permission denied'), OSError(30, 'Read-only file system'), OSError(28, 'No space left on device')])
 def test_a_claim_that_failed_for_another_reason_does_not_blame_the_shell(tmp_path, monkeypatch, error):
 	# only a directory made first (or the claim's parent removed) means the shell went on
@@ -890,6 +921,30 @@ def test_pick_falls_back_when_the_failure_cannot_be_shown(tmp_path, monkeypatch)
 	monkeypatch.setattr(mc, 'picker_items', fail)
 	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK)))
 	assert mc._cmd_pick() == 2
+
+
+@pytest.mark.parametrize('command, broken, status', [('edit', 'engine_for', 3), ('edit', 'Terminal', 3), ('query', 'answer', 1)])
+def test_a_failure_that_cannot_be_shown_keeps_the_fallback_status(tmp_path, monkeypatch, command, broken, status):
+	# edit's "editor cannot start" and query's "query failed" made their message even with the log off
+	import io
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	for name, value in env.items():
+		monkeypatch.setenv(name, value)
+	monkeypatch.delenv('MSSH_COMPLETE_DEBUG', raising=False)
+
+	class Unshowable(Exception):
+		def __repr__(self):
+			raise RuntimeError('no repr')
+
+	def fail(*args, **kwargs):
+		raise Unshowable()
+	monkeypatch.setattr(mc, broken, fail)
+	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK if command == 'query' else b'')))
+	if command == 'edit':
+		assert mc._cmd_edit(['--', 'mssh ']) == status
+	else:
+		assert mc._cmd_query() == status
 
 
 class _Steps(object):

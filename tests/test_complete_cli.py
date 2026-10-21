@@ -384,16 +384,18 @@ def test_an_engine_file_that_is_gone_ends_with_status_2(tmp_path):
 
 def test_the_engine_takes_no_module_from_elsewhere(tmp_path):
 	# as isolated as a script run with -I: nothing from the current directory or PYTHONPATH, and its own
-	# directory is not put on sys.path (a file there named as a standard module would hide that one);
+	# directory is not put on sys.path (a file there named as a standard module would hide that one,
+	# also for multiSSH3's own imports: it imports ipaddress after the engine's imports are done);
 	# the index is built with the multiSSH3 beside it
 	env, _ = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\tnode1\t"uptime"'])
 	decoys = tmp_path / 'decoys'
 	engine = tmp_path / 'engine'
 	decoys.mkdir()
 	engine.mkdir()
-	for name in ('mssh_complete', 'multiSSH3', 'bisect'):
+	for name in ('mssh_complete', 'multiSSH3', 'bisect', 'ipaddress'):
 		(decoys / (name + '.py')).write_text('raise SystemExit("the decoy {} was imported")\n'.format(name))
-	shutil.copyfile(str(decoys / 'bisect.py'), str(engine / 'bisect.py'))
+	for name in ('bisect', 'ipaddress'):
+		shutil.copyfile(str(decoys / (name + '.py')), str(engine / (name + '.py')))
 	for name in ('mssh_complete.py', 'multiSSH3.py'):
 		shutil.copyfile(str(REPO / name), str(engine / name))
 	command = mc.module_command(str(engine / 'mssh_complete.py'))

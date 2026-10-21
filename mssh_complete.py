@@ -13,6 +13,7 @@ building the index (`mssh-complete rebuild`) imports multiSSH3.
 import math
 import os
 import sys
+import stat
 import time
 from bisect import bisect_left
 
@@ -1198,6 +1199,27 @@ def _shell_locale(flags):
 # fish's glue names fish's locale variables in these request flags
 _NAMED_VARIABLES = (('lc_all', 'LC_ALL'), ('lc_ctype', 'LC_CTYPE'), ('lang', 'LANG'))
 
+_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
+
+def _url_unescape(value):
+	'''
+	value with each %XX replaced by the byte it names, the bytes read as UTF-8 (what cannot be is kept as
+	surrogate escapes). This undoes fish's `string escape --style=url`, which writes every byte outside
+	letters, digits and -._~/ as %XX (a space is %20, '+' is %2B); a % that no two hex digits follow stays.
+	'''
+	if '%' not in value:
+		return value
+	first, *rest = value.split('%')
+	data = bytearray(first.encode('utf-8', 'surrogateescape'))
+	for part in rest:
+		if len(part) >= 2 and part[0] in _HEX_DIGITS and part[1] in _HEX_DIGITS:
+			data.append(int(part[:2], 16))
+			part = part[2:]
+		else:
+			data.append(0x25)
+		data += part.encode('utf-8', 'surrogateescape')
+	return data.decode('utf-8', 'surrogateescape')
+
 def _measured_utf8(request):
 	"""
 	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
@@ -1217,10 +1239,7 @@ def _measured_utf8(request):
 	variables = {}
 	for flag, name in _NAMED_VARIABLES:
 		value = request.flags.get(flag, '')
-		if '%' in value:
-			from urllib.parse import unquote
-			value = unquote(value, errors='surrogateescape')
-		variables[name] = value
+		variables[name] = _url_unescape(value)
 	return _locale_variables_utf8(variables)
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
@@ -2010,12 +2029,30 @@ def file_signature(path):
 	return [path, str(st.st_ino), str(st.st_size), str(st.st_mtime_ns)]
 
 def _import_mssh():
-	'''Import multiSSH3, also when both files were copied somewhere by hand.'''
-	here = os.path.dirname(os.path.abspath(__file__))
-	if here not in sys.path:
-		sys.path.insert(0, here)
-	import multiSSH3
-	return multiSSH3
+	'''
+	Import multiSSH3, also when both files were copied somewhere by hand.
+
+	The multiSSH3.py beside this file is loaded from its path and registered as multiSSH3, which
+	puts that directory on no sys.path: a file in it named as a standard module (ipaddress.py) would
+	hide that module from multiSSH3's own imports. With no such file beside this one, multiSSH3 is
+	imported as installed.
+	'''
+	if 'multiSSH3' in sys.modules:
+		return sys.modules['multiSSH3']
+	path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'multiSSH3.py')
+	if not os.path.isfile(path):
+		import multiSSH3
+		return multiSSH3
+	import importlib.util
+	spec = importlib.util.spec_from_file_location('multiSSH3', path)
+	module = importlib.util.module_from_spec(spec)
+	sys.modules['multiSSH3'] = module
+	try:
+		spec.loader.exec_module(module)
+	except BaseException:
+		del sys.modules['multiSSH3']
+		raise
+	return module
 
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
@@ -2304,7 +2341,7 @@ def _spawn_detached(directory, lock_name, command):
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
-		_debug('cannot start {}: {!r}'.format(command, e))
+		_debug(lambda: 'cannot start {}: {!r}'.format(command, e))
 		try:
 			os.unlink(lock)
 		except OSError:
@@ -2320,7 +2357,7 @@ def _load_index(path):
 	try:
 		return NsvIndex.load(path)
 	except (OSError, IndexCorrupt, ValueError) as e:
-		_debug('index not usable: {!r}'.format(e))
+		_debug(lambda: 'index not usable: {!r}'.format(e))
 		return None
 
 def load_for_query(directory, now, deadline=None):
@@ -2679,7 +2716,7 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 				with guard:
 					retry.append(host)
 			else:
-				_debug('probing {} failed: {!r}'.format(host, e))
+				_debug(lambda: 'probing {} failed: {!r}'.format(host, e))
 			return
 		with guard:
 			states[host] = state
@@ -3699,20 +3736,23 @@ class Engine(object):
 					if pending:
 						response.directives.add('pending')
 				except Exception as e:
-					_debug('diagnostics failed: {!r}'.format(e))
+					_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 			return response
 		context = parse_context(request.before, request.after, self.spec)
 		response = Response(context)
 		if context is None:
 			return response
+		# what of the word parsed the shell keeps as typed, None when the shell's word is not its end (_frame offers nothing)
+		base = _word_base(context, request)
 		# how readline compares characters ignoring case, in the shell's locale (bash's glue says which)
 		context.icase = case_fold(request.flags) if request.flags.get('icase') == '1' else None
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
-			# nor before the shell's word (see _frame): a name differing in case there is no candidate, so no
-			# provider may count it (toward GROUP_THRESHOLD, among the hosts listed beside the groups)
-			base = _word_base(context, request)
+			# nor before the shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the
+			# base as typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''.
+			# A name differing in case there is no candidate, so no provider may count it (toward GROUP_THRESHOLD,
+			# among the hosts listed beside the groups), and _frame drops it
 			if base is not None:
 				context.fold_start = max(context.fold_start, len(base))
 		if context.slot == SLOT_OPTION:
@@ -3725,7 +3765,7 @@ class Engine(object):
 			candidates = self._commands(context, response, deadline)
 		if request.flags.get('nosort') == '1':
 			response.directives.add('nosort')
-		response.candidates = self._frame(candidates, context, request, response.directives)
+		response.candidates = self._frame(candidates, context, request, base, response.directives)
 		return response
 
 	def host_states(self):
@@ -3784,7 +3824,7 @@ class Engine(object):
 					split = _brace_split(token, request.shell, self.unicode)
 				except Exception as e:
 					# a word of odd braces must not cost the line its other warnings
-					_debug('brace warning failed: {!r}'.format(e))
+					_debug(lambda: 'brace warning failed: {!r}'.format(e))
 					split = None
 				if split is not None:
 					found.append(split)
@@ -3803,7 +3843,7 @@ class Engine(object):
 				pending = True
 				spawn_probe(self.directory)
 			except OSError as e:
-				_debug('cannot queue hosts: {!r}'.format(e))
+				_debug(lambda: 'cannot queue hosts: {!r}'.format(e))
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
 		return found, pending
 
@@ -4346,27 +4386,25 @@ class Engine(object):
 		'''value -> score of every feature of a kind ('h:', 'c:'), scored against features.'''
 		return {feature[len(kind):]: score for feature, score in score_features(self.knowledges, kind, sorted(features), deadline).items()}
 
-	def _frame(self, candidates, context, request, directives=()):
+	def _frame(self, candidates, context, request, base, directives=()):
 		'''
 		Turn slot values into replacements for the shell's word, best first, without duplicates.
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
 		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
-		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do.
+		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do. base is _word_base of the
+		request (query has it: it raises context.fold_start by its length): None offers nothing.
 		'''
 		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		prefix = context.prefix
-		base = _word_base(context, request)
 		if base is None:
 			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
 			return []
 		lead = prefix[:context.value_start]
-		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
-		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
-		# typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''
-		fold_start = max(context.fold_start, len(base))
+		# whatever found it: only from fold_start on may it differ from the word in case
+		fold_start = context.fold_start
 		out = []
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
@@ -5516,7 +5554,7 @@ def picker_warnings(engine, request):
 	try:
 		found, _ = engine.diagnose(Request(request.shell, request.before, request.after, ''))
 	except Exception as e:
-		_debug('diagnostics failed: {!r}'.format(e))
+		_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 		return []
 	return [item.message for item in found[:3]]
 
@@ -5970,7 +6008,7 @@ class LineEditor(object):
 		try:
 			ghost = self.suggest(self.text)
 		except Exception as e:
-			_debug('suggestion failed: {!r}'.format(e))
+			_debug(lambda: 'suggestion failed: {!r}'.format(e))
 		self.ghost = ghost.text if ghost is not None else ''
 		self._ghost_for = self.text
 
@@ -6091,7 +6129,7 @@ class LineEditor(object):
 		try:
 			found, pending = self.diagnose(self.text, self.cursor)
 		except Exception as e:
-			_debug('warnings failed: {!r}'.format(e))
+			_debug(lambda: 'warnings failed: {!r}'.format(e))
 			found, pending = [], False
 		self.marks = [(item.start, item.end) for item in found if 0 <= item.start < item.end <= len(self.text)]
 		self.reason = reason_line(found, self.unicode)
@@ -8180,7 +8218,7 @@ def module_command(path=None):
 	python compiles a script anew every time it runs one, and compiling this file was about half of
 	what a TAB waited for. As isolated as -I keeps a script (no current directory or user site on
 	sys.path, no PYTHON* variables), and the file is loaded from its path: no other mssh_complete on
-	sys.path is taken for it, and _import_mssh finds the multiSSH3 beside it. The bytecode settings
+	sys.path is taken for it, and _import_mssh loads the multiSSH3 beside it from its path. The bytecode settings
 	-I would drop are given on the command line: -B when this python writes none
 	(PYTHONDONTWRITEBYTECODE), and its pycache_prefix. Where the cache cannot be written (a read-only
 	directory) the file is compiled every time, as a script is.
@@ -8885,7 +8923,7 @@ def prepare_index():
 	try:
 		return 'built the completion index ' + build_index(directory)
 	except Exception as e:
-		_debug('install: rebuild failed: {!r}'.format(e))
+		_debug(lambda: 'install: rebuild failed: {!r}'.format(e))
 		return 'could not build the completion index now ({}): the first TAB tries again'.format(e)
 
 def completion_command(values):
@@ -9246,12 +9284,12 @@ def _cmd_query():
 	try:
 		request = parse_request(data)
 	except ValueError as e:
-		_debug('bad request: {}'.format(e))
+		_debug(lambda: 'bad request: {}'.format(e))
 		return 1
 	try:
 		response = answer(request, deadline)
 	except Exception as e:
-		_debug('query failed: {!r}'.format(e))
+		_debug(lambda: 'query failed: {!r}'.format(e))
 		return 1
 	sys.stdout.buffer.write(format_response(response, nul=request.flags.get('nul', '1') != '0'))
 	sys.stdout.buffer.flush()
@@ -9281,6 +9319,24 @@ def _ready():
 	except OSError:
 		return False
 
+def _launch_age(fd=1):
+	'''
+	Seconds since the shell's glue started the picker, None where that cannot be told.
+
+	START_SCRIPT makes the file the picker's answer goes to just before it starts the picker, and
+	nothing is written to it until the picker is done: when fd (the picker's stdout) is that file, its
+	modification time is the launch. This counts what the picker's own clock cannot, python starting
+	and loading this file, which is most of what a shell's MSSH_COMPLETE_START_TIMEOUT is spent on.
+	It is the wall clock against the file system's, so a few milliseconds are rounding.
+	'''
+	try:
+		status = os.fstat(fd)
+		if not stat.S_ISREG(status.st_mode):
+			return None
+		return max(0.0, time.time() - status.st_mtime)
+	except OSError:
+		return None
+
 def _claim_terminal(started=None):
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
@@ -9290,6 +9346,8 @@ def _claim_terminal(started=None):
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
 	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
 	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
+	Both times are given: since the picker's command ran, and since the shell launched it (_launch_age,
+	which includes starting python).
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -9298,12 +9356,17 @@ def _claim_terminal(started=None):
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		took = '' if started is None else ', {:.3f} s in'.format(time.monotonic() - started)
+		def took():
+			if started is None:
+				return ''
+			age = _launch_age()
+			return ', {:.3f} s into the picker{}'.format(time.monotonic() - started,
+				'' if age is None else ', {:.3f} s since the shell launched it'.format(age))
 		if isinstance(e, (FileExistsError, FileNotFoundError)):
 			# the shell claimed it first (its directory is there), or cleaned its directory up
-			_debug('pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took, e))
+			_debug(lambda: 'pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took(), e))
 		else:
-			_debug('pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took, e))
+			_debug(lambda: 'pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took(), e))
 		return False
 
 def _cmd_pick():
@@ -9356,7 +9419,7 @@ def _cmd_pick():
 		sys.stdout.buffer.write('MSSHC1\nL {}\t{}\nE\n'.format(cursor, line).encode('utf-8', 'surrogateescape'))
 		sys.stdout.buffer.flush()
 	except OSError as e:
-		_debug('pick: the answer did not reach the shell: {!r}'.format(e))
+		_debug(lambda: 'pick: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	return 0
 
@@ -9439,7 +9502,7 @@ def _cmd_edit(args):
 		engine = engine_for(Request('bash', options.text, '', '', flags=flags, history=history))
 		term = Terminal()
 	except Exception as e:
-		_debug('editor cannot start: {!r}'.format(e))
+		_debug(lambda: 'editor cannot start: {!r}'.format(e))
 		return 3
 	cache = {}
 
@@ -9486,7 +9549,7 @@ def _cmd_edit(args):
 		sys.stdout.buffer.write(out.encode('utf-8', 'surrogateescape'))
 		sys.stdout.buffer.flush()
 	except OSError as e:
-		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
+		_debug(lambda: 'edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
 	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
@@ -9508,7 +9571,7 @@ def _cmd_rebuild(args):
 		print(path)
 		return 0
 	except Exception as e:
-		_debug('rebuild failed: {!r}'.format(e))
+		_debug(lambda: 'rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
 		return 1
 	finally:
@@ -9528,7 +9591,7 @@ def _cmd_probe(args):
 		run_probe(directory, lock, owner=owner)
 		return 0
 	except Exception as e:
-		_debug('probe failed: {!r}'.format(e))
+		_debug(lambda: 'probe failed: {!r}'.format(e))
 		return 1
 	finally:
 		if lock:
