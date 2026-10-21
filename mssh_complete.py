@@ -6367,7 +6367,7 @@ _mssh_complete_delegate() {
 			elif declare -F _completion_loader >/dev/null 2>&1; then
 				_mssh_complete_operator _completion_loader "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			fi
-			_mssh_complete_compspec "$_mssh_complete_cmd"
+			_mssh_complete_compspec "$_mssh_complete_cmd" || :
 		fi
 		# printed once, into a variable: the one fork of the lookup
 		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_named" 2>/dev/null) || _mssh_complete_spec=
