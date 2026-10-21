@@ -1199,6 +1199,27 @@ def _shell_locale(flags):
 # fish's glue names fish's locale variables in these request flags
 _NAMED_VARIABLES = (('lc_all', 'LC_ALL'), ('lc_ctype', 'LC_CTYPE'), ('lang', 'LANG'))
 
+_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
+
+def _url_unescape(value):
+	'''
+	value with each %XX replaced by the byte it names, the bytes read as UTF-8 (what cannot be is kept as
+	surrogate escapes). This undoes fish's `string escape --style=url`, which writes every byte outside
+	letters, digits and -._~/ as %XX (a space is %20, '+' is %2B); a % that no two hex digits follow stays.
+	'''
+	if '%' not in value:
+		return value
+	first, *rest = value.split('%')
+	data = bytearray(first.encode('utf-8', 'surrogateescape'))
+	for part in rest:
+		if len(part) >= 2 and part[0] in _HEX_DIGITS and part[1] in _HEX_DIGITS:
+			data.append(int(part[:2], 16))
+			part = part[2:]
+		else:
+			data.append(0x25)
+		data += part.encode('utf-8', 'surrogateescape')
+	return data.decode('utf-8', 'surrogateescape')
+
 def _measured_utf8(request):
 	"""
 	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
@@ -1218,10 +1239,7 @@ def _measured_utf8(request):
 	variables = {}
 	for flag, name in _NAMED_VARIABLES:
 		value = request.flags.get(flag, '')
-		if '%' in value:
-			from urllib.parse import unquote
-			value = unquote(value, errors='surrogateescape')
-		variables[name] = value
+		variables[name] = _url_unescape(value)
 	return _locale_variables_utf8(variables)
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)

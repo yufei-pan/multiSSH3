@@ -689,6 +689,28 @@ def test_a_request_of_fish_names_the_variables_of_its_locale(system_locales, mon
 	assert mc.engine_for(mc.Request('fish', 'mssh ', flags={'term': 'xterm'}), directory=None).unicode is (not unicode)
 
 
+@pytest.mark.parametrize('escaped, text', [
+	# as fish 3.3.1 and 4.0.2 print them from `string escape --style=url`
+	('de_DE%40euro', 'de_DE@euro'), ('a%2Bb%20c', 'a+b c'), ('%C3%A9', '\u00e9'), ('%FF%FE', '\udcff\udcfe'),
+	('x~y.-_z', 'x~y.-_z'), ('/%3A%3B%3D', '/:;='), ('%25', '%'), ('AZaz09', 'AZaz09'),
+	# what no fish writes stays as it is, like urllib's unquote
+	('100%', '100%'), ('%zz', '%zz'), ('%4', '%4'), ('a+b', 'a+b'), ('%+1', '%+1'), ('%%41', '%A'),
+])
+def test_the_url_escape_of_fish_is_undone_exactly(escaped, text):
+	import urllib.parse
+	assert mc._url_unescape(escaped) == text == urllib.parse.unquote(escaped, errors='surrogateescape')
+
+
+def test_a_modifier_locale_of_fish_imports_no_url_module():
+	# fish writes the @ of de_DE@euro as %40: the TAB's path imports no package for it
+	code = ("import sys, mssh_complete as mc\n"
+		"request = mc.Request('fish', 'mssh ', flags=mc.parse_flags('lc_all= lc_ctype= lang=de_DE%40euro'))\n"
+		"mc._measured_utf8(request)\n"
+		"sys.exit('urllib.parse' in sys.modules)")
+	result = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(mc.__file__), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+
+
 @pytest.mark.parametrize('shell, flags, unicode', [
 	('bash', 'icase=1', None), ('zsh', 'term=xterm', None), ('fish', 'term=xterm', None),
 	('zsh', 'utf8=1 turkic=0', True), ('zsh', 'utf8=0 turkic=0', False),
