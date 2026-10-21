@@ -458,6 +458,9 @@ def completed_and_listed(session, typed, quoted=False):
 	listed, the typed word and a candidate named like the command included, and a word listed twice twice. In a
 	quoted command (quoted) the words come with the command in front (zzsvc zza), which is taken off."""
 	line = session.line_after(typed)
+	# what the line print binding ends with (its newline) is not the list
+	session.wait_idle()
+	session.read_until(b'@@never@@', 0.3)
 	start = len(session.output)
 	session.send(typed + '\t\t')
 	session.wait_idle()
