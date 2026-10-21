@@ -6479,32 +6479,17 @@ _mssh_complete_run_command() {
 
 _mssh_complete_exclude() {
 	# apply a compspec's -X filter $1 to _mssh_complete_results, as bash does: a result matching the pattern
-	# goes, and with a "!" first all that do not. An "&" in the pattern stands for the word $2, a "\&" for
-	# the character. compgen -X matches, as the shell does (its extglob setting), but puts in the word it
-	# is given for the &, which is none here (nothing to hold the results to): the word goes into the
-	# pattern first, its own & escaped
-	local _mssh_complete_pattern=$1 _mssh_complete_built= _mssh_complete_at=0 _mssh_complete_char _mssh_complete_item
+	# goes, and with a "!" first all that do not. compgen -X does it all (the "!", an & for the word, the
+	# word's glob characters quoted, the shell's extglob), but takes the word $2 for the & only along with a
+	# filter by it (case-sensitive, as bash gives a -W list, and not for the results of a function or a command,
+	# which bash does not filter): so it gets the word where the pattern holds an & (a "\&" is none), and none
+	# where it does not
+	local _mssh_complete_against=$2 _mssh_complete_item _mssh_complete_stripped=${1//\\?/}
 	local -a _mssh_complete_kept_results=()
-	if [[ $_mssh_complete_pattern == '!'* ]]; then
-		_mssh_complete_built='!'
-		_mssh_complete_pattern=${_mssh_complete_pattern:1}
-	fi
-	while (( _mssh_complete_at < ${#_mssh_complete_pattern} )); do
-		_mssh_complete_char=${_mssh_complete_pattern:_mssh_complete_at:1}
-		if [[ $_mssh_complete_char == '\' ]]; then
-			_mssh_complete_char=${_mssh_complete_pattern:_mssh_complete_at:2}
-			(( _mssh_complete_at++ ))
-		elif [[ $_mssh_complete_char == '&' ]]; then
-			_mssh_complete_char=${2//&/\\&}
-		fi
-		_mssh_complete_built+=$_mssh_complete_char
-		(( _mssh_complete_at++ ))
-	done
-	# a "!" the word put first is no negation
-	[[ $1 != '!'* && $_mssh_complete_built == '!'* ]] && _mssh_complete_built="\\$_mssh_complete_built"
+	[[ $_mssh_complete_stripped == *'&'* ]] || _mssh_complete_against=
 	while IFS= read -r _mssh_complete_item; do
 		_mssh_complete_kept_results+=("$_mssh_complete_item")
-	done < <(compgen -X "$_mssh_complete_built" -W '"${_mssh_complete_results[@]}"' -- '' 2>/dev/null || :)
+	done < <(compgen -X "$1" -W '"${_mssh_complete_results[@]}"' -- "$_mssh_complete_against" 2>/dev/null || :)
 	_mssh_complete_results=(${_mssh_complete_kept_results[@]+"${_mssh_complete_kept_results[@]}"})
 }
 
@@ -6515,13 +6500,13 @@ _mssh_complete_delegate() {
 	# sets the variables of the functions that call it (one written without local sets word, cur, ...)
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
-	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed _mssh_complete_one
+	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one
 	local _mssh_complete_have= _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
-	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev
+	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_cut
 	local -a _mssh_complete_actions=()
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
-	local -a _mssh_complete_words=("$@") _mssh_complete_results=() _mssh_complete_kept=()
+	local -a _mssh_complete_words=("$@") _mssh_complete_results=()
 	local _mssh_complete_current=${_mssh_complete_words[_mssh_complete_cword]-}
 	_mssh_complete_cmd=${_mssh_complete_words[0]-}
 	_mssh_complete_delegated=()
@@ -6624,31 +6609,31 @@ _mssh_complete_delegate() {
 	_mssh_complete_fold=${_mssh_complete_icase-0}
 	_mssh_complete_lead=$_mssh_complete_prefix$_mssh_complete_current
 	_mssh_complete_lead=${_mssh_complete_lead%"$_mssh_complete_word"}
-	for _mssh_complete_item in ${_mssh_complete_results[@]+"${_mssh_complete_results[@]}"}; do
-		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
+	_mssh_complete_typed=$_mssh_complete_word
+	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
+	for (( _mssh_complete_one = 0; _mssh_complete_one < ${#_mssh_complete_results[@]}; _mssh_complete_one++ )); do
+		_mssh_complete_item=$_mssh_complete_prefix${_mssh_complete_results[_mssh_complete_one]}
+		# how much of the prefix is left on the item: -P goes after it, in front of the remote word
+		_mssh_complete_cut=${#_mssh_complete_prefix}
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
+			_mssh_complete_cut=$(( ${#_mssh_complete_prefix} > ${#_mssh_complete_lead} ? ${#_mssh_complete_prefix} - ${#_mssh_complete_lead} : 0 ))
 		elif [[ -n $_mssh_complete_lead ]] && (( _mssh_complete_fold )) && [[ ${_mssh_complete_item,,} == "${_mssh_complete_lead,,}"* ]]; then
 			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
 			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)
 			_mssh_complete_dropped=1
 			continue
 		fi
-		_mssh_complete_kept+=("$_mssh_complete_item")
-	done
-	_mssh_complete_typed=$_mssh_complete_word
-	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
-	for _mssh_complete_item in ${_mssh_complete_kept[@]+"${_mssh_complete_kept[@]}"}; do
 		_mssh_complete_compared=$_mssh_complete_item
 		(( _mssh_complete_fold )) && _mssh_complete_compared=${_mssh_complete_item,,}
-		[[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]] && _mssh_complete_delegated+=("$_mssh_complete_item")
+		[[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]] || continue
+		# -P and -S, last, on the results of the compspec and not on the fallbacks' (bash adds them before
+		# those): what bash hands readline starts with the prefix, and no longer with the word
+		if (( _mssh_complete_one < _mssh_complete_listed )); then
+			_mssh_complete_item=${_mssh_complete_item:0:_mssh_complete_cut}$_mssh_complete_front${_mssh_complete_item:_mssh_complete_cut}$_mssh_complete_back
+		fi
+		_mssh_complete_delegated+=("$_mssh_complete_item")
 	done
-	# -P and -S, last: what bash hands readline starts with the prefix, and no longer with the word
-	if [[ $_mssh_complete_have == *' front '* || $_mssh_complete_have == *' back '* ]]; then
-		for _mssh_complete_one in "${!_mssh_complete_delegated[@]}"; do
-			_mssh_complete_delegated[_mssh_complete_one]=$_mssh_complete_front${_mssh_complete_delegated[_mssh_complete_one]}$_mssh_complete_back
-		done
-	fi
 	return 0
 }
 
