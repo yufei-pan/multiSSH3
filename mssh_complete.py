@@ -6557,7 +6557,7 @@ _mssh_complete_delegate() {
 			[[ $_mssh_complete_have == *' glob '* ]] && _mssh_complete_generate+=(-G "$_mssh_complete_glob")
 			[[ $_mssh_complete_have == *' words '* ]] && _mssh_complete_generate+=(-W "$_mssh_complete_wordlist")
 			# of -o, the options of the completion itself (the results of its fallbacks are file names)
-			for _mssh_complete_item in filenames nospace noquote nosort; do
+			for _mssh_complete_item in filenames nospace noquote nosort fullquote; do
 				[[ $_mssh_complete_options == *" $_mssh_complete_item "* ]] && { compopt -o "$_mssh_complete_item" 2>/dev/null || :; }
 			done
 			if (( ${#_mssh_complete_generate[@]} )); then

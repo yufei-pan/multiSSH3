@@ -393,6 +393,15 @@ def test_bash_delegation_gives_a_command_the_key_and_type_of_the_completion(tmp_
 	assert 'zzkey=' + key in output
 
 
+def test_bash_delegation_hands_the_options_of_the_compspec_to_compopt(tmp_path):
+	# -o fullquote, new in bash 5.3, is given too (a bash that does not know it never prints it: complete -p)
+	log = tmp_path / 'compopt.log'
+	setup = ('complete() {{ [[ $1 == -p ]] && echo "complete -W \'zza\' -o filenames -o nospace -o noquote -o nosort -o fullquote -o default zzsvc"; }}; '
+		'compopt() {{ echo "$*" >> {}; }}').format(log)
+	assert delegated(tmp_path, setup, 'zzsvc zz') == ['zza']
+	assert sorted(log.read_text().splitlines()) == sorted('-o ' + name for name in ('filenames', 'nospace', 'noquote', 'nosort', 'fullquote'))
+
+
 @pytest.mark.parametrize('options', ['set -e', 'set -u', 'set -eu', 'shopt -s nocasematch extglob'])
 def test_bash_delegation_by_a_compspec_survives_the_shell_options(tmp_path, options):
 	# every source at once, with the fallbacks that find nothing (set -e: a failed process substitution)
