@@ -222,7 +222,7 @@ def test_bash_ignoring_case_keeps_delegated_words_in_another_case(tmp_path):
 	# function (touch ran, making the files zzsvc and zz here)
 	('complete -W "start -F touch stop" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
 	('complete -C "echo -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
-	('complete -X "!*.c -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
+	('complete -X "zzq -F touch x" -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
 	('complete -F _zzreal zzsvc', 'mssh h zzsvc zzalp'),
 	# no function: file names. Nor where the quoted argument ends with a -F and a quoted word (bash 5.2
 	# quotes a function name so)
@@ -297,13 +297,113 @@ def test_bash_delegation_finds_the_completion_of_a_full_path_by_its_last_part(tm
 		session.close()
 
 
+def delegated(tmp_path, setup, words='zzsvc zz', before=''):
+	"""What the bash glue's delegate gives for the remote command line `words` after `setup` (a shell's own commands),
+	in a directory holding the file zzfile, the directories zzdir and zzdirb, and the command zzaws_completer, which
+	prints what it reads of its environment and arguments. The last word is the one completed."""
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / 'zzfile').write_text('')
+	(work / 'zzdir').mkdir()
+	(work / 'zzdirb').mkdir()
+	found = tmp_path / 'bin'
+	found.mkdir()
+	(found / 'zzaws_completer').write_text('#!/bin/bash\nprintf "%s\\n" "zzline=$COMP_LINE" "zzpoint=$COMP_POINT" '
+		'"zzkey=$COMP_KEY.$COMP_TYPE" "zzargs=$1|$2|$3"\n')
+	(found / 'zzaws_completer').chmod(0o755)
+	script = ('. "$1"; PATH=$2:$PATH; set -- $3; _zzreal() { COMPREPLY=(zzalpha zzalpine zzbeta); }; ' + before + setup +
+		'; _mssh_complete_guard _mssh_complete_delegate "${@: -1}" $(( $# - 1 )) "" "$@"; '
+		'(( ${#_mssh_complete_delegated[@]} )) && printf "%s\\n" "${_mssh_complete_delegated[@]}"; true')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found), words],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
+	assert output.returncode == 0, output
+	return output.stdout.decode().splitlines()
+
+
+@pytest.mark.parametrize('setup, expected', [
+	# -C: the command string with the command name, the word and the one before it, the line in the environment
+	('complete -C zzaws_completer zzsvc', ['zzline=zzsvc s3 zz', 'zzpoint=11', 'zzkey=9.9', 'zzargs=zzsvc|zz|s3']),
+	('complete -C "zzaws_completer --x" zzsvc', ['zzline=zzsvc s3 zz', 'zzpoint=11', 'zzkey=9.9', 'zzargs=--x|zzsvc|zz']),
+	('complete -W "zza zzb other" zzsvc', ['zza', 'zzb']),
+	('complete -W "\'zz a\' zzc" zzsvc', ['zz a', 'zzc']),
+	('complete -W "\'zz a\' zzc" -P "\'" -S "\'" zzsvc', ["'zz a'", "'zzc'"]),
+	('complete -d zzsvc', ['zzdir', 'zzdirb']),
+	('complete -A directory zzsvc', ['zzdir', 'zzdirb']),
+	('zzfn() { :; }; zzfn2() { :; }; complete -A function zzsvc', ['zzfn', 'zzfn2']),
+	('complete -G "zzd*" zzsvc', ['zzdir', 'zzdirb']),
+	# -X removes what matches, and with a ! what does not
+	('complete -W "zza.c zzb.h zzc.c" -X "*.c" zzsvc', ['zzb.h']),
+	('complete -W "zza.c zzb.h zzc.c" -X "!*.c" zzsvc', ['zza.c', 'zzc.c']),
+	# an & stands for the word, \& for the character
+	('complete -W "zz zzb zzbb" -X "&b" zzsvc', ['zz', 'zzbb']),
+	('complete -W "zz zzb zz& zz&b" -X "&\\&b" zzsvc', ['zz', 'zzb', 'zz&']),
+	# a function and a command are filtered too, and listed after the words
+	('complete -F _zzreal -X "!zza*" zzsvc', ['zzalpha', 'zzalpine']),
+	('complete -F _zzreal -X "zza*" zzsvc', ['zzbeta']),
+	('complete -W "zzw" -F _zzreal -C "echo zzc" -X "zzal*" zzsvc', ['zzw', 'zzbeta', 'zzc zzsvc zz s3']),
+	('complete -W "zza zzb" -P "[" -S "]" zzsvc', ['[zza]', '[zzb]']),
+	('complete -F _zzreal -P "\'" zzsvc', ["'zzalpha", "'zzalpine", "'zzbeta"]),
+	# -o: file names when nothing else is left (dirnames: directories, default: files)
+	('complete -W "other" -o default zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
+	('complete -W "other" -o dirnames zzsvc', ['zzdir', 'zzdirb']),
+	('complete -W "other" -o dirnames -o default zzsvc', ['zzdir', 'zzdirb']),
+	('complete -W "zza" -o default zzsvc', ['zza']),
+	('complete -W "zza" -o plusdirs zzsvc', ['zza', 'zzdir', 'zzdirb']),
+	('complete -W "other" zzsvc', []),
+])
+def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path, setup, expected):
+	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz')) == sorted(expected)
+
+
+@pytest.mark.parametrize('options', ['set -e', 'set -u', 'set -eu', 'shopt -s nocasematch extglob'])
+def test_bash_delegation_by_a_compspec_survives_the_shell_options(tmp_path, options):
+	# every source at once, with the fallbacks that find nothing (set -e: a failed process substitution)
+	setup = 'complete -W "zza zzb" -F _zzreal -C "echo zzc" -X "zzb*" -P "[" -S "]" -o nospace -o dirnames -o default zzsvc'
+	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz', before=options + '; ')) == [
+		'[zza]', '[zzalpha]', '[zzalpine]', '[zzc zzsvc zz s3]']
+
+
+@pytest.mark.parametrize('setup', ['complete -F _zzreal zzsvc', 'complete -F _zzreal -X "!zz*" zzsvc'])
+def test_bash_delegation_keeps_a_function_apart_from_the_options_of_the_command(tmp_path, setup):
+	assert delegated(tmp_path, setup) == ['zzalpha', 'zzalpine', 'zzbeta']
+
+
+def test_bash_delegation_without_a_compspec_offers_file_names(tmp_path):
+	assert sorted(delegated(tmp_path, ':')) == ['zzdir', 'zzdirb', 'zzfile']
+
+
 @pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
-def test_bash_the_glue_puts_the_shells_ifs_back_after_a_call(tmp_path, shell_ifs):
+def test_bash_the_glue_runs_with_the_default_ifs_and_the_shells_code_with_the_shells(tmp_path, shell_ifs):
+	# a -F function sees the shell's IFS (unset is no empty IFS); the glue's own joins and splits see bash's
+	# default, whatever the shell's: COMP_LINE is joined by spaces
+	setup = ('_zzifs() { COMPREPLY=("zzifs[${IFS-unset}]" "zzline[$COMP_LINE]" "zzstar[${COMP_WORDS[*]}]"); }; complete -F _zzifs zzsvc')
+	expected = {'IFS=:': 'zzifs[:]', 'IFS=': 'zzifs[]', 'unset IFS': 'zzifs[unset]'}[shell_ifs]
+	assert delegated(tmp_path, setup, before=shell_ifs + '; ') == [expected, 'zzline[zzsvc zz]',
+		'zzstar[{}]'.format({'IFS=:': 'zzsvc:zz', 'IFS=': 'zzsvczz', 'unset IFS': 'zzsvc zz'}[shell_ifs])]
+
+
+@pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
+def test_bash_the_glue_puts_the_shells_ifs_back(tmp_path, shell_ifs):
 	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha); }; complete -F _zzreal zzsvc; ' + shell_ifs + '; '
 		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "[%s][%s]" "${IFS+set}" "$IFS"')
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.stdout.decode() == {'IFS=:': '[set][:]', 'IFS=': '[set][]', 'unset IFS': '[][]'}[shell_ifs], output
+
+
+@pytest.mark.parametrize('options, completed', [
+	('-W "zzone zztwo" -o nospace', 'mssh h zzsvc zzone'),
+	('-W "zzone zztwo"', 'mssh h zzsvc zzone '),
+	('-W "zzdir zzdir2" -o filenames', 'mssh h zzsvc zzdir'),
+	('-d -o filenames', 'mssh h zzsvc zzdir/'),
+])
+def test_bash_delegation_gives_the_options_of_the_compspec_to_readline(tmp_path, options, completed):
+	session = ignoring_case(tmp_path, [], on=False, options='complete {} zzsvc'.format(options))
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		assert session.line_after('mssh h zzsvc zzo' if 'zzone' in options else 'mssh h zzsvc zzd') == completed
+	finally:
+		session.close()
 
 
 # names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
@@ -585,6 +685,9 @@ CUT_PROBE = r'''
 # a command's completion function, for the delegate path, and one a loader registers at the first TAB
 _zzstand() { COMPREPLY=(Alpha alpine beta); }
 complete -F _zzstand zzcmd
+# a compspec built on a word list and a filter, and one on a command (run in a subshell, as bash runs it)
+complete -W "Alpha alpine beta" -X "beta" zzwords
+complete -C "printf '%s\\n' Alpha alpine; :" zzcomm
 _completion_loader() { [[ $1 == zzlazy ]] && complete -F _zzstand zzlazy; }
 # the probe writes to fd 3: command substitutions in the glue take its stdout
 exec 3>&1
@@ -615,6 +718,8 @@ printf 'delegated: %s\n' "${_mssh_complete_delegated[*]-}"
 	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'Alpha alpine'),
 	('_mssh_complete_icase=0 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'alpine'),
 	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzlazy al', 'Alpha alpine'),
+	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzwords al', 'alpine'),
+	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcomm al', 'Alpha alpine'),
 ])
 def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call, delegated):
 	# a cut between turning nocasematch off and noting it left the glue's off where its note said the
