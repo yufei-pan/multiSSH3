@@ -454,7 +454,9 @@ def test_bash_delegation_gives_the_options_of_the_compspec_to_readline(tmp_path,
 
 
 def completed_and_listed(session, typed, quoted=False):
-	"""What a TAB at the end of typed makes of the line, and the words a second TAB lists (the typed ones out)."""
+	"""What a TAB at the end of typed makes of the line, and the words a second TAB lists, sorted: every one that is
+	listed, the typed word and a candidate named like the command included, and a word listed twice twice. In a
+	quoted command (quoted) the words come with the command in front (zzsvc zza), which is taken off."""
 	line = session.line_after(typed)
 	start = len(session.output)
 	session.send(typed + '\t\t')
@@ -463,12 +465,14 @@ def completed_and_listed(session, typed, quoted=False):
 	text = session.output[start:].decode('utf-8', 'replace')
 	session.send('\x15')
 	session.read_until(b'@@never@@', 0.3)
-	# readline lists on the lines below the one it redraws (with backspaces and a bell where it redraws)
-	text = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text.split('\n', 1)[1]) if '\n' in text else ''
-	listed = {word.strip('"') for word in text.split()} - {'', '@@READY@@', 'mssh', 'h', 'zzsvc', typed.split()[-1].strip('"')}
-	if quoted and line:
-		line = line.replace('"', '')
-	return line.rstrip() if line else line, listed
+	# readline lists on the lines below the one it redraws (with backspaces and a bell where it redraws), and
+	# redraws the prompt and the line after the list
+	rows = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text).split('\r\n')[1:-1]
+	listed = ' '.join(rows).split()
+	if quoted:
+		listed = listed[1::2] if listed[0::2] == ['zzsvc'] * len(listed[0::2]) else listed
+		line = line and line.replace('"', '')
+	return line.rstrip() if line else line, sorted(listed)
 
 
 # (the arguments of complete, the word, the shell's setting before it): what bash gives the command itself is what mssh
