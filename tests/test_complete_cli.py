@@ -10,7 +10,9 @@ import multiSSH3
 import mssh_complete as mc
 from complete_shell_harness import ENGINE, REPO, build_index, make_home, require_shell
 
-MSSH = [sys.executable, '-I', str(REPO / 'multiSSH3.py')]
+# -I as the engine is run, but mssh's entry point heeds PYTHONDONTWRITEBYTECODE, which -I drops: the glue it
+# prints carries -B then (module_command)
+MSSH = [sys.executable, '-I'] + (['-B'] if sys.dont_write_bytecode else []) + [str(REPO / 'multiSSH3.py')]
 # what a shell reports for a command SIGPIPE ended (128 + 13), as for seq or cat piped into head
 SIGPIPE_STATUS = 141
 
