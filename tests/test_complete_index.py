@@ -49,6 +49,55 @@ def test_cache_dir_matches_multissh3(home):
 	assert mc.cache_dir() == os.path.dirname(multiSSH3._unavailable_hosts_file_path())
 
 
+def _log(home):
+	with open(os.path.join(mc.cache_dir(), 'complete.log'), 'rb') as f:
+		return f.read()
+
+
+def test_the_debug_log_never_raises(home, monkeypatch):
+	# pick and edit log after their answer is written: an exception there ended them with a traceback, status 1
+	import tempfile
+	monkeypatch.setenv('MSSH_COMPLETE_DEBUG', '1')
+
+	class NoText(object):
+		def __str__(self):
+			raise RuntimeError('no text')
+
+	mc._debug(NoText())
+	mc._debug('kept')
+	assert _log(home).endswith(b' kept\n')
+
+	def no_temporary_directory():
+		raise FileNotFoundError(errno.ENOENT, 'No usable temporary directory found')
+
+	# cache_dir lists it among the directories it may take
+	monkeypatch.setattr(tempfile, 'gettempdir', no_temporary_directory)
+	mc._debug('lost')
+	mc._debug(lambda: 'lost')
+
+
+def test_the_debug_log_is_cut_at_a_line_start(home, monkeypatch):
+	# kept under 256 KB by keeping its last 128 KB: the cut fell inside a line, here inside a character
+	monkeypatch.setenv('MSSH_COMPLETE_DEBUG', '1')
+	line = '1790000000.000 1 xxxxxx\u00e9t\u00e9 \u2014 d\u00e9j\u00e0 vu\n'.encode('utf-8')
+	with open(os.path.join(mc.cache_dir(), 'complete.log'), 'wb') as f:
+		f.write(line * (256 * 1024 // len(line) + 1))
+	# the second byte of the \u00e9 in d\u00e9j\u00e0
+	assert line[-128 * 1024 % len(line) - 2:].startswith(b'd\xc3\xa9')
+	mc._debug('last')
+	log = _log(home)
+	# the whole lines of the last 128 KB, then the new one
+	assert log.startswith(line) and log.count(line) == 128 * 1024 // len(line) and log.endswith(b' last\n')
+	log.decode('utf-8')
+
+
+def test_the_debug_log_shows_bytes_that_were_not_utf8(home, monkeypatch):
+	# read with surrogateescape, a byte that was not UTF-8 is a lone surrogate: written as ?, it was lost
+	monkeypatch.setenv('MSSH_COMPLETE_DEBUG', '1')
+	mc._debug('host h\udcffllo')
+	assert _log(home).endswith(b' host h\\udcffllo\n')
+
+
 def test_build_index_collects_every_source(home):
 	index, _ = build()
 	hosts = mc.HostTable(index)

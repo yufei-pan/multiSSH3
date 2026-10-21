@@ -8,15 +8,17 @@ import shutil
 import signal
 import struct
 import subprocess
-import sys
 import termios
 import time
 from pathlib import Path
 
 import pytest
 
+import mssh_complete
+
 REPO = Path(__file__).resolve().parents[1]
-ENGINE = [sys.executable, '-I', str(REPO / 'mssh_complete.py')]
+# what the glue runs when mssh-complete is not on PATH: this python, the file from its bytecode cache
+ENGINE = mssh_complete.module_command(str(REPO / 'mssh_complete.py'))
 # 2026-10-13 00:00 UTC, when the histories these tests write were given their fixed times (1790000000 on)
 WRITTEN = 1791849600
 
@@ -61,6 +63,15 @@ def bash_locale(env, multibyte=False):
 # make_home turns the engine's debug log on (a failing test's report carries it); the tests this marks run
 # with it off too, as mssh ships, so the path that writes no log runs in the pty suites
 WITH_AND_WITHOUT_DEBUG_LOG = pytest.mark.parametrize('debug', ['1', '0'], ids=['debug-log', 'no-debug-log'])
+
+def with_debug_log(env, debug):
+	'''env with the debug log on (debug '1') or as mssh ships, MSSH_COMPLETE_DEBUG not set at all (debug '0').'''
+	env = dict(env)
+	if debug == '1':
+		env['MSSH_COMPLETE_DEBUG'] = '1'
+	else:
+		env.pop('MSSH_COMPLETE_DEBUG', None)
+	return env
 
 def debug_log_size(env):
 	'''How much the engine's debug log holds now (0 when there is none).'''
@@ -117,8 +128,10 @@ def without_command(env, name, directory):
 
 class Session(object):
 	'''An interactive shell on a pseudo-terminal. print_key makes the shell print its command line.'''
-	def __init__(self, argv, env, cwd=None, print_key='\x18\x10'):
+	def __init__(self, argv, env, cwd=None, print_key='\x18\x10', settle=False):
 		self.print_key = print_key
+		# line_after waits for the shell to go idle after the keys (wait_idle) instead of a fixed time
+		self.settle = settle
 		self.pid, self.fd = pty.fork()
 		if self.pid == 0:
 			# a real terminal has a size (ble.sh sizes its panels from it)
@@ -152,13 +165,57 @@ class Session(object):
 		self.resizes.append((len(self.output), rows, columns))
 		fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
 
+	def _busy(self):
+		'''
+		What the shell is doing, from /proc: (its state, the CPU ticks it used, whether it has children).
+		None where /proc cannot say.
+		'''
+		try:
+			with open('/proc/{}/stat'.format(self.pid)) as f:
+				fields = f.read().rsplit(')', 1)[1].split()
+			with open('/proc/{}/task/{}/children'.format(self.pid, self.pid)) as f:
+				children = bool(f.read().split())
+		except (OSError, IndexError):
+			return None
+		return fields[0], int(fields[11]) + int(fields[12]), children
+
+	def wait_idle(self, timeout=10.0, window=0.2):
+		'''
+		Wait until the shell has done with what was typed: asleep (not running, not waiting for the CPU, which
+		a loaded host makes it do for long), with no child (an engine still answering) and no CPU used for
+		window seconds. Returns whether it did; without /proc, after a fixed 0.3 s. ble.sh gives up a completion
+		when a key comes while it runs, so a key sent after a time that was long enough on an idle host
+		found the line as typed on a loaded one.
+		'''
+		if self._busy() is None:
+			time.sleep(0.3)
+			return False
+		end = time.monotonic() + timeout
+		since, seen = None, None
+		while time.monotonic() < end:
+			# what the shell writes meanwhile is read, so that it never waits on a full terminal
+			self.read_until(b'@@never@@', 0.05)
+			now = self._busy()
+			if now is None or now[0] != 'S' or now[2] or now != seen:
+				since, seen = time.monotonic(), now
+			elif time.monotonic() - since >= window:
+				return True
+		return False
+
 	def send(self, data):
 		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)
 
-	def line_after(self, typed, keys='\t', timeout=10.0):
-		'''Type typed, press keys, then return the command line as the test binding (print_key) prints it.'''
+	def line_after(self, typed, keys='\t', timeout=10.0, settle=None):
+		'''
+		Type typed, press keys, then return the command line as the test binding (print_key) prints it. The
+		binding waits until the shell is idle (wait_idle) when the session settles (settle overrides), or
+		0.3 s.
+		'''
 		self.send(typed + keys)
-		time.sleep(0.3)
+		if self.settle if settle is None else settle:
+			self.wait_idle(timeout)
+		else:
+			time.sleep(0.3)
 		self.send(self.print_key)
 		text = self.read_until(b']@@', timeout)
 		start = text.rfind('@@LINE[')
@@ -240,10 +297,10 @@ def blesh_session(home, env, glue=None, pre='', extra=''):
 	argv = ['bash', '--noprofile', '--rcfile', str(rc), '-i']
 	if not (home / '.cache' / 'blesh').exists():
 		# the first start builds ble.sh's caches and says so: keep that out of the session
-		warm = Session(argv, env, cwd=home, print_key='\x14')
+		warm = Session(argv, env, cwd=home, print_key='\x14', settle=True)
 		warm.read_until(b'@@READY@@', timeout=60)
 		warm.close()
-	session = Session(argv, env, cwd=home, print_key='\x14')
+	session = Session(argv, env, cwd=home, print_key='\x14', settle=True)
 	session.read_until(b'@@READY@@', timeout=60)
 	return session
 

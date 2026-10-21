@@ -1,7 +1,6 @@
 import os
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -9,7 +8,7 @@ import pytest
 import multiSSH3
 import mssh_complete as mc
 
-ENGINE = [sys.executable, '-I', str(Path(__file__).resolve().parents[1] / 'mssh_complete.py')]
+ENGINE = mc.module_command(str(Path(__file__).resolve().parents[1] / 'mssh_complete.py'))
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 NOW = 1790000000
@@ -629,6 +628,34 @@ def test_icase_matches_in_any_case_only_from_bash_s_word_on(history, typed, word
 	knowledges = [memory([record])]
 	assert offered not in texts(query(typed, word=word, knowledges=knowledges, flags=ICASE))
 	assert offered in texts(query(control, word=control_word, knowledges=knowledges, flags=ICASE))
+
+
+# 60 hosts web:a00..web:a59 and 3 WEB:a0..WEB:a2 (the newest): typed WEB:a, bash's word is a (COMP_WORDBREAKS :)
+SPLIT_HOSTS = ['WEB:a{}'.format(number) for number in range(3)] + ['web:a{:02d}'.format(number) for number in range(60)]
+
+
+@pytest.mark.parametrize('source', ['history', 'index'])
+def test_icase_hosts_differing_before_bash_s_word_are_not_counted(tmp_path, source):
+	# _frame drops them (bash keeps WEB: as typed), so they must not count toward GROUP_THRESHOLD either:
+	# the 3 WEB: hosts were offered as a[0-2], as if 63 hosts matched
+	if source == 'history':
+		knowledges, table = [memory([line(NOW - number, '-su', host, '"uptime"') for number, host in enumerate(SPLIT_HOSTS)])], None
+	else:
+		knowledges, table = [], _host_table(tmp_path, SPLIT_HOSTS)
+	assert texts(query('mssh WEB:a', word='a', knowledges=knowledges, hosts=table, flags=ICASE)) == ['a0', 'a1', 'a2']
+	assert texts(query('mssh WEB:a', word='a', knowledges=knowledges, hosts=table)) == ['a0', 'a1', 'a2']
+	assert texts(query('mssh WEB:A', word='A', knowledges=knowledges, hosts=table, flags=ICASE)) == ['a0', 'a1', 'a2']
+
+
+def test_icase_hosts_differing_before_bash_s_word_are_not_listed_beside_the_groups():
+	# nor do they take places among the 20 hosts used most listed beside the groups: the WEB: hosts, used last,
+	# left 17 of them
+	knowledges = [memory([line(NOW - number, '-su', host, '"uptime"') for number, host in enumerate(SPLIT_HOSTS)])]
+	listed = texts(query('mssh web:a', word='a', knowledges=knowledges, flags=ICASE))
+	assert listed == ['a[00-59]'] + ['a{:02d}'.format(number) for number in range(20)]
+	# -X keeps the hosts the hosts argument names listed one by one, found from the host typed
+	listed = texts(query('mssh web:a[00-59] -X web:A', word='A', knowledges=knowledges, flags=ICASE))
+	assert sorted(listed) == sorted(['a[00-59]'] + ['a{:02d}'.format(number) for number in range(60)])
 
 
 def test_icase_hosts_after_x_match_only_the_host_typed_in_any_case():

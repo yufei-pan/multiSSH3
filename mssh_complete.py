@@ -1447,11 +1447,11 @@ class HostTable(object):
 		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
 		self._groups = None
 
-	def names_with_prefix(self, prefix, icase=None):
-		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase) for name in self.names[lo:hi]]
+	def names_with_prefix(self, prefix, icase=None, start=0):
+		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase, start) for name in self.names[lo:hi]]
 
-	def aliases_with_prefix(self, prefix, icase=None):
-		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase) for index in range(lo, hi)]
+	def aliases_with_prefix(self, prefix, icase=None, start=0):
+		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase, start) for index in range(lo, hi)]
 
 	def sources(self, name):
 		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
@@ -1759,32 +1759,37 @@ def _debug(message):
 	'''
 	Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8
 	whatever the locale. message may be a function making it, called only then: what it costs (and a
-	failure making it) is the log's alone.
+	failure making it) is the log's alone. Never raises: pick and edit log after their answer is
+	written too, where nothing may change the exit status.
 	'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
 		return
-	if callable(message):
+	try:
+		if callable(message):
+			try:
+				message = message()
+			except Exception as e:
+				message = 'cannot make a debug message: {!r}'.format(e)
+		directory = cache_dir()
+		if directory is None:
+			return
+		path = os.path.join(directory, 'complete.log')
 		try:
-			message = message()
-		except Exception as e:
-			message = 'cannot make a debug message: {!r}'.format(e)
-	directory = cache_dir()
-	if directory is None:
-		return
-	path = os.path.join(directory, 'complete.log')
-	try:
-		if os.path.getsize(path) > 256 * 1024:
-			with open(path, 'rb') as f:
-				f.seek(-128 * 1024, os.SEEK_END)
-				kept = f.read()
-			with open(path, 'wb') as f:
-				f.write(kept)
-	except OSError:
-		pass
-	try:
-		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='replace') as f:
+			if os.path.getsize(path) > 256 * 1024:
+				with open(path, 'rb') as f:
+					f.seek(-128 * 1024, os.SEEK_END)
+					kept = f.read()
+				with open(path, 'wb') as f:
+					# from the line after the cut, which may fall inside a line or a UTF-8 character
+					f.write(kept[kept.find(b'\n') + 1:])
+		except OSError:
+			pass
+		# a lone surrogate (a byte that was not UTF-8, read with surrogateescape) is written as \udcXX
+		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='backslashreplace') as f:
 			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
-	except (OSError, ValueError):
+	except Exception:
+		# the log is lost, nothing else: no usable temporary directory (cache_dir lists it, and
+		# tempfile.gettempdir raises FileNotFoundError then), a full disk, a message that is no text
 		pass
 
 #%% ------------ Index sources ----------------
@@ -2295,7 +2300,7 @@ def _spawn_detached(directory, lock_name, command):
 		return False
 	import subprocess
 	try:
-		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), command, '--lock', lock],
+		subprocess.Popen(module_command() + [command, '--lock', lock],
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
@@ -3591,6 +3596,19 @@ def _shell_word(request):
 		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
 	return request.word
 
+def _word_base(context, request):
+	'''
+	What of the word parsed comes before the shell's word, which the shell keeps as typed (bash's word
+	starts after its COMP_WORDBREAKS : and =; zsh's and fish's is the whole word): '' for none, None when
+	the shell's word is not the end of the word parsed (e.g. backslash escapes).
+	'''
+	word = _shell_word(request)
+	if word is None:
+		return ''
+	if not context.prefix.endswith(word):
+		return None
+	return context.prefix[:len(context.prefix) - len(word)]
+
 # characters zsh reads specially in an unquoted word, globs included (zsh fails on a glob that matches nothing)
 _ZSH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!*?[]#~^{}')
 
@@ -3692,6 +3710,11 @@ class Engine(object):
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
+			# nor before the shell's word (see _frame): a name differing in case there is no candidate, so no
+			# provider may count it (toward GROUP_THRESHOLD, among the hosts listed beside the groups)
+			base = _word_base(context, request)
+			if base is not None:
+				context.fold_start = max(context.fold_start, len(base))
 		if context.slot == SLOT_OPTION:
 			candidates = self._options(context, request.shell)
 		elif context.slot == SLOT_VALUE:
@@ -4334,14 +4357,11 @@ class Engine(object):
 		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
-		word = _shell_word(request)
 		prefix = context.prefix
-		if word is None:
-			word = prefix
-		if not prefix.endswith(word):
+		base = _word_base(context, request)
+		if base is None:
 			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
 			return []
-		base = prefix[:len(prefix) - len(word)]
 		lead = prefix[:context.value_start]
 		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
 		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
@@ -4391,7 +4411,7 @@ class Engine(object):
 			else:
 				strings = option.strings
 			for string in strings:
-				if _starts(string, word, icase):
+				if _starts(string, word, icase, context.fold_start):
 					out.append(Candidate(string, option.help, 'options', score))
 		return out
 
@@ -4421,8 +4441,8 @@ class Engine(object):
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase, start))
 		elif dest == 'skip_hosts':
 			# the members that can complete the host being typed (after the last separator and "user@")
-			prefix = word[start:]
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
+			host = _last_host_start(word)[1]
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, word[host:], icase, start - host)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase, start))
 		elif dest == 'encoding':
@@ -4446,11 +4466,11 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text, prefix='', icase=None):
+	def _members(self, hosts_text, prefix='', icase=None, start=0):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
-		ranges), that start with prefix (in any case with icase): the first RANGE_MEMBERS_LIMIT of
-		them, as for its warnings.
+		ranges), that start with prefix (with icase prefix[start:] in any case): the first
+		RANGE_MEMBERS_LIMIT of them, as for its warnings.
 		'''
 		import itertools
 		members = set()
@@ -4466,7 +4486,7 @@ class Engine(object):
 				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
 				# a range past its limit names no member, and costs nothing to find out
 				named = expand_ranges(word)
-			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase)), room))
+			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase, start)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -4475,22 +4495,25 @@ class Engine(object):
 		lead, host_prefix = text[:start], text[start:]
 		user = text[cut:start - 1] if start > cut else ''
 		icase = context.icase
+		# where in host_prefix matching in any case starts: fold_start, at the host itself unless the
+		# shell's word starts later (bash's COMP_WORDBREAKS : in WEB:a)
+		fold = max(0, context.fold_start - context.value_start - start)
 		scores = {}
-		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2).items():
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2 + fold).items():
 			scores[feature[2:]] = score
 		out = []
 		if not start:
 			# one host typed: whole hosts arguments used before
-			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2).items():
+			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2 + fold).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		# with icase only the lookups match the host typed in any case: the names found stay apart (mssh's aliases,
 		# its list of unreachable hosts and -X compare them exactly)
 		aliases = set()
-		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase):
+		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase, fold):
 			aliases.add(name)
 			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
-		names = set(self.hosts.names_with_prefix(host_prefix, icase))
+		names = set(self.hosts.names_with_prefix(host_prefix, icase, fold))
 		# the history's names, which its lookup found starting with the host typed
 		names.update(name for name in scores if '[' not in name)
 		names -= aliases
@@ -4526,7 +4549,7 @@ class Engine(object):
 			return out
 		covered = set()
 		for group_text, members in self.hosts.groups():
-			if _starts(group_text, host_prefix, icase) and len(members) > 1 and names.issuperset(members):
+			if _starts(group_text, host_prefix, icase, fold) and len(members) > 1 and names.issuperset(members):
 				covered.update(members)
 				out.append(Candidate(lead + group_text, '{} hosts'.format(len(members)), 'groups', sum(host_score(member) for member in members)))
 		rest = names - covered
@@ -8131,12 +8154,50 @@ end
 
 _GLUES = {'bash': BASH_GLUE, 'zsh': ZSH_GLUE, 'fish': FISH_GLUE, 'fish-keys': FISH_KEYS_GLUE}
 
+# What module_command has python run (-c): the file named first as the module mssh_complete, from
+# the bytecode cached beside it, then its main. One that cannot be read ends with status 2, as python
+# ends for a script it cannot open: a glue takes more than 1 from the picker for "not there". No
+# single quote in it, so that the glue holds it as it is, in single quotes.
+MODULE_LOADER = '''import sys, types
+from importlib.machinery import SourceFileLoader
+path = sys.argv[0] = sys.argv.pop(1)
+loader = SourceFileLoader("mssh_complete", path)
+try:
+	code = loader.get_code("mssh_complete")
+except OSError as e:
+	sys.stderr.write("{}: cannot open file {!r}: [Errno {}] {}\\n".format(sys.executable, path, e.errno, e.strerror))
+	sys.exit(2)
+module = sys.modules["mssh_complete"] = types.ModuleType("mssh_complete")
+module.__file__, module.__loader__ = path, loader
+exec(code, module.__dict__)
+sys.exit(module.main())'''
+
+def module_command(path=None):
+	'''
+	The command running the module file path (this file) with this python, as `python -I path` runs it
+	but from the bytecode cached in __pycache__ beside it.
+
+	python compiles a script anew every time it runs one, and compiling this file was about half of
+	what a TAB waited for. As isolated as -I keeps a script (no current directory or user site on
+	sys.path, no PYTHON* variables), and the file is loaded from its path: no other mssh_complete on
+	sys.path is taken for it, and _import_mssh finds the multiSSH3 beside it. The bytecode settings
+	-I would drop are given on the command line: -B when this python writes none
+	(PYTHONDONTWRITEBYTECODE), and its pycache_prefix. Where the cache cannot be written (a read-only
+	directory) the file is compiled every time, as a script is.
+	'''
+	command = [sys.executable, '-I']
+	if sys.dont_write_bytecode:
+		command.append('-B')
+	if getattr(sys, 'pycache_prefix', None):
+		command += ['-X', 'pycache_prefix=' + os.path.abspath(sys.pycache_prefix)]
+	return command + ['-c', MODULE_LOADER, os.path.abspath(path or __file__)]
+
 def engine_command():
-	'''How the glue runs the engine: mssh-complete if it is on PATH, else this file with this python.'''
+	'''How the glue runs the engine: mssh-complete if it is on PATH, else this file with this python (module_command).'''
 	import shutil
 	if shutil.which('mssh-complete'):
 		return ['mssh-complete']
-	return [sys.executable, '-I', os.path.abspath(__file__)]
+	return module_command()
 
 def _fish_quote(word):
 	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"
@@ -9220,14 +9281,15 @@ def _ready():
 	except OSError:
 		return False
 
-def _claim_terminal():
+def _claim_terminal(started=None):
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
 
 	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
 	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
-	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
+	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
+	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -9236,7 +9298,12 @@ def _claim_terminal():
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		_debug('pick: the claim on the terminal failed, the shell went on ({!r}): the terminal is left alone'.format(e))
+		took = '' if started is None else ', {:.3f} s in'.format(time.monotonic() - started)
+		if isinstance(e, (FileExistsError, FileNotFoundError)):
+			# the shell claimed it first (its directory is there), or cleaned its directory up
+			_debug('pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took, e))
+		else:
+			_debug('pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took, e))
 		return False
 
 def _cmd_pick():
@@ -9267,7 +9334,7 @@ def _cmd_pick():
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
 		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
-		if not _claim_terminal():
+		if not _claim_terminal(started):
 			return 2
 		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
@@ -9277,7 +9344,7 @@ def _cmd_pick():
 			_debug('pick: ready {:.3f} s in'.format(time.monotonic() - started))
 			outcome = picker.run(term, line, before)
 	except Exception as e:
-		_debug('pick failed: {!r}\n{}'.format(e, _traceback()))
+		_debug(lambda: 'pick failed: {!r}\n{}'.format(e, _traceback()))
 		return 2
 	_debug('pick: {}, {:.3f} s in'.format(outcome, time.monotonic() - started))
 	if outcome == 'unavailable':
@@ -9412,7 +9479,7 @@ def _cmd_edit(args):
 			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
-		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
+		_debug(lambda: 'editor failed: {!r}\n{}'.format(e, _traceback()))
 		action, replay = 'pass', b''
 	out = 'MSSHC1\nL {}\t{}\nK {}\t{}\nE\n'.format(editor.cursor, editor.text, action, readline_keyseq(replay))
 	try:

@@ -1,14 +1,18 @@
 '''The command lines of mssh-complete and mssh --completion: what they print, and how they end.'''
 import os
+import shutil
 import subprocess
 import sys
 
 import pytest
 
+import multiSSH3
 import mssh_complete as mc
 from complete_shell_harness import ENGINE, REPO, build_index, make_home, require_shell
 
-MSSH = [sys.executable, '-I', str(REPO / 'multiSSH3.py')]
+# -I as the engine is run, but mssh's entry point heeds PYTHONDONTWRITEBYTECODE, which -I drops: the glue it
+# prints carries -B then (module_command)
+MSSH = [sys.executable, '-I'] + (['-B'] if sys.dont_write_bytecode else []) + [str(REPO / 'multiSSH3.py')]
 # what a shell reports for a command SIGPIPE ended (128 + 13), as for seq or cat piped into head
 SIGPIPE_STATUS = 141
 
@@ -283,3 +287,124 @@ def test_the_diagnostics_report_names_a_host_stdout_cannot_print(tmp_path, host,
 
 	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
 	assert b'    ' + printed + b'  1 line' in result.stdout
+
+
+def test_the_glue_runs_mssh_complete_when_it_is_on_path(tmp_path, monkeypatch):
+	monkeypatch.setenv('PATH', str(tmp_path))
+	assert mc.engine_command() == mc.module_command()
+	(tmp_path / 'mssh-complete').write_text('#!/bin/sh\n')
+	(tmp_path / 'mssh-complete').chmod(0o755)
+	assert mc.engine_command() == ['mssh-complete']
+
+
+def _engine_copy(tmp_path, name):
+	'''mssh_complete.py copied alone into a new directory tmp_path/name (bytes, so as to be any name). Returns its path.'''
+	directory = os.path.join(os.fsencode(str(tmp_path)), name)
+	os.mkdir(directory)
+	path = os.path.join(directory, b'mssh_complete.py')
+	shutil.copyfile(os.fsencode(str(REPO / 'mssh_complete.py')), path)
+	return os.fsdecode(path)
+
+
+def _module_command(monkeypatch, path, write_bytecode=True):
+	'''module_command(path) made by a python that writes bytecode into __pycache__, or none.'''
+	monkeypatch.setattr(sys, 'dont_write_bytecode', not write_bytecode)
+	if hasattr(sys, 'pycache_prefix'):
+		monkeypatch.setattr(sys, 'pycache_prefix', None)
+	return mc.module_command(path)
+
+
+def _version_from(command, env=None):
+	'''
+	Run command -V, python saying where it takes each code object from. Returns (status, what it
+	printed, where mssh_complete came from each time: 'source' or 'bytecode').
+	'''
+	result = subprocess.run(command[:1] + ['-v'] + command[1:] + ['-V'], env=env, stdin=subprocess.DEVNULL,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+	taken = []
+	for line in result.stderr.decode('utf-8', 'replace').splitlines():
+		name = line.rstrip("'").rsplit('/', 1)[-1]
+		if line.startswith('# code object from ') and name.startswith('mssh_complete.'):
+			taken.append('bytecode' if name.endswith('.pyc') else 'source')
+	return result.returncode, result.stdout.decode('utf-8', 'replace'), taken
+
+
+VERSION_LINE = 'mssh-complete {} (protocol {})\n'.format(mc.version, mc.PROTOCOL)
+
+
+@pytest.mark.parametrize('name, c_locale', [
+	(b'lone', False),
+	(b'd\xc3\xa9', False),
+	# Python 3.6 in the C locale takes the name as ASCII with the other bytes escaped
+	(b'd\xc3\xa9', True),
+	# bytes that are no UTF-8
+	(b'\xff', False),
+], ids=['plain', 'non-ascii', 'non-ascii-c-locale', 'not-utf8'])
+def test_the_engine_runs_from_its_bytecode_cache(tmp_path, monkeypatch, name, c_locale):
+	# python compiles a script anew every time: run as one, the engine was compiled at every TAB
+	command = _module_command(monkeypatch, _engine_copy(tmp_path, name))
+	env = None
+	if c_locale:
+		env = _c_locale_env(dict(os.environ))
+		command = command[:1] + ['-X', 'utf8=0'] + command[1:]
+
+	assert _version_from(command, env) == (0, VERSION_LINE, ['source'])
+	assert _version_from(command, env) == (0, VERSION_LINE, ['bytecode'])
+
+
+def test_the_engine_writes_no_bytecode_when_its_python_writes_none(tmp_path, monkeypatch):
+	# PYTHONDONTWRITEBYTECODE when the glue was made: -I drops it, the glue's -B keeps it
+	path = _engine_copy(tmp_path, b'lone')
+	command = _module_command(monkeypatch, path, write_bytecode=False)
+
+	assert '-B' in command[:command.index('-c')]
+	assert _version_from(command) == (0, VERSION_LINE, ['source'])
+	assert not os.path.exists(os.path.join(os.path.dirname(path), '__pycache__'))
+
+
+def test_the_engine_runs_where_its_bytecode_cannot_be_written(tmp_path, monkeypatch):
+	# as in a read-only directory (the shell matrix mounts the repository so): compiled every time, as a script is
+	path = _engine_copy(tmp_path, b'lone')
+	(tmp_path / 'lone' / '__pycache__').write_text('')
+	command = _module_command(monkeypatch, path)
+
+	assert _version_from(command) == (0, VERSION_LINE, ['source'])
+	assert _version_from(command) == (0, VERSION_LINE, ['source'])
+
+
+def test_an_engine_file_that_is_gone_ends_with_status_2(tmp_path):
+	# as python ends for a script it cannot open: a picker ending with more than 1 is not there, and Ctrl-R
+	# does what it did before
+	result = subprocess.run(mc.module_command(str(tmp_path / 'mssh_complete.py')) + ['pick'], stdin=subprocess.DEVNULL,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+
+	assert (result.returncode, result.stdout) == (2, b'')
+	assert b'cannot open file' in result.stderr and b'No such file or directory' in result.stderr
+
+
+def test_the_engine_takes_no_module_from_elsewhere(tmp_path):
+	# as isolated as a script run with -I: nothing from the current directory or PYTHONPATH, and its own
+	# directory is not put on sys.path (a file there named as a standard module would hide that one);
+	# the index is built with the multiSSH3 beside it
+	env, _ = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\tnode1\t"uptime"'])
+	decoys = tmp_path / 'decoys'
+	engine = tmp_path / 'engine'
+	decoys.mkdir()
+	engine.mkdir()
+	for name in ('mssh_complete', 'multiSSH3', 'bisect'):
+		(decoys / (name + '.py')).write_text('raise SystemExit("the decoy {} was imported")\n'.format(name))
+	shutil.copyfile(str(decoys / 'bisect.py'), str(engine / 'bisect.py'))
+	for name in ('mssh_complete.py', 'multiSSH3.py'):
+		shutil.copyfile(str(REPO / name), str(engine / name))
+	command = mc.module_command(str(engine / 'mssh_complete.py'))
+	env = dict(env, PYTHONPATH=str(decoys))
+
+	built = subprocess.run(command + ['rebuild'], env=env, cwd=str(decoys), stdin=subprocess.DEVNULL,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+	answer = subprocess.run(command + ['query'], input=b'MSSHC1\0bash\x005.2\0\0mssh no\0\0no\0', env=env, cwd=str(decoys),
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+
+	assert built.returncode == 0, built.stderr.decode('utf-8', 'replace')
+	assert mc.NsvIndex.load(built.stdout.decode().strip()).header['mssh_version'] == multiSSH3.version
+	assert answer.returncode == 0, answer.stderr.decode('utf-8', 'replace')
+	assert answer.stdout.startswith(b'MSSHC1\n') and b'node1' in answer.stdout

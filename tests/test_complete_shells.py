@@ -12,7 +12,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, build_index,
-	debug_log_size, fish_complete, fish_session, make_home, require_shell, without_command, zsh_session)
+	debug_log_size, fish_complete, fish_session, make_home, require_shell, with_debug_log, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -37,7 +37,7 @@ def glue_file(home, shell, command=ENGINE):
 @pytest.mark.parametrize('bash_completion', [True, False])
 def test_bash_completes_in_a_real_shell(setup, bash_completion, debug):
 	env, home = setup
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion)
 	try:
@@ -1091,7 +1091,7 @@ def test_bash_falls_back_to_file_names_when_the_engine_is_slow(setup):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_zsh_completes_in_a_real_shell(setup, debug):
 	env, home = setup
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = zsh_session(home, env, glue_file(home, 'zsh'))
 	try:
