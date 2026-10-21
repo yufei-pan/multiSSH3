@@ -6399,8 +6399,11 @@ _mssh_complete_delegate() {
 			COMP_LINE=${COMP_LINE% }
 			COMP_POINT=${#COMP_LINE}
 			local -a COMPREPLY=()
-			_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
-				"${_mssh_complete_words[_mssh_complete_cword-1]}" >/dev/null 2>&1 || :
+			# bash runs only a function so named (else: function not found), never a command
+			if declare -F -- "$_mssh_complete_func" >/dev/null 2>&1; then
+				_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
+					"${_mssh_complete_words[_mssh_complete_cword-1]}" >/dev/null 2>&1 || :
+			fi
 			_mssh_complete_results=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
 		else
 			while IFS= read -r _mssh_complete_item; do

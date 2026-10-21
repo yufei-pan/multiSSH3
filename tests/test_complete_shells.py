@@ -263,17 +263,19 @@ def test_bash_delegation_runs_a_completion_function_whatever_its_name(tmp_path, 
 	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
 
 
-def test_bash_delegation_runs_no_command_for_a_completion_function_named_with_a_quote(tmp_path):
-	# no function's name holds a quote (bash refuses one), yet complete -F takes the word, and bash 5.2
-	# prints it quoted (-F 'zz'\''f'): unquoted, the glue ran the command zz'f in its place
+@pytest.mark.parametrize('name', ["zz'f", 'zzrun'])
+def test_bash_delegation_runs_no_command_for_a_completion_function(tmp_path, name):
+	# bash runs complete -F's word only as a function (function not found, else): the glue ran a command so
+	# named in its place, zzrun, and zz'f, which no function's name can be (bash refuses a quote), and which
+	# bash 5.2 prints quoted (-F 'zz'\''f')
 	ran = tmp_path / 'ran'
 	found = tmp_path / 'bin'
 	found.mkdir()
-	(found / "zz'f").write_text('#!/bin/sh\ntouch {}\n'.format(ran))
-	(found / "zz'f").chmod(0o755)
-	script = ('. "$1"; PATH=$2:$PATH; complete -F "zz\'f" zzsvc; '
+	(found / name).write_text('#!/bin/sh\ntouch {}\n'.format(ran))
+	(found / name).chmod(0o755)
+	script = ('. "$1"; PATH=$2:$PATH; complete -F "$3" zzsvc; '
 		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
-	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found)],
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found), name],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(tmp_path))
 	assert not ran.exists(), output
 	assert output.returncode == 0, output
