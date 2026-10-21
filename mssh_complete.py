@@ -6443,11 +6443,11 @@ _mssh_complete_unpack() {
 	# -A and the like, as compgen takes them), _mssh_complete_options (-o, each followed by a space), the
 	# arguments of -G, -W, -P, -S, -X, -C and -F in _mssh_complete_glob, _wordlist, _front, _back, _filter,
 	# _command and _func, and which of them the command has in _mssh_complete_have (words, each followed
-	# by a space). Read, never run: bash prints an argument single-quoted, and -F's word (a function's
-	# name) as it is, or from bash 5.2 quoted when it holds a metacharacter (_mssh_complete_unquote). No
-	# function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid identifier, also from the
-	# environment), so its quoted form -F 'a^b' holds none inside. A quote there (complete -F "a'b" is
-	# accepted) names no function, which declare -F tells in the delegate
+	# by a space, and files for a file action). Read, never run: bash prints an argument single-quoted, and
+	# -F's word (a function's name) as it is, or from bash 5.2 quoted when it holds a metacharacter
+	# (_mssh_complete_unquote). No function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid
+	# identifier, also from the environment), so its quoted form -F 'a^b' holds none inside. A quote there
+	# (complete -F "a'b" is accepted) names no function, which declare -F tells in the delegate
 	local _mssh_complete_text=$1 _mssh_complete_value
 	local _mssh_complete_flag_pattern='^-([abcdefgjksuv])( +|$)' _mssh_complete_name_pattern='^-([oA]) ([a-z]+)( +|$)'
 	local _mssh_complete_argument_pattern="^-([GWPSXC]) ((\\\\'|'[^']*')+)( +|\$)" _mssh_complete_function_pattern="^-F ([^ ']+|(\\\\'|'[^']*')+)( +|\$)"
@@ -6459,11 +6459,13 @@ _mssh_complete_unpack() {
 	while [[ -n $_mssh_complete_text ]]; do
 		if [[ $_mssh_complete_text =~ $_mssh_complete_flag_pattern ]]; then
 			_mssh_complete_actions+=("-${BASH_REMATCH[1]}")
+			[[ ${BASH_REMATCH[1]} == [fd] ]] && _mssh_complete_have+='files '
 		elif [[ $_mssh_complete_text =~ $_mssh_complete_name_pattern ]]; then
 			if [[ ${BASH_REMATCH[1]} == o ]]; then
 				_mssh_complete_options+="${BASH_REMATCH[2]} "
 			else
 				_mssh_complete_actions+=(-A "${BASH_REMATCH[2]}")
+				[[ ${BASH_REMATCH[2]} == file || ${BASH_REMATCH[2]} == directory ]] && _mssh_complete_have+='files '
 			fi
 		elif [[ $_mssh_complete_text =~ $_mssh_complete_argument_pattern ]]; then
 			_mssh_complete_unquote "${BASH_REMATCH[2]}"
@@ -6516,19 +6518,22 @@ _mssh_complete_run_command() {
 	eval "$1"' "$2" "$3" "$4"'
 }
 
+_mssh_complete_replay() {
+	# the function _mssh_complete_exclude gives compgen -F: the results as a function's
+	COMPREPLY=(${_mssh_complete_results[@]+"${_mssh_complete_results[@]}"})
+}
+
 _mssh_complete_exclude() {
-	# apply a compspec's -X filter $1 to _mssh_complete_results, as bash does: a result matching the pattern
-	# goes, and with a "!" first all that do not. compgen -X does it all (the "!", an & for the word, the
-	# word's glob characters quoted, the shell's extglob), but takes the word $2 for the & only along with a
-	# filter by it (case-sensitive, as bash gives a -W list, and not for the results of a function or a command,
-	# which bash does not filter): so it gets the word where the pattern holds an & (a "\&" is none), and none
-	# where it does not
-	local _mssh_complete_against=$2 _mssh_complete_item _mssh_complete_stripped=${1//\\?/}
+	# apply a compspec's -X filter $1 to _mssh_complete_results, as bash does: by bash. compgen -F filters a
+	# function's results (_mssh_complete_replay: ours) as it filters those of a compspec's function or command,
+	# which are not held to the word $2 as -W's and the actions' are: a result matching the pattern goes, and
+	# with a "!" first all that do not, an & stands for the word with its glob characters quoted (a "\&" for
+	# the character) and the shell's extglob and nocasematch count, all as bash has them
+	local _mssh_complete_item
 	local -a _mssh_complete_kept_results=()
-	[[ $_mssh_complete_stripped == *'&'* ]] || _mssh_complete_against=
 	while IFS= read -r _mssh_complete_item; do
 		_mssh_complete_kept_results+=("$_mssh_complete_item")
-	done < <(compgen -X "$1" -W '"${_mssh_complete_results[@]}"' -- "$_mssh_complete_against" 2>/dev/null || :)
+	done < <(_mssh_complete_operator compgen -F _mssh_complete_replay -X "$1" -- "$2" 2>/dev/null || :)
 	_mssh_complete_results=(${_mssh_complete_kept_results[@]+"${_mssh_complete_kept_results[@]}"})
 }
 
@@ -6540,8 +6545,8 @@ _mssh_complete_delegate() {
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
 	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one
-	local _mssh_complete_have= _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
-	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_cut
+	local _mssh_complete_have _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
+	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_front_at
 	local -a _mssh_complete_actions=()
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
@@ -6550,6 +6555,8 @@ _mssh_complete_delegate() {
 	_mssh_complete_cmd=${_mssh_complete_words[0]-}
 	_mssh_complete_delegated=()
 	if [[ $_mssh_complete_cword -eq 0 ]]; then
+		# command names are quoted as file names are
+		compopt -o filenames 2>/dev/null || :
 		while IFS= read -r _mssh_complete_item; do
 			_mssh_complete_results+=("$_mssh_complete_item")
 		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
@@ -6597,6 +6604,11 @@ _mssh_complete_delegate() {
 			for _mssh_complete_item in filenames nospace noquote nosort fullquote; do
 				[[ $_mssh_complete_options == *" $_mssh_complete_item "* ]] && { compopt -o "$_mssh_complete_item" 2>/dev/null || :; }
 			done
+			# the file actions and -G give file names: bash has readline quote them and mark the directories
+			# (compgen in the subshell below cannot set that)
+			if [[ $_mssh_complete_have == *' files '* || $_mssh_complete_have == *' glob '* ]]; then
+				compopt -o filenames 2>/dev/null || :
+			fi
 			if (( ${#_mssh_complete_generate[@]} )); then
 				while IFS= read -r _mssh_complete_item; do
 					_mssh_complete_results+=("$_mssh_complete_item")
@@ -6633,7 +6645,8 @@ _mssh_complete_delegate() {
 				compopt -o filenames 2>/dev/null || :
 			fi
 		else
-			_mssh_complete_have=
+			# a command with no compspec, or one that cannot be read: its arguments are file names
+			compopt -o filenames 2>/dev/null || :
 			while IFS= read -r _mssh_complete_item; do
 				_mssh_complete_results+=("$_mssh_complete_item")
 			done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)
@@ -6652,10 +6665,10 @@ _mssh_complete_delegate() {
 	for (( _mssh_complete_one = 0; _mssh_complete_one < ${#_mssh_complete_results[@]}; _mssh_complete_one++ )); do
 		_mssh_complete_item=$_mssh_complete_prefix${_mssh_complete_results[_mssh_complete_one]}
 		# how much of the prefix is left on the item: -P goes after it, in front of the remote word
-		_mssh_complete_cut=${#_mssh_complete_prefix}
+		_mssh_complete_front_at=${#_mssh_complete_prefix}
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
-			_mssh_complete_cut=$(( ${#_mssh_complete_prefix} > ${#_mssh_complete_lead} ? ${#_mssh_complete_prefix} - ${#_mssh_complete_lead} : 0 ))
+			_mssh_complete_front_at=$(( ${#_mssh_complete_prefix} > ${#_mssh_complete_lead} ? ${#_mssh_complete_prefix} - ${#_mssh_complete_lead} : 0 ))
 		elif [[ -n $_mssh_complete_lead ]] && (( _mssh_complete_fold )) && [[ ${_mssh_complete_item,,} == "${_mssh_complete_lead,,}"* ]]; then
 			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
 			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)
@@ -6668,7 +6681,7 @@ _mssh_complete_delegate() {
 		# -P and -S, last, on the results of the compspec and not on the fallbacks' (bash adds them before
 		# those): what bash hands readline starts with the prefix, and no longer with the word
 		if (( _mssh_complete_one < _mssh_complete_listed )); then
-			_mssh_complete_item=${_mssh_complete_item:0:_mssh_complete_cut}$_mssh_complete_front${_mssh_complete_item:_mssh_complete_cut}$_mssh_complete_back
+			_mssh_complete_item=${_mssh_complete_item:0:_mssh_complete_front_at}$_mssh_complete_front${_mssh_complete_item:_mssh_complete_front_at}$_mssh_complete_back
 		fi
 		_mssh_complete_delegated+=("$_mssh_complete_item")
 	done
@@ -6743,8 +6756,11 @@ _mssh_complete_tab() {
 	(( _mssh_complete_ended )) || return 0
 	if (( _mssh_complete_delegating )) && (( ${#_mssh_complete_xfields[@]} >= 3 )); then
 		_mssh_complete_delegate "$_mssh_complete_cur" "${_mssh_complete_xfields[@]}"
-		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped
-		if [[ $(compopt 2>/dev/null) == *' -o filenames '* ]]; then
+		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped,
+		# unless it turned quoting off (noquote: readline quotes no file names then, but fullquote, from bash
+		# 5.3, still quotes all matches)
+		_mssh_complete_item=$(compopt 2>/dev/null) || :
+		if [[ $_mssh_complete_item == *' -o fullquote '* ]] || [[ $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ]]; then
 			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
 		fi
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})

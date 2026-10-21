@@ -389,19 +389,37 @@ spec = importlib.util.spec_from_file_location('multiSSH3', sys.argv[1])
 mssh = importlib.util.module_from_spec(spec)
 sys.modules['multiSSH3'] = mssh
 spec.loader.exec_module(mssh)
+before = list(sys.path)
 with contextlib.redirect_stdout(io.StringIO()) as glue:
 	status = mssh._completion_command(['bash'])
-print(status, glue.getvalue().startswith('# MSSH_COMPLETE_GLUE '), sys.path.index(here) == len(sys.path) - 1)
+print(status, glue.getvalue().startswith('# MSSH_COMPLETE_GLUE '), sys.path == before, sys.modules['mssh_complete'].__file__ == os.path.join(here, 'mssh_complete.py'))
 '''
 
-def test_mssh_completion_puts_its_directory_last_on_sys_path(tmp_path):
-	# mssh run where mssh_complete is not importable finds the one beside it, from the end of sys.path:
-	# first there, a file beside it named as a standard module would hide that one from mssh_complete
+def test_mssh_completion_loads_the_mssh_complete_beside_it_by_path(tmp_path):
+	# mssh run where mssh_complete is not importable loads the one beside it from its path, and puts its
+	# directory on no sys.path: a file beside it named as a standard module would hide that one from mssh_complete
 	for name in ('mssh_complete.py', 'multiSSH3.py'):
 		shutil.copyfile(str(REPO / name), str(tmp_path / name))
 	result = subprocess.run([sys.executable, '-I', '-B', '-c', _COMPLETION_PATH_SCRIPT, str(tmp_path / 'multiSSH3.py')],
 		cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-	assert result.stdout.split() == [b'0', b'True', b'True'], result.stderr.decode('utf-8', 'replace')
+	assert result.stdout.split() == [b'0', b'True', b'True', b'True'], result.stderr.decode('utf-8', 'replace')
+
+
+_COMPLETION_ALONE_SCRIPT = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('multiSSH3', sys.argv[1])
+mssh = importlib.util.module_from_spec(spec)
+sys.modules['multiSSH3'] = mssh
+spec.loader.exec_module(mssh)
+print(mssh._completion_command(['bash']), 'mssh_complete' in sys.modules)
+'''
+
+def test_mssh_completion_without_mssh_complete_beside_it_says_so(tmp_path):
+	shutil.copyfile(str(REPO / 'multiSSH3.py'), str(tmp_path / 'multiSSH3.py'))
+	result = subprocess.run([sys.executable, '-I', '-B', '-c', _COMPLETION_ALONE_SCRIPT, str(tmp_path / 'multiSSH3.py')],
+		cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+	assert result.stdout.split() == [b'1', b'False'], result.stderr.decode('utf-8', 'replace')
+	assert b'autocomplete needs mssh_complete.py next to ' in result.stderr
 
 
 def test_the_engine_takes_no_module_from_elsewhere(tmp_path):

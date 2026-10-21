@@ -454,8 +454,13 @@ def test_bash_delegation_gives_the_options_of_the_compspec_to_readline(tmp_path,
 
 
 def completed_and_listed(session, typed, quoted=False):
-	"""What a TAB at the end of typed makes of the line, and the words a second TAB lists (the typed ones out)."""
+	"""What a TAB at the end of typed makes of the line, and the words a second TAB lists, sorted: every one that is
+	listed, the typed word and a candidate named like the command included, and a word listed twice twice. In a
+	quoted command (quoted) the words come with the command in front (zzsvc zza), which is taken off."""
 	line = session.line_after(typed)
+	# what the line print binding ends with (its newline) is not the list
+	session.wait_idle()
+	session.read_until(b'@@never@@', 0.3)
 	start = len(session.output)
 	session.send(typed + '\t\t')
 	session.wait_idle()
@@ -463,12 +468,14 @@ def completed_and_listed(session, typed, quoted=False):
 	text = session.output[start:].decode('utf-8', 'replace')
 	session.send('\x15')
 	session.read_until(b'@@never@@', 0.3)
-	# readline lists on the lines below the one it redraws (with backspaces and a bell where it redraws)
-	text = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text.split('\n', 1)[1]) if '\n' in text else ''
-	listed = {word.strip('"') for word in text.split()} - {'', '@@READY@@', 'mssh', 'h', 'zzsvc', typed.split()[-1].strip('"')}
-	if quoted and line:
-		line = line.replace('"', '')
-	return line.rstrip() if line else line, listed
+	# readline lists on the lines below the one it redraws (with backspaces and a bell where it redraws), and
+	# redraws the prompt and the line after the list
+	rows = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text).split('\r\n')[1:-1]
+	listed = ' '.join(rows).split()
+	if quoted:
+		listed = listed[1::2] if listed[0::2] == ['zzsvc'] * len(listed[0::2]) else listed
+		line = line and line.replace('"', '')
+	return line.rstrip() if line else line, sorted(listed)
 
 
 # (the arguments of complete, the word, the shell's setting before it): what bash gives the command itself is what mssh
@@ -490,6 +497,19 @@ SAME_AS_BASH = [
 	(['-W', 'Zza zzb', '-P', '['], 'zz', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza zzb', '-o', 'plusdirs'], 'ZZ', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza', '-o', 'nospace', '-P', '['], 'zz', ''),
+	# -X over what a function gives is not held to the word: its & stands for the word with its glob characters
+	# quoted (a ! in the word included), and the results stay whatever case or characters they hold
+	(['-F', '_zzf', '-X', '&'], 'zz', 'bind "set completion-ignore-case on"; _zzf() { COMPREPLY=(Zzalpha zzbeta); }'),
+	(['-F', '_zzf', '-X', '!&*'], 'zz', 'bind "set completion-ignore-case on"; _zzf() { COMPREPLY=(Zzalpha zzbeta); }'),
+	(['-F', '_zzf', '-X', '&'], 'zz', "_zzf() { COMPREPLY=('zz\\x' zzy); }"),
+	(['-W', '!x !xy y', '-X', '&'], '!x', ''),
+	(['-W', '!x !xy y', '-X', '!&'], '!x', ''),
+	# an & is a substitution unless a backslash comes right before it, and a backslash before that one is no escape
+	(['-F', '_zzf', '-X', 'z\\\\&'], 'z', "_zzf() { COMPREPLY=('z&' 'z\\&' zx); }"),
+	(['-F', '_zzf', '-X', 'z\\&'], 'z', "_zzf() { COMPREPLY=('z&' 'z\\&' zx); }"),
+	(['-F', '_zzf', '-X', 'z&'], 'z', "_zzf() { COMPREPLY=('z&' 'zz' 'zzz' zx); }"),
+	# -X and the shell's nocasematch
+	(['-W', 'zzA.C zzb.h', '-X', '*.c'], 'zz', 'shopt -s nocasematch'),
 ]
 
 
@@ -497,6 +517,20 @@ SAME_AS_BASH = [
 # directory), and mixed with others they have no start in common (zzsvc [zza] beside zzsvc zzdir): readline cuts the
 # line back to the command prefix where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
+	# bash's word stops at a colon: bx for a:b
+	(['-F', '_zzg', '-X', '&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
+	(['-F', '_zzg', '-X', '!&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
+	# file names, as the file actions and -G give them, are quoted and the directories marked, as without -o filenames
+	(['-f'], 'my', ''),
+	(['-d'], 'my', ''),
+	(['-A', 'file'], 'my', ''),
+	(['-A', 'directory'], 'my', ''),
+	(['-G', 'my*'], 'my', ''),
+	(['-d', '-o', 'noquote'], 'my', ''),
+	(['-W', 'other', '-d', '-X', '!my*'], 'my', ''),
+	# a command with no completion of its own gets file names
+	(None, 'my', ''),
+	(None, 'zzd', ''),
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
@@ -520,14 +554,63 @@ SAME_AS_BASH_QUOTED = [
 	[(True,) + case for case in SAME_AS_BASH + SAME_AS_BASH_QUOTED])
 def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec, word, before, quoted):
 	import shlex
-	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; complete {} zzsvc'.format(before or ':', ' '.join(map(shlex.quote, spec)))
+	if spec and 'noquote' in spec:
+		require_bash_printing('noquote')
+	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; {}'.format(before or ':',
+		'complete {} zzsvc'.format(' '.join(map(shlex.quote, spec))) if spec else ':')
 	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab'], options=options)
 	try:
-		(tmp_path / 'work' / 'zzdir').mkdir()
-		(tmp_path / 'work' / 'zzdirb').mkdir()
+		for name in ('zzdir', 'zzdirb', 'my dir'):
+			(tmp_path / 'work' / name).mkdir()
 		native = completed_and_listed(session, 'zzsvc ' + word)
 		remote = completed_and_listed(session, 'mssh h ' + ('"zzsvc ' if quoted else 'zzsvc ') + word, quoted)
 		assert remote == ('mssh h ' + native[0], native[1])
+	finally:
+		session.close()
+
+
+def require_bash_printing(option):
+	"""Skip unless this bash prints `complete -o option` back, which the glue reads a compspec by: bash 4.2 refuses noquote, 4.3
+	and 4.4 take it and never print it (nor 4.4 nosort), and fullquote is new in bash 5.3."""
+	output = subprocess.run([require_shell('bash'), '-c', 'complete -o {} -W x zzq && complete -p zzq'.format(option)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+	if option.encode() not in output:
+		pytest.skip('this bash does not print complete -o {}'.format(option))
+
+
+ENGINES_GLOB = ['1790000000\t/x/multiSSH3.py\t-su\th\t"zzsvc zz*x"']
+
+
+@pytest.mark.parametrize('options, completed', [
+	# readline quotes what the compspec's -o filenames makes it quote, and mssh's own words are handed over unescaped to it
+	('-W other -o filenames', 'mssh h zzsvc zz\\*x '),
+	# not with -o noquote: readline quotes nothing then, and mssh's words go in as the engine escaped them
+	('-W other -o filenames -o noquote', 'mssh h zzsvc zz\\*x '),
+	('-W other -o filenames -o noquote -o nospace', 'mssh h zzsvc zz\\*x'),
+	('-d -o noquote', 'mssh h zzsvc zz\\*x '),
+	# from bash 5.3, -o fullquote quotes all matches
+	('-W other -o fullquote', 'mssh h zzsvc zz\\*x '),
+	('-W other -o fullquote -o noquote', 'mssh h zzsvc zz\\*x '),
+	('-W other -o fullquote -o filenames', 'mssh h zzsvc zz\\*x '),
+])
+def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_path, options, completed):
+	for option in ('noquote', 'fullquote'):
+		if option in options:
+			require_bash_printing(option)
+	session = ignoring_case(tmp_path, ENGINES_GLOB, on=False, options='complete {} zzsvc'.format(options))
+	try:
+		assert session.line_after('mssh h zzsvc zz') == completed
+	finally:
+		session.close()
+
+
+def test_bash_completes_the_command_word_of_a_remote_line_as_bash_does(tmp_path):
+	# a name with a space is quoted for the remote shell too
+	session = ignoring_case(tmp_path, [], on=False, commands=['zzc cmd'])
+	try:
+		native = session.line_after('zzc')
+		assert native == 'zzc\\ cmd '
+		assert session.line_after('mssh h zzc') == 'mssh h ' + native
 	finally:
 		session.close()
 
