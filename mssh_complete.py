@@ -1759,10 +1759,12 @@ def _debug(message):
 					f.seek(-128 * 1024, os.SEEK_END)
 					kept = f.read()
 				with open(path, 'wb') as f:
-					f.write(kept)
+					# from the line after the cut, which may fall inside a line or a UTF-8 character
+					f.write(kept[kept.find(b'\n') + 1:])
 		except OSError:
 			pass
-		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='replace') as f:
+		# a lone surrogate (a byte that was not UTF-8, read with surrogateescape) is written as \udcXX
+		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='backslashreplace') as f:
 			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
 	except Exception:
 		# the log is lost, nothing else: no usable temporary directory (cache_dir lists it, and
