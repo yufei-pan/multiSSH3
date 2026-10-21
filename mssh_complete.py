@@ -2050,7 +2050,7 @@ def _import_mssh():
 	try:
 		spec.loader.exec_module(module)
 	except BaseException:
-		del sys.modules['multiSSH3']
+		sys.modules.pop('multiSSH3', None)
 		raise
 	return module
 

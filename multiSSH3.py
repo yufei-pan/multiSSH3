@@ -8651,7 +8651,10 @@ def _import_mssh_complete():
 	if not os.path.isfile(path):
 		try:
 			import mssh_complete
-		except ImportError:
+		except ModuleNotFoundError as error:
+			# only a missing mssh_complete is that; an import it makes itself failing is the real error
+			if error.name != 'mssh_complete':
+				raise
 			return None
 		return mssh_complete
 	import importlib.util
@@ -8661,7 +8664,7 @@ def _import_mssh_complete():
 	try:
 		spec.loader.exec_module(module)
 	except BaseException:
-		del sys.modules['mssh_complete']
+		sys.modules.pop('mssh_complete', None)
 		raise
 	return module
 
