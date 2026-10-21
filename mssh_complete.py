@@ -1738,32 +1738,35 @@ def _debug(message):
 	'''
 	Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8
 	whatever the locale. message may be a function making it, called only then: what it costs (and a
-	failure making it) is the log's alone.
+	failure making it) is the log's alone. Never raises: pick and edit log after their answer is
+	written too, where nothing may change the exit status.
 	'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
 		return
-	if callable(message):
+	try:
+		if callable(message):
+			try:
+				message = message()
+			except Exception as e:
+				message = 'cannot make a debug message: {!r}'.format(e)
+		directory = cache_dir()
+		if directory is None:
+			return
+		path = os.path.join(directory, 'complete.log')
 		try:
-			message = message()
-		except Exception as e:
-			message = 'cannot make a debug message: {!r}'.format(e)
-	directory = cache_dir()
-	if directory is None:
-		return
-	path = os.path.join(directory, 'complete.log')
-	try:
-		if os.path.getsize(path) > 256 * 1024:
-			with open(path, 'rb') as f:
-				f.seek(-128 * 1024, os.SEEK_END)
-				kept = f.read()
-			with open(path, 'wb') as f:
-				f.write(kept)
-	except OSError:
-		pass
-	try:
+			if os.path.getsize(path) > 256 * 1024:
+				with open(path, 'rb') as f:
+					f.seek(-128 * 1024, os.SEEK_END)
+					kept = f.read()
+				with open(path, 'wb') as f:
+					f.write(kept)
+		except OSError:
+			pass
 		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='replace') as f:
 			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
-	except (OSError, ValueError):
+	except Exception:
+		# the log is lost, nothing else: no usable temporary directory (cache_dir lists it, and
+		# tempfile.gettempdir raises FileNotFoundError then), a full disk, a message that is no text
 		pass
 
 #%% ------------ Index sources ----------------

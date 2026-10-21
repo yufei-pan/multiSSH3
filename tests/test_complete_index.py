@@ -49,6 +49,33 @@ def test_cache_dir_matches_multissh3(home):
 	assert mc.cache_dir() == os.path.dirname(multiSSH3._unavailable_hosts_file_path())
 
 
+def _log(home):
+	with open(os.path.join(mc.cache_dir(), 'complete.log'), 'rb') as f:
+		return f.read()
+
+
+def test_the_debug_log_never_raises(home, monkeypatch):
+	# pick and edit log after their answer is written: an exception there ended them with a traceback, status 1
+	import tempfile
+	monkeypatch.setenv('MSSH_COMPLETE_DEBUG', '1')
+
+	class NoText(object):
+		def __str__(self):
+			raise RuntimeError('no text')
+
+	mc._debug(NoText())
+	mc._debug('kept')
+	assert _log(home).endswith(b' kept\n')
+
+	def no_temporary_directory():
+		raise FileNotFoundError(errno.ENOENT, 'No usable temporary directory found')
+
+	# cache_dir lists it among the directories it may take
+	monkeypatch.setattr(tempfile, 'gettempdir', no_temporary_directory)
+	mc._debug('lost')
+	mc._debug(lambda: 'lost')
+
+
 def test_build_index_collects_every_source(home):
 	index, _ = build()
 	hosts = mc.HostTable(index)
