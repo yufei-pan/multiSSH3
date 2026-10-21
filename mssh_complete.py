@@ -6443,11 +6443,11 @@ _mssh_complete_unpack() {
 	# -A and the like, as compgen takes them), _mssh_complete_options (-o, each followed by a space), the
 	# arguments of -G, -W, -P, -S, -X, -C and -F in _mssh_complete_glob, _wordlist, _front, _back, _filter,
 	# _command and _func, and which of them the command has in _mssh_complete_have (words, each followed
-	# by a space). Read, never run: bash prints an argument single-quoted, and -F's word (a function's
-	# name) as it is, or from bash 5.2 quoted when it holds a metacharacter (_mssh_complete_unquote). No
-	# function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid identifier, also from the
-	# environment), so its quoted form -F 'a^b' holds none inside. A quote there (complete -F "a'b" is
-	# accepted) names no function, which declare -F tells in the delegate
+	# by a space, and files for a file action). Read, never run: bash prints an argument single-quoted, and
+	# -F's word (a function's name) as it is, or from bash 5.2 quoted when it holds a metacharacter
+	# (_mssh_complete_unquote). No function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid
+	# identifier, also from the environment), so its quoted form -F 'a^b' holds none inside. A quote there
+	# (complete -F "a'b" is accepted) names no function, which declare -F tells in the delegate
 	local _mssh_complete_text=$1 _mssh_complete_value
 	local _mssh_complete_flag_pattern='^-([abcdefgjksuv])( +|$)' _mssh_complete_name_pattern='^-([oA]) ([a-z]+)( +|$)'
 	local _mssh_complete_argument_pattern="^-([GWPSXC]) ((\\\\'|'[^']*')+)( +|\$)" _mssh_complete_function_pattern="^-F ([^ ']+|(\\\\'|'[^']*')+)( +|\$)"
@@ -6459,11 +6459,13 @@ _mssh_complete_unpack() {
 	while [[ -n $_mssh_complete_text ]]; do
 		if [[ $_mssh_complete_text =~ $_mssh_complete_flag_pattern ]]; then
 			_mssh_complete_actions+=("-${BASH_REMATCH[1]}")
+			[[ ${BASH_REMATCH[1]} == [fd] ]] && _mssh_complete_have+='files '
 		elif [[ $_mssh_complete_text =~ $_mssh_complete_name_pattern ]]; then
 			if [[ ${BASH_REMATCH[1]} == o ]]; then
 				_mssh_complete_options+="${BASH_REMATCH[2]} "
 			else
 				_mssh_complete_actions+=(-A "${BASH_REMATCH[2]}")
+				[[ ${BASH_REMATCH[2]} == file || ${BASH_REMATCH[2]} == directory ]] && _mssh_complete_have+='files '
 			fi
 		elif [[ $_mssh_complete_text =~ $_mssh_complete_argument_pattern ]]; then
 			_mssh_complete_unquote "${BASH_REMATCH[2]}"
@@ -6553,6 +6555,8 @@ _mssh_complete_delegate() {
 	_mssh_complete_cmd=${_mssh_complete_words[0]-}
 	_mssh_complete_delegated=()
 	if [[ $_mssh_complete_cword -eq 0 ]]; then
+		# command names are quoted as file names are
+		compopt -o filenames 2>/dev/null || :
 		while IFS= read -r _mssh_complete_item; do
 			_mssh_complete_results+=("$_mssh_complete_item")
 		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
@@ -6600,6 +6604,11 @@ _mssh_complete_delegate() {
 			for _mssh_complete_item in filenames nospace noquote nosort fullquote; do
 				[[ $_mssh_complete_options == *" $_mssh_complete_item "* ]] && { compopt -o "$_mssh_complete_item" 2>/dev/null || :; }
 			done
+			# the file actions and -G give file names: bash has readline quote them and mark the directories
+			# (compgen in the subshell below cannot set that)
+			if [[ $_mssh_complete_have == *' files '* || $_mssh_complete_have == *' glob '* ]]; then
+				compopt -o filenames 2>/dev/null || :
+			fi
 			if (( ${#_mssh_complete_generate[@]} )); then
 				while IFS= read -r _mssh_complete_item; do
 					_mssh_complete_results+=("$_mssh_complete_item")
@@ -6636,7 +6645,8 @@ _mssh_complete_delegate() {
 				compopt -o filenames 2>/dev/null || :
 			fi
 		else
-			_mssh_complete_have=
+			# a command with no compspec, or one that cannot be read: its arguments are file names
+			compopt -o filenames 2>/dev/null || :
 			while IFS= read -r _mssh_complete_item; do
 				_mssh_complete_results+=("$_mssh_complete_item")
 			done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)

@@ -517,6 +517,17 @@ SAME_AS_BASH_UNQUOTED = [
 	# bash's word stops at a colon: bx for a:b
 	(['-F', '_zzg', '-X', '&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
 	(['-F', '_zzg', '-X', '!&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
+	# file names, as the file actions and -G give them, are quoted and the directories marked, as without -o filenames
+	(['-f'], 'my', ''),
+	(['-d'], 'my', ''),
+	(['-A', 'file'], 'my', ''),
+	(['-A', 'directory'], 'my', ''),
+	(['-G', 'my*'], 'my', ''),
+	(['-d', '-o', 'noquote'], 'my', ''),
+	(['-W', 'other', '-d', '-X', '!my*'], 'my', ''),
+	# a command with no completion of its own gets file names
+	(None, 'my', ''),
+	(None, 'zzd', ''),
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
@@ -575,6 +586,17 @@ def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_pa
 	session = ignoring_case(tmp_path, ENGINES_GLOB, on=False, options='complete {} zzsvc'.format(options))
 	try:
 		assert session.line_after('mssh h zzsvc zz') == completed
+	finally:
+		session.close()
+
+
+def test_bash_completes_the_command_word_of_a_remote_line_as_bash_does(tmp_path):
+	# a name with a space is quoted for the remote shell too
+	session = ignoring_case(tmp_path, [], on=False, commands=['zzc cmd'])
+	try:
+		native = session.line_after('zzc')
+		assert native == 'zzc\\ cmd '
+		assert session.line_after('mssh h zzc') == 'mssh h ' + native
 	finally:
 		session.close()
 
