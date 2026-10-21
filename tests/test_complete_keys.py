@@ -13,7 +13,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
+from complete_shell_harness import (ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, with_debug_log, aged, bash_locale, bash_session, blesh_session, build_index,
 	debug_log_size, fish_session, make_home, require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
@@ -101,7 +101,7 @@ def bash_version(env):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = bash_session(home, env, glue_file(home, 'bash'))
 	try:
@@ -539,7 +539,7 @@ def test_editor_keeps_passwords_out_of_the_debug_log(home):
 		assert '@@RAN[-p hunter2 host1 uptime]@@' in session.read_until(b'@@RAN[-p hunter2 host1 uptime]@@', 15)
 	finally:
 		session.close()
-	log = (Path(env['XDG_RUNTIME_DIR']) / 'multiSSH3' / 'complete.log').read_text()
+	log = (Path(env['XDG_RUNTIME_DIR']) / 'multiSSH3' / 'complete.log').read_text(encoding='utf-8')
 	assert "-p *** host1 uptime" in log and 'hunter2' not in log
 
 
@@ -588,7 +588,7 @@ def test_editor_space_keeps_magic_space_when_the_glue_loads_again(home):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_editor_shows_and_accepts_the_suggestion(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = editor_session(env, home)
 	try:
@@ -641,7 +641,7 @@ def test_editor_marks_an_mssh_option_ending_the_line_before_enter(home):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_editor_enter_runs_what_was_typed(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = editor_session(env, home)
 	try:
@@ -1381,7 +1381,7 @@ def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = zsh_with(env, home)
 	try:
@@ -1499,7 +1499,7 @@ def test_fish_space_still_expands_abbreviations(home):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	pre = "bind \\cr 'commandline -r FISHPREV'"
 	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)

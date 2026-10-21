@@ -64,6 +64,15 @@ def bash_locale(env, multibyte=False):
 # with it off too, as mssh ships, so the path that writes no log runs in the pty suites
 WITH_AND_WITHOUT_DEBUG_LOG = pytest.mark.parametrize('debug', ['1', '0'], ids=['debug-log', 'no-debug-log'])
 
+def with_debug_log(env, debug):
+	'''env with the debug log on (debug '1') or as mssh ships, MSSH_COMPLETE_DEBUG not set at all (debug '0').'''
+	env = dict(env)
+	if debug == '1':
+		env['MSSH_COMPLETE_DEBUG'] = '1'
+	else:
+		env.pop('MSSH_COMPLETE_DEBUG', None)
+	return env
+
 def debug_log_size(env):
 	'''How much the engine's debug log holds now (0 when there is none).'''
 	path = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
