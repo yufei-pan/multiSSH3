@@ -2010,12 +2010,30 @@ def file_signature(path):
 	return [path, str(st.st_ino), str(st.st_size), str(st.st_mtime_ns)]
 
 def _import_mssh():
-	'''Import multiSSH3, also when both files were copied somewhere by hand.'''
-	here = os.path.dirname(os.path.abspath(__file__))
-	if here not in sys.path:
-		sys.path.insert(0, here)
-	import multiSSH3
-	return multiSSH3
+	'''
+	Import multiSSH3, also when both files were copied somewhere by hand.
+
+	The multiSSH3.py beside this file is loaded from its path and registered as multiSSH3, which
+	puts that directory on no sys.path: a file in it named as a standard module (ipaddress.py) would
+	hide that module from multiSSH3's own imports. With no such file beside this one, multiSSH3 is
+	imported as installed.
+	'''
+	if 'multiSSH3' in sys.modules:
+		return sys.modules['multiSSH3']
+	path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'multiSSH3.py')
+	if not os.path.isfile(path):
+		import multiSSH3
+		return multiSSH3
+	import importlib.util
+	spec = importlib.util.spec_from_file_location('multiSSH3', path)
+	module = importlib.util.module_from_spec(spec)
+	sys.modules['multiSSH3'] = module
+	try:
+		spec.loader.exec_module(module)
+	except BaseException:
+		del sys.modules['multiSSH3']
+		raise
+	return module
 
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
@@ -8180,7 +8198,7 @@ def module_command(path=None):
 	python compiles a script anew every time it runs one, and compiling this file was about half of
 	what a TAB waited for. As isolated as -I keeps a script (no current directory or user site on
 	sys.path, no PYTHON* variables), and the file is loaded from its path: no other mssh_complete on
-	sys.path is taken for it, and _import_mssh finds the multiSSH3 beside it. The bytecode settings
+	sys.path is taken for it, and _import_mssh loads the multiSSH3 beside it from its path. The bytecode settings
 	-I would drop are given on the command line: -B when this python writes none
 	(PYTHONDONTWRITEBYTECODE), and its pycache_prefix. Where the cache cannot be written (a read-only
 	directory) the file is compiled every time, as a script is.
