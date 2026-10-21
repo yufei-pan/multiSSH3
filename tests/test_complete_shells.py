@@ -12,7 +12,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, build_index,
-	debug_log_size, fish_complete, fish_session, make_home, require_shell, without_command, zsh_session)
+	debug_log_size, fish_complete, fish_session, make_home, require_shell, with_debug_log, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
