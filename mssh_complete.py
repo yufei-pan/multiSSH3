@@ -6544,7 +6544,6 @@ _mssh_complete_delegate() {
 		elif [[ $_mssh_complete_spec == *" $_mssh_complete_quoted" ]]; then
 			_mssh_complete_rest=${_mssh_complete_spec% "$_mssh_complete_quoted"}
 		fi
-		_mssh_complete_have=
 		if [[ -n $_mssh_complete_rest ]] && _mssh_complete_unpack "$_mssh_complete_rest"; then
 			# the completion bash would give the remote command: the compspec's actions, -G and -W, then its
 			# function, then its command, the -X filter over all of them, then -P and -S, and the fallbacks
@@ -6552,7 +6551,7 @@ _mssh_complete_delegate() {
 			local -a COMP_WORDS=("${_mssh_complete_words[@]}") COMPREPLY=()
 			local COMP_CWORD=$_mssh_complete_cword COMP_LINE="${_mssh_complete_words[*]}" COMP_POINT
 			COMP_POINT=${#COMP_LINE}
-			local _mssh_complete_prev=${_mssh_complete_words[_mssh_complete_cword-1]}
+			_mssh_complete_prev=${_mssh_complete_words[_mssh_complete_cword-1]}
 			local -a _mssh_complete_generate=(${_mssh_complete_actions[@]+"${_mssh_complete_actions[@]}"})
 			[[ $_mssh_complete_have == *' glob '* ]] && _mssh_complete_generate+=(-G "$_mssh_complete_glob")
 			[[ $_mssh_complete_have == *' words '* ]] && _mssh_complete_generate+=(-W "$_mssh_complete_wordlist")
