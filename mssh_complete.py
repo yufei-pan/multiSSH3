@@ -13,6 +13,7 @@ building the index (`mssh-complete rebuild`) imports multiSSH3.
 import math
 import os
 import sys
+import stat
 import time
 from bisect import bisect_left
 
@@ -1148,13 +1149,13 @@ def case_fold(flags):
 	"""
 	How a request with icase=1 is matched in any case: a CaseFold, or None for not at all.
 
-	This glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
+	bash's glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
 	UTF-8 character as one, whether it lowers I to another letter than i): readline compares in the
-	locale bash runs in, whatever the variables name. Older glues get what their own engine did, as an
-	installed glue file stays until mssh --completion install runs again: main's between 6.36 and the
-	measure (never released) sent the locale's name, lc=, read through the C library (_named_locale), no
-	matching in any case where it names no locale; 6.36's sent icase alone, read once per shell, and its
-	engine matched in the case typed.
+	locale bash runs in, whatever the variables name (zsh's glue measures them too, with icase=0).
+	Older glues get what their own engine did, as an installed glue file stays until mssh --completion
+	install runs again: main's between 6.36 and the measure (never released) sent the locale's name, lc=,
+	read through the C library (_named_locale), no matching in any case where it names no locale; 6.36's
+	sent icase alone, read once per shell, and its engine matched in the case typed.
 	"""
 	measured = _shell_locale(flags)
 	if not measured:
@@ -1184,9 +1185,10 @@ def _named_locale(name):
 
 def _shell_locale(flags):
 	"""
-	(utf8, turkic) of the locale bash runs in, as its glue's request flags say: this glue's measure
-	(utf8=, turkic=), or the locale an older glue named (lc=, _named_locale). False where lc= names a
-	locale the C library has not, None where the flags say nothing of it (zsh, fish, 6.36's glue).
+	(utf8, turkic) of the locale the shell runs in, as its glue's request flags say: the measure bash's
+	and zsh's glues make in the shell (utf8=, turkic=), or the locale an older bash glue named (lc=,
+	_named_locale). False where lc= names a locale the C library has not, None where the flags say
+	nothing of it (fish, which names its variables instead: _measured_utf8; older glues).
 	"""
 	if 'utf8' in flags:
 		return flags['utf8'] == '1', flags.get('turkic') == '1'
@@ -1194,13 +1196,51 @@ def _shell_locale(flags):
 		return _named_locale(flags['lc']) or False
 	return None
 
+# fish's glue names fish's locale variables in these request flags
+_NAMED_VARIABLES = (('lc_all', 'LC_ALL'), ('lc_ctype', 'LC_CTYPE'), ('lang', 'LANG'))
+
+_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
+
+def _url_unescape(value):
+	'''
+	value with each %XX replaced by the byte it names, the bytes read as UTF-8 (what cannot be is kept as
+	surrogate escapes). This undoes fish's `string escape --style=url`, which writes every byte outside
+	letters, digits and -._~/ as %XX (a space is %20, '+' is %2B); a % that no two hex digits follow stays.
+	'''
+	if '%' not in value:
+		return value
+	first, *rest = value.split('%')
+	data = bytearray(first.encode('utf-8', 'surrogateescape'))
+	for part in rest:
+		if len(part) >= 2 and part[0] in _HEX_DIGITS and part[1] in _HEX_DIGITS:
+			data.append(int(part[:2], 16))
+			part = part[2:]
+		else:
+			data.append(0x25)
+		data += part.encode('utf-8', 'surrogateescape')
+	return data.decode('utf-8', 'surrogateescape')
+
 def _measured_utf8(request):
 	"""
-	Whether bash runs in a UTF-8 locale, as a request of its glue says (_shell_locale: ASCII where an
-	older glue's lc= names no locale), None where it says nothing.
+	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
+	older glue: Engine.unicode then reads the variables the engine was started with). bash's and zsh's
+	glues measure it in the shell (_shell_locale: ASCII where an older bash glue's lc= names no locale).
+	fish's names the LC_ALL, LC_CTYPE and LANG fish exports, the only ones it follows (lc_all=,
+	lc_ctype=, lang=, escaped as in URLs), resolved here as bash resolves them: in a single-byte locale,
+	C included, fish takes a UTF-8 one instead unless fish_allow_singlebyte_locale is set (fish 3.3 and
+	4.0 alike), so a measure there says UTF-8 where the terminal may show none of it; the variables the
+	operator set say what it shows.
 	"""
-	measured = _shell_locale(request.flags) if request.shell == 'bash' else None
-	return measured and measured[0]
+	measured = _shell_locale(request.flags)
+	if measured is not None:
+		return measured and measured[0]
+	if 'lang' not in request.flags:
+		return None
+	variables = {}
+	for flag, name in _NAMED_VARIABLES:
+		value = request.flags.get(flag, '')
+		variables[name] = _url_unescape(value)
+	return _locale_variables_utf8(variables)
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
@@ -1426,11 +1466,11 @@ class HostTable(object):
 		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
 		self._groups = None
 
-	def names_with_prefix(self, prefix, icase=None):
-		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase) for name in self.names[lo:hi]]
+	def names_with_prefix(self, prefix, icase=None, start=0):
+		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase, start) for name in self.names[lo:hi]]
 
-	def aliases_with_prefix(self, prefix, icase=None):
-		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase) for index in range(lo, hi)]
+	def aliases_with_prefix(self, prefix, icase=None, start=0):
+		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase, start) for index in range(lo, hi)]
 
 	def sources(self, name):
 		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
@@ -1738,32 +1778,37 @@ def _debug(message):
 	'''
 	Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8
 	whatever the locale. message may be a function making it, called only then: what it costs (and a
-	failure making it) is the log's alone.
+	failure making it) is the log's alone. Never raises: pick and edit log after their answer is
+	written too, where nothing may change the exit status.
 	'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
 		return
-	if callable(message):
+	try:
+		if callable(message):
+			try:
+				message = message()
+			except Exception as e:
+				message = 'cannot make a debug message: {!r}'.format(e)
+		directory = cache_dir()
+		if directory is None:
+			return
+		path = os.path.join(directory, 'complete.log')
 		try:
-			message = message()
-		except Exception as e:
-			message = 'cannot make a debug message: {!r}'.format(e)
-	directory = cache_dir()
-	if directory is None:
-		return
-	path = os.path.join(directory, 'complete.log')
-	try:
-		if os.path.getsize(path) > 256 * 1024:
-			with open(path, 'rb') as f:
-				f.seek(-128 * 1024, os.SEEK_END)
-				kept = f.read()
-			with open(path, 'wb') as f:
-				f.write(kept)
-	except OSError:
-		pass
-	try:
-		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='replace') as f:
+			if os.path.getsize(path) > 256 * 1024:
+				with open(path, 'rb') as f:
+					f.seek(-128 * 1024, os.SEEK_END)
+					kept = f.read()
+				with open(path, 'wb') as f:
+					# from the line after the cut, which may fall inside a line or a UTF-8 character
+					f.write(kept[kept.find(b'\n') + 1:])
+		except OSError:
+			pass
+		# a lone surrogate (a byte that was not UTF-8, read with surrogateescape) is written as \udcXX
+		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='backslashreplace') as f:
 			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
-	except (OSError, ValueError):
+	except Exception:
+		# the log is lost, nothing else: no usable temporary directory (cache_dir lists it, and
+		# tempfile.gettempdir raises FileNotFoundError then), a full disk, a message that is no text
 		pass
 
 #%% ------------ Index sources ----------------
@@ -1984,12 +2029,30 @@ def file_signature(path):
 	return [path, str(st.st_ino), str(st.st_size), str(st.st_mtime_ns)]
 
 def _import_mssh():
-	'''Import multiSSH3, also when both files were copied somewhere by hand.'''
-	here = os.path.dirname(os.path.abspath(__file__))
-	if here not in sys.path:
-		sys.path.insert(0, here)
-	import multiSSH3
-	return multiSSH3
+	'''
+	Import multiSSH3, also when both files were copied somewhere by hand.
+
+	The multiSSH3.py beside this file is loaded from its path and registered as multiSSH3, which
+	puts that directory on no sys.path: a file in it named as a standard module (ipaddress.py) would
+	hide that module from multiSSH3's own imports. With no such file beside this one, multiSSH3 is
+	imported as installed.
+	'''
+	if 'multiSSH3' in sys.modules:
+		return sys.modules['multiSSH3']
+	path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'multiSSH3.py')
+	if not os.path.isfile(path):
+		import multiSSH3
+		return multiSSH3
+	import importlib.util
+	spec = importlib.util.spec_from_file_location('multiSSH3', path)
+	module = importlib.util.module_from_spec(spec)
+	sys.modules['multiSSH3'] = module
+	try:
+		spec.loader.exec_module(module)
+	except BaseException:
+		sys.modules.pop('multiSSH3', None)
+		raise
+	return module
 
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
@@ -2274,11 +2337,11 @@ def _spawn_detached(directory, lock_name, command):
 		return False
 	import subprocess
 	try:
-		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), command, '--lock', lock],
+		subprocess.Popen(module_command() + [command, '--lock', lock],
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
-		_debug('cannot start {}: {!r}'.format(command, e))
+		_debug(lambda: 'cannot start {}: {!r}'.format(command, e))
 		try:
 			os.unlink(lock)
 		except OSError:
@@ -2294,7 +2357,7 @@ def _load_index(path):
 	try:
 		return NsvIndex.load(path)
 	except (OSError, IndexCorrupt, ValueError) as e:
-		_debug('index not usable: {!r}'.format(e))
+		_debug(lambda: 'index not usable: {!r}'.format(e))
 		return None
 
 def load_for_query(directory, now, deadline=None):
@@ -2653,7 +2716,7 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 				with guard:
 					retry.append(host)
 			else:
-				_debug('probing {} failed: {!r}'.format(host, e))
+				_debug(lambda: 'probing {} failed: {!r}'.format(host, e))
 			return
 		with guard:
 			states[host] = state
@@ -3570,6 +3633,19 @@ def _shell_word(request):
 		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
 	return request.word
 
+def _word_base(context, request):
+	'''
+	What of the word parsed comes before the shell's word, which the shell keeps as typed (bash's word
+	starts after its COMP_WORDBREAKS : and =; zsh's and fish's is the whole word): '' for none, None when
+	the shell's word is not the end of the word parsed (e.g. backslash escapes).
+	'''
+	word = _shell_word(request)
+	if word is None:
+		return ''
+	if not context.prefix.endswith(word):
+		return None
+	return context.prefix[:len(context.prefix) - len(word)]
+
 # characters zsh reads specially in an unquoted word, globs included (zsh fails on a glob that matches nothing)
 _ZSH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!*?[]#~^{}')
 
@@ -3628,7 +3704,7 @@ class Engine(object):
 		self.flag_defaults = {}
 		# OPTION_NO_EFFECT entries from mssh: (long option, 'with' | 'without', other long options, why)
 		self.no_effect = []
-		# whether bash runs in a UTF-8 locale, as its glue measured it (request flag utf8), None if not said
+		# whether the shell runs in a UTF-8 locale, as its glue's request says (_measured_utf8), None if not said
 		self.shell_utf8 = None
 		# _unicode_terminal(), once asked
 		self._unicode = None
@@ -3636,8 +3712,8 @@ class Engine(object):
 	@property
 	def unicode(self):
 		'''
-		Whether to write in Unicode (messages, the picker): as bash's glue measured its locale, else as the
-		variables say, which are worked out at the first use and kept.
+		Whether to write in Unicode (messages, the picker): as the shell's glue said of its locale, else (an
+		older glue) as the variables say, which are worked out at the first use and kept.
 		'''
 		if self.shell_utf8 is not None:
 			return self.shell_utf8
@@ -3660,17 +3736,25 @@ class Engine(object):
 					if pending:
 						response.directives.add('pending')
 				except Exception as e:
-					_debug('diagnostics failed: {!r}'.format(e))
+					_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 			return response
 		context = parse_context(request.before, request.after, self.spec)
 		response = Response(context)
 		if context is None:
 			return response
+		# what of the word parsed the shell keeps as typed, None when the shell's word is not its end (_frame offers nothing)
+		base = _word_base(context, request)
 		# how readline compares characters ignoring case, in the shell's locale (bash's glue says which)
 		context.icase = case_fold(request.flags) if request.flags.get('icase') == '1' else None
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
+			# nor before the shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the
+			# base as typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''.
+			# A name differing in case there is no candidate, so no provider may count it (toward GROUP_THRESHOLD,
+			# among the hosts listed beside the groups), and _frame drops it
+			if base is not None:
+				context.fold_start = max(context.fold_start, len(base))
 		if context.slot == SLOT_OPTION:
 			candidates = self._options(context, request.shell)
 		elif context.slot == SLOT_VALUE:
@@ -3681,7 +3765,7 @@ class Engine(object):
 			candidates = self._commands(context, response, deadline)
 		if request.flags.get('nosort') == '1':
 			response.directives.add('nosort')
-		response.candidates = self._frame(candidates, context, request, response.directives)
+		response.candidates = self._frame(candidates, context, request, base, response.directives)
 		return response
 
 	def host_states(self):
@@ -3740,7 +3824,7 @@ class Engine(object):
 					split = _brace_split(token, request.shell, self.unicode)
 				except Exception as e:
 					# a word of odd braces must not cost the line its other warnings
-					_debug('brace warning failed: {!r}'.format(e))
+					_debug(lambda: 'brace warning failed: {!r}'.format(e))
 					split = None
 				if split is not None:
 					found.append(split)
@@ -3759,7 +3843,7 @@ class Engine(object):
 				pending = True
 				spawn_probe(self.directory)
 			except OSError as e:
-				_debug('cannot queue hosts: {!r}'.format(e))
+				_debug(lambda: 'cannot queue hosts: {!r}'.format(e))
 		found.sort(key=lambda item: (DIAGNOSTIC_KINDS.index(item.kind), item.start))
 		return found, pending
 
@@ -4302,30 +4386,25 @@ class Engine(object):
 		'''value -> score of every feature of a kind ('h:', 'c:'), scored against features.'''
 		return {feature[len(kind):]: score for feature, score in score_features(self.knowledges, kind, sorted(features), deadline).items()}
 
-	def _frame(self, candidates, context, request, directives=()):
+	def _frame(self, candidates, context, request, base, directives=()):
 		'''
 		Turn slot values into replacements for the shell's word, best first, without duplicates.
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
 		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
-		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do.
+		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do. base is _word_base of the
+		request (query has it: it raises context.fold_start by its length): None offers nothing.
 		'''
 		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
-		word = _shell_word(request)
 		prefix = context.prefix
-		if word is None:
-			word = prefix
-		if not prefix.endswith(word):
+		if base is None:
 			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
 			return []
-		base = prefix[:len(prefix) - len(word)]
 		lead = prefix[:context.value_start]
-		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
-		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
-		# typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''
-		fold_start = max(context.fold_start, len(base))
+		# whatever found it: only from fold_start on may it differ from the word in case
+		fold_start = context.fold_start
 		out = []
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
@@ -4370,7 +4449,7 @@ class Engine(object):
 			else:
 				strings = option.strings
 			for string in strings:
-				if _starts(string, word, icase):
+				if _starts(string, word, icase, context.fold_start):
 					out.append(Candidate(string, option.help, 'options', score))
 		return out
 
@@ -4400,8 +4479,8 @@ class Engine(object):
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase, start))
 		elif dest == 'skip_hosts':
 			# the members that can complete the host being typed (after the last separator and "user@")
-			prefix = word[start:]
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
+			host = _last_host_start(word)[1]
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, word[host:], icase, start - host)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase, start))
 		elif dest == 'encoding':
@@ -4425,11 +4504,11 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text, prefix='', icase=None):
+	def _members(self, hosts_text, prefix='', icase=None, start=0):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
-		ranges), that start with prefix (in any case with icase): the first RANGE_MEMBERS_LIMIT of
-		them, as for its warnings.
+		ranges), that start with prefix (with icase prefix[start:] in any case): the first
+		RANGE_MEMBERS_LIMIT of them, as for its warnings.
 		'''
 		import itertools
 		members = set()
@@ -4445,7 +4524,7 @@ class Engine(object):
 				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
 				# a range past its limit names no member, and costs nothing to find out
 				named = expand_ranges(word)
-			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase)), room))
+			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase, start)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -4454,22 +4533,25 @@ class Engine(object):
 		lead, host_prefix = text[:start], text[start:]
 		user = text[cut:start - 1] if start > cut else ''
 		icase = context.icase
+		# where in host_prefix matching in any case starts: fold_start, at the host itself unless the
+		# shell's word starts later (bash's COMP_WORDBREAKS : in WEB:a)
+		fold = max(0, context.fold_start - context.value_start - start)
 		scores = {}
-		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2).items():
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2 + fold).items():
 			scores[feature[2:]] = score
 		out = []
 		if not start:
 			# one host typed: whole hosts arguments used before
-			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2).items():
+			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2 + fold).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		# with icase only the lookups match the host typed in any case: the names found stay apart (mssh's aliases,
 		# its list of unreachable hosts and -X compare them exactly)
 		aliases = set()
-		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase):
+		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase, fold):
 			aliases.add(name)
 			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
-		names = set(self.hosts.names_with_prefix(host_prefix, icase))
+		names = set(self.hosts.names_with_prefix(host_prefix, icase, fold))
 		# the history's names, which its lookup found starting with the host typed
 		names.update(name for name in scores if '[' not in name)
 		names -= aliases
@@ -4505,7 +4587,7 @@ class Engine(object):
 			return out
 		covered = set()
 		for group_text, members in self.hosts.groups():
-			if _starts(group_text, host_prefix, icase) and len(members) > 1 and names.issuperset(members):
+			if _starts(group_text, host_prefix, icase, fold) and len(members) > 1 and names.issuperset(members):
 				covered.update(members)
 				out.append(Candidate(lead + group_text, '{} hosts'.format(len(members)), 'groups', sum(host_score(member) for member in members)))
 		rest = names - covered
@@ -4662,7 +4744,7 @@ def engine_for(request, directory=Ellipsis, now=None, deadline=None):
 		history = request.history[::-1] if request.shell == 'fish' else request.history
 		knowledges.append(shell_history_knowledge(history, spec))
 	engine = Engine(spec, knowledges, HostTable(index), users)
-	# the locale bash runs in, as its glue measured it
+	# the locale the shell runs in, as its glue says
 	engine.shell_utf8 = _measured_utf8(request)
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	engine.directory = directory
@@ -5115,11 +5197,13 @@ def _age(seconds):
 def _unicode_terminal():
 	'''
 	Whether the shell runs in a UTF-8 locale, from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them
-	(_locale_variables_utf8): for what bash's glue has not measured (Engine.unicode). Python's own encoding
-	says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 in os.environ there (PEP
-	538), and 3.15 always runs in UTF-8 mode. The variables are read as the process was started with them
-	(_exec_environ), which that change leaves alone. Where they cannot be (macOS, the BSDs), os.environ is
-	read, where Python changed LC_CTYPE only where it took C, which also starts its UTF-8 mode: then an
+	(_locale_variables_utf8): for a request whose glue said nothing of it (Engine.unicode), as zsh's and
+	fish's before 6.38 and 6.36's bash glue do (an installed glue file stays until mssh --completion
+	install runs again). Python's own encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets
+	LC_CTYPE to C.UTF-8 in os.environ there (PEP 538), and 3.15 always runs in UTF-8 mode. The variables
+	are read as the process was started with them (_exec_environ), which that change leaves alone. Where
+	they cannot be (macOS, the BSDs), os.environ is read, where Python changed LC_CTYPE only where it
+	took C, which also starts its UTF-8 mode: then an
 	LC_CTYPE of C.UTF-8, C.utf8 or UTF-8 may be Python's and draws ASCII, whatever LANG says. UTF-8 mode
 	says so on 3.7 to 3.14, unless PYTHONUTF8 set it: this file runs isolated (-I), which ignores that,
 	but the mssh-complete script pip or uv makes does not, and with PYTHONUTF8 set in its environment
@@ -5470,7 +5554,7 @@ def picker_warnings(engine, request):
 	try:
 		found, _ = engine.diagnose(Request(request.shell, request.before, request.after, ''))
 	except Exception as e:
-		_debug('diagnostics failed: {!r}'.format(e))
+		_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 		return []
 	return [item.message for item in found[:3]]
 
@@ -5924,7 +6008,7 @@ class LineEditor(object):
 		try:
 			ghost = self.suggest(self.text)
 		except Exception as e:
-			_debug('suggestion failed: {!r}'.format(e))
+			_debug(lambda: 'suggestion failed: {!r}'.format(e))
 		self.ghost = ghost.text if ghost is not None else ''
 		self._ghost_for = self.text
 
@@ -6045,7 +6129,7 @@ class LineEditor(object):
 		try:
 			found, pending = self.diagnose(self.text, self.cursor)
 		except Exception as e:
-			_debug('warnings failed: {!r}'.format(e))
+			_debug(lambda: 'warnings failed: {!r}'.format(e))
 			found, pending = [], False
 		self.marks = [(item.start, item.end) for item in found if 0 <= item.start < item.end <= len(self.text)]
 		self.reason = reason_line(found, self.unicode)
@@ -6236,8 +6320,8 @@ _mssh_complete_slice() {
 }
 
 _mssh_complete_split() {
-	# split $1 on tabs (or on $2 when not empty) into _mssh_complete_fields, keeping empty fields, whatever IFS the shell
-	# has (not IFS=' ' read -a <<<: with the shell's IFS empty, bash 4.2 read " emacs vi-insert" as one word)
+	# split $1 on tabs (or on $2 when not empty) into _mssh_complete_fields, keeping empty fields: read -a
+	# would make a run of tabs one separator (a tab is IFS whitespace)
 	local _mssh_complete_text=$1 _mssh_complete_separator=${2:-$'\t'}
 	_mssh_complete_fields=()
 	while [[ $_mssh_complete_text == *"$_mssh_complete_separator"* ]]; do
@@ -6247,22 +6331,32 @@ _mssh_complete_split() {
 	_mssh_complete_fields+=("$_mssh_complete_text")
 }
 
+# bash's default IFS: space, tab, newline
+_mssh_complete_default_ifs=$' \t\n'
+
 _mssh_complete_guard() {
 	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
 	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
 	# completion function). The shell's setting comes back on every return, also after a command's
 	# completion function changed it; after a Ctrl-C cut a call short (bash 5 cuts bind -x commands, and
 	# every bash a completion function running a command), at the next prompt (_mssh_complete_heal), else
-	# at the next call, unless the shell changed it since.
-	# _mssh_complete_operator runs the shell's own code in it. Its variables are prefixed: the shell's
-	# code runs inside it. _mssh_complete_held: the shell's setting while a call runs; _mssh_complete_left:
-	# the setting the glue last made, noted before the glue turns the shell's off and after it puts the
-	# shell's back: a cut between the two finds the shell's setting where the note differs, which the heal
-	# keeps. The glue never switches between two settings of its own, where no order would do
+	# at the next call, unless the shell changed it since. It runs it with IFS at bash's default too (space,
+	# tab, newline), for the glue's splits and joins whatever the shell's: a local, which a return and a cut
+	# alike unwind.
+	# _mssh_complete_operator runs the shell's own code in its setting and its IFS. Its variables are
+	# prefixed: the shell's code runs inside it. _mssh_complete_held: the shell's setting while a call runs;
+	# _mssh_complete_left: the setting the glue last made, noted before the glue turns the shell's off and
+	# after it puts the shell's back: a cut between the two finds the shell's setting where the note
+	# differs, which the heal keeps. The glue never switches between two settings of its own, where no
+	# order would do
 	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
 	if [[ -z $_mssh_complete_outer ]]; then
 		_mssh_complete_heal || :
+		# the shell's IFS, and whether it has one: unset, it is no empty one ("${a[*]}" joins with spaces)
+		local _mssh_complete_ifs=${IFS-} _mssh_complete_ifs_set=0
+		[[ -n ${IFS+1} ]] && _mssh_complete_ifs_set=1
 	fi
+	local IFS=$_mssh_complete_default_ifs
 	shopt -q nocasematch && _mssh_complete_was=1
 	# the shell's setting, as the outermost call found it (one inside is called with it off, or as ble.sh set it)
 	local _mssh_complete_nocase=${_mssh_complete_outer:-$_mssh_complete_was}
@@ -6316,8 +6410,13 @@ _mssh_complete_heal() {
 
 _mssh_complete_operator() {
 	# run "$@", the shell's own code (a command's completion function, the binding ours took over), in
-	# the shell's nocasematch; the glue's comes back after
+	# the shell's nocasematch and its IFS (the one the guard noted: called without the guard, IFS stays as it
+	# is); the glue's come back after, the local IFS unwinding on a return and on a cut alike
 	local _mssh_complete_rc=0
+	case ${_mssh_complete_ifs_set-} in
+		1) local IFS=$_mssh_complete_ifs ;;
+		0) local IFS; unset IFS ;;
+	esac
 	if (( ${_mssh_complete_nocase:-0} )); then
 		shopt -s nocasematch
 		_mssh_complete_left=1
@@ -6338,6 +6437,104 @@ _mssh_complete_compspec() {
 	complete -p -- "$_mssh_complete_named" >/dev/null 2>&1
 }
 
+_mssh_complete_unpack() {
+	# the arguments of a printed complete command $1 (without the name it ends with) into the variables of
+	# _mssh_complete_delegate, which fails when it finds one it does not know: _mssh_complete_actions (-a,
+	# -A and the like, as compgen takes them), _mssh_complete_options (-o, each followed by a space), the
+	# arguments of -G, -W, -P, -S, -X, -C and -F in _mssh_complete_glob, _wordlist, _front, _back, _filter,
+	# _command and _func, and which of them the command has in _mssh_complete_have (words, each followed
+	# by a space). Read, never run: bash prints an argument single-quoted, and -F's word (a function's
+	# name) as it is, or from bash 5.2 quoted when it holds a metacharacter (_mssh_complete_unquote). No
+	# function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid identifier, also from the
+	# environment), so its quoted form -F 'a^b' holds none inside. A quote there (complete -F "a'b" is
+	# accepted) names no function, which declare -F tells in the delegate
+	local _mssh_complete_text=$1 _mssh_complete_value
+	local _mssh_complete_flag_pattern='^-([abcdefgjksuv])( +|$)' _mssh_complete_name_pattern='^-([oA]) ([a-z]+)( +|$)'
+	local _mssh_complete_argument_pattern="^-([GWPSXC]) ((\\\\'|'[^']*')+)( +|\$)" _mssh_complete_function_pattern="^-F ([^ ']+|(\\\\'|'[^']*')+)( +|\$)"
+	_mssh_complete_actions=()
+	_mssh_complete_options=' '
+	_mssh_complete_have=' '
+	[[ $_mssh_complete_text == 'complete '* ]] || return 1
+	_mssh_complete_text=${_mssh_complete_text#complete }
+	while [[ -n $_mssh_complete_text ]]; do
+		if [[ $_mssh_complete_text =~ $_mssh_complete_flag_pattern ]]; then
+			_mssh_complete_actions+=("-${BASH_REMATCH[1]}")
+		elif [[ $_mssh_complete_text =~ $_mssh_complete_name_pattern ]]; then
+			if [[ ${BASH_REMATCH[1]} == o ]]; then
+				_mssh_complete_options+="${BASH_REMATCH[2]} "
+			else
+				_mssh_complete_actions+=(-A "${BASH_REMATCH[2]}")
+			fi
+		elif [[ $_mssh_complete_text =~ $_mssh_complete_argument_pattern ]]; then
+			_mssh_complete_unquote "${BASH_REMATCH[2]}"
+			case ${BASH_REMATCH[1]} in
+				G) _mssh_complete_glob=$_mssh_complete_value; _mssh_complete_have+='glob ' ;;
+				W) _mssh_complete_wordlist=$_mssh_complete_value; _mssh_complete_have+='words ' ;;
+				P) _mssh_complete_front=$_mssh_complete_value; _mssh_complete_have+='front ' ;;
+				S) _mssh_complete_back=$_mssh_complete_value; _mssh_complete_have+='back ' ;;
+				X) _mssh_complete_filter=$_mssh_complete_value; _mssh_complete_have+='filter ' ;;
+				C) _mssh_complete_command=$_mssh_complete_value; _mssh_complete_have+='command ' ;;
+			esac
+		elif [[ $_mssh_complete_text =~ $_mssh_complete_function_pattern ]]; then
+			_mssh_complete_func=${BASH_REMATCH[1]}
+			if [[ $_mssh_complete_func == [\'\\]* ]]; then
+				_mssh_complete_unquote "$_mssh_complete_func"
+				_mssh_complete_func=$_mssh_complete_value
+			fi
+			_mssh_complete_have+='function '
+		else
+			return 1
+		fi
+		_mssh_complete_text=${_mssh_complete_text:${#BASH_REMATCH[0]}}
+	done
+}
+
+_mssh_complete_unquote() {
+	# $1 as bash prints a word it quotes, into _mssh_complete_value: parts in single quotes, and a quote
+	# alone as \' (inside a word it is '\'', but at its start or its end bash leaves out the empty '' there)
+	local _mssh_complete_unquoting=$1
+	_mssh_complete_value=
+	while [[ -n $_mssh_complete_unquoting ]]; do
+		if [[ $_mssh_complete_unquoting == \\\'* ]]; then
+			_mssh_complete_value+="'"
+			_mssh_complete_unquoting=${_mssh_complete_unquoting:2}
+		else
+			_mssh_complete_unquoting=${_mssh_complete_unquoting:1}
+			_mssh_complete_value+=${_mssh_complete_unquoting%%\'*}
+			_mssh_complete_unquoting=${_mssh_complete_unquoting#*\'}
+		fi
+	done
+}
+
+_mssh_complete_run_command() {
+	# a compspec's -C command $1 as bash runs it, with the command name, the word and the one before it as
+	# its arguments ($2, $3, $4) added to its string, and the line, the key and the type of the completion in
+	# the environment the command reads (aws_completer reads COMP_LINE and COMP_POINT); its output lines are
+	# the results. The key and the type are those bash (or ble.sh) set for mssh's own completion, a tab and
+	# the plain completion where none is set. Called in a subshell: the exports stay in it
+	export COMP_LINE COMP_POINT COMP_KEY=${COMP_KEY:-9} COMP_TYPE=${COMP_TYPE:-9}
+	eval "$1"' "$2" "$3" "$4"'
+}
+
+_mssh_complete_replay() {
+	# the function _mssh_complete_exclude gives compgen -F: the results as a function's
+	COMPREPLY=(${_mssh_complete_results[@]+"${_mssh_complete_results[@]}"})
+}
+
+_mssh_complete_exclude() {
+	# apply a compspec's -X filter $1 to _mssh_complete_results, as bash does: by bash. compgen -F filters a
+	# function's results (_mssh_complete_replay: ours) as it filters those of a compspec's function or command,
+	# which are not held to the word $2 as -W's and the actions' are: a result matching the pattern goes, and
+	# with a "!" first all that do not, an & stands for the word with its glob characters quoted (a "\&" for
+	# the character) and the shell's extglob and nocasematch count, all as bash has them
+	local _mssh_complete_item
+	local -a _mssh_complete_kept_results=()
+	while IFS= read -r _mssh_complete_item; do
+		_mssh_complete_kept_results+=("$_mssh_complete_item")
+	done < <(_mssh_complete_operator compgen -F _mssh_complete_replay -X "$1" -- "$2" 2>/dev/null || :)
+	_mssh_complete_results=(${_mssh_complete_kept_results[@]+"${_mssh_complete_kept_results[@]}"})
+}
+
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated. Its variables
@@ -6345,10 +6542,13 @@ _mssh_complete_delegate() {
 	# sets the variables of the functions that call it (one written without local sets word, cur, ...)
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
-	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_pattern
+	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one
+	local _mssh_complete_have _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
+	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_front_at
+	local -a _mssh_complete_actions=()
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
-	local -a _mssh_complete_words=("$@") _mssh_complete_results=() _mssh_complete_kept=()
+	local -a _mssh_complete_words=("$@") _mssh_complete_results=()
 	local _mssh_complete_current=${_mssh_complete_words[_mssh_complete_cword]-}
 	_mssh_complete_cmd=${_mssh_complete_words[0]-}
 	_mssh_complete_delegated=()
@@ -6367,14 +6567,13 @@ _mssh_complete_delegate() {
 			elif declare -F _completion_loader >/dev/null 2>&1; then
 				_mssh_complete_operator _completion_loader "$_mssh_complete_cmd" >/dev/null 2>&1 || :
 			fi
-			_mssh_complete_compspec "$_mssh_complete_cmd"
+			_mssh_complete_compspec "$_mssh_complete_cmd" || :
 		fi
 		# printed once, into a variable: the one fork of the lookup
 		_mssh_complete_spec=$(complete -p -- "$_mssh_complete_named" 2>/dev/null) || _mssh_complete_spec=
-		# bash prints -F last, right before the name, after the single-quoted arguments of -G, -W, -P, -S, -X
-		# and -C, which may hold " -F " themselves. From bash 5.2 it single-quotes a name or a function
-		# holding a metacharacter (a lone quote as \'): the function is the word after the last -F, as it is
-		# or so quoted, which the tail of a quoted argument never is (a quote in it comes as '\'')
+		# bash prints the name last, and the arguments of -G, -W, -P, -S, -X and -C single-quoted before it,
+		# which may hold the name themselves: take it off the end, as typed or, from bash 5.2, quoted when it
+		# holds a metacharacter (a lone quote as \')
 		if [[ $_mssh_complete_named == "'" ]]; then
 			_mssh_complete_quoted="\\'"
 		else
@@ -6386,24 +6585,58 @@ _mssh_complete_delegate() {
 		elif [[ $_mssh_complete_spec == *" $_mssh_complete_quoted" ]]; then
 			_mssh_complete_rest=${_mssh_complete_spec% "$_mssh_complete_quoted"}
 		fi
-		_mssh_complete_pattern=" -F ([^ ']+|'([^']|'\\\\'')*')\$"
-		if [[ $_mssh_complete_rest =~ $_mssh_complete_pattern ]]; then
-			_mssh_complete_func=${BASH_REMATCH[1]}
-			if [[ $_mssh_complete_func == \'* ]]; then
-				_mssh_complete_func=${_mssh_complete_func:1:${#_mssh_complete_func}-2}
-				_mssh_complete_func=${_mssh_complete_func//"'\\''"/"'"}
-			fi
-			local -a COMP_WORDS=("${_mssh_complete_words[@]}")
-			local COMP_CWORD=$_mssh_complete_cword COMP_LINE COMP_POINT
-			# the words joined by spaces, whatever IFS the shell has
-			printf -v COMP_LINE '%s ' "${_mssh_complete_words[@]}"
-			COMP_LINE=${COMP_LINE% }
+		if [[ -n $_mssh_complete_rest ]] && _mssh_complete_unpack "$_mssh_complete_rest"; then
+			# the completion bash would give the remote command: the compspec's actions, -G and -W, then its
+			# function, then its command, the -X filter over all of them, then -P and -S, and the fallbacks
+			# of -o. The words and the line are the remote command's, a function and a command read them
+			local -a COMP_WORDS=("${_mssh_complete_words[@]}") COMPREPLY=()
+			local COMP_CWORD=$_mssh_complete_cword COMP_LINE="${_mssh_complete_words[*]}" COMP_POINT
 			COMP_POINT=${#COMP_LINE}
-			local -a COMPREPLY=()
-			_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
-				"${_mssh_complete_words[_mssh_complete_cword-1]}" >/dev/null 2>&1 || :
-			_mssh_complete_results=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
+			_mssh_complete_prev=${_mssh_complete_words[_mssh_complete_cword-1]}
+			local -a _mssh_complete_generate=(${_mssh_complete_actions[@]+"${_mssh_complete_actions[@]}"})
+			[[ $_mssh_complete_have == *' glob '* ]] && _mssh_complete_generate+=(-G "$_mssh_complete_glob")
+			[[ $_mssh_complete_have == *' words '* ]] && _mssh_complete_generate+=(-W "$_mssh_complete_wordlist")
+			# of -o, the options of the completion itself (the results of its fallbacks are file names)
+			for _mssh_complete_item in filenames nospace noquote nosort fullquote; do
+				[[ $_mssh_complete_options == *" $_mssh_complete_item "* ]] && { compopt -o "$_mssh_complete_item" 2>/dev/null || :; }
+			done
+			if (( ${#_mssh_complete_generate[@]} )); then
+				while IFS= read -r _mssh_complete_item; do
+					_mssh_complete_results+=("$_mssh_complete_item")
+				done < <(_mssh_complete_operator compgen "${_mssh_complete_generate[@]}" -- "$_mssh_complete_current" 2>/dev/null || :)
+			fi
+			# bash runs only a function so named (else: function not found), never a command
+			if [[ $_mssh_complete_have == *' function '* ]] && declare -F -- "$_mssh_complete_func" >/dev/null 2>&1; then
+				_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
+					"$_mssh_complete_prev" >/dev/null 2>&1 || :
+				_mssh_complete_results+=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
+			fi
+			if [[ $_mssh_complete_have == *' command '* ]]; then
+				while IFS= read -r _mssh_complete_item; do
+					_mssh_complete_results+=("$_mssh_complete_item")
+				done < <(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
+					"$_mssh_complete_current" "$_mssh_complete_prev" 2>/dev/null </dev/null || :)
+			fi
+			if [[ $_mssh_complete_have == *' filter '* ]] && (( ${#_mssh_complete_results[@]} )); then
+				_mssh_complete_exclude "$_mssh_complete_filter" "$_mssh_complete_current"
+			fi
+			# the fallbacks and plusdirs: directory names, then file names, as file names
+			_mssh_complete_listed=${#_mssh_complete_results[@]}
+			if [[ $_mssh_complete_options == *' plusdirs '* ]] || { (( _mssh_complete_listed == 0 )) && [[ $_mssh_complete_options == *' dirnames '* ]]; }; then
+				while IFS= read -r _mssh_complete_item; do
+					_mssh_complete_results+=("$_mssh_complete_item")
+				done < <(compgen -d -- "$_mssh_complete_current" 2>/dev/null || :)
+			fi
+			if (( ${#_mssh_complete_results[@]} == 0 )) && [[ $_mssh_complete_options == *' default '* ]]; then
+				while IFS= read -r _mssh_complete_item; do
+					_mssh_complete_results+=("$_mssh_complete_item")
+				done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)
+			fi
+			if (( ${#_mssh_complete_results[@]} > _mssh_complete_listed )); then
+				compopt -o filenames 2>/dev/null || :
+			fi
 		else
+			# a command with no compspec, or one that cannot be read: its arguments are file names
 			while IFS= read -r _mssh_complete_item; do
 				_mssh_complete_results+=("$_mssh_complete_item")
 			done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)
@@ -6417,24 +6650,30 @@ _mssh_complete_delegate() {
 	_mssh_complete_fold=${_mssh_complete_icase-0}
 	_mssh_complete_lead=$_mssh_complete_prefix$_mssh_complete_current
 	_mssh_complete_lead=${_mssh_complete_lead%"$_mssh_complete_word"}
-	for _mssh_complete_item in ${_mssh_complete_results[@]+"${_mssh_complete_results[@]}"}; do
-		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
+	_mssh_complete_typed=$_mssh_complete_word
+	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
+	for (( _mssh_complete_one = 0; _mssh_complete_one < ${#_mssh_complete_results[@]}; _mssh_complete_one++ )); do
+		_mssh_complete_item=$_mssh_complete_prefix${_mssh_complete_results[_mssh_complete_one]}
+		# how much of the prefix is left on the item: -P goes after it, in front of the remote word
+		_mssh_complete_front_at=${#_mssh_complete_prefix}
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
+			_mssh_complete_front_at=$(( ${#_mssh_complete_prefix} > ${#_mssh_complete_lead} ? ${#_mssh_complete_prefix} - ${#_mssh_complete_lead} : 0 ))
 		elif [[ -n $_mssh_complete_lead ]] && (( _mssh_complete_fold )) && [[ ${_mssh_complete_item,,} == "${_mssh_complete_lead,,}"* ]]; then
 			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
 			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)
 			_mssh_complete_dropped=1
 			continue
 		fi
-		_mssh_complete_kept+=("$_mssh_complete_item")
-	done
-	_mssh_complete_typed=$_mssh_complete_word
-	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
-	for _mssh_complete_item in ${_mssh_complete_kept[@]+"${_mssh_complete_kept[@]}"}; do
 		_mssh_complete_compared=$_mssh_complete_item
 		(( _mssh_complete_fold )) && _mssh_complete_compared=${_mssh_complete_item,,}
-		[[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]] && _mssh_complete_delegated+=("$_mssh_complete_item")
+		[[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]] || continue
+		# -P and -S, last, on the results of the compspec and not on the fallbacks' (bash adds them before
+		# those): what bash hands readline starts with the prefix, and no longer with the word
+		if (( _mssh_complete_one < _mssh_complete_listed )); then
+			_mssh_complete_item=${_mssh_complete_item:0:_mssh_complete_front_at}$_mssh_complete_front${_mssh_complete_item:_mssh_complete_front_at}$_mssh_complete_back
+		fi
+		_mssh_complete_delegated+=("$_mssh_complete_item")
 	done
 	return 0
 }
@@ -6507,8 +6746,11 @@ _mssh_complete_tab() {
 	(( _mssh_complete_ended )) || return 0
 	if (( _mssh_complete_delegating )) && (( ${#_mssh_complete_xfields[@]} >= 3 )); then
 		_mssh_complete_delegate "$_mssh_complete_cur" "${_mssh_complete_xfields[@]}"
-		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped
-		if [[ $(compopt 2>/dev/null) == *' -o filenames '* ]]; then
+		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped,
+		# unless it turned quoting off (noquote: readline quotes no file names then, but fullquote, from bash
+		# 5.3, still quotes all matches)
+		_mssh_complete_item=$(compopt 2>/dev/null) || :
+		if [[ $_mssh_complete_item == *' -o fullquote '* ]] || [[ $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ]]; then
 			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
 		fi
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
@@ -7090,7 +7332,7 @@ _mssh() {
 	local -A _mssh_complete_compsys_options
 	_mssh_complete_compsys_options=("${(@kv)options}")
 	emulate -L zsh
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_flags _mssh_complete_resp _mssh_complete_chunk
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_flags _mssh_complete_resp _mssh_complete_chunk _mssh_complete_locale
 	local _mssh_complete_line _mssh_complete_item _mssh_complete_name _mssh_complete_qfd _mssh_complete_kind _mssh_complete_rest
 	local -F _mssh_complete_end
 	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0
@@ -7098,7 +7340,8 @@ _mssh() {
 	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed
 	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} ${compstate[quote]}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
-	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM"
+	_mssh_complete_read_locale
+	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM $_mssh_complete_locale"
 	exec {_mssh_complete_qfd}< <(
 		{
 			print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$_mssh_complete_flags"$'\0'"$_mssh_complete_before"$'\0'"$_mssh_complete_after"$'\0'"$PREFIX"$'\0'
@@ -7220,9 +7463,24 @@ _mssh_complete_is_mssh() {
 	[[ $1 =~ '^[[:space:]]*([^[:space:]]*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)[[:space:]]' ]]
 }
 
+_mssh_complete_read_locale() {
+	# how zsh takes characters in the locale it runs in, as request flags measured as bash's glue measures
+	# them: utf8=1 when it counts a two-byte UTF-8 character as one and two bytes that are none as two
+	# (GB18030, GBK, EUC-KR, EUC-JP and Big5 count both as one), turkic=1 when it lowers I to another
+	# letter than i (Turkish: a dotless i). This is the locale zsh took, which zle shows text in: zsh also
+	# follows an LC_ALL, LC_CTYPE or LANG set in the shell and not exported, which the engine never sees
+	emulate -L zsh
+	local _mssh_complete_two_bytes=$'\xc3\xa9' _mssh_complete_gb_pair=$'\xa1\xa1' _mssh_complete_capital=I _mssh_complete_turkic=1
+	[[ ${(L)_mssh_complete_capital} == i ]] && _mssh_complete_turkic=0
+	_mssh_complete_locale="utf8=$(( ${#_mssh_complete_two_bytes} == 1 && ${#_mssh_complete_gb_pair} == 2 )) turkic=$_mssh_complete_turkic"
+}
+
 _mssh_complete_request() {
-	# print a request with flags $1 for the line $2 (before the cursor) $3 (after it), then the history tail
-	print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$1 term=$TERM"$'\0'"$2"$'\0'"$3"$'\0'$'\0'
+	# print a request with flags $1 (and the locale zsh runs in) for the line $2 (before the cursor) $3
+	# (after it), then the history tail
+	local _mssh_complete_locale
+	_mssh_complete_read_locale
+	print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$1 term=$TERM $_mssh_complete_locale"$'\0'"$2"$'\0'"$3"$'\0'$'\0'
 	fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
 }
 
@@ -7661,8 +7919,12 @@ _mssh_complete_setup() {
 _mssh_complete_zas_strategy() {
 	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
 	emulate -L zsh
-	# joined and split on spaces, whatever IFS the shell has: (s) alone joins an array with IFS first
-	(( ${${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY:-history})
+	# its strategies as words (also a list written as one string): joined and split on spaces, whatever
+	# IFS the shell has ((s) alone joins an array with IFS first). Held in an array: one word was a
+	# scalar, whose subscript looks for mssh inside it, and found it in xmssh (zsh 5.9) or not in mssh (5.5)
+	local -a _mssh_complete_strategies
+	_mssh_complete_strategies=(${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY})
+	(( ${_mssh_complete_strategies[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${_mssh_complete_strategies:-history})
 }
 
 if [[ -o interactive ]]; then
@@ -7673,11 +7935,26 @@ fi
 '''
 
 # Both fish glue files ask the engine through these (a file defines them again when it loads: the same text)
-_FISH_QUERY = r'''function __mssh_complete_request --argument-names flags before after word
-	# print a request with flags for the line before and after the cursor, then the history tail
+_FISH_QUERY = r'''function __mssh_complete_locale
+	# the locale fish runs in, as request flags: the LC_ALL, LC_CTYPE and LANG it exports (fish follows no
+	# others), escaped as in URLs, empty when not exported. Named, not measured: in a single-byte locale,
+	# C included, fish reads text as UTF-8 (unless fish_allow_singlebyte_locale is set), whatever the
+	# terminal shows
+	set -l flags
+	for name in LC_ALL LC_CTYPE LANG
+		set -l value
+		set -qx $name; and set value (string escape --style=url -- "$$name")
+		set -a flags (string lower -- $name)="$value"
+	end
+	echo $flags
+end
+function __mssh_complete_request --argument-names flags before after word
+	# print a request with flags (and the locale fish runs in) for the line before and after the cursor,
+	# then the history tail
 	set -l keep 1000
 	set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
-	command printf '%s\0' MSSHC1 fish $FISH_VERSION "$flags term=$TERM" "$before" "$after" "$word"
+	set -l locale (__mssh_complete_locale)
+	command printf '%s\0' MSSHC1 fish $FISH_VERSION "$flags term=$TERM $locale" "$before" "$after" "$word"
 	# the history builtin: the operator's history function or alias (one showing times) would change the lines
 	builtin history search -n $keep 2>/dev/null
 end
@@ -7803,8 +8080,9 @@ switch "$FISH_VERSION"
 					# long as the operator takes: 124 when too slow, 130 on Ctrl-C while it starts (START_SCRIPT)
 					set -l limit 2
 					string match -qr '^(\d+|\d+\.\d*|\.\d+)$' -- "$MSSH_COMPLETE_START_TIMEOUT"; and set limit $MSSH_COMPLETE_START_TIMEOUT
+					set -l locale (__mssh_complete_locale)
 					set -l lines (begin
-						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM" "$before" "$after" ''
+						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM $locale" "$before" "$after" ''
 						builtin history search -n $keep 2>/dev/null
 					end | command sh -c $__mssh_complete_start_script sh $limit @ENGINE@ pick 2>/dev/null)
 					set -l st $status
@@ -7905,12 +8183,50 @@ end
 
 _GLUES = {'bash': BASH_GLUE, 'zsh': ZSH_GLUE, 'fish': FISH_GLUE, 'fish-keys': FISH_KEYS_GLUE}
 
+# What module_command has python run (-c): the file named first as the module mssh_complete, from
+# the bytecode cached beside it, then its main. One that cannot be read ends with status 2, as python
+# ends for a script it cannot open: a glue takes more than 1 from the picker for "not there". No
+# single quote in it, so that the glue holds it as it is, in single quotes.
+MODULE_LOADER = '''import sys, types
+from importlib.machinery import SourceFileLoader
+path = sys.argv[0] = sys.argv.pop(1)
+loader = SourceFileLoader("mssh_complete", path)
+try:
+	code = loader.get_code("mssh_complete")
+except OSError as e:
+	sys.stderr.write("{}: cannot open file {!r}: [Errno {}] {}\\n".format(sys.executable, path, e.errno, e.strerror))
+	sys.exit(2)
+module = sys.modules["mssh_complete"] = types.ModuleType("mssh_complete")
+module.__file__, module.__loader__ = path, loader
+exec(code, module.__dict__)
+sys.exit(module.main())'''
+
+def module_command(path=None):
+	'''
+	The command running the module file path (this file) with this python, as `python -I path` runs it
+	but from the bytecode cached in __pycache__ beside it.
+
+	python compiles a script anew every time it runs one, and compiling this file was about half of
+	what a TAB waited for. As isolated as -I keeps a script (no current directory or user site on
+	sys.path, no PYTHON* variables), and the file is loaded from its path: no other mssh_complete on
+	sys.path is taken for it, and _import_mssh loads the multiSSH3 beside it from its path. The bytecode settings
+	-I would drop are given on the command line: -B when this python writes none
+	(PYTHONDONTWRITEBYTECODE), and its pycache_prefix. Where the cache cannot be written (a read-only
+	directory) the file is compiled every time, as a script is.
+	'''
+	command = [sys.executable, '-I']
+	if sys.dont_write_bytecode:
+		command.append('-B')
+	if getattr(sys, 'pycache_prefix', None):
+		command += ['-X', 'pycache_prefix=' + os.path.abspath(sys.pycache_prefix)]
+	return command + ['-c', MODULE_LOADER, os.path.abspath(path or __file__)]
+
 def engine_command():
-	'''How the glue runs the engine: mssh-complete if it is on PATH, else this file with this python.'''
+	'''How the glue runs the engine: mssh-complete if it is on PATH, else this file with this python (module_command).'''
 	import shutil
 	if shutil.which('mssh-complete'):
 		return ['mssh-complete']
-	return [sys.executable, '-I', os.path.abspath(__file__)]
+	return module_command()
 
 def _fish_quote(word):
 	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"
@@ -8598,7 +8914,7 @@ def prepare_index():
 	try:
 		return 'built the completion index ' + build_index(directory)
 	except Exception as e:
-		_debug('install: rebuild failed: {!r}'.format(e))
+		_debug(lambda: 'install: rebuild failed: {!r}'.format(e))
 		return 'could not build the completion index now ({}): the first TAB tries again'.format(e)
 
 def completion_command(values):
@@ -8959,12 +9275,12 @@ def _cmd_query():
 	try:
 		request = parse_request(data)
 	except ValueError as e:
-		_debug('bad request: {}'.format(e))
+		_debug(lambda: 'bad request: {}'.format(e))
 		return 1
 	try:
 		response = answer(request, deadline)
 	except Exception as e:
-		_debug('query failed: {!r}'.format(e))
+		_debug(lambda: 'query failed: {!r}'.format(e))
 		return 1
 	sys.stdout.buffer.write(format_response(response, nul=request.flags.get('nul', '1') != '0'))
 	sys.stdout.buffer.flush()
@@ -8994,14 +9310,35 @@ def _ready():
 	except OSError:
 		return False
 
-def _claim_terminal():
+def _launch_age(fd=1):
+	'''
+	Seconds since the shell's glue started the picker, None where that cannot be told.
+
+	START_SCRIPT makes the file the picker's answer goes to just before it starts the picker, and
+	nothing is written to it until the picker is done: when fd (the picker's stdout) is that file, its
+	modification time is the launch. This counts what the picker's own clock cannot, python starting
+	and loading this file, which is most of what a shell's MSSH_COMPLETE_START_TIMEOUT is spent on.
+	It is the wall clock against the file system's, so a few milliseconds are rounding.
+	'''
+	try:
+		status = os.fstat(fd)
+		if not stat.S_ISREG(status.st_mode):
+			return None
+		return max(0.0, time.time() - status.st_mtime)
+	except OSError:
+		return None
+
+def _claim_terminal(started=None):
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
 
 	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
 	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
-	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
+	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
+	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
+	Both times are given: since the picker's command ran, and since the shell launched it (_launch_age,
+	which includes starting python).
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -9010,7 +9347,17 @@ def _claim_terminal():
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		_debug('pick: the claim on the terminal failed, the shell went on ({!r}): the terminal is left alone'.format(e))
+		def took():
+			if started is None:
+				return ''
+			age = _launch_age()
+			return ', {:.3f} s into the picker{}'.format(time.monotonic() - started,
+				'' if age is None else ', {:.3f} s since the shell launched it'.format(age))
+		if isinstance(e, (FileExistsError, FileNotFoundError)):
+			# the shell claimed it first (its directory is there), or cleaned its directory up
+			_debug(lambda: 'pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took(), e))
+		else:
+			_debug(lambda: 'pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took(), e))
 		return False
 
 def _cmd_pick():
@@ -9041,7 +9388,7 @@ def _cmd_pick():
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
 		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
-		if not _claim_terminal():
+		if not _claim_terminal(started):
 			return 2
 		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
@@ -9051,7 +9398,7 @@ def _cmd_pick():
 			_debug('pick: ready {:.3f} s in'.format(time.monotonic() - started))
 			outcome = picker.run(term, line, before)
 	except Exception as e:
-		_debug('pick failed: {!r}\n{}'.format(e, _traceback()))
+		_debug(lambda: 'pick failed: {!r}\n{}'.format(e, _traceback()))
 		return 2
 	_debug('pick: {}, {:.3f} s in'.format(outcome, time.monotonic() - started))
 	if outcome == 'unavailable':
@@ -9063,7 +9410,7 @@ def _cmd_pick():
 		sys.stdout.buffer.write('MSSHC1\nL {}\t{}\nE\n'.format(cursor, line).encode('utf-8', 'surrogateescape'))
 		sys.stdout.buffer.flush()
 	except OSError as e:
-		_debug('pick: the answer did not reach the shell: {!r}'.format(e))
+		_debug(lambda: 'pick: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	return 0
 
@@ -9146,7 +9493,7 @@ def _cmd_edit(args):
 		engine = engine_for(Request('bash', options.text, '', '', flags=flags, history=history))
 		term = Terminal()
 	except Exception as e:
-		_debug('editor cannot start: {!r}'.format(e))
+		_debug(lambda: 'editor cannot start: {!r}'.format(e))
 		return 3
 	cache = {}
 
@@ -9186,14 +9533,14 @@ def _cmd_edit(args):
 			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
-		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
+		_debug(lambda: 'editor failed: {!r}\n{}'.format(e, _traceback()))
 		action, replay = 'pass', b''
 	out = 'MSSHC1\nL {}\t{}\nK {}\t{}\nE\n'.format(editor.cursor, editor.text, action, readline_keyseq(replay))
 	try:
 		sys.stdout.buffer.write(out.encode('utf-8', 'surrogateescape'))
 		sys.stdout.buffer.flush()
 	except OSError as e:
-		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
+		_debug(lambda: 'edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
 	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
@@ -9215,7 +9562,7 @@ def _cmd_rebuild(args):
 		print(path)
 		return 0
 	except Exception as e:
-		_debug('rebuild failed: {!r}'.format(e))
+		_debug(lambda: 'rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
 		return 1
 	finally:
@@ -9235,7 +9582,7 @@ def _cmd_probe(args):
 		run_probe(directory, lock, owner=owner)
 		return 0
 	except Exception as e:
-		_debug('probe failed: {!r}'.format(e))
+		_debug(lambda: 'probe failed: {!r}'.format(e))
 		return 1
 	finally:
 		if lock:

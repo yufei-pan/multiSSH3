@@ -8636,19 +8636,44 @@ def set_global_with_args(args):
 		DEFAULT_HOST_FILE = args.host_file
 
 #%% ------------ Wrapper Block ----------------
-def _completion_command(values):
-	'''Run `mssh --completion ...` with mssh_complete, which ships next to this file.'''
-	try:
-		import mssh_complete
-	except ImportError:
-		here = os.path.dirname(os.path.abspath(__file__))
-		if here not in sys.path:
-			sys.path.insert(0, here)
+def _import_mssh_complete():
+	'''
+	Import mssh_complete, which ships next to this file, or None when there is none.
+
+	The mssh_complete.py beside this file is loaded from its path and registered as mssh_complete, which
+	puts that directory on no sys.path: a file in it named as a standard module (bisect.py) would hide that
+	module from mssh_complete's own imports. With no such file beside this one, mssh_complete is imported as
+	installed.
+	'''
+	if 'mssh_complete' in sys.modules:
+		return sys.modules['mssh_complete']
+	path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mssh_complete.py')
+	if not os.path.isfile(path):
 		try:
 			import mssh_complete
-		except ImportError:
-			eprint('Error: autocomplete needs mssh_complete.py next to {} (it ships with the multiSSH3 package)'.format(os.path.abspath(__file__)))
-			return 1
+		except ModuleNotFoundError as error:
+			# only a missing mssh_complete is that; an import it makes itself failing is the real error
+			if error.name != 'mssh_complete':
+				raise
+			return None
+		return mssh_complete
+	import importlib.util
+	spec = importlib.util.spec_from_file_location('mssh_complete', path)
+	module = importlib.util.module_from_spec(spec)
+	sys.modules['mssh_complete'] = module
+	try:
+		spec.loader.exec_module(module)
+	except BaseException:
+		sys.modules.pop('mssh_complete', None)
+		raise
+	return module
+
+def _completion_command(values):
+	'''Run `mssh --completion ...` with mssh_complete, which ships next to this file.'''
+	mssh_complete = _import_mssh_complete()
+	if mssh_complete is None:
+		eprint('Error: autocomplete needs mssh_complete.py next to {} (it ships with the multiSSH3 package)'.format(os.path.abspath(__file__)))
+		return 1
 	return mssh_complete.completion_command(values)
 
 def _summary_host_list(names):

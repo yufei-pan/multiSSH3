@@ -554,7 +554,7 @@ def pytest_runtest_makereport(item, call):
 		return
 	for log in sorted(Path(tmp).rglob('complete.log')):
 		try:
-			text = log.read_text(errors='replace')
+			text = log.read_text(encoding='utf-8', errors='replace')
 		except OSError:
 			continue
 		report.sections.append(('mssh-complete log ' + str(log.relative_to(tmp)), text[-20000:]))

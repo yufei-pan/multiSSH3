@@ -13,7 +13,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
+from complete_shell_harness import (ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, with_debug_log, aged, bash_locale, bash_session, blesh_session, build_index,
 	debug_log_size, fish_session, make_home, require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
@@ -101,7 +101,7 @@ def bash_version(env):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = bash_session(home, env, glue_file(home, 'bash'))
 	try:
@@ -539,7 +539,7 @@ def test_editor_keeps_passwords_out_of_the_debug_log(home):
 		assert '@@RAN[-p hunter2 host1 uptime]@@' in session.read_until(b'@@RAN[-p hunter2 host1 uptime]@@', 15)
 	finally:
 		session.close()
-	log = (Path(env['XDG_RUNTIME_DIR']) / 'multiSSH3' / 'complete.log').read_text()
+	log = (Path(env['XDG_RUNTIME_DIR']) / 'multiSSH3' / 'complete.log').read_text(encoding='utf-8')
 	assert "-p *** host1 uptime" in log and 'hunter2' not in log
 
 
@@ -588,7 +588,7 @@ def test_editor_space_keeps_magic_space_when_the_glue_loads_again(home):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_editor_shows_and_accepts_the_suggestion(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = editor_session(env, home)
 	try:
@@ -641,7 +641,7 @@ def test_editor_marks_an_mssh_option_ending_the_line_before_enter(home):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_editor_enter_runs_what_was_typed(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = editor_session(env, home)
 	try:
@@ -1381,7 +1381,7 @@ def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	session = zsh_with(env, home)
 	try:
@@ -1434,6 +1434,49 @@ def test_zsh_picker_leaves_keys_typed_after_the_choice(home):
 		assert words(printed(session, '')) == PICKED + ['XYZ']
 	finally:
 		session.close()
+
+
+def recording_engine(home):
+	'''The engine, keeping each request it is given in a file of home/requests: (command, that directory).'''
+	requests = home / 'requests'
+	requests.mkdir()
+	path = home / 'recording-engine'
+	path.write_text('#!/bin/sh\nrequest=$(mktemp {}/request.XXXXXX)\ncat >"$request"\nexec {} "$@" <"$request"\n'.format(
+		shlex.quote(str(requests)), ' '.join(shlex.quote(part) for part in ENGINE)))
+	path.chmod(0o755)
+	return [str(path)], requests
+
+
+def recorded_flags(requests):
+	'''{kind: [the flags of each request]} of what recording_engine kept: pick, ghost, diag (warnings) or tab.'''
+	kinds = {}
+	for path in sorted(requests.iterdir()):
+		flags = mc.parse_request(path.read_bytes()).flags
+		kinds.setdefault(next((kind for kind in ('pick', 'ghost', 'diag') if flags.get(kind) == '1'), 'tab'), []).append(flags)
+	return kinds
+
+
+@pytest.mark.parametrize('zas', [False, True], ids=['own', 'zsh-autosuggestions'])
+def test_zsh_says_the_locale_it_runs_in_in_every_request(home, zas):
+	# grey text, warnings, Ctrl-R and TAB: each request holds zsh's measure of its locale, here C by an
+	# LC_ALL it keeps to itself (the engine sees the exported LANG), and the picker draws ASCII
+	env, home = home
+	command, requests = recording_engine(home)
+	session = zsh_with(env, home, zas, command=command, extra='LC_ALL=C   # not exported: zsh runs in C, mssh-complete sees LANG')
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
+		session.send('\x1b')
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		session.send('\x15mssh gp\t')
+		session.read_until(b'@@never@@', 1.0)
+	finally:
+		session.close()
+	kinds = recorded_flags(requests)
+	assert {'ghost', 'diag', 'pick', 'tab'} <= set(kinds), kinds
+	assert [flags for flags in sum(kinds.values(), []) if (flags.get('utf8'), flags.get('turkic')) != ('0', '0')] == []
 
 
 # ---------------------------------------------------------------- fish
@@ -1499,7 +1542,7 @@ def test_fish_space_still_expands_abbreviations(home):
 @WITH_AND_WITHOUT_DEBUG_LOG
 def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home, debug):
 	env, home = home
-	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	env = with_debug_log(env, debug)
 	logged = debug_log_size(env)
 	pre = "bind \\cr 'commandline -r FISHPREV'"
 	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE), pre=pre)
@@ -1515,6 +1558,29 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home, debug
 		session.close()
 	if debug == '0':
 		assert debug_log_size(env) == logged
+
+
+def test_fish_names_the_locale_it_exports_in_every_request(home):
+	# TAB, the check at a space (fish 4) and Ctrl-R: each request names the LC_ALL, LC_CTYPE and LANG fish
+	# exports, the only ones it follows (an LC_ALL it keeps to itself changes nothing)
+	env, home = home
+	command, requests = recording_engine(home)
+	pre = 'set -g LC_ALL C\nfunction mssh; end\nsource {}'.format(glue_file(home, 'fish', command=command))
+	session = fish_session(home, env, mc.render_glue('fish-keys', command), pre=pre)
+	try:
+		session.send('mssh gp\t')
+		session.read_until(b'@@never@@', 1.0)
+		session.send('x ')
+		session.read_until(b'@@never@@', 1.0)
+		session.send('\x12')
+		assert 'type to filter' in session.read_until(b'type to filter', 10)
+		session.send('\x1b')
+		session.read_until(b'@@never@@', 0.5)
+	finally:
+		session.close()
+	kinds = recorded_flags(requests)
+	assert {'tab', 'pick'} | ({'diag'} if fish_major() >= 4 else set()) <= set(kinds), kinds
+	assert [flags for flags in sum(kinds.values(), []) if (flags.get('lc_all'), flags.get('lc_ctype'), flags.get('lang')) != ('', '', env['LANG'])] == []
 
 
 def slow_start_session(shell, env, home, delay, deaf=False, **env_options):

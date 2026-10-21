@@ -132,7 +132,10 @@ def main():
 		runtime.mkdir(mode=0o700)
 		synthetic(home)
 		env = dict(os.environ, HOME=str(home), XDG_RUNTIME_DIR=str(runtime))
-		engine = [sys.executable, '-I', str(REPO / 'mssh_complete.py')]
+		sys.path.insert(0, str(REPO))
+		import mssh_complete
+		# the command the glue runs when mssh-complete is not on PATH
+		engine = mssh_complete.module_command(str(REPO / 'mssh_complete.py'))
 		started = time.monotonic()
 		path = subprocess.run(engine + ['rebuild'], env=env, stdout=subprocess.PIPE, check=True).stdout.decode().strip()
 		print('rebuild: {:.0f} ms, index {:.1f} MB'.format((time.monotonic() - started) * 1000, os.path.getsize(path) / 1e6))
