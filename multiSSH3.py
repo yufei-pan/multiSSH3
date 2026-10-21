@@ -8641,9 +8641,11 @@ def _completion_command(values):
 	try:
 		import mssh_complete
 	except ImportError:
+		# last on sys.path: no mssh_complete is found elsewhere, and a file beside this one named as a
+		# standard module (bisect.py) must not hide that one from mssh_complete
 		here = os.path.dirname(os.path.abspath(__file__))
 		if here not in sys.path:
-			sys.path.insert(0, here)
+			sys.path.append(here)
 		try:
 			import mssh_complete
 		except ImportError:

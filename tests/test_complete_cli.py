@@ -382,6 +382,28 @@ def test_an_engine_file_that_is_gone_ends_with_status_2(tmp_path):
 	assert b'cannot open file' in result.stderr and b'No such file or directory' in result.stderr
 
 
+_COMPLETION_PATH_SCRIPT = '''
+import contextlib, importlib.util, io, os, sys
+here = os.path.dirname(sys.argv[1])
+spec = importlib.util.spec_from_file_location('multiSSH3', sys.argv[1])
+mssh = importlib.util.module_from_spec(spec)
+sys.modules['multiSSH3'] = mssh
+spec.loader.exec_module(mssh)
+with contextlib.redirect_stdout(io.StringIO()) as glue:
+	status = mssh._completion_command(['bash'])
+print(status, glue.getvalue().startswith('# MSSH_COMPLETE_GLUE '), sys.path.index(here) == len(sys.path) - 1)
+'''
+
+def test_mssh_completion_puts_its_directory_last_on_sys_path(tmp_path):
+	# mssh run where mssh_complete is not importable finds the one beside it, from the end of sys.path:
+	# first there, a file beside it named as a standard module would hide that one from mssh_complete
+	for name in ('mssh_complete.py', 'multiSSH3.py'):
+		shutil.copyfile(str(REPO / name), str(tmp_path / name))
+	result = subprocess.run([sys.executable, '-I', '-B', '-c', _COMPLETION_PATH_SCRIPT, str(tmp_path / 'multiSSH3.py')],
+		cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+	assert result.stdout.split() == [b'0', b'True', b'True'], result.stderr.decode('utf-8', 'replace')
+
+
 def test_the_engine_takes_no_module_from_elsewhere(tmp_path):
 	# as isolated as a script run with -I: nothing from the current directory or PYTHONPATH, and its own
 	# directory is not put on sys.path (a file there named as a standard module would hide that one,
