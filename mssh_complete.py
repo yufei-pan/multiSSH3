@@ -1426,11 +1426,11 @@ class HostTable(object):
 		self.unavailable = frozenset(index.single('unavailable')) if index is not None else frozenset()
 		self._groups = None
 
-	def names_with_prefix(self, prefix, icase=None):
-		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase) for name in self.names[lo:hi]]
+	def names_with_prefix(self, prefix, icase=None, start=0):
+		return [name for lo, hi in _prefix_ranges(self.names, prefix, icase, start) for name in self.names[lo:hi]]
 
-	def aliases_with_prefix(self, prefix, icase=None):
-		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase) for index in range(lo, hi)]
+	def aliases_with_prefix(self, prefix, icase=None, start=0):
+		return [(index, self.alias_names[index]) for lo, hi in _prefix_ranges(self.alias_names, prefix, icase, start) for index in range(lo, hi)]
 
 	def sources(self, name):
 		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
@@ -3570,6 +3570,19 @@ def _shell_word(request):
 		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
 	return request.word
 
+def _word_base(context, request):
+	'''
+	What of the word parsed comes before the shell's word, which the shell keeps as typed (bash's word
+	starts after its COMP_WORDBREAKS : and =; zsh's and fish's is the whole word): '' for none, None when
+	the shell's word is not the end of the word parsed (e.g. backslash escapes).
+	'''
+	word = _shell_word(request)
+	if word is None:
+		return ''
+	if not context.prefix.endswith(word):
+		return None
+	return context.prefix[:len(context.prefix) - len(word)]
+
 # characters zsh reads specially in an unquoted word, globs included (zsh fails on a glob that matches nothing)
 _ZSH_SPECIAL = frozenset(' \t"\'\\$`|&;<>()!*?[]#~^{}')
 
@@ -3671,6 +3684,11 @@ class Engine(object):
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
+			# nor before the shell's word (see _frame): a name differing in case there is no candidate, so no
+			# provider may count it (toward GROUP_THRESHOLD, among the hosts listed beside the groups)
+			base = _word_base(context, request)
+			if base is not None:
+				context.fold_start = max(context.fold_start, len(base))
 		if context.slot == SLOT_OPTION:
 			candidates = self._options(context, request.shell)
 		elif context.slot == SLOT_VALUE:
@@ -4313,14 +4331,11 @@ class Engine(object):
 		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
-		word = _shell_word(request)
 		prefix = context.prefix
-		if word is None:
-			word = prefix
-		if not prefix.endswith(word):
+		base = _word_base(context, request)
+		if base is None:
 			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
 			return []
-		base = prefix[:len(prefix) - len(word)]
 		lead = prefix[:context.value_start]
 		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
 		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
@@ -4370,7 +4385,7 @@ class Engine(object):
 			else:
 				strings = option.strings
 			for string in strings:
-				if _starts(string, word, icase):
+				if _starts(string, word, icase, context.fold_start):
 					out.append(Candidate(string, option.help, 'options', score))
 		return out
 
@@ -4400,8 +4415,8 @@ class Engine(object):
 			out.extend(Candidate(user, 'user', 'users', PRIOR) for user in users if _starts(user, word, icase, start))
 		elif dest == 'skip_hosts':
 			# the members that can complete the host being typed (after the last separator and "user@")
-			prefix = word[start:]
-			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, prefix, icase)))
+			host = _last_host_start(word)[1]
+			out.extend(self._hosts(word, context, deadline, boost=self._members(context.hosts, word[host:], icase, start - host)))
 		elif dest == 'completion':
 			out.extend(Candidate(action, '', 'values', PRIOR) for action in COMPLETION_ACTIONS if _starts(action, word, icase, start))
 		elif dest == 'encoding':
@@ -4425,11 +4440,11 @@ class Engine(object):
 				out.append(Candidate(text, 'key', 'keys', PRIOR))
 		return out
 
-	def _members(self, hosts_text, prefix='', icase=None):
+	def _members(self, hosts_text, prefix='', icase=None, start=0):
 		'''
 		The host names a hosts argument names, as far as the index knows them (aliases, number
-		ranges), that start with prefix (in any case with icase): the first RANGE_MEMBERS_LIMIT of
-		them, as for its warnings.
+		ranges), that start with prefix (with icase prefix[start:] in any case): the first
+		RANGE_MEMBERS_LIMIT of them, as for its warnings.
 		'''
 		import itertools
 		members = set()
@@ -4445,7 +4460,7 @@ class Engine(object):
 				# expand_ranges checks each name it makes again (_iter_range raised on a value holding a [);
 				# a range past its limit names no member, and costs nothing to find out
 				named = expand_ranges(word)
-			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase)), room))
+			members.update(itertools.islice((name for name in named if _starts(name, prefix, icase, start)), room))
 		return members
 
 	def _hosts(self, text, context, deadline, boost=frozenset()):
@@ -4454,22 +4469,25 @@ class Engine(object):
 		lead, host_prefix = text[:start], text[start:]
 		user = text[cut:start - 1] if start > cut else ''
 		icase = context.icase
+		# where in host_prefix matching in any case starts: fold_start, at the host itself unless the
+		# shell's word starts later (bash's COMP_WORDBREAKS : in WEB:a)
+		fold = max(0, context.fold_start - context.value_start - start)
 		scores = {}
-		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2).items():
+		for feature, score in score_features(self.knowledges, 't:' + host_prefix, context.features, deadline, icase, 2 + fold).items():
 			scores[feature[2:]] = score
 		out = []
 		if not start:
 			# one host typed: whole hosts arguments used before
-			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2).items():
+			for feature, score in score_features(self.knowledges, 'h:' + text, context.features, deadline, icase, 2 + fold).items():
 				if feature[2:] not in scores and len(feature) - 2 <= MAX_HOSTS_TEXT:
 					out.append(Candidate(feature[2:], 'used before', 'history', score))
 		# with icase only the lookups match the host typed in any case: the names found stay apart (mssh's aliases,
 		# its list of unreachable hosts and -X compare them exactly)
 		aliases = set()
-		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase):
+		for number, name in self.hosts.aliases_with_prefix(host_prefix, icase, fold):
 			aliases.add(name)
 			out.append(Candidate(lead + name, 'alias, {} hosts'.format(self.hosts.alias_size(number)), 'aliases', scores.get(name, 0.0) + 2 * PRIOR))
-		names = set(self.hosts.names_with_prefix(host_prefix, icase))
+		names = set(self.hosts.names_with_prefix(host_prefix, icase, fold))
 		# the history's names, which its lookup found starting with the host typed
 		names.update(name for name in scores if '[' not in name)
 		names -= aliases
@@ -4505,7 +4523,7 @@ class Engine(object):
 			return out
 		covered = set()
 		for group_text, members in self.hosts.groups():
-			if _starts(group_text, host_prefix, icase) and len(members) > 1 and names.issuperset(members):
+			if _starts(group_text, host_prefix, icase, fold) and len(members) > 1 and names.issuperset(members):
 				covered.update(members)
 				out.append(Candidate(lead + group_text, '{} hosts'.format(len(members)), 'groups', sum(host_score(member) for member in members)))
 		rest = names - covered
