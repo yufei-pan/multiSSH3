@@ -6470,10 +6470,11 @@ _mssh_complete_unquote() {
 
 _mssh_complete_run_command() {
 	# a compspec's -C command $1 as bash runs it, with the command name, the word and the one before it as
-	# its arguments ($2, $3, $4) added to its string, and the line and the key (a tab) in the environment
-	# the command reads (aws_completer reads COMP_LINE and COMP_POINT); its output lines are the results.
-	# Called in a subshell: the exports stay in it
-	export COMP_LINE COMP_POINT COMP_KEY=9 COMP_TYPE=9
+	# its arguments ($2, $3, $4) added to its string, and the line, the key and the type of the completion in
+	# the environment the command reads (aws_completer reads COMP_LINE and COMP_POINT); its output lines are
+	# the results. The key and the type are those bash (or ble.sh) set for mssh's own completion, a tab and
+	# the plain completion where none is set. Called in a subshell: the exports stay in it
+	export COMP_LINE COMP_POINT COMP_KEY=${COMP_KEY:-9} COMP_TYPE=${COMP_TYPE:-9}
 	eval "$1"' "$2" "$3" "$4"'
 }
 

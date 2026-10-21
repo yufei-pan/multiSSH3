@@ -386,6 +386,13 @@ def test_bash_delegation_puts_the_prefix_and_the_filter_where_bash_does(tmp_path
 	assert sorted(delegated(tmp_path, setup, words, prefix=prefix, word=word)) == sorted(expected)
 
 
+@pytest.mark.parametrize('before, key', [('', '9.9'), ('COMP_KEY=63 COMP_TYPE=33; ', '63.33')])
+def test_bash_delegation_gives_a_command_the_key_and_type_of_the_completion(tmp_path, before, key):
+	# bash sets them for mssh's own completion (ble.sh too), a tab and a plain completion otherwise
+	output = delegated(tmp_path, 'complete -C zzaws_completer zzsvc', 'zzsvc s3 zz', before=before)
+	assert 'zzkey=' + key in output
+
+
 @pytest.mark.parametrize('options', ['set -e', 'set -u', 'set -eu', 'shopt -s nocasematch extglob'])
 def test_bash_delegation_by_a_compspec_survives_the_shell_options(tmp_path, options):
 	# every source at once, with the fallbacks that find nothing (set -e: a failed process substitution)
