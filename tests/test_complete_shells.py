@@ -472,7 +472,9 @@ def completed_and_listed(session, typed, quoted=False):
 
 
 # (the arguments of complete, the word, the shell's setting before it): what bash gives the command itself is what mssh
-# gives for it on a remote host, line and list alike, however -X, -P, -S and -o treat the words
+# gives for it on a remote host, line and list alike, however -X, -P, -S and -o treat the words. An -o default is there
+# where a filter may leave nothing on some bash (4.2 takes !( for a negation of what follows): mssh, registered with
+# it, then offers file names, as bash does for the command
 SAME_AS_BASH = [
 	(['-W', 'zzalpha zzb', '-P', '['], 'zz', ''),
 	(['-W', 'zzalpha zzb', '-S', ']'], 'zz', ''),
@@ -482,9 +484,6 @@ SAME_AS_BASH = [
 	(['-W', 'a[b a[bx ab', '-X', '&'], 'a[', ''),
 	(['-W', 'a\\b a\\bx', '-X', '!&*'], 'a\\\\b', ''),
 	(['-W', 'zza zzab zzb', '-X', '!&b'], 'zza', ''),
-	(['-W', 'zza zzb zzc', '-X', '!(zza)'], 'zz', 'shopt -s extglob'),
-	(['-W', 'zza zzb zzc', '-X', '!!(zza)'], 'zz', 'shopt -s extglob'),
-	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza.c zzb.h', '-X', '*.c', '-P', '<'], 'zz', ''),
 	(['-W', 'zzalpha zzalpine', '-F', '_zzreal', '-X', '!zza*', '-P', '<'], 'zz', ''),
 	(['-W', 'Zza zzb'], 'zz', 'bind "set completion-ignore-case on"'),
@@ -498,6 +497,9 @@ SAME_AS_BASH = [
 # directory), and mixed with others they have no start in common (zzsvc [zza] beside zzsvc zzdir): readline cuts the
 # line back to the command prefix where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
+	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb', '-P', '[', '-S', ']', '-o', 'plusdirs'], 'zz', ''),
 	(['-W', 'zza zzb', '-P', '[', '-o', 'plusdirs'], 'zz', ''),
 	(['-W', 'other', '-P', '[', '-o', 'dirnames'], 'zz', ''),
@@ -506,9 +508,16 @@ SAME_AS_BASH_UNQUOTED = [
 	(['-W', 'zza zzb', '-o', 'dirnames', '-o', 'default'], 'zzd', ''),
 ]
 
+# and where a filter leaving nothing makes bash offer nothing at all (the unquoted ones are above, with -o default)
+SAME_AS_BASH_QUOTED = [
+	(['-W', 'zza zzb zzc', '-X', '!(zza)'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!!(zza)'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)'], 'zz', 'shopt -s extglob'),
+]
+
 
 @pytest.mark.parametrize('quoted, spec, word, before', [(False,) + case for case in SAME_AS_BASH + SAME_AS_BASH_UNQUOTED] +
-	[(True,) + case for case in SAME_AS_BASH])
+	[(True,) + case for case in SAME_AS_BASH + SAME_AS_BASH_QUOTED])
 def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec, word, before, quoted):
 	import shlex
 	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; complete {} zzsvc'.format(before or ':', ' '.join(map(shlex.quote, spec)))
