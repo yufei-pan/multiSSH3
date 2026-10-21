@@ -1,7 +1,6 @@
 import os
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -9,7 +8,7 @@ import pytest
 import multiSSH3
 import mssh_complete as mc
 
-ENGINE = [sys.executable, '-I', str(Path(__file__).resolve().parents[1] / 'mssh_complete.py')]
+ENGINE = mc.module_command(str(Path(__file__).resolve().parents[1] / 'mssh_complete.py'))
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 NOW = 1790000000

@@ -8,15 +8,17 @@ import shutil
 import signal
 import struct
 import subprocess
-import sys
 import termios
 import time
 from pathlib import Path
 
 import pytest
 
+import mssh_complete
+
 REPO = Path(__file__).resolve().parents[1]
-ENGINE = [sys.executable, '-I', str(REPO / 'mssh_complete.py')]
+# what the glue runs when mssh-complete is not on PATH: this python, the file from its bytecode cache
+ENGINE = mssh_complete.module_command(str(REPO / 'mssh_complete.py'))
 # 2026-10-13 00:00 UTC, when the histories these tests write were given their fixed times (1790000000 on)
 WRITTEN = 1791849600
 

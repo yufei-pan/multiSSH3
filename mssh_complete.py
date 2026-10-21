@@ -2274,7 +2274,7 @@ def _spawn_detached(directory, lock_name, command):
 		return False
 	import subprocess
 	try:
-		subprocess.Popen([sys.executable, '-I', os.path.abspath(__file__), command, '--lock', lock],
+		subprocess.Popen(module_command() + [command, '--lock', lock],
 			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 			close_fds=True, start_new_session=True, cwd='/')
 	except OSError as e:
@@ -7905,12 +7905,50 @@ end
 
 _GLUES = {'bash': BASH_GLUE, 'zsh': ZSH_GLUE, 'fish': FISH_GLUE, 'fish-keys': FISH_KEYS_GLUE}
 
+# What module_command has python run (-c): the file named first as the module mssh_complete, from
+# the bytecode cached beside it, then its main. One that cannot be read ends with status 2, as python
+# ends for a script it cannot open: a glue takes more than 1 from the picker for "not there". No
+# single quote in it, so that the glue holds it as it is, in single quotes.
+MODULE_LOADER = '''import sys, types
+from importlib.machinery import SourceFileLoader
+path = sys.argv[0] = sys.argv.pop(1)
+loader = SourceFileLoader("mssh_complete", path)
+try:
+	code = loader.get_code("mssh_complete")
+except OSError as e:
+	sys.stderr.write("{}: cannot open file {!r}: [Errno {}] {}\\n".format(sys.executable, path, e.errno, e.strerror))
+	sys.exit(2)
+module = sys.modules["mssh_complete"] = types.ModuleType("mssh_complete")
+module.__file__, module.__loader__ = path, loader
+exec(code, module.__dict__)
+sys.exit(module.main())'''
+
+def module_command(path=None):
+	'''
+	The command running the module file path (this file) with this python, as `python -I path` runs it
+	but from the bytecode cached in __pycache__ beside it.
+
+	python compiles a script anew every time it runs one, and compiling this file was about half of
+	what a TAB waited for. As isolated as -I keeps a script (no current directory or user site on
+	sys.path, no PYTHON* variables), and the file is loaded from its path: no other mssh_complete on
+	sys.path is taken for it, and _import_mssh finds the multiSSH3 beside it. The bytecode settings
+	-I would drop are given on the command line: -B when this python writes none
+	(PYTHONDONTWRITEBYTECODE), and its pycache_prefix. Where the cache cannot be written (a read-only
+	directory) the file is compiled every time, as a script is.
+	'''
+	command = [sys.executable, '-I']
+	if sys.dont_write_bytecode:
+		command.append('-B')
+	if getattr(sys, 'pycache_prefix', None):
+		command += ['-X', 'pycache_prefix=' + os.path.abspath(sys.pycache_prefix)]
+	return command + ['-c', MODULE_LOADER, os.path.abspath(path or __file__)]
+
 def engine_command():
-	'''How the glue runs the engine: mssh-complete if it is on PATH, else this file with this python.'''
+	'''How the glue runs the engine: mssh-complete if it is on PATH, else this file with this python (module_command).'''
 	import shutil
 	if shutil.which('mssh-complete'):
 		return ['mssh-complete']
-	return [sys.executable, '-I', os.path.abspath(__file__)]
+	return module_command()
 
 def _fish_quote(word):
 	return "'" + word.replace('\\', '\\\\').replace("'", "\\'") + "'"
