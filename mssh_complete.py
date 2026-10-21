@@ -1735,9 +1735,18 @@ def _traceback():
 	return traceback.format_exc().rstrip()
 
 def _debug(message):
-	'''Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB).'''
+	'''
+	Append a line to <cache dir>/complete.log when MSSH_COMPLETE_DEBUG=1 (kept under 256 KB), in UTF-8
+	whatever the locale. message may be a function making it, called only then: what it costs (and a
+	failure making it) is the log's alone.
+	'''
 	if os.environ.get('MSSH_COMPLETE_DEBUG') != '1':
 		return
+	if callable(message):
+		try:
+			message = message()
+		except Exception as e:
+			message = 'cannot make a debug message: {!r}'.format(e)
 	directory = cache_dir()
 	if directory is None:
 		return
@@ -1752,9 +1761,9 @@ def _debug(message):
 	except OSError:
 		pass
 	try:
-		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a') as f:
+		with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), 'a', encoding='utf-8', errors='replace') as f:
 			f.write('{:.3f} {} {}\n'.format(time.time(), os.getpid(), message))
-	except OSError:
+	except (OSError, ValueError):
 		pass
 
 #%% ------------ Index sources ----------------
@@ -2028,11 +2037,11 @@ def build_index(directory, now=None, mssh=None):
 	features, record_rows, postings, fweights, fcounts, flast = serialize_knowledge(memory)
 	history_tokens = {feature[2:] for feature in features if feature.startswith('t:')}
 	hosts = {}
+	host_word, _ = _host_patterns()
 	def add(name, source, address=''):
 		# mssh splits a hosts word where a separator is: a name holding one (machine/.host in
 		# systemd's ssh config) is never one host
-		word, _ = _host_patterns()
-		if not name or not safe_field(name) or not word.fullmatch(name):
+		if not name or not safe_field(name) or not host_word.fullmatch(name):
 			return
 		entry = hosts.setdefault(name, [0, ''])
 		entry[0] |= source
@@ -4313,12 +4322,15 @@ class Engine(object):
 			return []
 		base = prefix[:len(prefix) - len(word)]
 		lead = prefix[:context.value_start]
+		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
+		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
+		# typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''
+		fold_start = max(context.fold_start, len(base))
 		out = []
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):
 			full = lead + candidate.text
-			# whatever found it: only from fold_start on may it differ from the word in case
-			if not _starts(full, prefix, context.icase, context.fold_start) or full in seen:
+			if not _starts(full, prefix, context.icase, fold_start) or full in seen:
 				continue
 			rest = full[len(prefix):]
 			if literal:
@@ -8998,7 +9010,7 @@ def _claim_terminal():
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		_debug('pick: the shell went on ({!r}): leaving the terminal alone'.format(e))
+		_debug('pick: the claim on the terminal failed, the shell went on ({!r}): the terminal is left alone'.format(e))
 		return False
 
 def _cmd_pick():
@@ -9028,7 +9040,10 @@ def _cmd_pick():
 		line = before = None
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
-		if not _claim_terminal() or (request.flags.get('ready') == '1' and not _ready()):
+		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
+		if not _claim_terminal():
+			return 2
+		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 			return 2
 		with Terminal() as term:
@@ -9168,7 +9183,7 @@ def _cmd_edit(args):
 	try:
 		with term:
 			# logged once the terminal is taken, as pick does: keys typed before that are echoed by it
-			_debug('edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
+			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
 		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
@@ -9180,7 +9195,9 @@ def _cmd_edit(args):
 	except OSError as e:
 		_debug('edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
-	_debug('edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor, time.monotonic() - started))
+	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
+	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
+		time.monotonic() - started))
 	return 0
 
 def _cmd_rebuild(args):

@@ -612,6 +612,25 @@ def test_frame_drops_candidates_matching_earlier_text_in_any_case():
 	assert texts_of(engine._frame(candidates, context, request)) == ['web1,WEB3', 'web1,web2']
 
 
+@pytest.mark.parametrize('history, typed, word, control, control_word, offered', [
+	# bash's word starts after its COMP_WORDBREAKS (: and =): bash replaces that word alone, so a candidate whose
+	# text before it differs in case put in a word naming nothing (HOST:fi became HOST:file for host:file).
+	# The word itself still matches in any case (control)
+	('"nosuchcmd host:file"', 'mssh h nosuchcmd HOST:fi', 'fi', 'mssh h nosuchcmd host:FI', 'FI', 'file'),
+	('"cat Fi:fa.txt"', 'mssh h cat fi:f', 'f', 'mssh h cat Fi:F', 'F', 'fa.txt'),
+	('-f=/data/a:bc', 'mssh -f /data/A:b', 'b', 'mssh -f /data/a:B', 'B', 'bc'),
+	('"make CC=gcc"', 'mssh h make cc=Gc', 'Gc', 'mssh h make CC=GC', 'GC', 'gcc'),
+])
+def test_icase_matches_in_any_case_only_from_bash_s_word_on(history, typed, word, control, control_word, offered):
+	if history.startswith('-'):
+		record = line(NOW, '-su ' + history, 'h', '"uptime"')
+	else:
+		record = line(NOW, '-su', 'h', history)
+	knowledges = [memory([record])]
+	assert offered not in texts(query(typed, word=word, knowledges=knowledges, flags=ICASE))
+	assert offered in texts(query(control, word=control_word, knowledges=knowledges, flags=ICASE))
+
+
 def test_icase_hosts_after_x_match_only_the_host_typed_in_any_case():
 	# -X's history matched the whole value in any case: web1,we was offered WEB1,web2, root@we ROOT@web1
 	knowledges = [memory([line(NOW, '-su -X=WEB1,web2', 'web[1-3]', '"uptime"'), line(NOW - 1, '-su -X=ROOT@web1', 'web[1-3]', '"uptime"')])]

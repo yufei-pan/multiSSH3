@@ -643,6 +643,71 @@ def test_pick_and_edit_leave_the_terminal_alone_when_nobody_waits_any_more(tmp_p
 		os.close(master)
 
 
+# the engine run with a function of its replaced first: python -I -c CODE REPO ARGS...
+PATCHED_ENGINE = ('import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; '
+	'exec(sys.argv[2]); sys.exit(mc.main(sys.argv[3:]))')
+
+
+def patched_engine(patch, ascii_locale=False):
+	'''The engine command with patch run first (python code, mc the module); ascii_locale: in C, not in UTF-8 mode.'''
+	import os
+	return [sys.executable, '-I'] + (['-X', 'utf8=0'] if ascii_locale else []) + ['-c', PATCHED_ENGINE, os.path.dirname(mc.__file__), patch]
+
+
+@pytest.mark.parametrize('debug', ['1', '0'])
+def test_edit_delivers_its_answer_whatever_its_debug_messages_do(tmp_path, debug):
+	# _without_passwords made the editor's debug messages, debug on or off: raising before the editor ran it
+	# fell back to pass, and after the answer was written it made the exit status 1, so the glue dropped the line
+	import os
+	import subprocess
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	env['MSSH_COMPLETE_DEBUG'] = debug
+	master, slave = pty_pair()
+	read_end, write_end = os.pipe()
+	name = os.ttyname(slave)
+	patch = 'def boom(*args): raise RuntimeError("boom")\nmc._without_passwords = boom'
+	process = subprocess.Popen(patched_engine(patch) + ['edit', '--ready', '--', 'mssh '], stdin=subprocess.DEVNULL, stdout=write_end,
+		stderr=subprocess.PIPE, env=env, start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
+	os.close(write_end)
+	os.close(slave)
+	try:
+		assert terminal_output(read_end, 10.0, until=b'\n') == b'ready\n'
+		assert b'mssh ' in terminal_output(master, 10.0, until=b'mssh ')
+		os.write(master, b'h\r')
+		assert process.wait(20) == 0, process.stderr.read()
+		# the line the editor made, and Enter handed back to readline (the fallback hands back no key)
+		assert terminal_output(read_end, 2.0) == b'MSSHC1\nL 6\tmssh h\nK pass\t\\C-m\nE\n'
+	finally:
+		process.kill()
+		os.close(master)
+		os.close(read_end)
+
+
+def pty_pair():
+	import pty
+	return pty.openpty()
+
+
+def test_a_debug_message_the_locale_cannot_write_still_lets_pick_fall_back(tmp_path):
+	# in C, not in UTF-8 mode (Python 3.6 there), the log took the locale's encoding: the failure message,
+	# quoting "— … ⚠", raised writing it, and pick ended 1 (cancelled) for 2 (do what Ctrl-R did)
+	import os
+	import subprocess
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	env = dict(env, LC_ALL='C')
+	env.pop('LANG', None)
+	# escapes in the code: an ASCII locale takes the command line's bytes as surrogates
+	patch = 'def boom(*args): raise RuntimeError("\\u26a0 \\u2014 \\u2026")\nmc.picker_items = boom'
+	result = subprocess.run(patched_engine(patch, ascii_locale=True) + ['pick'], input=READY_PICK.replace(b' ready=1', b''), env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, timeout=60)
+	assert (result.returncode, result.stdout, result.stderr) == (2, b'', b'')
+	log = open(os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log'), encoding='utf-8').read()
+	# Python 3.6 shows the exception as RuntimeError('...',)
+	assert "pick failed: RuntimeError('\u26a0 \u2014 \u2026'" in log
+
+
 CLAIM_PICK = b'\0'.join([b'MSSHC1', b'zsh', b'5.9', b'pick=1 nul=0 term=xterm', b'mssh gpu[01-16] ', b'', b'', b''])
 
 
@@ -777,6 +842,24 @@ def test_the_debug_log_shows_a_line_without_its_passwords(line):
 	assert mc._without_passwords('mssh -u root web1 uptime', SPEC) == 'mssh -u root web1 uptime'
 
 
+def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
+	# zsh and fish make the claim: when the shell went on, its own line said so, and a second blamed "ready",
+	# which zsh never asked for
+	import io
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	claim = tmp_path / 'claim'
+	claim.mkdir()
+	for name, value in dict(env, MSSH_COMPLETE_CLAIM=str(claim)).items():
+		monkeypatch.setenv(name, value)
+	logged = []
+	monkeypatch.setattr(mc, '_debug', lambda message: logged.append(message() if callable(message) else message))
+	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK)))
+	assert mc._cmd_pick() == 2
+	logged = [message for message in logged if message.startswith('pick:')]
+	assert len(logged) == 1 and 'claim' in logged[0] and 'ready' not in logged[0], logged
+
+
 class _Steps(object):
 	'''What _cmd_edit and _cmd_pick do, in order: saying ready, taking the terminal, logging.'''
 	def __init__(self, monkeypatch):
@@ -795,7 +878,11 @@ class _Steps(object):
 				return False
 		monkeypatch.setattr(mc, 'Terminal', FakeTerminal)
 		monkeypatch.setattr(mc, '_ready', lambda: steps.done.append('ready') or True)
-		monkeypatch.setattr(mc, '_debug', lambda message: steps.done.append(message.split(' ')[0] + ' ' + message.split(' ')[1]))
+		def debug(message):
+			# a message, or a function making it (_debug calls it only when debugging)
+			message = message() if callable(message) else message
+			steps.done.append(message.split(' ')[0] + ' ' + message.split(' ')[1])
+		monkeypatch.setattr(mc, '_debug', debug)
 
 
 @pytest.mark.parametrize('command', ['edit', 'pick'])

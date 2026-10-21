@@ -5,7 +5,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import ENGINE, blesh_session, build_index, make_home
+from complete_shell_harness import ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, blesh_session, build_index, debug_log_size, make_home
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -60,6 +60,20 @@ def test_blesh_suggests_our_candidates_while_typing(setup):
 		assert session.line_after('', keys='\x1b[C') == 'mssh gpu[01-16] "nvidia-smi" '
 	finally:
 		session.close()
+
+
+@WITH_AND_WITHOUT_DEBUG_LOG
+def test_blesh_tab_completes_with_and_without_the_debug_log(setup, debug):
+	env, home = setup
+	env = dict(env, MSSH_COMPLETE_DEBUG=debug)
+	logged = debug_log_size(env)
+	session = blesh_session(home, env, glue_file(home))
+	try:
+		assert words(session.line_after('mssh gp')) == ['mssh', 'gpu[01-16]']
+	finally:
+		session.close()
+	if debug == '0':
+		assert debug_log_size(env) == logged
 
 
 def test_blesh_typing_is_not_held_up_by_a_slow_engine(setup):
