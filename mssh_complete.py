@@ -6516,19 +6516,22 @@ _mssh_complete_run_command() {
 	eval "$1"' "$2" "$3" "$4"'
 }
 
+_mssh_complete_replay() {
+	# the function _mssh_complete_exclude gives compgen -F: the results as a function's
+	COMPREPLY=(${_mssh_complete_results[@]+"${_mssh_complete_results[@]}"})
+}
+
 _mssh_complete_exclude() {
-	# apply a compspec's -X filter $1 to _mssh_complete_results, as bash does: a result matching the pattern
-	# goes, and with a "!" first all that do not. compgen -X does it all (the "!", an & for the word, the
-	# word's glob characters quoted, the shell's extglob), but takes the word $2 for the & only along with a
-	# filter by it (case-sensitive, as bash gives a -W list, and not for the results of a function or a command,
-	# which bash does not filter): so it gets the word where the pattern holds an & (a "\&" is none), and none
-	# where it does not
-	local _mssh_complete_against=$2 _mssh_complete_item _mssh_complete_stripped=${1//\\?/}
+	# apply a compspec's -X filter $1 to _mssh_complete_results, as bash does: by bash. compgen -F filters a
+	# function's results (_mssh_complete_replay: ours) as it filters those of a compspec's function or command,
+	# which are not held to the word $2 as -W's and the actions' are: a result matching the pattern goes, and
+	# with a "!" first all that do not, an & stands for the word with its glob characters quoted (a "\&" for
+	# the character) and the shell's extglob and nocasematch count, all as bash has them
+	local _mssh_complete_item
 	local -a _mssh_complete_kept_results=()
-	[[ $_mssh_complete_stripped == *'&'* ]] || _mssh_complete_against=
 	while IFS= read -r _mssh_complete_item; do
 		_mssh_complete_kept_results+=("$_mssh_complete_item")
-	done < <(compgen -X "$1" -W '"${_mssh_complete_results[@]}"' -- "$_mssh_complete_against" 2>/dev/null || :)
+	done < <(_mssh_complete_operator compgen -F _mssh_complete_replay -X "$1" -- "$2" 2>/dev/null || :)
 	_mssh_complete_results=(${_mssh_complete_kept_results[@]+"${_mssh_complete_kept_results[@]}"})
 }
 

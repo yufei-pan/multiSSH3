@@ -494,6 +494,19 @@ SAME_AS_BASH = [
 	(['-W', 'Zza zzb', '-P', '['], 'zz', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza zzb', '-o', 'plusdirs'], 'ZZ', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza', '-o', 'nospace', '-P', '['], 'zz', ''),
+	# -X over what a function gives is not held to the word: its & stands for the word with its glob characters
+	# quoted (a ! in the word included), and the results stay whatever case or characters they hold
+	(['-F', '_zzf', '-X', '&'], 'zz', 'bind "set completion-ignore-case on"; _zzf() { COMPREPLY=(Zzalpha zzbeta); }'),
+	(['-F', '_zzf', '-X', '!&*'], 'zz', 'bind "set completion-ignore-case on"; _zzf() { COMPREPLY=(Zzalpha zzbeta); }'),
+	(['-F', '_zzf', '-X', '&'], 'zz', "_zzf() { COMPREPLY=('zz\\x' zzy); }"),
+	(['-W', '!x !xy y', '-X', '&'], '!x', ''),
+	(['-W', '!x !xy y', '-X', '!&'], '!x', ''),
+	# an & is a substitution unless a backslash comes right before it, and a backslash before that one is no escape
+	(['-F', '_zzf', '-X', 'z\\\\&'], 'z', "_zzf() { COMPREPLY=('z&' 'z\\&' zx); }"),
+	(['-F', '_zzf', '-X', 'z\\&'], 'z', "_zzf() { COMPREPLY=('z&' 'z\\&' zx); }"),
+	(['-F', '_zzf', '-X', 'z&'], 'z', "_zzf() { COMPREPLY=('z&' 'zz' 'zzz' zx); }"),
+	# -X and the shell's nocasematch
+	(['-W', 'zzA.C zzb.h', '-X', '*.c'], 'zz', 'shopt -s nocasematch'),
 ]
 
 
@@ -501,6 +514,9 @@ SAME_AS_BASH = [
 # directory), and mixed with others they have no start in common (zzsvc [zza] beside zzsvc zzdir): readline cuts the
 # line back to the command prefix where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
+	# bash's word stops at a colon: bx for a:b
+	(['-F', '_zzg', '-X', '&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
+	(['-F', '_zzg', '-X', '!&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
@@ -524,11 +540,12 @@ SAME_AS_BASH_QUOTED = [
 	[(True,) + case for case in SAME_AS_BASH + SAME_AS_BASH_QUOTED])
 def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec, word, before, quoted):
 	import shlex
-	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; complete {} zzsvc'.format(before or ':', ' '.join(map(shlex.quote, spec)))
+	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; {}'.format(before or ':',
+		'complete {} zzsvc'.format(' '.join(map(shlex.quote, spec))) if spec else ':')
 	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab'], options=options)
 	try:
-		(tmp_path / 'work' / 'zzdir').mkdir()
-		(tmp_path / 'work' / 'zzdirb').mkdir()
+		for name in ('zzdir', 'zzdirb', 'my dir'):
+			(tmp_path / 'work' / name).mkdir()
 		native = completed_and_listed(session, 'zzsvc ' + word)
 		remote = completed_and_listed(session, 'mssh h ' + ('"zzsvc ' if quoted else 'zzsvc ') + word, quoted)
 		assert remote == ('mssh h ' + native[0], native[1])
