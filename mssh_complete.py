@@ -6374,7 +6374,9 @@ _mssh_complete_delegate() {
 		# bash prints -F last, right before the name, after the single-quoted arguments of -G, -W, -P, -S, -X
 		# and -C, which may hold " -F " themselves. From bash 5.2 it single-quotes a name or a function
 		# holding a metacharacter (a lone quote as \'): the function is the word after the last -F, as it is
-		# or so quoted, which the tail of a quoted argument never is (a quote in it comes as '\'')
+		# or so quoted, which the tail of a quoted argument never is (a quote in it comes as '\''). No
+		# function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid identifier, also from the
+		# environment), nor so its quoted form: -F 'a^b'. A quote there names no function
 		if [[ $_mssh_complete_named == "'" ]]; then
 			_mssh_complete_quoted="\\'"
 		else
@@ -6386,13 +6388,10 @@ _mssh_complete_delegate() {
 		elif [[ $_mssh_complete_spec == *" $_mssh_complete_quoted" ]]; then
 			_mssh_complete_rest=${_mssh_complete_spec% "$_mssh_complete_quoted"}
 		fi
-		_mssh_complete_pattern=" -F ([^ ']+|'([^']|'\\\\'')*')\$"
+		_mssh_complete_pattern=" -F ([^ ']+|'[^']*')\$"
 		if [[ $_mssh_complete_rest =~ $_mssh_complete_pattern ]]; then
 			_mssh_complete_func=${BASH_REMATCH[1]}
-			if [[ $_mssh_complete_func == \'* ]]; then
-				_mssh_complete_func=${_mssh_complete_func:1:${#_mssh_complete_func}-2}
-				_mssh_complete_func=${_mssh_complete_func//"'\\''"/"'"}
-			fi
+			[[ $_mssh_complete_func == \'* ]] && _mssh_complete_func=${_mssh_complete_func:1:${#_mssh_complete_func}-2}
 			local -a COMP_WORDS=("${_mssh_complete_words[@]}")
 			local COMP_CWORD=$_mssh_complete_cword COMP_LINE COMP_POINT
 			# the words joined by spaces, whatever IFS the shell has

@@ -252,7 +252,8 @@ def test_bash_delegation_reads_the_function_of_a_command_whatever_its_name(tmp_p
 	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
 
 
-@pytest.mark.parametrize('function', ['zz^f', 'zz%f', 'zz@f', '_zzplain'])
+# every character bash 5.2 quotes that a function's name can hold (bash 4.2 to 5.3; "[" from 5.0, "=" from 5.3)
+@pytest.mark.parametrize('function', ['zz^f', 'zz!f', 'zz*f', 'zz?f', 'zz]f', 'zz{f}', '~zzf', 'zz%f', 'zz@f', '_zzplain'])
 def test_bash_delegation_runs_a_completion_function_whatever_its_name(tmp_path, function):
 	# from bash 5.2 complete -p single-quotes a function name holding a shell metacharacter (-F 'zz^f')
 	script = ('. "$1"; eval "function $2 { COMPREPLY=(zzalpha zzalpine); }"; complete -F "$2" zzsvc; '
@@ -260,6 +261,22 @@ def test_bash_delegation_runs_a_completion_function_whatever_its_name(tmp_path, 
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), function],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.stdout.decode().split() == ['zzalpha', 'zzalpine'], output
+
+
+def test_bash_delegation_runs_no_command_for_a_completion_function_named_with_a_quote(tmp_path):
+	# no function's name holds a quote (bash refuses one), yet complete -F takes the word, and bash 5.2
+	# prints it quoted (-F 'zz'\''f'): unquoted, the glue ran the command zz'f in its place
+	ran = tmp_path / 'ran'
+	found = tmp_path / 'bin'
+	found.mkdir()
+	(found / "zz'f").write_text('#!/bin/sh\ntouch {}\n'.format(ran))
+	(found / "zz'f").chmod(0o755)
+	script = ('. "$1"; PATH=$2:$PATH; complete -F "zz\'f" zzsvc; '
+		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "%s\\n" "${_mssh_complete_delegated[@]}"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found)],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(tmp_path))
+	assert not ran.exists(), output
+	assert output.returncode == 0, output
 
 
 @pytest.mark.parametrize('spec', [
