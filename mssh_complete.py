@@ -3724,14 +3724,17 @@ class Engine(object):
 		response = Response(context)
 		if context is None:
 			return response
+		# what of the word parsed the shell keeps as typed, None when the shell's word is not its end (_frame offers nothing)
+		base = _word_base(context, request)
 		# how readline compares characters ignoring case, in the shell's locale (bash's glue says which)
 		context.icase = case_fold(request.flags) if request.flags.get('icase') == '1' else None
 		if context.icase:
 			# bash's glue then matches what it adds itself (a command's own completion, file names) in any case too
 			response.directives.add('icase')
-			# nor before the shell's word (see _frame): a name differing in case there is no candidate, so no
-			# provider may count it (toward GROUP_THRESHOLD, among the hosts listed beside the groups)
-			base = _word_base(context, request)
+			# nor before the shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the
+			# base as typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''.
+			# A name differing in case there is no candidate, so no provider may count it (toward GROUP_THRESHOLD,
+			# among the hosts listed beside the groups), and _frame drops it
 			if base is not None:
 				context.fold_start = max(context.fold_start, len(base))
 		if context.slot == SLOT_OPTION:
@@ -3744,7 +3747,7 @@ class Engine(object):
 			candidates = self._commands(context, response, deadline)
 		if request.flags.get('nosort') == '1':
 			response.directives.add('nosort')
-		response.candidates = self._frame(candidates, context, request, response.directives)
+		response.candidates = self._frame(candidates, context, request, base, response.directives)
 		return response
 
 	def host_states(self):
@@ -4365,27 +4368,25 @@ class Engine(object):
 		'''value -> score of every feature of a kind ('h:', 'c:'), scored against features.'''
 		return {feature[len(kind):]: score for feature, score in score_features(self.knowledges, kind, sorted(features), deadline).items()}
 
-	def _frame(self, candidates, context, request, directives=()):
+	def _frame(self, candidates, context, request, base, directives=()):
 		'''
 		Turn slot values into replacements for the shell's word, best first, without duplicates.
 
 		For bash, and for any shell that inserts the text as it is (request flag insert=1: the picker),
 		text left unquoted is escaped for that shell, except when bash's TAB quotes file names itself.
-		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do.
+		ble.sh (flag ble=1) quotes what it inserts itself, as zsh and fish do. base is _word_base of the
+		request (query has it: it raises context.fold_start by its length): None offers nothing.
 		'''
 		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
 		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
 		prefix = context.prefix
-		base = _word_base(context, request)
 		if base is None:
 			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
 			return []
 		lead = prefix[:context.value_start]
-		# whatever found it: only from fold_start on may it differ from the word in case, and not before the
-		# shell's word: bash (its COMP_WORDBREAKS : and =) replaces that word alone, keeping the base as
-		# typed (HOST:fi with host:file put in HOST:file); zsh and fish replace their whole word, base ''
-		fold_start = max(context.fold_start, len(base))
+		# whatever found it: only from fold_start on may it differ from the word in case
+		fold_start = context.fold_start
 		out = []
 		seen = set()
 		for candidate in sorted(candidates, key=lambda candidate: (-candidate.score, candidate.text)):

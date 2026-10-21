@@ -608,7 +608,7 @@ def test_frame_drops_candidates_matching_earlier_text_in_any_case():
 	context = mc.parse_context(request.before, request.after, SPEC)
 	context.icase = mc.UNICODE_CASE
 	candidates = [mc.Candidate(text, '', 'history', 1.0) for text in ('WEB1,web2', 'web1,WEB3', 'web1,web2')]
-	assert texts_of(engine._frame(candidates, context, request)) == ['web1,WEB3', 'web1,web2']
+	assert texts_of(engine._frame(candidates, context, request, mc._word_base(context, request))) == ['web1,WEB3', 'web1,web2']
 
 
 @pytest.mark.parametrize('history, typed, word, control, control_word, offered', [
