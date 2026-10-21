@@ -432,6 +432,72 @@ def test_bash_ignoring_case_in_the_locale_bash_takes_from_lang_over_a_bad_lc_cty
 		session.close()
 
 
+def utf8_locale():
+	'''A UTF-8 locale bash takes here (C.UTF-8, en_US.UTF-8), None where there is none.'''
+	return next((name for name in ('C.UTF-8', 'en_US.UTF-8') if taken_by_bash(name) == (True, False)), None)
+
+
+def glue_request_flags(tmp_path, shell, env, setting=''):
+	'''The flags of a request zsh's or fish's glue prints for the engine in env, setting run in the shell first.'''
+	glue = glue_file(tmp_path, shell)
+	if shell == 'zsh':
+		argv = [require_shell('zsh'), '-f', '-c', setting + '\nsource "$1"; _mssh_complete_request x=1 "mssh " ""', 'probe', str(glue)]
+	else:
+		argv = [require_shell('fish'), '--no-config', '-c', setting + '\nsource {}; __mssh_complete_request x=1 "mssh " "" ""'.format(mc._fish_quote(str(glue)))]
+	output = subprocess.run(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	# (zsh's status is fc's, which has no history to give outside an interactive shell)
+	assert output.stderr == b'', output
+	return mc.parse_request(output.stdout).flags
+
+
+@pytest.mark.parametrize('lang', ['UTF-8', 'C', 'POSIX', 'tr_TR.UTF-8', 'tr_TR.ISO-8859-9'])
+@pytest.mark.parametrize('shell', ['zsh', 'fish'])
+def test_zsh_and_fish_requests_say_the_locale_the_shell_runs_in(tmp_path, shell, lang):
+	# zsh's glue measures it as bash's does (utf8, turkic); fish's names the variables fish exports, as fish
+	# reads text as UTF-8 in C too, which says nothing of the terminal. The engine takes either as bash here
+	# takes the locale, whatever its own variables say (they were all it had)
+	if lang == 'UTF-8':
+		lang = utf8_locale()
+		if lang is None:
+			pytest.skip('no UTF-8 locale here')
+	taken = taken_by_bash(lang)
+	if lang.startswith('tr_') and not taken[1]:
+		pytest.skip('no {} locale here'.format(lang))
+	if lang in ('C', 'POSIX'):
+		assert taken == (False, False)
+	env, _ = make_home(tmp_path)
+	flags = glue_request_flags(tmp_path, shell, dict(env, LANG=lang))
+	assert flags['x'] == '1' and flags['term'] == env['TERM']
+	if shell == 'zsh':
+		assert (flags['utf8'], flags['turkic']) == tuple('1' if value else '0' for value in taken)
+	else:
+		assert (flags['lc_all'], flags['lc_ctype'], flags['lang']) == ('', '', lang)
+	assert mc._measured_utf8(mc.Request(shell, 'mssh ', flags=flags)) is taken[0]
+
+
+@pytest.mark.parametrize('shell, exported, setting, utf8', [
+	# zsh follows an LC_ALL or LC_CTYPE set in the shell and not exported, which the engine never sees
+	('zsh', 'UTF-8', 'LC_ALL=C', False),
+	('zsh', 'C', 'LC_CTYPE={utf8}', True),
+	# fish follows only the variables it exports
+	('fish', 'UTF-8', 'set -g LC_ALL C', True),
+	('fish', 'UTF-8', 'set -gx LC_ALL C', False),
+	('fish', 'C', 'set -gx LC_CTYPE {utf8}', True)])
+def test_zsh_and_fish_requests_say_the_locale_the_shell_set_itself(tmp_path, shell, exported, setting, utf8):
+	locale = utf8_locale()
+	if locale is None:
+		pytest.skip('no UTF-8 locale here')
+	env, _ = make_home(tmp_path)
+	env['LANG'] = locale if exported == 'UTF-8' else exported
+	setting = setting.format(utf8=locale)
+	assert mc._measured_utf8(mc.Request(shell, 'mssh ', flags=glue_request_flags(tmp_path, shell, env, setting))) is utf8
+	if shell == 'fish':
+		# fish itself reads text so, once kept from taking a UTF-8 locale for a single-byte one
+		script = "set -g fish_allow_singlebyte_locale 1\n" + setting + "\nstring length -- (printf '\\xc3\\xa9')"
+		output = subprocess.run([require_shell('fish'), '--no-config', '-c', script], env=env, stdout=subprocess.PIPE, timeout=30)
+		assert output.stdout.decode().strip() == ('1' if utf8 else '2')
+
+
 def test_bash_ignoring_case_keeps_the_directories_of_a_command_word_as_typed(tmp_path):
 	# as readline's own file name completion does: /zzsrv/data/o became /zzsrv/Data/out
 	history = ['179000000{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command)
