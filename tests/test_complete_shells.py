@@ -553,6 +553,32 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 		session.close()
 
 
+ENGINES_GLOB = ['1790000000\t/x/multiSSH3.py\t-su\th\t"zzsvc zz*x"']
+
+
+@pytest.mark.parametrize('options, completed', [
+	# readline quotes what the compspec's -o filenames makes it quote, and mssh's own words are handed over unescaped to it
+	('-W other -o filenames', 'mssh h zzsvc zz\\*x '),
+	# not with -o noquote: readline quotes nothing then, and mssh's words go in as the engine escaped them
+	('-W other -o filenames -o noquote', 'mssh h zzsvc zz\\*x '),
+	('-W other -o filenames -o noquote -o nospace', 'mssh h zzsvc zz\\*x'),
+	('-d -o noquote', 'mssh h zzsvc zz\\*x '),
+	# from bash 5.3, -o fullquote quotes all matches
+	('-W other -o fullquote', 'mssh h zzsvc zz\\*x '),
+	('-W other -o fullquote -o noquote', 'mssh h zzsvc zz\\*x '),
+	('-W other -o fullquote -o filenames', 'mssh h zzsvc zz\\*x '),
+])
+def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_path, options, completed):
+	if 'fullquote' in options and subprocess.run([require_shell('bash'), '-c', 'complete -o fullquote -W x zzq'],
+			stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode:
+		pytest.skip('this bash has no complete -o fullquote (bash 5.3)')
+	session = ignoring_case(tmp_path, ENGINES_GLOB, on=False, options='complete {} zzsvc'.format(options))
+	try:
+		assert session.line_after('mssh h zzsvc zz') == completed
+	finally:
+		session.close()
+
+
 # names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
 # sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
 # every glue function to the prefix

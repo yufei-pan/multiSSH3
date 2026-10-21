@@ -6746,8 +6746,11 @@ _mssh_complete_tab() {
 	(( _mssh_complete_ended )) || return 0
 	if (( _mssh_complete_delegating )) && (( ${#_mssh_complete_xfields[@]} >= 3 )); then
 		_mssh_complete_delegate "$_mssh_complete_cur" "${_mssh_complete_xfields[@]}"
-		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped
-		if [[ $(compopt 2>/dev/null) == *' -o filenames '* ]]; then
+		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped,
+		# unless it turned quoting off (noquote: readline quotes no file names then, but fullquote, from bash
+		# 5.3, still quotes all matches)
+		_mssh_complete_item=$(compopt 2>/dev/null) || :
+		if [[ $_mssh_complete_item == *' -o fullquote '* ]] || [[ $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ]]; then
 			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
 		fi
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
