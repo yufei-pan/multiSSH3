@@ -87,7 +87,8 @@ def test_blesh_typing_is_not_held_up_by_a_slow_engine(setup):
 		for char in 'mssh gpu[01-16] uptime':
 			session.send(char)
 			time.sleep(0.05)
-		assert session.line_after('', keys='') == 'mssh gpu[01-16] uptime'
+		# the slow engine is still running: it is what is not waited for
+		assert session.line_after('', keys='', settle=False) == 'mssh gpu[01-16] uptime'
 		assert time.monotonic() - started < 6
 	finally:
 		session.close()
