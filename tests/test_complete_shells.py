@@ -520,17 +520,9 @@ SAME_AS_BASH_UNQUOTED = [
 	# bash's word stops at a colon: bx for a:b
 	(['-F', '_zzg', '-X', '&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
 	(['-F', '_zzg', '-X', '!&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
-	# file names, as the file actions and -G give them, are quoted and the directories marked, as without -o filenames
-	(['-f'], 'my', ''),
-	(['-d'], 'my', ''),
-	(['-A', 'file'], 'my', ''),
-	(['-A', 'directory'], 'my', ''),
-	(['-G', 'my*'], 'my', ''),
-	(['-d', '-o', 'noquote'], 'my', ''),
-	(['-W', 'other', '-d', '-X', '!my*'], 'my', ''),
-	# a command with no completion of its own gets file names
-	(None, 'my', ''),
-	(None, 'zzd', ''),
+	# the file actions, -G and a command with no compspec give file names that readline does not quote here: the glue
+	# leaves readline's file name mode off while mssh's own words are in the reply, so these are not compared with
+	# bash (6.39: the glue quotes them itself)
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
@@ -604,13 +596,38 @@ def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_pa
 		session.close()
 
 
-def test_bash_completes_the_command_word_of_a_remote_line_as_bash_does(tmp_path):
-	# a name with a space is quoted for the remote shell too
-	session = ignoring_case(tmp_path, [], on=False, commands=['zzc cmd'])
+def history_of(*commands):
+	return ['17900000{:02d}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(number, command) for number, command in enumerate(commands)]
+
+
+@pytest.mark.parametrize('options, typed', [
+	('', 'mssh h othercmd '),
+	('complete -f zzsvc', 'mssh h zzsvc '),
+])
+def test_bash_a_remote_home_path_from_history_is_not_left_for_the_local_shell_to_expand(tmp_path, options, typed):
+	# readline never quotes a leading ~: the glue keeps the engine's \~ and does not turn readline's file name mode on
+	history = history_of('othercmd ~/notes', 'zzsvc ~/notes')
+	session = ignoring_case(tmp_path, history, on=False, options=options)
 	try:
-		native = session.line_after('zzc')
-		assert native == 'zzc\\ cmd '
-		assert session.line_after('mssh h zzc') == 'mssh h ' + native
+		assert session.line_after(typed) == typed + '\\~/notes '
+	finally:
+		session.close()
+
+
+def test_bash_a_remote_word_matching_a_local_directory_keeps_its_space(tmp_path):
+	session = ignoring_case(tmp_path, history_of('othercmd srcx'), on=False)
+	try:
+		(tmp_path / 'work' / 'srcx').mkdir()
+		assert session.line_after('mssh h othercmd sr') == 'mssh h othercmd srcx '
+	finally:
+		session.close()
+
+
+def test_bash_a_remote_command_name_matching_a_local_directory_keeps_its_space(tmp_path):
+	session = ignoring_case(tmp_path, history_of('zqbuild'), on=False)
+	try:
+		(tmp_path / 'work' / 'zqbuild').mkdir()
+		assert session.line_after('mssh h zqbu') == 'mssh h zqbuild '
 	finally:
 		session.close()
 

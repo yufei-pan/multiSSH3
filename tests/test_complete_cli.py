@@ -416,10 +416,66 @@ print(mssh._completion_command(['bash']), 'mssh_complete' in sys.modules)
 
 def test_mssh_completion_without_mssh_complete_beside_it_says_so(tmp_path):
 	shutil.copyfile(str(REPO / 'multiSSH3.py'), str(tmp_path / 'multiSSH3.py'))
-	result = subprocess.run([sys.executable, '-I', '-B', '-c', _COMPLETION_ALONE_SCRIPT, str(tmp_path / 'multiSSH3.py')],
+	# -S: no site-packages, so an installed or editable multiSSH3 has no mssh_complete to import here
+	result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', _COMPLETION_ALONE_SCRIPT, str(tmp_path / 'multiSSH3.py')],
 		cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 	assert result.stdout.split() == [b'1', b'False'], result.stderr.decode('utf-8', 'replace')
 	assert b'autocomplete needs mssh_complete.py next to ' in result.stderr
+
+
+_IMPORT_FAILS_SCRIPT = '''
+import importlib.util, sys
+name, path = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location(name, path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[name] = module
+spec.loader.exec_module(module)
+sys.path[:0] = sys.argv[3:]
+try:
+	module._completion_command(['bash']) if name == 'multiSSH3' else module._import_mssh()
+except BaseException as error:
+	print(type(error).__name__, error)
+'''
+
+
+def import_fails(tmp_path, first, other_stub, installed=False):
+	"""The failure (class and text) of importing the other module when its stub raises: the stub sits beside first, or
+	(installed) in a directory on sys.path with no copy beside first."""
+	pair = {'multiSSH3': 'mssh_complete', 'mssh_complete': 'multiSSH3'}
+	other = pair[first]
+	here = tmp_path / 'here'
+	here.mkdir()
+	shutil.copyfile(str(REPO / (first + '.py')), str(here / (first + '.py')))
+	where = tmp_path / 'installed' if installed else here
+	where.mkdir(exist_ok=True)
+	(where / (other + '.py')).write_text(other_stub)
+	command = [sys.executable, '-I', '-S', '-B', '-c', _IMPORT_FAILS_SCRIPT, first, str(here / (first + '.py'))]
+	command += [str(where)] if installed else []
+	result = subprocess.run(command, cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE, timeout=60)
+	return result.stdout.decode('utf-8', 'replace').strip(), result.stderr.decode('utf-8', 'replace')
+
+
+def test_mssh_completion_reports_an_import_error_of_an_installed_mssh_complete_as_it_is(tmp_path):
+	# not as the file being missing: it is there, and what it imports is not
+	out, err = import_fails(tmp_path, 'multiSSH3', 'import zz_no_such_module\n', installed=True)
+	assert out.startswith('ModuleNotFoundError'), (out, err)
+	assert 'zz_no_such_module' in out and 'needs mssh_complete.py' not in err
+
+
+def test_mssh_completion_survives_an_mssh_complete_that_took_itself_out_of_sys_modules(tmp_path):
+	out, err = import_fails(tmp_path, 'multiSSH3', 'import sys\ndel sys.modules[__name__]\nraise RuntimeError("boom")\n')
+	assert out == 'RuntimeError boom', (out, err)
+
+
+def test_the_engine_survives_a_multissh3_that_took_itself_out_of_sys_modules(tmp_path):
+	out, err = import_fails(tmp_path, 'mssh_complete', 'import sys\ndel sys.modules[__name__]\nraise RuntimeError("boom")\n')
+	assert out == 'RuntimeError boom', (out, err)
+
+
+def test_the_engine_reports_an_import_error_of_an_installed_multissh3_as_it_is(tmp_path):
+	out, err = import_fails(tmp_path, 'mssh_complete', 'import zz_no_such_module\n', installed=True)
+	assert out.startswith('ModuleNotFoundError') and 'zz_no_such_module' in out, (out, err)
 
 
 def test_the_engine_takes_no_module_from_elsewhere(tmp_path):
