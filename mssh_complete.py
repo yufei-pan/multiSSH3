@@ -1148,13 +1148,13 @@ def case_fold(flags):
 	"""
 	How a request with icase=1 is matched in any case: a CaseFold, or None for not at all.
 
-	This glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
+	bash's glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
 	UTF-8 character as one, whether it lowers I to another letter than i): readline compares in the
-	locale bash runs in, whatever the variables name. Older glues get what their own engine did, as an
-	installed glue file stays until mssh --completion install runs again: main's between 6.36 and the
-	measure (never released) sent the locale's name, lc=, read through the C library (_named_locale), no
-	matching in any case where it names no locale; 6.36's sent icase alone, read once per shell, and its
-	engine matched in the case typed.
+	locale bash runs in, whatever the variables name (zsh's glue measures them too, with icase=0).
+	Older glues get what their own engine did, as an installed glue file stays until mssh --completion
+	install runs again: main's between 6.36 and the measure (never released) sent the locale's name, lc=,
+	read through the C library (_named_locale), no matching in any case where it names no locale; 6.36's
+	sent icase alone, read once per shell, and its engine matched in the case typed.
 	"""
 	measured = _shell_locale(flags)
 	if not measured:
@@ -1184,9 +1184,10 @@ def _named_locale(name):
 
 def _shell_locale(flags):
 	"""
-	(utf8, turkic) of the locale bash runs in, as its glue's request flags say: this glue's measure
-	(utf8=, turkic=), or the locale an older glue named (lc=, _named_locale). False where lc= names a
-	locale the C library has not, None where the flags say nothing of it (zsh, fish, 6.36's glue).
+	(utf8, turkic) of the locale the shell runs in, as its glue's request flags say: the measure bash's
+	and zsh's glues make in the shell (utf8=, turkic=), or the locale an older bash glue named (lc=,
+	_named_locale). False where lc= names a locale the C library has not, None where the flags say
+	nothing of it (fish, which names its variables instead: _measured_utf8; older glues).
 	"""
 	if 'utf8' in flags:
 		return flags['utf8'] == '1', flags.get('turkic') == '1'
@@ -1194,13 +1195,33 @@ def _shell_locale(flags):
 		return _named_locale(flags['lc']) or False
 	return None
 
+# fish's glue names fish's locale variables in these request flags
+_NAMED_VARIABLES = (('lc_all', 'LC_ALL'), ('lc_ctype', 'LC_CTYPE'), ('lang', 'LANG'))
+
 def _measured_utf8(request):
 	"""
-	Whether bash runs in a UTF-8 locale, as a request of its glue says (_shell_locale: ASCII where an
-	older glue's lc= names no locale), None where it says nothing.
+	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
+	older glue: Engine.unicode then reads the variables the engine was started with). bash's and zsh's
+	glues measure it in the shell (_shell_locale: ASCII where an older bash glue's lc= names no locale).
+	fish's names the LC_ALL, LC_CTYPE and LANG fish exports, the only ones it follows (lc_all=,
+	lc_ctype=, lang=, escaped as in URLs), resolved here as bash resolves them: in a single-byte locale,
+	C included, fish takes a UTF-8 one instead unless fish_allow_singlebyte_locale is set (fish 3.3 and
+	4.0 alike), so a measure there says UTF-8 where the terminal may show none of it; the variables the
+	operator set say what it shows.
 	"""
-	measured = _shell_locale(request.flags) if request.shell == 'bash' else None
-	return measured and measured[0]
+	measured = _shell_locale(request.flags)
+	if measured is not None:
+		return measured and measured[0]
+	if 'lang' not in request.flags:
+		return None
+	variables = {}
+	for flag, name in _NAMED_VARIABLES:
+		value = request.flags.get(flag, '')
+		if '%' in value:
+			from urllib.parse import unquote
+			value = unquote(value, errors='surrogateescape')
+		variables[name] = value
+	return _locale_variables_utf8(variables)
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
@@ -3628,7 +3649,7 @@ class Engine(object):
 		self.flag_defaults = {}
 		# OPTION_NO_EFFECT entries from mssh: (long option, 'with' | 'without', other long options, why)
 		self.no_effect = []
-		# whether bash runs in a UTF-8 locale, as its glue measured it (request flag utf8), None if not said
+		# whether the shell runs in a UTF-8 locale, as its glue's request says (_measured_utf8), None if not said
 		self.shell_utf8 = None
 		# _unicode_terminal(), once asked
 		self._unicode = None
@@ -3636,8 +3657,8 @@ class Engine(object):
 	@property
 	def unicode(self):
 		'''
-		Whether to write in Unicode (messages, the picker): as bash's glue measured its locale, else as the
-		variables say, which are worked out at the first use and kept.
+		Whether to write in Unicode (messages, the picker): as the shell's glue said of its locale, else (an
+		older glue) as the variables say, which are worked out at the first use and kept.
 		'''
 		if self.shell_utf8 is not None:
 			return self.shell_utf8
@@ -4662,7 +4683,7 @@ def engine_for(request, directory=Ellipsis, now=None, deadline=None):
 		history = request.history[::-1] if request.shell == 'fish' else request.history
 		knowledges.append(shell_history_knowledge(history, spec))
 	engine = Engine(spec, knowledges, HostTable(index), users)
-	# the locale bash runs in, as its glue measured it
+	# the locale the shell runs in, as its glue says
 	engine.shell_utf8 = _measured_utf8(request)
 	engine.history_path = index.header.get('history') if index is not None else os.path.expanduser('~/.mssh_history')
 	engine.directory = directory
@@ -5115,11 +5136,13 @@ def _age(seconds):
 def _unicode_terminal():
 	'''
 	Whether the shell runs in a UTF-8 locale, from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them
-	(_locale_variables_utf8): for what bash's glue has not measured (Engine.unicode). Python's own encoding
-	says UTF-8 in a C or POSIX locale too: from 3.7 it sets LC_CTYPE to C.UTF-8 in os.environ there (PEP
-	538), and 3.15 always runs in UTF-8 mode. The variables are read as the process was started with them
-	(_exec_environ), which that change leaves alone. Where they cannot be (macOS, the BSDs), os.environ is
-	read, where Python changed LC_CTYPE only where it took C, which also starts its UTF-8 mode: then an
+	(_locale_variables_utf8): for a request whose glue said nothing of it (Engine.unicode), as zsh's and
+	fish's before 6.38 and 6.36's bash glue do (an installed glue file stays until mssh --completion
+	install runs again). Python's own encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets
+	LC_CTYPE to C.UTF-8 in os.environ there (PEP 538), and 3.15 always runs in UTF-8 mode. The variables
+	are read as the process was started with them (_exec_environ), which that change leaves alone. Where
+	they cannot be (macOS, the BSDs), os.environ is read, where Python changed LC_CTYPE only where it
+	took C, which also starts its UTF-8 mode: then an
 	LC_CTYPE of C.UTF-8, C.utf8 or UTF-8 may be Python's and draws ASCII, whatever LANG says. UTF-8 mode
 	says so on 3.7 to 3.14, unless PYTHONUTF8 set it: this file runs isolated (-I), which ignores that,
 	but the mssh-complete script pip or uv makes does not, and with PYTHONUTF8 set in its environment
@@ -7257,7 +7280,7 @@ _mssh() {
 	local -A _mssh_complete_compsys_options
 	_mssh_complete_compsys_options=("${(@kv)options}")
 	emulate -L zsh
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_flags _mssh_complete_resp _mssh_complete_chunk
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_flags _mssh_complete_resp _mssh_complete_chunk _mssh_complete_locale
 	local _mssh_complete_line _mssh_complete_item _mssh_complete_name _mssh_complete_qfd _mssh_complete_kind _mssh_complete_rest
 	local -F _mssh_complete_end
 	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0
@@ -7265,7 +7288,8 @@ _mssh() {
 	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed
 	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} ${compstate[quote]}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
-	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM"
+	_mssh_complete_read_locale
+	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM $_mssh_complete_locale"
 	exec {_mssh_complete_qfd}< <(
 		{
 			print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$_mssh_complete_flags"$'\0'"$_mssh_complete_before"$'\0'"$_mssh_complete_after"$'\0'"$PREFIX"$'\0'
@@ -7387,9 +7411,24 @@ _mssh_complete_is_mssh() {
 	[[ $1 =~ '^[[:space:]]*([^[:space:]]*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)[[:space:]]' ]]
 }
 
+_mssh_complete_read_locale() {
+	# how zsh takes characters in the locale it runs in, as request flags measured as bash's glue measures
+	# them: utf8=1 when it counts a two-byte UTF-8 character as one and two bytes that are none as two
+	# (GB18030, GBK, EUC-KR, EUC-JP and Big5 count both as one), turkic=1 when it lowers I to another
+	# letter than i (Turkish: a dotless i). This is the locale zsh took, which zle shows text in: zsh also
+	# follows an LC_ALL, LC_CTYPE or LANG set in the shell and not exported, which the engine never sees
+	emulate -L zsh
+	local _mssh_complete_two_bytes=$'\xc3\xa9' _mssh_complete_gb_pair=$'\xa1\xa1' _mssh_complete_capital=I _mssh_complete_turkic=1
+	[[ ${(L)_mssh_complete_capital} == i ]] && _mssh_complete_turkic=0
+	_mssh_complete_locale="utf8=$(( ${#_mssh_complete_two_bytes} == 1 && ${#_mssh_complete_gb_pair} == 2 )) turkic=$_mssh_complete_turkic"
+}
+
 _mssh_complete_request() {
-	# print a request with flags $1 for the line $2 (before the cursor) $3 (after it), then the history tail
-	print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$1 term=$TERM"$'\0'"$2"$'\0'"$3"$'\0'$'\0'
+	# print a request with flags $1 (and the locale zsh runs in) for the line $2 (before the cursor) $3
+	# (after it), then the history tail
+	local _mssh_complete_locale
+	_mssh_complete_read_locale
+	print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$1 term=$TERM $_mssh_complete_locale"$'\0'"$2"$'\0'"$3"$'\0'$'\0'
 	fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
 }
 
@@ -7828,8 +7867,12 @@ _mssh_complete_setup() {
 _mssh_complete_zas_strategy() {
 	# zsh-autosuggestions asks mssh first (in zsh's options: ksh_arrays would keep only its first strategy)
 	emulate -L zsh
-	# joined and split on spaces, whatever IFS the shell has: (s) alone joins an array with IFS first
-	(( ${${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY}[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY:-history})
+	# its strategies as words (also a list written as one string): joined and split on spaces, whatever
+	# IFS the shell has ((s) alone joins an array with IFS first). Held in an array: one word was a
+	# scalar, whose subscript looks for mssh inside it, and found it in xmssh (zsh 5.9) or not in mssh (5.5)
+	local -a _mssh_complete_strategies
+	_mssh_complete_strategies=(${(j: :s: :)ZSH_AUTOSUGGEST_STRATEGY})
+	(( ${_mssh_complete_strategies[(Ie)mssh]} )) || ZSH_AUTOSUGGEST_STRATEGY=(mssh ${_mssh_complete_strategies:-history})
 }
 
 if [[ -o interactive ]]; then
@@ -7840,11 +7883,26 @@ fi
 '''
 
 # Both fish glue files ask the engine through these (a file defines them again when it loads: the same text)
-_FISH_QUERY = r'''function __mssh_complete_request --argument-names flags before after word
-	# print a request with flags for the line before and after the cursor, then the history tail
+_FISH_QUERY = r'''function __mssh_complete_locale
+	# the locale fish runs in, as request flags: the LC_ALL, LC_CTYPE and LANG it exports (fish follows no
+	# others), escaped as in URLs, empty when not exported. Named, not measured: in a single-byte locale,
+	# C included, fish reads text as UTF-8 (unless fish_allow_singlebyte_locale is set), whatever the
+	# terminal shows
+	set -l flags
+	for name in LC_ALL LC_CTYPE LANG
+		set -l value
+		set -qx $name; and set value (string escape --style=url -- "$$name")
+		set -a flags (string lower -- $name)="$value"
+	end
+	echo $flags
+end
+function __mssh_complete_request --argument-names flags before after word
+	# print a request with flags (and the locale fish runs in) for the line before and after the cursor,
+	# then the history tail
 	set -l keep 1000
 	set -q MSSH_COMPLETE_SHELL_HISTORY; and set keep $MSSH_COMPLETE_SHELL_HISTORY
-	command printf '%s\0' MSSHC1 fish $FISH_VERSION "$flags term=$TERM" "$before" "$after" "$word"
+	set -l locale (__mssh_complete_locale)
+	command printf '%s\0' MSSHC1 fish $FISH_VERSION "$flags term=$TERM $locale" "$before" "$after" "$word"
 	# the history builtin: the operator's history function or alias (one showing times) would change the lines
 	builtin history search -n $keep 2>/dev/null
 end
@@ -7970,8 +8028,9 @@ switch "$FISH_VERSION"
 					# long as the operator takes: 124 when too slow, 130 on Ctrl-C while it starts (START_SCRIPT)
 					set -l limit 2
 					string match -qr '^(\d+|\d+\.\d*|\.\d+)$' -- "$MSSH_COMPLETE_START_TIMEOUT"; and set limit $MSSH_COMPLETE_START_TIMEOUT
+					set -l locale (__mssh_complete_locale)
 					set -l lines (begin
-						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM" "$before" "$after" ''
+						command printf '%s\0' MSSHC1 fish $FISH_VERSION "pick=1 nul=0 term=$TERM $locale" "$before" "$after" ''
 						builtin history search -n $keep 2>/dev/null
 					end | command sh -c $__mssh_complete_start_script sh $limit @ENGINE@ pick 2>/dev/null)
 					set -l st $status

@@ -1436,6 +1436,49 @@ def test_zsh_picker_leaves_keys_typed_after_the_choice(home):
 		session.close()
 
 
+def recording_engine(home):
+	'''The engine, keeping each request it is given in a file of home/requests: (command, that directory).'''
+	requests = home / 'requests'
+	requests.mkdir()
+	path = home / 'recording-engine'
+	path.write_text('#!/bin/sh\nrequest=$(mktemp {}/request.XXXXXX)\ncat >"$request"\nexec {} "$@" <"$request"\n'.format(
+		shlex.quote(str(requests)), ' '.join(shlex.quote(part) for part in ENGINE)))
+	path.chmod(0o755)
+	return [str(path)], requests
+
+
+def recorded_flags(requests):
+	'''{kind: [the flags of each request]} of what recording_engine kept: pick, ghost, diag (warnings) or tab.'''
+	kinds = {}
+	for path in sorted(requests.iterdir()):
+		flags = mc.parse_request(path.read_bytes()).flags
+		kinds.setdefault(next((kind for kind in ('pick', 'ghost', 'diag') if flags.get(kind) == '1'), 'tab'), []).append(flags)
+	return kinds
+
+
+@pytest.mark.parametrize('zas', [False, True], ids=['own', 'zsh-autosuggestions'])
+def test_zsh_says_the_locale_it_runs_in_in_every_request(home, zas):
+	# grey text, warnings, Ctrl-R and TAB: each request holds zsh's measure of its locale, here C by an
+	# LC_ALL it keeps to itself (the engine sees the exported LANG), and the picker draws ASCII
+	env, home = home
+	command, requests = recording_engine(home)
+	session = zsh_with(env, home, zas, command=command, extra='LC_ALL=C   # not exported: zsh runs in C, mssh-complete sees LANG')
+	try:
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.5)
+		session.send('\x12')
+		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
+		session.send('\x1b')
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		session.send('\x15mssh gp\t')
+		session.read_until(b'@@never@@', 1.0)
+	finally:
+		session.close()
+	kinds = recorded_flags(requests)
+	assert {'ghost', 'diag', 'pick', 'tab'} <= set(kinds), kinds
+	assert [flags for flags in sum(kinds.values(), []) if (flags.get('utf8'), flags.get('turkic')) != ('0', '0')] == []
+
+
 # ---------------------------------------------------------------- fish
 
 def fish_major():
@@ -1515,6 +1558,29 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home, debug
 		session.close()
 	if debug == '0':
 		assert debug_log_size(env) == logged
+
+
+def test_fish_names_the_locale_it_exports_in_every_request(home):
+	# TAB, the check at a space (fish 4) and Ctrl-R: each request names the LC_ALL, LC_CTYPE and LANG fish
+	# exports, the only ones it follows (an LC_ALL it keeps to itself changes nothing)
+	env, home = home
+	command, requests = recording_engine(home)
+	pre = 'set -g LC_ALL C\nfunction mssh; end\nsource {}'.format(glue_file(home, 'fish', command=command))
+	session = fish_session(home, env, mc.render_glue('fish-keys', command), pre=pre)
+	try:
+		session.send('mssh gp\t')
+		session.read_until(b'@@never@@', 1.0)
+		session.send('x ')
+		session.read_until(b'@@never@@', 1.0)
+		session.send('\x12')
+		assert 'type to filter' in session.read_until(b'type to filter', 10)
+		session.send('\x1b')
+		session.read_until(b'@@never@@', 0.5)
+	finally:
+		session.close()
+	kinds = recorded_flags(requests)
+	assert {'tab', 'pick'} | ({'diag'} if fish_major() >= 4 else set()) <= set(kinds), kinds
+	assert [flags for flags in sum(kinds.values(), []) if (flags.get('lc_all'), flags.get('lc_ctype'), flags.get('lang')) != ('', '', env['LANG'])] == []
 
 
 def slow_start_session(shell, env, home, delay, deaf=False, **env_options):
