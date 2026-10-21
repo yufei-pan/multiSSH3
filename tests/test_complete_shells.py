@@ -1006,6 +1006,18 @@ def test_zsh_glue_splits_the_autosuggestion_strategies_whatever_ifs_the_shell_ha
 	assert output.stdout.decode() == '|'.join(['mssh'] + strategies) + '\n', output
 
 
+@pytest.mark.parametrize('strategy, strategies', [
+	('(mssh)', 'mssh'), ('mssh', 'mssh'), ('(history mssh)', 'history|mssh'),
+	('(xmssh)', 'mssh|xmssh'), ('mssh_old', 'mssh|mssh_old'), ('"history mssh_old"', 'mssh|history|mssh_old')])
+def test_zsh_glue_finds_mssh_among_the_autosuggestion_strategies_as_a_whole_word(tmp_path, strategy, strategies):
+	# one strategy was a scalar to the subscript, which looked for mssh inside it: zsh 5.9 found it in
+	# xmssh and mssh_old (mssh never asked), zsh 5.5 not in mssh (asked twice)
+	script = 'source "$1"; ZSH_AUTOSUGGEST_STRATEGY=' + strategy + '; _mssh_complete_zas_strategy; print -r -- "${(j:|:)ZSH_AUTOSUGGEST_STRATEGY}"'
+	output = subprocess.run([require_shell('zsh'), '-f', '-c', script, 'probe', str(glue_file(tmp_path, 'zsh'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.stdout.decode() == strategies + '\n', output
+
+
 # a command whose completion is built on _arguments, as most of zsh's are
 ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
 
