@@ -561,11 +561,12 @@ def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
 		assert (edit.returncode, edit.stdout, edit.stderr) == (3, b'', b'')
 
 
-def start_on_a_terminal(args, data, env, listening):
+def start_on_a_terminal(args, data, env, listening, command=None, stderr=None):
 	'''
 	Start the engine with a pseudo-terminal as its controlling terminal, the request on stdin and
 	stdout a pipe; listening False: nobody reads that pipe any more (the shell stopped waiting).
-	Returns (process, the terminal's master side, the pipe's read end or None).
+	data None: stdin is /dev/null. command: the engine command to run (default ENGINE); stderr: where
+	its stderr goes (default /dev/null). Returns (process, the terminal's master side, the pipe's read end or None).
 	'''
 	import os
 	import pty
@@ -575,15 +576,16 @@ def start_on_a_terminal(args, data, env, listening):
 	name = os.ttyname(slave)
 	read_end, write_end = os.pipe()
 	# a new session that opens the terminal gets it as its controlling terminal
-	process = subprocess.Popen(ENGINE + args, stdin=subprocess.PIPE, stdout=write_end, stderr=subprocess.DEVNULL, env=env,
-		start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
+	process = subprocess.Popen((ENGINE if command is None else command) + args, stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
+		stdout=write_end, stderr=subprocess.DEVNULL if stderr is None else stderr, env=env, start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
 	os.close(write_end)
 	os.close(slave)
 	if not listening:
 		os.close(read_end)
 		read_end = None
-	process.stdin.write(data)
-	process.stdin.close()
+	if data is not None:
+		process.stdin.write(data)
+		process.stdin.close()
 	return process, master, read_end
 
 
@@ -660,17 +662,12 @@ def test_edit_delivers_its_answer_whatever_its_debug_messages_do(tmp_path, debug
 	# fell back to pass, and after the answer was written it made the exit status 1, so the glue dropped the line
 	import os
 	import subprocess
-	from complete_shell_harness import make_home
+	from complete_shell_harness import make_home, with_debug_log
 	env, _ = make_home(tmp_path, HISTORY)
-	env['MSSH_COMPLETE_DEBUG'] = debug
-	master, slave = pty_pair()
-	read_end, write_end = os.pipe()
-	name = os.ttyname(slave)
+	env = with_debug_log(env, debug)
 	patch = 'def boom(*args): raise RuntimeError("boom")\nmc._without_passwords = boom'
-	process = subprocess.Popen(patched_engine(patch) + ['edit', '--ready', '--', 'mssh '], stdin=subprocess.DEVNULL, stdout=write_end,
-		stderr=subprocess.PIPE, env=env, start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
-	os.close(write_end)
-	os.close(slave)
+	process, master, read_end = start_on_a_terminal(['edit', '--ready', '--', 'mssh '], None, env, listening=True,
+		command=patched_engine(patch), stderr=subprocess.PIPE)
 	try:
 		assert terminal_output(read_end, 10.0, until=b'\n') == b'ready\n'
 		assert b'mssh ' in terminal_output(master, 10.0, until=b'mssh ')
@@ -680,13 +677,10 @@ def test_edit_delivers_its_answer_whatever_its_debug_messages_do(tmp_path, debug
 		assert terminal_output(read_end, 2.0) == b'MSSHC1\nL 6\tmssh h\nK pass\t\\C-m\nE\n'
 	finally:
 		process.kill()
+		process.wait()
+		process.stderr.close()
 		os.close(master)
 		os.close(read_end)
-
-
-def pty_pair():
-	import pty
-	return pty.openpty()
 
 
 def test_a_debug_message_the_locale_cannot_write_still_lets_pick_fall_back(tmp_path):
@@ -703,7 +697,8 @@ def test_a_debug_message_the_locale_cannot_write_still_lets_pick_fall_back(tmp_p
 	result = subprocess.run(patched_engine(patch, ascii_locale=True) + ['pick'], input=READY_PICK.replace(b' ready=1', b''), env=env,
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, timeout=60)
 	assert (result.returncode, result.stdout, result.stderr) == (2, b'', b'')
-	log = open(os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log'), encoding='utf-8').read()
+	with open(os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log'), encoding='utf-8') as f:
+		log = f.read()
 	# Python 3.6 shows the exception as RuntimeError('...',)
 	assert "pick failed: RuntimeError('\u26a0 \u2014 \u2026'" in log
 
@@ -858,6 +853,43 @@ def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
 	assert mc._cmd_pick() == 2
 	logged = [message for message in logged if message.startswith('pick:')]
 	assert len(logged) == 1 and 'claim' in logged[0] and 'ready' not in logged[0], logged
+	# how slowly the picker started is what explains a lost claim
+	assert 's in' in logged[0] and 'went on' in logged[0], logged
+
+
+@pytest.mark.parametrize('error', [PermissionError(13, 'Permission denied'), OSError(30, 'Read-only file system'), OSError(28, 'No space left on device')])
+def test_a_claim_that_failed_for_another_reason_does_not_blame_the_shell(tmp_path, monkeypatch, error):
+	# only a directory made first (or the claim's parent removed) means the shell went on
+	import os
+	logged = []
+	monkeypatch.setattr(mc, '_debug', lambda message: logged.append(message() if callable(message) else message))
+	monkeypatch.setenv('MSSH_COMPLETE_CLAIM', str(tmp_path / 'claim'))
+
+	def refuse(*args):
+		raise error
+	monkeypatch.setattr(os, 'mkdir', refuse)
+	assert mc._claim_terminal(time.monotonic()) is False
+	assert len(logged) == 1 and 'went on' not in logged[0] and error.strerror in logged[0] and ' s in' in logged[0], logged
+
+
+def test_pick_falls_back_when_the_failure_cannot_be_shown(tmp_path, monkeypatch):
+	# the failure message was made even with the debug log off: a __repr__ raising there skipped the answer 2
+	import io
+	from complete_shell_harness import make_home, with_debug_log
+	env, _ = make_home(tmp_path, HISTORY)
+	for name, value in with_debug_log(env, '0').items():
+		monkeypatch.setenv(name, value)
+	monkeypatch.delenv('MSSH_COMPLETE_DEBUG', raising=False)
+
+	class Unshowable(Exception):
+		def __repr__(self):
+			raise RuntimeError('no repr')
+
+	def fail(*args):
+		raise Unshowable()
+	monkeypatch.setattr(mc, 'picker_items', fail)
+	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK)))
+	assert mc._cmd_pick() == 2
 
 
 class _Steps(object):

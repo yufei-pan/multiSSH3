@@ -9055,14 +9055,15 @@ def _ready():
 	except OSError:
 		return False
 
-def _claim_terminal():
+def _claim_terminal(started=None):
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
 
 	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
 	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
-	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
+	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
+	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -9071,7 +9072,12 @@ def _claim_terminal():
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		_debug('pick: the claim on the terminal failed, the shell went on ({!r}): the terminal is left alone'.format(e))
+		took = '' if started is None else ', {:.3f} s in'.format(time.monotonic() - started)
+		if isinstance(e, (FileExistsError, FileNotFoundError)):
+			# the shell claimed it first (its directory is there), or cleaned its directory up
+			_debug('pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took, e))
+		else:
+			_debug('pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took, e))
 		return False
 
 def _cmd_pick():
@@ -9102,7 +9108,7 @@ def _cmd_pick():
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
 		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
-		if not _claim_terminal():
+		if not _claim_terminal(started):
 			return 2
 		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
@@ -9112,7 +9118,7 @@ def _cmd_pick():
 			_debug('pick: ready {:.3f} s in'.format(time.monotonic() - started))
 			outcome = picker.run(term, line, before)
 	except Exception as e:
-		_debug('pick failed: {!r}\n{}'.format(e, _traceback()))
+		_debug(lambda: 'pick failed: {!r}\n{}'.format(e, _traceback()))
 		return 2
 	_debug('pick: {}, {:.3f} s in'.format(outcome, time.monotonic() - started))
 	if outcome == 'unavailable':
@@ -9247,7 +9253,7 @@ def _cmd_edit(args):
 			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
-		_debug('editor failed: {!r}\n{}'.format(e, _traceback()))
+		_debug(lambda: 'editor failed: {!r}\n{}'.format(e, _traceback()))
 		action, replay = 'pass', b''
 	out = 'MSSHC1\nL {}\t{}\nK {}\t{}\nE\n'.format(editor.cursor, editor.text, action, readline_keyseq(replay))
 	try:
