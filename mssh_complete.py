@@ -6545,8 +6545,8 @@ _mssh_complete_delegate() {
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
 	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one
-	local _mssh_complete_have= _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
-	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_cut
+	local _mssh_complete_have _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
+	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_front_at
 	local -a _mssh_complete_actions=()
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
@@ -6665,10 +6665,10 @@ _mssh_complete_delegate() {
 	for (( _mssh_complete_one = 0; _mssh_complete_one < ${#_mssh_complete_results[@]}; _mssh_complete_one++ )); do
 		_mssh_complete_item=$_mssh_complete_prefix${_mssh_complete_results[_mssh_complete_one]}
 		# how much of the prefix is left on the item: -P goes after it, in front of the remote word
-		_mssh_complete_cut=${#_mssh_complete_prefix}
+		_mssh_complete_front_at=${#_mssh_complete_prefix}
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
-			_mssh_complete_cut=$(( ${#_mssh_complete_prefix} > ${#_mssh_complete_lead} ? ${#_mssh_complete_prefix} - ${#_mssh_complete_lead} : 0 ))
+			_mssh_complete_front_at=$(( ${#_mssh_complete_prefix} > ${#_mssh_complete_lead} ? ${#_mssh_complete_prefix} - ${#_mssh_complete_lead} : 0 ))
 		elif [[ -n $_mssh_complete_lead ]] && (( _mssh_complete_fold )) && [[ ${_mssh_complete_item,,} == "${_mssh_complete_lead,,}"* ]]; then
 			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
 			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)
@@ -6681,7 +6681,7 @@ _mssh_complete_delegate() {
 		# -P and -S, last, on the results of the compspec and not on the fallbacks' (bash adds them before
 		# those): what bash hands readline starts with the prefix, and no longer with the word
 		if (( _mssh_complete_one < _mssh_complete_listed )); then
-			_mssh_complete_item=${_mssh_complete_item:0:_mssh_complete_cut}$_mssh_complete_front${_mssh_complete_item:_mssh_complete_cut}$_mssh_complete_back
+			_mssh_complete_item=${_mssh_complete_item:0:_mssh_complete_front_at}$_mssh_complete_front${_mssh_complete_item:_mssh_complete_front_at}$_mssh_complete_back
 		fi
 		_mssh_complete_delegated+=("$_mssh_complete_item")
 	done
