@@ -6729,6 +6729,33 @@ _mssh_complete() {
 	_mssh_complete_guard _mssh_complete_tab "$@"
 }
 
+_mssh_complete_open_quote() {
+	# the quote that is open at the end of $1 (' or ", empty for none), into _mssh_complete_state, as readline finds it
+	# (_rl_find_completion_word: the quote characters ' and ", a backslash outside single quotes passing the next
+	# character; $' and $( mean nothing to it). It jumps from one of those characters to the next, so that a long line
+	# costs no more than the few it holds
+	local _mssh_complete_rest=$1 _mssh_complete_head _mssh_complete_char
+	_mssh_complete_state=
+	while [[ -n $_mssh_complete_rest ]]; do
+		case $_mssh_complete_state in
+			"'") _mssh_complete_head=${_mssh_complete_rest%%\'*} ;;
+			'"') _mssh_complete_head=${_mssh_complete_rest%%[\\\"]*} ;;
+			*) _mssh_complete_head=${_mssh_complete_rest%%[\\\'\"]*} ;;
+		esac
+		[[ $_mssh_complete_head == "$_mssh_complete_rest" ]] && break
+		_mssh_complete_char=${_mssh_complete_rest:${#_mssh_complete_head}:1}
+		_mssh_complete_rest=${_mssh_complete_rest:${#_mssh_complete_head}+1}
+		if [[ $_mssh_complete_char == '\' ]]; then
+			_mssh_complete_rest=${_mssh_complete_rest:1}
+		elif [[ -n $_mssh_complete_state ]]; then
+			_mssh_complete_state=
+		else
+			_mssh_complete_state=$_mssh_complete_char
+		fi
+	done
+	return 0
+}
+
 _mssh_complete_unspace() {
 	# a remote command's spec asked for nospace (compopt applies it to all the candidates, the engine's too), and its
 	# words end with the space they want (bash-completion adds it, as __gitcomp does). Reads and sets
@@ -6744,7 +6771,7 @@ _mssh_complete_unspace() {
 	# nospace stays and the engine's words get their space one by one, as readline would give them, except in front of
 	# a blank, inside an open quote, and those the delegate gave: the same word without the space (kept as it is) or
 	# with it (the engine's is left out)
-	local _mssh_complete_item _mssh_complete_key _mssh_complete_uniform=1 _mssh_complete_state= _mssh_complete_char _mssh_complete_at
+	local _mssh_complete_item _mssh_complete_key _mssh_complete_uniform=1 _mssh_complete_state=
 	local -a _mssh_complete_words=()
 	local -A _mssh_complete_given=()
 	if (( _mssh_complete_ble )); then
@@ -6777,23 +6804,7 @@ _mssh_complete_unspace() {
 		return 0
 	fi
 	[[ $_mssh_complete_after == [[:blank:]]* ]] && return 0
-	# whether the cursor is inside a quote (readline closes none under nospace, and a space there is part of the word)
-	for (( _mssh_complete_at = 0; _mssh_complete_at < ${#_mssh_complete_before}; _mssh_complete_at++ )); do
-		_mssh_complete_char=${_mssh_complete_before:_mssh_complete_at:1}
-		case $_mssh_complete_state in
-			"'") [[ $_mssh_complete_char == "'" ]] && _mssh_complete_state= ;;
-			'$') if [[ $_mssh_complete_char == '\' ]]; then (( _mssh_complete_at++ )); elif [[ $_mssh_complete_char == "'" ]]; then _mssh_complete_state=; fi ;;
-			'"') if [[ $_mssh_complete_char == '\' ]]; then (( _mssh_complete_at++ )); elif [[ $_mssh_complete_char == '"' ]]; then _mssh_complete_state=; fi ;;
-			*)
-				case $_mssh_complete_char in
-					'\') (( _mssh_complete_at++ )) ;;
-					"'") _mssh_complete_state="'" ;;
-					'"') _mssh_complete_state='"' ;;
-					'$') [[ ${_mssh_complete_before:_mssh_complete_at+1:1} == "'" ]] && { _mssh_complete_state='$'; (( _mssh_complete_at++ )); } ;;
-				esac
-				;;
-		esac
-	done
+	_mssh_complete_open_quote "$_mssh_complete_before"
 	[[ -z $_mssh_complete_state ]] || return 0
 	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
 		_mssh_complete_key=$_mssh_complete_item
