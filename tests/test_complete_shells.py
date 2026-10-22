@@ -576,7 +576,8 @@ ENGINES_GLOB = ['1790000000\t/x/multiSSH3.py\t-su\th\t"zzsvc zz*x"']
 	('-W other -o filenames', 'mssh h zzsvc zz\\*x '),
 	# not with -o noquote: readline quotes nothing then, and mssh's words go in as the engine escaped them
 	('-W other -o filenames -o noquote', 'mssh h zzsvc zz\\*x '),
-	('-W other -o filenames -o noquote -o nospace', 'mssh h zzsvc zz\\*x'),
+	# and the space nospace takes off is put on them, as on the spec's own words
+	('-W other -o filenames -o noquote -o nospace', 'mssh h zzsvc zz\\*x '),
 	# from bash 5.3, -o fullquote quotes all matches
 	('-W other -o fullquote', 'mssh h zzsvc zz\\*x '),
 	('-W other -o fullquote -o noquote', 'mssh h zzsvc zz\\*x '),
