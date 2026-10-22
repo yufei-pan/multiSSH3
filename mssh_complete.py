@@ -6535,6 +6535,20 @@ _mssh_complete_exclude() {
 	_mssh_complete_results=(${_mssh_complete_kept_results[@]+"${_mssh_complete_kept_results[@]}"})
 }
 
+_mssh_complete_command_result() {
+	# a result $1 of a compspec's -C command, into _mssh_complete_results of _mssh_complete_delegate (it reads and
+	# sets that function's variables: dynamic scope). Bash drops the empty lines between results, as the command
+	# substitution drops those at the end, but a blank first line is a result, an empty one
+	if [[ -n $1 ]]; then
+		(( _mssh_complete_blank )) && _mssh_complete_results+=('')
+		_mssh_complete_blank=0
+		_mssh_complete_results+=("$1")
+	elif (( ! _mssh_complete_started )); then
+		_mssh_complete_blank=1
+	fi
+	_mssh_complete_started=1
+}
+
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated. Its variables
@@ -6543,6 +6557,7 @@ _mssh_complete_delegate() {
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
 	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one _mssh_complete_blank _mssh_complete_started
+	local _mssh_complete_output _mssh_complete_joined _mssh_complete_continued
 	local _mssh_complete_have _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
 	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_front_at
 	local -a _mssh_complete_actions=()
@@ -6612,21 +6627,33 @@ _mssh_complete_delegate() {
 				_mssh_complete_results+=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
 			fi
 			if [[ $_mssh_complete_have == *' command '* ]]; then
-				# a command's output as bash reads it: the trailing newlines go (command substitution) and a run
-				# of them between results is one separator, but a blank first line is a result, an empty one
-				# (aws_completer prints a lone newline for nothing: no results)
-				_mssh_complete_blank=0 _mssh_complete_started=0
-				while IFS= read -r _mssh_complete_item || [[ -n $_mssh_complete_item ]]; do
-					if [[ -n $_mssh_complete_item ]]; then
-						(( _mssh_complete_blank )) && _mssh_complete_results+=('')
-						_mssh_complete_blank=0
-						_mssh_complete_results+=("$_mssh_complete_item")
-					elif (( ! _mssh_complete_started )); then
-						_mssh_complete_blank=1
+				# a command's output as bash reads it: the trailing newlines go (command substitution), a newline
+				# after a backslash stays inside its result (the backslash too: gen_command_matches, 4.2 to 5.3),
+				# and a run of newlines between results is one separator, but a blank first line is a result, an
+				# empty one (aws_completer prints a lone newline for nothing: no results)
+				# (the group keeps the shell's warning of a null byte in the output off the terminal)
+				{ _mssh_complete_output=$(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
+					"$_mssh_complete_current" "$_mssh_complete_prev" 2>/dev/null </dev/null) || :; } 2>/dev/null
+				_mssh_complete_blank=0 _mssh_complete_started=0 _mssh_complete_joined= _mssh_complete_continued=0
+				if [[ -n $_mssh_complete_output ]]; then
+					while IFS= read -r _mssh_complete_item; do
+						if (( _mssh_complete_continued )); then
+							_mssh_complete_item=$_mssh_complete_joined$'\n'$_mssh_complete_item
+							_mssh_complete_continued=0
+						fi
+						# the newline after a backslash is not the end of the result (an empty line after it joins too)
+						if [[ $_mssh_complete_item == *'\' ]]; then
+							_mssh_complete_joined=$_mssh_complete_item
+							_mssh_complete_continued=1
+							continue
+						fi
+						_mssh_complete_command_result "$_mssh_complete_item"
+					done <<< "$_mssh_complete_output"
+					# a backslash ending the output: the result as it is
+					if (( _mssh_complete_continued )); then
+						_mssh_complete_command_result "$_mssh_complete_joined"
 					fi
-					_mssh_complete_started=1
-				done < <(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
-					"$_mssh_complete_current" "$_mssh_complete_prev" 2>/dev/null </dev/null || :)
+				fi
 			fi
 			if [[ $_mssh_complete_have == *' filter '* ]] && (( ${#_mssh_complete_results[@]} )); then
 				_mssh_complete_exclude "$_mssh_complete_filter" "$_mssh_complete_current"

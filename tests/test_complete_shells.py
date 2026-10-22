@@ -301,11 +301,12 @@ def test_bash_delegation_finds_the_completion_of_a_full_path_by_its_last_part(tm
 		session.close()
 
 
-def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None):
+def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None, each=None):
 	"""What the bash glue's delegate gives for the remote command line `words` after `setup` (a shell's own commands),
 	in a directory holding the file zzfile, the directories zzdir and zzdirb, and the command zzaws_completer, which
 	prints what it reads of its environment and arguments. The last word is the one completed. With prefix, the text
-	in front of the remote words in a quoted command, and word, the word bash replaces (the last by default)."""
+	in front of the remote words in a quoted command, and word, the word bash replaces (the last by default). With each (a
+	printf format), the results come back as one string with each one in that format, not one per line."""
 	work = tmp_path / 'work'
 	work.mkdir()
 	(work / 'zzfile').write_text('')
@@ -316,13 +317,13 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	(found / 'zzaws_completer').write_text('#!/bin/bash\nprintf "%s\\n" "zzline=$COMP_LINE" "zzpoint=$COMP_POINT" '
 		'"zzkey=$COMP_KEY.$COMP_TYPE" "zzargs=$1|$2|$3"\n')
 	(found / 'zzaws_completer').chmod(0o755)
-	script = ('. "$1"; PATH=$2:$PATH; zzword=$4; zzprefix=$5; set -- $3; _zzreal() { COMPREPLY=(zzalpha zzalpine zzbeta); }; ' + before + setup +
+	script = ('. "$1"; PATH=$2:$PATH; zzword=$4; zzprefix=$5; zzeach=$6; set -- $3; _zzreal() { COMPREPLY=(zzalpha zzalpine zzbeta); }; ' + before + setup +
 		'; _mssh_complete_guard _mssh_complete_delegate "${zzword:-${@: -1}}" $(( $# - 1 )) "$zzprefix" "$@"; '
-		'(( ${#_mssh_complete_delegated[@]} )) && printf "%s\\n" "${_mssh_complete_delegated[@]}"; true')
-	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found), words, word or '', prefix],
+		'(( ${#_mssh_complete_delegated[@]} )) && printf "${zzeach:-%s\\n}" "${_mssh_complete_delegated[@]}"; true')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found), words, word or '', prefix, each or ''],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
 	assert output.returncode == 0, output
-	return output.stdout.decode().splitlines()
+	return output.stdout.decode() if each else output.stdout.decode().splitlines()
 
 
 @pytest.mark.parametrize('setup, expected', [
@@ -368,6 +369,37 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 ])
 def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path, setup, expected):
 	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz')) == sorted(expected)
+
+
+@pytest.mark.parametrize('output, expected', [
+	# bash keeps a newline after a backslash inside the result (gen_command_matches: 4.2 to 5.3), however many
+	# backslashes there are, as a result ends at a newline that no backslash precedes: the newline after the
+	# first of two is a separator
+	(r'zza\\\nzzb\n', ['zza\\\nzzb']),
+	(r'zza\\\\\nzzb\n', ['zza\\\\\nzzb']),
+	(r'zza\\\\\\\nzzb\n', ['zza\\\\\\\nzzb']),
+	(r'zza\\\n\nzzb\n', ['zza\\\n', 'zzb']),
+	(r'zza\\\nzzb\\\nzzc\n', ['zza\\\nzzb\\\nzzc']),
+	(r'zza\nzzb\\\nzzc\n', ['zza', 'zzb\\\nzzc']),
+	(r'zza\\\nzzb', ['zza\\\nzzb']),
+	# at the end of the output the command substitution takes the newlines (the backslash stays)
+	(r'zza\\\n', ['zza\\']),
+	(r'zza\\\n\n\n', ['zza\\']),
+	(r'zza\\', ['zza\\']),
+	# a quote or a substitution does not join lines
+	(r'zz\047a\nzzb\n', ["zz'a", 'zzb']),
+	(r'zz"a\nzzb\n', ['zz"a', 'zzb']),
+	(r'zz$(a\nzzb)\n', ['zz$(a', 'zzb)']),
+])
+def test_bash_delegation_reads_the_lines_of_a_command_as_bash_splits_them(tmp_path, output, expected):
+	# the results one per bracket pair, a newline inside shown as it is
+	results = delegated(tmp_path, '_zzc() {{ printf \'{}\'; }}; complete -C _zzc zzsvc'.format(output), 'zzsvc s3 zz', each='[%s]')
+	assert results == ''.join('[{}]'.format(item) for item in expected)
+	# bash 5.3 says what it reads: compgen -V puts each result into an array
+	script = '_zzc() {{ printf \'{}\'; }}; compgen -V zzr -C _zzc -- zz >/dev/null && printf "[%s]" "${{zzr[@]}}"'.format(output)
+	reads = subprocess.run([require_shell('bash'), '-c', script], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+	if reads.returncode == 0:
+		assert reads.stdout.decode() == ''.join('[{}]'.format(item) for item in expected)
 
 
 @pytest.mark.parametrize('prefix, words, word, setup, expected', [
