@@ -6684,13 +6684,72 @@ _mssh_complete() {
 	_mssh_complete_guard _mssh_complete_tab "$@"
 }
 
+_mssh_complete_unspace() {
+	# a remote command's spec asked for nospace (compopt applies it to all the candidates, the engine's too),
+	# and its words end with the space they want (bash-completion adds it, as __gitcomp does). When all of the
+	# delegate's words do (or it gave none), the space comes off them and nospace off the completion: readline
+	# adds it itself, as for a spec without nospace (on a unique match only, over an existing space in the
+	# middle of a line, after the closing quote), and so does ble.sh. Otherwise (--opt= beside spaced words)
+	# nospace stays and the engine's words get their space one by one, as readline would give them, except in
+	# front of a blank, inside an open quote, and those the delegate gave: the same word without the space
+	# (kept as it is) or with it (the engine's is left out). Reads and sets _mssh_complete_reply and
+	# _mssh_complete_delegated of _mssh_complete_tab
+	local _mssh_complete_item _mssh_complete_key _mssh_complete_uniform=1 _mssh_complete_state= _mssh_complete_char _mssh_complete_at
+	local -a _mssh_complete_words=()
+	local -A _mssh_complete_given=()
+	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
+		[[ -z $_mssh_complete_item || $_mssh_complete_item == *' ' ]] || _mssh_complete_uniform=0
+	done
+	if (( _mssh_complete_uniform )); then
+		for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
+			_mssh_complete_words+=("${_mssh_complete_item% }")
+		done
+		_mssh_complete_delegated=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
+		compopt +o nospace 2>/dev/null || :
+		return 0
+	fi
+	[[ $_mssh_complete_after == [[:blank:]]* ]] && return 0
+	# whether the cursor is inside a quote (readline closes none under nospace, and a space there is part of the word)
+	for (( _mssh_complete_at = 0; _mssh_complete_at < ${#_mssh_complete_before}; _mssh_complete_at++ )); do
+		_mssh_complete_char=${_mssh_complete_before:_mssh_complete_at:1}
+		case $_mssh_complete_state in
+			"'") [[ $_mssh_complete_char == "'" ]] && _mssh_complete_state= ;;
+			'$') if [[ $_mssh_complete_char == '\' ]]; then (( _mssh_complete_at++ )); elif [[ $_mssh_complete_char == "'" ]]; then _mssh_complete_state=; fi ;;
+			'"') if [[ $_mssh_complete_char == '\' ]]; then (( _mssh_complete_at++ )); elif [[ $_mssh_complete_char == '"' ]]; then _mssh_complete_state=; fi ;;
+			*)
+				case $_mssh_complete_char in
+					'\') (( _mssh_complete_at++ )) ;;
+					"'") _mssh_complete_state="'" ;;
+					'"') _mssh_complete_state='"' ;;
+					'$') [[ ${_mssh_complete_before:_mssh_complete_at+1:1} == "'" ]] && { _mssh_complete_state='$'; (( _mssh_complete_at++ )); } ;;
+				esac
+				;;
+		esac
+	done
+	[[ -z $_mssh_complete_state ]] || return 0
+	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
+		_mssh_complete_key=$_mssh_complete_item
+		(( _mssh_complete_icase )) && _mssh_complete_key=${_mssh_complete_item,,}
+		_mssh_complete_given["x$_mssh_complete_key"]=1
+	done
+	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
+		_mssh_complete_key=$_mssh_complete_item
+		(( _mssh_complete_icase )) && _mssh_complete_key=${_mssh_complete_item,,}
+		if [[ -n ${_mssh_complete_given["x$_mssh_complete_key"]-} ]]; then
+			_mssh_complete_words+=("$_mssh_complete_item")
+		elif [[ -z ${_mssh_complete_given["x$_mssh_complete_key "]-} ]]; then
+			_mssh_complete_words+=("$_mssh_complete_item ")
+		fi
+	done
+	_mssh_complete_reply=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
+}
+
 _mssh_complete_tab() {
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
 	local _mssh_complete_ble=0 _mssh_complete_asked=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
-	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=() _mssh_complete_spaced=()
-	local _mssh_complete_given
+	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
@@ -6752,22 +6811,13 @@ _mssh_complete_tab() {
 		# a delegated completion that turned on file name quoting quotes ours too: hand them over unescaped,
 		# unless it turned quoting off (noquote: readline quotes no file names then, but fullquote, from bash
 		# 5.3, still quotes all matches)
+		# the options end with a space for the patterns below (ble.sh's compopt prints no command name)
 		_mssh_complete_item=$(compopt 2>/dev/null) || :
+		_mssh_complete_item+=' '
 		if [[ $_mssh_complete_item == *' -o fullquote '* ]] || [[ $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ]]; then
 			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
-		elif [[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_asked && ! _mssh_complete_ble && ! _mssh_complete_files && ! _mssh_complete_dirs )); then
-			# the spec's -o nospace, not ours: compopt applies it to all the candidates, and the spec's own
-			# words end with the space they want (bash-completion adds it), so ours get it too, but those
-			# the spec gave in another form (a -W word has none). Not where readline quotes (a space would
-			# be quoted too) nor ble.sh (it quotes what it inserts)
-			for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
-				_mssh_complete_one=$_mssh_complete_item' '
-				for _mssh_complete_given in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
-					[[ $_mssh_complete_given == "$_mssh_complete_item" ]] && _mssh_complete_one=$_mssh_complete_item
-				done
-				_mssh_complete_spaced+=("$_mssh_complete_one")
-			done
-			_mssh_complete_reply=(${_mssh_complete_spaced[@]+"${_mssh_complete_spaced[@]}"})
+		elif [[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_asked && ! _mssh_complete_files && ! _mssh_complete_dirs )); then
+			_mssh_complete_unspace
 		fi
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
 	fi
