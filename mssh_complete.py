@@ -6686,9 +6686,10 @@ _mssh_complete() {
 _mssh_complete_tab() {
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
-	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
+	local _mssh_complete_ble=0 _mssh_complete_asked=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
-	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
+	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=() _mssh_complete_spaced=()
+	local _mssh_complete_given
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
@@ -6721,7 +6722,8 @@ _mssh_complete_tab() {
 				_mssh_complete_split "${_mssh_complete_line:2}" ' '
 				for _mssh_complete_item in "${_mssh_complete_fields[@]}"; do
 					case $_mssh_complete_item in
-						nospace|filenames|nosort) compopt -o "$_mssh_complete_item" 2>/dev/null || : ;;
+						nospace) _mssh_complete_asked=1; compopt -o nospace 2>/dev/null || : ;;
+						filenames|nosort) compopt -o "$_mssh_complete_item" 2>/dev/null || : ;;
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
 						files) _mssh_complete_files=1 ;;
 						dirs) _mssh_complete_dirs=1 ;;
@@ -6752,6 +6754,19 @@ _mssh_complete_tab() {
 		_mssh_complete_item=$(compopt 2>/dev/null) || :
 		if [[ $_mssh_complete_item == *' -o fullquote '* ]] || [[ $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ]]; then
 			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
+		elif [[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_asked && ! _mssh_complete_ble && ! _mssh_complete_files && ! _mssh_complete_dirs )); then
+			# the spec's -o nospace, not ours: compopt applies it to all the candidates, and the spec's own
+			# words end with the space they want (bash-completion adds it), so ours get it too, but those
+			# the spec gave in another form (a -W word has none). Not where readline quotes (a space would
+			# be quoted too) nor ble.sh (it quotes what it inserts)
+			for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
+				_mssh_complete_one=$_mssh_complete_item' '
+				for _mssh_complete_given in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
+					[[ $_mssh_complete_given == "$_mssh_complete_item" ]] && _mssh_complete_one=$_mssh_complete_item
+				done
+				_mssh_complete_spaced+=("$_mssh_complete_one")
+			done
+			_mssh_complete_reply=(${_mssh_complete_spaced[@]+"${_mssh_complete_spaced[@]}"})
 		fi
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
 	fi

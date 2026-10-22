@@ -593,8 +593,61 @@ def test_bash_delegation_hands_the_engines_words_to_readline_as_it_quotes(tmp_pa
 		session.close()
 
 
+def test_bash_a_nospace_spec_lists_mssh_s_own_words_as_they_are(tmp_path):
+	history = history_of('zzgit checkout zzbranch', 'zzgit checkout zzbrook')
+	session = ignoring_case(tmp_path, history, on=False, options='_zzn() { COMPREPLY=(); }; complete -o nospace -F _zzn zzgit')
+	try:
+		assert completed_and_listed(session, 'mssh h zzgit checkout zzbr') == ('mssh h zzgit checkout zzbr', ['zzbranch', 'zzbrook'])
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('engine_asks, spec, completed', [
+	# the engine asks for no space itself (zzopt= goes on): it gets none, whatever the spec says
+	(True, '-o nospace -W zzx', 'mssh h zzgit zzopt='),
+	(True, '-W zzx', 'mssh h zzgit zzopt='),
+	# the engine does not: its word is like the spec's, a space where the spec asks for none
+	(False, '-o nospace -W zzx', 'mssh h zzgit zzopt= '),
+	(False, '-W zzx', 'mssh h zzgit zzopt= '),
+])
+def test_bash_a_nospace_spec_leaves_the_space_alone_where_the_engine_asked_for_none(tmp_path, engine_asks, spec, completed):
+	env, home = make_home(tmp_path, [])
+	engine = home / 'engine'
+	directive = 'D nospace\\n' if engine_asks else ''
+	engine.write_text("#!/bin/sh\nprintf 'MSSHC1\\n{}C zzopt=\\t\\tx\\nX 1\\t\\tzzgit\\tzzopt\\nE\\n\\0'\n".format(directive))
+	engine.chmod(0o755)
+	session = bash_session(home, env, glue_file(home, 'bash', [str(engine)]), bash_completion=False, extra='complete {} zzgit'.format(spec))
+	try:
+		assert session.line_after('mssh h zzgit zzopt') == completed
+	finally:
+		session.close()
+
+
 def history_of(*commands):
 	return ['{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(1790000000 + number, command) for number, command in enumerate(commands)]
+
+
+@pytest.mark.parametrize('options, typed, completed', [
+	# a nospace spec: mssh's own words get the space the spec's own words bring themselves (__gitcomp appends it)
+	('_zzn() { COMPREPLY=(); }; complete -o bashdefault -o default -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -W "zzfeature" zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature'),
+	# without nospace it is as before
+	('_zzn() { COMPREPLY=(); }; complete -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	# the spec's words end with a space: both are one word, with the one space
+	('_zzn() { COMPREPLY=("zzfeature "); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	# several: the common start, no space
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzb', 'mssh h zzgit checkout zzbr'),
+	# readline quotes the words under filenames: a space would be quoted as well, and there is none
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -o filenames -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature'),
+])
+def test_bash_a_nospace_spec_gives_mssh_s_own_words_their_space(tmp_path, options, typed, completed):
+	history = history_of('zzgit checkout zzfeature', 'zzgit checkout zzbranch', 'zzgit checkout zzbrook')
+	session = ignoring_case(tmp_path, history, on=False, options=options)
+	try:
+		assert session.line_after(typed) == completed
+	finally:
+		session.close()
 
 
 @pytest.mark.parametrize('options, typed', [
