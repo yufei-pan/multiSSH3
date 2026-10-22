@@ -3,6 +3,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -361,11 +362,18 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -C "printf \'\\n\'" zzsvc', []),
 	('complete -o default -C "printf \'\\n\'" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
 	('complete -o dirnames -C "printf \'\\n\\n\'" zzsvc', ['zzdir', 'zzdirb']),
-	# a blank first line is a result, an empty one (bash keeps it whatever the word is, and the fallbacks do not run)
-	('complete -C "printf \'\\nzza\\n\'" zzsvc', ['', 'zza']),
-	('complete -C "printf \'\\n\\n\\nzza\\n\\nzzb\'" zzsvc', ['', 'zza', 'zzb']),
+	# a blank first line is a result, an empty one: no candidate (the glue hands readline none), but an answer, so
+	# the fallbacks do not run, as in bash
+	('complete -C "printf \'\\nzza\\n\'" zzsvc', ['zza']),
+	('complete -C "printf \'\\n\\n\\nzza\\n\\nzzb\'" zzsvc', ['zza', 'zzb']),
 	('complete -C "printf zza" zzsvc', ['zza']),
-	('complete -o default -C "printf \'\\nzza\\n\'" zzsvc', ['', 'zza']),
+	('complete -o default -C "printf \'\\nzza\\n\'" zzsvc', ['zza']),
+	# a function's empty word, the sentinel that git, grub and pcp give for no completions, is an answer as well
+	('_zzs() { COMPREPLY=(""); }; complete -F _zzs zzsvc', []),
+	('_zzs() { COMPREPLY=(""); }; complete -o default -F _zzs zzsvc', []),
+	('_zzs() { COMPREPLY=(""); }; complete -o dirnames -F _zzs zzsvc', []),
+	('_zzs() { COMPREPLY=("" zza); }; complete -F _zzs -P "[" -S "]" zzsvc', ['[zza]']),
+	('_zzs() { COMPREPLY=(""); }; complete -W "zza" -o default -F _zzs zzsvc', ['zza']),
 ])
 def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path, setup, expected):
 	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz')) == sorted(expected)
@@ -687,6 +695,99 @@ def test_bash_a_command_giving_a_blank_line_for_nothing_inserts_no_space(tmp_pat
 		session.close()
 
 
+SHELLS = ['readline', 'ble']
+BASH_COMPLETION = '/usr/share/bash-completion/bash_completion'
+needs_bash_completion = pytest.mark.skipif(not os.path.exists(BASH_COMPLETION), reason='bash-completion is not installed')
+
+
+def shell_session(tmp_path, shell, history=(), options='', files=()):
+	"""A bash with readline ('readline') or with ble.sh ('ble'), the glue loaded, in a directory holding files (and no
+	other); options run after the glue loads."""
+	if shell == 'readline':
+		return ignoring_case(tmp_path, history, on=False, files=files, options=options)
+	import test_complete_blesh as ble
+	env, home = make_home(tmp_path, history)
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in files:
+		(work / name).write_text('')
+	return blesh_session(home, env, ble.glue_file(home), extra="cd '{}'; {}".format(work, options))
+
+
+def fresh_line(tmp_path, name, shell, typed, keys='\t', **kwargs):
+	"""The line after typed and keys in a new session of shell_session (kwargs: history, options, files). ble.sh does
+	not complete the same word the same way twice in a session: after one that inserted something, the next inserts
+	nothing, and the one after the first candidate."""
+	(tmp_path / name).mkdir()
+	session = shell_session(tmp_path / name, shell, **kwargs)
+	try:
+		return session.line_after(typed, keys=keys)
+	finally:
+		session.close()
+
+
+SENTINEL = '_zzs() { COMPREPLY=(""); }; '
+# the empty word, as git sparse-checkout, grub and pcp give it for no completions; a command's blank first line
+EMPTY_SPECS = [
+	SENTINEL + 'complete -o nospace -F _zzs zzgit',
+	SENTINEL + 'complete -F _zzs zzgit',
+	SENTINEL + 'complete -o default -F _zzs zzgit',
+	SENTINEL + 'complete -o nospace -o default -o bashdefault -F _zzs zzgit',
+	"complete -C \"printf '\\\\nzza'\" zzgit",
+	"complete -o nospace -C \"printf '\\\\nzza'\" zzgit",
+]
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('options', EMPTY_SPECS)
+def test_bash_an_empty_result_is_no_candidate_and_no_unique_match(tmp_path, shell, options):
+	# the empty word is not a match readline could add a space to (git sparse-checkout add qq), and not one that lets
+	# the file names of -o default in (bash finds an answer there). ble.sh adds file names of its own, to the command
+	# itself as to mssh's line
+	given = dict(options=options, files=['zzfile'])
+	line = fresh_line(tmp_path, 'mssh', shell, 'mssh h zzgit zzf', **given)
+	if shell == 'ble':
+		assert line == 'mssh h ' + fresh_line(tmp_path, 'native', shell, 'zzgit zzf', **given)
+	else:
+		# (bash adds a space after the empty word of a function that has no nospace, which mssh does not do)
+		if 'nospace' in options or '-C' in options:
+			assert fresh_line(tmp_path, 'native', shell, 'zzgit zzf', **given) == 'zzgit zzf'
+		assert line == 'mssh h zzgit zzf'
+	assert fresh_line(tmp_path, 'sparse', shell, 'mssh h zzgit sparse-checkout add qq', **given) == 'mssh h zzgit sparse-checkout add qq'
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('options', EMPTY_SPECS)
+def test_bash_an_empty_result_leaves_mssh_s_own_words_to_complete(tmp_path, shell, options):
+	# the sentinel kept mssh's own candidates (the history's) from completing
+	line = fresh_line(tmp_path, 'mssh', shell, 'mssh h zzgit sparse-checkout add zzp', options=options,
+		history=history_of('zzgit sparse-checkout add zzproj/src'))
+	assert line == 'mssh h zzgit sparse-checkout add zzproj/src '
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('options, typed, completed', [
+	# beside spaced words (or none) the empty word makes the reply neither uniform nor mixed
+	(SENTINEL.replace('("")', '("" "zzfeature ")') + 'complete -o nospace -F _zzs zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	(SENTINEL.replace('("")', '("" "zzopt=")') + 'complete -o nospace -F _zzs zzgit', 'mssh h zzgit checkout zzo', 'mssh h zzgit checkout zzopt='),
+	(SENTINEL + 'complete -F _zzs zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+])
+def test_bash_an_empty_result_beside_other_words_changes_nothing(tmp_path, shell, options, typed, completed):
+	assert fresh_line(tmp_path, 'mssh', shell, typed, options=options, history=history_of('zzgit checkout zzfeature')) == completed
+
+
+@needs_bash_completion
+@pytest.mark.skipif(not os.path.exists('/usr/share/bash-completion/completions/git') or not shutil.which('git'), reason='no git completion')
+@pytest.mark.parametrize('shell', SHELLS)
+def test_bash_git_sparse_checkout_with_nothing_to_complete_leaves_the_line_as_it_does_natively(tmp_path, shell):
+	# git's completion gives COMPREPLY=("") for no completions, under -o nospace
+	given = dict(history=history_of('git sparse-checkout add zzproj/src'), options='git init -q . ; . ' + BASH_COMPLETION)
+	assert fresh_line(tmp_path, 'native', shell, 'git sparse-checkout add qq', **given) == 'git sparse-checkout add qq'
+	assert fresh_line(tmp_path, 'mssh', shell, 'mssh h git sparse-checkout add qq', **given) == 'mssh h git sparse-checkout add qq'
+	assert fresh_line(tmp_path, 'history', shell, 'mssh h git sparse-checkout add zzp', **given) == 'mssh h git sparse-checkout add zzproj/src '
+
+
 def history_of(*commands):
 	return ['{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(1790000000 + number, command) for number, command in enumerate(commands)]
 
@@ -769,20 +870,21 @@ def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_
 			session.close()
 
 
-@pytest.mark.parametrize('output, completed', [
+@pytest.mark.parametrize('output, native, completed', [
 	# bash reads "\nzza\n" as '' and zza: the command substitution drops the trailing newlines, a run of them
-	# between results is one separator, and a leading one is a result. '' has no common start with z, and bash
-	# leaves the word as it is
-	('\\n\\nzza\\n', 'zzsvc z'),
-	('\\nzza\\n', 'zzsvc z'),
-	('zza\\n\\n\\n', 'zzsvc zza '),
-	('zza\\n\\nzzb\\n', 'zzsvc zz'),
-	('\\n\\n', 'zzsvc z'),
+	# between results is one separator, and a leading one is a result. The glue hands readline no empty candidate
+	# (it would be a unique match to add a space to, and hold the others back), so zza is the one match where bash,
+	# having '' beside it, finds no common start and leaves the word
+	('\\n\\nzza\\n', 'zzsvc z', 'zzsvc zza '),
+	('\\nzza\\n', 'zzsvc z', 'zzsvc zza '),
+	('zza\\n\\n\\n', 'zzsvc zza ', 'zzsvc zza '),
+	('zza\\n\\nzzb\\n', 'zzsvc zz', 'zzsvc zz'),
+	('\\n\\n', 'zzsvc z', 'zzsvc z'),
 ])
-def test_bash_a_command_giving_a_blank_first_line_gives_an_empty_result_as_bash_does(tmp_path, output, completed):
+def test_bash_a_command_giving_a_blank_first_line_gives_an_empty_result_that_is_no_candidate(tmp_path, output, native, completed):
 	session = ignoring_case(tmp_path, [], on=False, options='complete -C "printf \'{}\'" zzsvc'.format(output.replace('\\', '\\\\')))
 	try:
-		assert session.line_after('zzsvc z') == completed
+		assert session.line_after('zzsvc z') == native
 		assert session.line_after('mssh h zzsvc z') == 'mssh h ' + completed
 	finally:
 		session.close()
@@ -828,8 +930,6 @@ def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'icase': 1}, '[zzb ]', '[zza ][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza', 'zzopt='], {'icase': 1}, '[ZZA][zzb ]', '[zza][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {}, '[ZZA ][zzb ]', '[zza ][zzopt=]'),
-	# an empty result of the delegate counts as neither
-	(['zzb'], ['', 'zza '], {}, '[zzb]', '[][zza]'),
 ])
 def test_bash_the_space_of_a_nospace_spec_goes_on_the_engines_words_where_the_delegate_s_are_mixed(tmp_path, reply, given, kwargs, engine, delegate):
 	assert unspaced(tmp_path, reply, given, **kwargs) == (engine, delegate)

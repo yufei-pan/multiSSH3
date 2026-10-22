@@ -6691,10 +6691,12 @@ _mssh_complete_delegate() {
 	_mssh_complete_typed=$_mssh_complete_word
 	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
 	for (( _mssh_complete_one = 0; _mssh_complete_one < ${#_mssh_complete_results[@]}; _mssh_complete_one++ )); do
-		# an empty result (a command's blank first line, a function's empty word) stays whatever the word is, as in
-		# bash, which does not hold those of a function or a command to the word: readline then finds no common start
+		# an empty result (a command's blank first line, a function's empty word: the sentinel of git, grub and pcp for
+		# no completions) is an answer, which the -o fallbacks above met and which keeps mssh's own default off when
+		# nothing else is left (_mssh_complete_dropped), but no candidate: readline would add a space to it as to a
+		# unique match, and it would hold mssh's own words back. No -P or -S for it
 		if [[ -z ${_mssh_complete_results[_mssh_complete_one]} ]]; then
-			_mssh_complete_delegated+=('')
+			_mssh_complete_dropped=1
 			continue
 		fi
 		_mssh_complete_item=$_mssh_complete_prefix${_mssh_complete_results[_mssh_complete_one]}
@@ -6741,7 +6743,7 @@ _mssh_complete_unspace() {
 	local -a _mssh_complete_words=()
 	local -A _mssh_complete_given=()
 	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
-		[[ -z $_mssh_complete_item || $_mssh_complete_item == *' ' ]] || _mssh_complete_uniform=0
+		[[ $_mssh_complete_item == *' ' ]] || _mssh_complete_uniform=0
 	done
 	if (( _mssh_complete_uniform )); then
 		for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
