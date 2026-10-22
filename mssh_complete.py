@@ -6730,18 +6730,41 @@ _mssh_complete() {
 }
 
 _mssh_complete_unspace() {
-	# a remote command's spec asked for nospace (compopt applies it to all the candidates, the engine's too),
-	# and its words end with the space they want (bash-completion adds it, as __gitcomp does). When all of the
-	# delegate's words do (or it gave none), the space comes off them and nospace off the completion: readline
-	# adds it itself, as for a spec without nospace (on a unique match only, over an existing space in the
-	# middle of a line, after the closing quote), and so does ble.sh. Otherwise (--opt= beside spaced words)
-	# nospace stays and the engine's words get their space one by one, as readline would give them, except in
-	# front of a blank, inside an open quote, and those the delegate gave: the same word without the space
-	# (kept as it is) or with it (the engine's is left out). Reads and sets _mssh_complete_reply and
-	# _mssh_complete_delegated of _mssh_complete_tab
+	# a remote command's spec asked for nospace (compopt applies it to all the candidates, the engine's too), and its
+	# words end with the space they want (bash-completion adds it, as __gitcomp does). Reads and sets
+	# _mssh_complete_reply and _mssh_complete_delegated of _mssh_complete_tab.
+	# Under ble.sh a nospace candidate that ends in a space goes in exactly as given, unquoted, while the engine's
+	# words (sent unescaped) are quoted by ble.sh: the delegate's words keep their space and nospace stays, so that
+	# ble.sh does not quote an escaped name again ('solo\ one.txt'), and the engine's words get no space, which would
+	# go in unquoted. The engine's word the delegate gave with its space is left out (ble.sh would meet both). With no
+	# delegated word nospace goes off, as in 6.37.
+	# Under readline, when all the delegate's words end in a space (or it gave none), the space comes off them and
+	# nospace off the completion: readline adds it itself, as for a spec without nospace (on a unique match only, over
+	# an existing space in the middle of a line, after the closing quote). Otherwise (--opt= beside spaced words)
+	# nospace stays and the engine's words get their space one by one, as readline would give them, except in front of
+	# a blank, inside an open quote, and those the delegate gave: the same word without the space (kept as it is) or
+	# with it (the engine's is left out)
 	local _mssh_complete_item _mssh_complete_key _mssh_complete_uniform=1 _mssh_complete_state= _mssh_complete_char _mssh_complete_at
 	local -a _mssh_complete_words=()
 	local -A _mssh_complete_given=()
+	if (( _mssh_complete_ble )); then
+		if (( ! ${#_mssh_complete_delegated[@]} )); then
+			compopt +o nospace 2>/dev/null || :
+			return 0
+		fi
+		for _mssh_complete_item in "${_mssh_complete_delegated[@]}"; do
+			_mssh_complete_key=$_mssh_complete_item
+			(( _mssh_complete_icase )) && _mssh_complete_key=${_mssh_complete_item,,}
+			_mssh_complete_given["x$_mssh_complete_key"]=1
+		done
+		for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
+			_mssh_complete_key=$_mssh_complete_item
+			(( _mssh_complete_icase )) && _mssh_complete_key=${_mssh_complete_item,,}
+			[[ -n ${_mssh_complete_given["x$_mssh_complete_key "]-} ]] || _mssh_complete_words+=("$_mssh_complete_item")
+		done
+		_mssh_complete_reply=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
+		return 0
+	fi
 	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
 		[[ $_mssh_complete_item == *' ' ]] || _mssh_complete_uniform=0
 	done

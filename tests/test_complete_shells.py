@@ -727,6 +727,22 @@ def fresh_line(tmp_path, name, shell, typed, keys='\t', **kwargs):
 		session.close()
 
 
+@needs_bash_completion
+@pytest.mark.skipif(not os.path.exists('/usr/share/bash-completion/completions/scp'), reason='no scp completion')
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('files, typed, completed', [
+	# bash-completion's scp gives file names with their spaces escaped, and ends them with the space they want
+	(['solo one.txt'], 'so', 'solo\\ one.txt '),
+	(['my file.txt', 'my notes.txt'], 'my', 'my\\ '),
+])
+def test_bash_a_delegated_file_name_with_a_space_reaches_the_line_as_it_does_natively(tmp_path, shell, files, typed, completed):
+	# under ble.sh the glue used to strip the space, and ble.sh quoted the escaped name again ('solo\ one.txt'), or, for
+	# several, inserted nothing
+	given = dict(options='. ' + BASH_COMPLETION, files=files)
+	assert fresh_line(tmp_path, 'native', shell, 'scp ' + typed, **given) == 'scp ' + completed
+	assert fresh_line(tmp_path, 'mssh', shell, 'mssh h scp ' + typed, **given) == 'mssh h scp ' + completed
+
+
 SENTINEL = '_zzs() { COMPREPLY=(""); }; '
 # the empty word, as git sparse-checkout, grub and pcp give it for no completions; a command's blank first line
 EMPTY_SPECS = [
@@ -786,6 +802,15 @@ def test_bash_git_sparse_checkout_with_nothing_to_complete_leaves_the_line_as_it
 	assert fresh_line(tmp_path, 'native', shell, 'git sparse-checkout add qq', **given) == 'git sparse-checkout add qq'
 	assert fresh_line(tmp_path, 'mssh', shell, 'mssh h git sparse-checkout add qq', **given) == 'mssh h git sparse-checkout add qq'
 	assert fresh_line(tmp_path, 'history', shell, 'mssh h git sparse-checkout add zzp', **given) == 'mssh h git sparse-checkout add zzproj/src '
+
+
+def test_blesh_a_nospace_spec_leaves_the_engine_s_words_as_they_are(tmp_path):
+	# ble.sh inserts a nospace candidate that ends in a space as it is, and quotes the engine's words (sent unescaped)
+	# itself: a space appended to one would go in unquoted (zz*x and the glob it is)
+	options = "_zzs() { COMPREPLY=('zzopt=' 'zzfeature '); }; complete -o nospace -F _zzs zzgit"
+	# the pick of the engine's word, the first candidate, from the menu
+	line = fresh_line(tmp_path, 'mssh', 'ble', 'mssh h zzgit checkout zz', keys='\t\t', options=options, history=history_of('zzgit checkout zz*x'))
+	assert line == 'mssh h zzgit checkout zz\\*x'
 
 
 def history_of(*commands):
@@ -890,14 +915,14 @@ def test_bash_a_command_giving_a_blank_first_line_gives_an_empty_result_that_is_
 		session.close()
 
 
-def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=0):
+def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=0, ble=0):
 	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given): the engine's
 	words and the delegate's, each in brackets."""
 	import shlex
 	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_before={}; _mssh_complete_after={}; '
-		'_mssh_complete_icase={}; _mssh_complete_unspace; '
+		'_mssh_complete_icase={}; _mssh_complete_ble={}; _mssh_complete_unspace; '
 		'printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
-		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(before), shlex.quote(after), icase)
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(before), shlex.quote(after), icase, ble)
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.returncode == 0, output
@@ -923,6 +948,23 @@ def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=
 	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
 	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h a\\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
 	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h $'a\\'' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
+	# the delegate's own word: without the space the engine's is the same word, with it the engine's is left out
+	(['zza', 'zzb'], ['zza', 'zzopt='], {}, '[zza][zzb ]', '[zza][zzopt=]'),
+	(['zza', 'zzb'], ['zza ', 'zzopt='], {}, '[zzb ]', '[zza ][zzopt=]'),
+	# in any case under icase (and only then)
+	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'icase': 1}, '[zzb ]', '[zza ][zzopt=]'),
+	(['ZZA', 'zzb'], ['zza', 'zzopt='], {'icase': 1}, '[ZZA][zzb ]', '[zza][zzopt=]'),
+	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {}, '[ZZA ][zzb ]', '[zza ][zzopt=]'),
+	# under ble.sh: the delegate's words as given, the engine's with no space, and the engine's word the delegate gave
+	# with one left out (ble.sh would meet both); no delegated word: nothing to keep
+	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {'ble': 1}, '[zzb][zzd/]', '[zza ][zzopt=]'),
+	(['zzb', 'zzd/'], ['zza ', 'zzc '], {'ble': 1}, '[zzb][zzd/]', '[zza ][zzc ]'),
+	(['zzb'], [], {'ble': 1}, '[zzb]', '[]'),
+	(['zza', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[zzb]', '[zza ][zzopt=]'),
+	(['zza', 'zzb'], ['zza', 'zzopt='], {'ble': 1}, '[zza][zzb]', '[zza][zzopt=]'),
+	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1, 'icase': 1}, '[zzb]', '[zza ][zzopt=]'),
+	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[ZZA][zzb]', '[zza ][zzopt=]'),
+	(['zz*x'], ['zzopt='], {'ble': 1, 'after': ' -- x'}, '[zz*x]', '[zzopt=]'),
 	# the delegate's own word: without the space the engine's is the same word, with it the engine's is left out
 	(['zza', 'zzb'], ['zza', 'zzopt='], {}, '[zza][zzb ]', '[zza][zzopt=]'),
 	(['zza', 'zzb'], ['zza ', 'zzopt='], {}, '[zzb ]', '[zza ][zzopt=]'),
