@@ -6442,8 +6442,8 @@ _mssh_complete_unpack() {
 	# _mssh_complete_delegate, which fails when it finds one it does not know: _mssh_complete_actions (-a,
 	# -A and the like, as compgen takes them), _mssh_complete_options (-o, each followed by a space), the
 	# arguments of -G, -W, -P, -S, -X, -C and -F in _mssh_complete_glob, _wordlist, _front, _back, _filter,
-	# _command and _func, and which of them the command has in _mssh_complete_have (words, each followed
-	# by a space). Read, never run: bash prints an argument single-quoted, and -F's word (a function's
+	# _command and _func, and which of -G, -W, -X, -C and -F the command has in _mssh_complete_have (words,
+	# each followed by a space; -P and -S are empty when absent, and applied as they are). Read, never run: bash prints an argument single-quoted, and -F's word (a function's
 	# name) as it is, or from bash 5.2 quoted when it holds a metacharacter (_mssh_complete_unquote). No
 	# function's name holds a quote (bash 4.2 to 5.3 refuse one: not a valid identifier, also from the
 	# environment), so its quoted form -F 'a^b' holds none inside. A quote there (complete -F "a'b" is
@@ -6470,8 +6470,8 @@ _mssh_complete_unpack() {
 			case ${BASH_REMATCH[1]} in
 				G) _mssh_complete_glob=$_mssh_complete_value; _mssh_complete_have+='glob ' ;;
 				W) _mssh_complete_wordlist=$_mssh_complete_value; _mssh_complete_have+='words ' ;;
-				P) _mssh_complete_front=$_mssh_complete_value; _mssh_complete_have+='front ' ;;
-				S) _mssh_complete_back=$_mssh_complete_value; _mssh_complete_have+='back ' ;;
+				P) _mssh_complete_front=$_mssh_complete_value ;;
+				S) _mssh_complete_back=$_mssh_complete_value ;;
 				X) _mssh_complete_filter=$_mssh_complete_value; _mssh_complete_have+='filter ' ;;
 				C) _mssh_complete_command=$_mssh_complete_value; _mssh_complete_have+='command ' ;;
 			esac
