@@ -6542,7 +6542,7 @@ _mssh_complete_delegate() {
 	# sets the variables of the functions that call it (one written without local sets word, cur, ...)
 	local _mssh_complete_word=$1 _mssh_complete_cword=$2 _mssh_complete_prefix=$3 _mssh_complete_cmd _mssh_complete_spec
 	local _mssh_complete_func _mssh_complete_item _mssh_complete_lead _mssh_complete_fold _mssh_complete_typed _mssh_complete_compared
-	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one
+	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0 _mssh_complete_one _mssh_complete_blank _mssh_complete_started
 	local _mssh_complete_have _mssh_complete_options _mssh_complete_glob _mssh_complete_wordlist _mssh_complete_front=
 	local _mssh_complete_back= _mssh_complete_filter _mssh_complete_command _mssh_complete_prev _mssh_complete_front_at
 	local -a _mssh_complete_actions=()
@@ -6612,9 +6612,19 @@ _mssh_complete_delegate() {
 				_mssh_complete_results+=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
 			fi
 			if [[ $_mssh_complete_have == *' command '* ]]; then
-				# bash drops a command's blank lines (aws_completer prints one for nothing)
-				while IFS= read -r _mssh_complete_item; do
-					[[ -n $_mssh_complete_item ]] && _mssh_complete_results+=("$_mssh_complete_item")
+				# a command's output as bash reads it: the trailing newlines go (command substitution) and a run
+				# of them between results is one separator, but a blank first line is a result, an empty one
+				# (aws_completer prints a lone newline for nothing: no results)
+				_mssh_complete_blank=0 _mssh_complete_started=0
+				while IFS= read -r _mssh_complete_item || [[ -n $_mssh_complete_item ]]; do
+					if [[ -n $_mssh_complete_item ]]; then
+						(( _mssh_complete_blank )) && _mssh_complete_results+=('')
+						_mssh_complete_blank=0
+						_mssh_complete_results+=("$_mssh_complete_item")
+					elif (( ! _mssh_complete_started )); then
+						_mssh_complete_blank=1
+					fi
+					_mssh_complete_started=1
 				done < <(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
 					"$_mssh_complete_current" "$_mssh_complete_prev" 2>/dev/null </dev/null || :)
 			fi
@@ -6654,6 +6664,12 @@ _mssh_complete_delegate() {
 	_mssh_complete_typed=$_mssh_complete_word
 	(( _mssh_complete_fold )) && _mssh_complete_typed=${_mssh_complete_word,,}
 	for (( _mssh_complete_one = 0; _mssh_complete_one < ${#_mssh_complete_results[@]}; _mssh_complete_one++ )); do
+		# an empty result (a command's blank first line, a function's empty word) stays whatever the word is, as in
+		# bash, which does not hold those of a function or a command to the word: readline then finds no common start
+		if [[ -z ${_mssh_complete_results[_mssh_complete_one]} ]]; then
+			_mssh_complete_delegated+=('')
+			continue
+		fi
 		_mssh_complete_item=$_mssh_complete_prefix${_mssh_complete_results[_mssh_complete_one]}
 		# how much of the prefix is left on the item: -P goes after it, in front of the remote word
 		_mssh_complete_front_at=${#_mssh_complete_prefix}

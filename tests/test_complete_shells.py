@@ -360,6 +360,11 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -C "printf \'\\n\'" zzsvc', []),
 	('complete -o default -C "printf \'\\n\'" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
 	('complete -o dirnames -C "printf \'\\n\\n\'" zzsvc', ['zzdir', 'zzdirb']),
+	# a blank first line is a result, an empty one (bash keeps it whatever the word is, and the fallbacks do not run)
+	('complete -C "printf \'\\nzza\\n\'" zzsvc', ['', 'zza']),
+	('complete -C "printf \'\\n\\n\\nzza\\n\\nzzb\'" zzsvc', ['', 'zza', 'zzb']),
+	('complete -C "printf zza" zzsvc', ['zza']),
+	('complete -o default -C "printf \'\\nzza\\n\'" zzsvc', ['', 'zza']),
 ])
 def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path, setup, expected):
 	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz')) == sorted(expected)
@@ -730,6 +735,25 @@ def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_
 			assert session.line_after(typed) == completed
 		finally:
 			session.close()
+
+
+@pytest.mark.parametrize('output, completed', [
+	# bash reads "\nzza\n" as '' and zza: the command substitution drops the trailing newlines, a run of them
+	# between results is one separator, and a leading one is a result. '' has no common start with z, and bash
+	# leaves the word as it is
+	('\\n\\nzza\\n', 'zzsvc z'),
+	('\\nzza\\n', 'zzsvc z'),
+	('zza\\n\\n\\n', 'zzsvc zza '),
+	('zza\\n\\nzzb\\n', 'zzsvc zz'),
+	('\\n\\n', 'zzsvc z'),
+])
+def test_bash_a_command_giving_a_blank_first_line_gives_an_empty_result_as_bash_does(tmp_path, output, completed):
+	session = ignoring_case(tmp_path, [], on=False, options='complete -C "printf \'{}\'" zzsvc'.format(output.replace('\\', '\\\\')))
+	try:
+		assert session.line_after('zzsvc z') == completed
+		assert session.line_after('mssh h zzsvc z') == 'mssh h ' + completed
+	finally:
+		session.close()
 
 
 def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=0):
