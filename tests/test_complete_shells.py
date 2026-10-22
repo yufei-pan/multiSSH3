@@ -434,6 +434,18 @@ def test_bash_the_glue_runs_with_the_default_ifs_and_the_shells_code_with_the_sh
 		'zzstar[{}]'.format({'IFS=:': 'zzsvc:zz', 'IFS=': 'zzsvczz', 'unset IFS': 'zzsvc zz'}[shell_ifs])]
 
 
+@pytest.mark.parametrize('shell_ifs, expected', [('IFS=:', '[a][b]'), ('IFS=', '[a:b][]'), ('unset IFS', '[a:b][]')])
+def test_bash_the_prompt_the_picker_redraws_is_expanded_in_the_shells_ifs(tmp_path, shell_ifs, expected):
+	# PS1's command substitutions are the shell's code: they split on the shell's IFS, not the glue's
+	script = ('. "$1"; ' + shell_ifs + '; PS1=\'$(echo a:b | { read x y; echo "[$x][$y]"; })\'; '
+		'_mssh_complete_guard _mssh_complete_prompt; printf "%s" "$_mssh_complete_ps1"')
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	if output.stdout.decode().startswith('$('):
+		pytest.skip('this bash has no ${PS1@P}')
+	assert output.stdout.decode() == expected, output
+
+
 @pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
 def test_bash_the_glue_puts_the_shells_ifs_back(tmp_path, shell_ifs):
 	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha); }; complete -F _zzreal zzsvc; ' + shell_ifs + '; '

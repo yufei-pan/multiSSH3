@@ -6828,11 +6828,16 @@ _mssh_complete_request() {
 	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 }
 
+_mssh_complete_expand_prompt() {
+	# PS1 expanded (_mssh_complete_prompt), run by the operator: its command substitutions are the shell's code
+	_mssh_complete_ps1=${PS1@P}
+}
+
 _mssh_complete_prompt() {
 	# the prompt the picker and the editor redraw (bash clears the line before a bind -x command):
 	# expanded on bash 4.4 and later, else PS1 itself for the engine to expand
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
-		_mssh_complete_ps1=${PS1@P}
+		_mssh_complete_operator _mssh_complete_expand_prompt
 		_mssh_complete_expand=0
 	else
 		_mssh_complete_ps1=$PS1
