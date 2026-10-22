@@ -665,19 +665,16 @@ def test_bash_a_nospace_spec_lists_mssh_s_own_words_as_they_are(tmp_path):
 		session.close()
 
 
-@pytest.mark.parametrize('engine_asks, spec, completed', [
-	# the engine asks for no space itself (zzopt= goes on): it gets none, whatever the spec says
-	(True, '-o nospace -W zzx', 'mssh h zzgit zzopt='),
-	(True, '-W zzx', 'mssh h zzgit zzopt='),
-	# the engine does not: its word is like the spec's, a space where the spec asks for none
-	(False, '-o nospace -W zzx', 'mssh h zzgit zzopt= '),
-	(False, '-W zzx', 'mssh h zzgit zzopt= '),
+@pytest.mark.parametrize('spec, completed', [
+	# the engine's word is like the spec's: a space where the spec asks for none
+	('-o nospace -W zzx', 'mssh h zzgit zzopt= '),
+	('-W zzx', 'mssh h zzgit zzopt= '),
 ])
-def test_bash_a_nospace_spec_leaves_the_space_alone_where_the_engine_asked_for_none(tmp_path, engine_asks, spec, completed):
+def test_bash_a_nospace_spec_gives_an_option_word_of_the_engine_its_space(tmp_path, spec, completed):
+	# (the engine never asks for nospace itself: a path or an --opt= word it gives is spaced like any other)
 	env, home = make_home(tmp_path, [])
 	engine = home / 'engine'
-	directive = 'D nospace\\n' if engine_asks else ''
-	engine.write_text("#!/bin/sh\nprintf 'MSSHC1\\n{}C zzopt=\\t\\tx\\nX 1\\t\\tzzgit\\tzzopt\\nE\\n\\0'\n".format(directive))
+	engine.write_text("#!/bin/sh\nprintf 'MSSHC1\\nC zzopt=\\t\\tx\\nX 1\\t\\tzzgit\\tzzopt\\nE\\n\\0'\n")
 	engine.chmod(0o755)
 	session = bash_session(home, env, glue_file(home, 'bash', [str(engine)]), bash_completion=False, extra='complete {} zzgit'.format(spec))
 	try:
