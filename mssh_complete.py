@@ -6612,8 +6612,9 @@ _mssh_complete_delegate() {
 				_mssh_complete_results+=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
 			fi
 			if [[ $_mssh_complete_have == *' command '* ]]; then
+				# bash drops a command's blank lines (aws_completer prints one for nothing)
 				while IFS= read -r _mssh_complete_item; do
-					_mssh_complete_results+=("$_mssh_complete_item")
+					[[ -n $_mssh_complete_item ]] && _mssh_complete_results+=("$_mssh_complete_item")
 				done < <(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
 					"$_mssh_complete_current" "$_mssh_complete_prev" 2>/dev/null </dev/null || :)
 			fi

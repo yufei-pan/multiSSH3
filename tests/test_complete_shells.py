@@ -355,6 +355,11 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -W "zza" -o default zzsvc', ['zza']),
 	('complete -W "zza" -o plusdirs zzsvc', ['zza', 'zzdir', 'zzdirb']),
 	('complete -W "other" zzsvc', []),
+	# a command's blank lines are no results, as in bash (a lone newline is aws_completer's answer for nothing), so the fallbacks run
+	('complete -C "printf \'zza\\n\\nzzb\\n\\n\'" zzsvc', ['zza', 'zzb']),
+	('complete -C "printf \'\\n\'" zzsvc', []),
+	('complete -o default -C "printf \'\\n\'" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
+	('complete -o dirnames -C "printf \'\\n\\n\'" zzsvc', ['zzdir', 'zzdirb']),
 ])
 def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path, setup, expected):
 	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz')) == sorted(expected)
@@ -620,6 +625,15 @@ def test_bash_a_nospace_spec_leaves_the_space_alone_where_the_engine_asked_for_n
 	session = bash_session(home, env, glue_file(home, 'bash', [str(engine)]), bash_completion=False, extra='complete {} zzgit'.format(spec))
 	try:
 		assert session.line_after('mssh h zzgit zzopt') == completed
+	finally:
+		session.close()
+
+
+def test_bash_a_command_giving_a_blank_line_for_nothing_inserts_no_space(tmp_path):
+	# aws v1's aws_completer prints a newline when it has nothing: bash reads no result there
+	session = ignoring_case(tmp_path, [], on=False, options="complete -C \"printf '\\\\n'\" zzsvc")
+	try:
+		assert session.line_after('mssh h zzsvc ') == 'mssh h zzsvc '
 	finally:
 		session.close()
 
