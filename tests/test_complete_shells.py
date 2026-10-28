@@ -814,16 +814,15 @@ def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_
 			session.close()
 
 
-def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=0, ble=0, env=None):
+def unspaced(tmp_path, reply, given, icase=0, ble=0):
 	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given): the engine's
 	words and the delegate's, each in brackets."""
 	import shlex
-	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_before={}; _mssh_complete_after={}; '
-		'_mssh_complete_icase={}; _mssh_complete_ble={}; _mssh_complete_unspace; '
-		'printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
-		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(before), shlex.quote(after), icase, ble)
+	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_icase={}; _mssh_complete_ble={}; '
+		'_mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble)
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, env=env)
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.returncode == 0, output
 	lines = output.stdout.decode().splitlines()
 	return lines[0], lines[1]
@@ -833,31 +832,8 @@ def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=
 	# all spaced, or none: the space comes off the delegate's words (readline adds it)
 	(['zzb'], ['zza ', 'zzc '], {}, '[zzb]', '[zza][zzc]'),
 	(['zzb'], [], {}, '[zzb]', '[]'),
-	# mixed: the engine's words get a space, one by one
-	(['zzb', 'zzd/', 'zze='], ['zza ', 'zzopt='], {}, '[zzb ][zzd/ ][zze= ]', '[zza ][zzopt=]'),
-	# not in front of a blank
-	(['zzb'], ['zza ', 'zzopt='], {'after': ' -- x'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'after': '\tx'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'after': ')'}, '[zzb ]', '[zza ][zzopt=]'),
-	# not inside an open quote, but after a closed one, an escaped one and one in an ansi-c quote
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "zzgit zzf'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h 'zzgit zzf"}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a \\" b'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h a\\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
-	# as readline finds it: a backslash means nothing in single quotes, and $' and $( mean nothing at all (readline
-	# closes the single quote at the second ' of $'a\'' and opens the next; it completes nothing in "$(echo ")" either)
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h 'a\\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h $'zzgit \\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h $'a\\'' zzf"}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "$(echo ")" zzgit zzf'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "$(echo "x")" zzgit zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h \\"a zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a\\\\" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a\\\\\\" zzf'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a" \'b\' "c" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a\'" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h '\"' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
+	# mixed: the words stay as they are
+	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {}, '[zzb][zzd/]', '[zza ][zzopt=]'),
 	# under ble.sh: the delegate's words as given, the engine's with no space, and the engine's word the delegate gave
 	# with one left out (ble.sh would meet both); no delegated word: nothing to keep
 	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {'ble': 1}, '[zzb][zzd/]', '[zza ][zzopt=]'),
@@ -867,32 +843,20 @@ def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=
 	(['zza', 'zzb'], ['zza', 'zzopt='], {'ble': 1}, '[zza][zzb]', '[zza][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1, 'icase': 1}, '[zzb]', '[zza ][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[ZZA][zzb]', '[zza ][zzopt=]'),
-	(['zz*x'], ['zzopt='], {'ble': 1, 'after': ' -- x'}, '[zz*x]', '[zzopt=]'),
-	# the delegate's own word: without the space the engine's is the same word, with it the engine's is left out
-	(['zza', 'zzb'], ['zza', 'zzopt='], {}, '[zza][zzb ]', '[zza][zzopt=]'),
-	(['zza', 'zzb'], ['zza ', 'zzopt='], {}, '[zzb ]', '[zza ][zzopt=]'),
-	# in any case under icase (and only then)
-	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'icase': 1}, '[zzb ]', '[zza ][zzopt=]'),
-	(['ZZA', 'zzb'], ['zza', 'zzopt='], {'icase': 1}, '[ZZA][zzb ]', '[zza][zzopt=]'),
-	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {}, '[ZZA ][zzb ]', '[zza ][zzopt=]'),
 ])
-def test_bash_the_space_of_a_nospace_spec_goes_on_the_engines_words_where_the_delegate_s_are_mixed(tmp_path, reply, given, kwargs, engine, delegate):
+def test_bash_a_nospace_spec_loses_its_space_to_readline_where_all_its_words_end_in_one(tmp_path, reply, given, kwargs, engine, delegate):
 	assert unspaced(tmp_path, reply, given, **kwargs) == (engine, delegate)
 
 
-def test_bash_the_scan_for_an_open_quote_costs_the_quotes_not_the_characters(tmp_path):
-	# 16000 characters of two bytes took seconds: bash cut ${line:i:1} out of the line for each of them (the cost of one
-	# grows with i in a UTF-8 locale)
-	for name in ('C.UTF-8', 'en_US.UTF-8'):
-		env = dict(os.environ, LC_ALL=name)
-		if bash_locale(env)[0]:
-			break
-	else:
-		pytest.skip('no UTF-8 locale')
-	long = '\u00e9' * 16000
-	started = time.monotonic()
-	assert unspaced(tmp_path, ['zzb'], ['zza ', 'zzopt='], before='mssh h zzgit ' + long + ' \'a b\' \"' + long + '\" zzf', env=env) == ('[zzb ]', '[zza ][zzopt=]')
-	assert time.monotonic() - started < 2.5
+def test_bash_a_nospace_spec_lists_a_word_of_the_engine_and_the_spec_once(tmp_path):
+	# beside a word without a space (--format=) the spec's words keep theirs: the engine's zzfeature is the same word
+	history = history_of('zzgit checkout zzfeature')
+	options = "_zzs() { COMPREPLY=('zzfeature ' 'zzopt='); }; complete -o nospace -F _zzs zzgit"
+	session = ignoring_case(tmp_path, history, on=False, options=options)
+	try:
+		assert completed_and_listed(session, 'mssh h zzgit checkout zz') == ('mssh h zzgit checkout zz', ['zzfeature', 'zzopt='])
+	finally:
+		session.close()
 
 
 @pytest.mark.parametrize('options, typed', [
