@@ -6454,7 +6454,8 @@ ZSH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ zsh: autocomplete for mssh (multiS
 
 _mssh() {
 	# without the modules that read the engine's answer: what zsh offers for a command it has no
-	# completion for (see the end)
+	# completion for (see the end). An if, not `|| { ...; return }`: ignore_braces and ignore_close_braces
+	# read a } after a command on the same line as its argument, and the whole file would not parse
 	if ! zmodload zsh/zselect zsh/system zsh/datetime 2>/dev/null; then
 		_default "$@"
 		return
