@@ -2727,7 +2727,11 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	Returns:
 		None
 	'''
-	bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
+	try:
+		bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
+	except (LookupError, TypeError):
+		# not an encoding (set_global_with_args takes args.encoding as it is): the decode fails as it did before
+		bulk_encoding = False
 	def add_line():
 		line = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
 		target.append(line)

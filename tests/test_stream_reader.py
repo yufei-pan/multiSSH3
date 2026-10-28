@@ -1,6 +1,7 @@
 import io
 import itertools
 import random
+import threading
 import time
 
 import pytest
@@ -186,3 +187,17 @@ def test_reader_notes_no_lines_to_redraw(tui):
 	# the TUI draws the lines added since its last frame (Host.printedLines): a set of every new line's
 	# number held 136 MB per million lines when output came faster than frames
 	assert host.lineNumToPrintSet == set()
+
+
+def test_a_command_with_no_output_runs_quietly_under_an_unknown_encoding(monkeypatch):
+	# set_global_with_args takes args.encoding as it is (a caller's mistake): the readers must not die with a traceback
+	monkeypatch.setattr(multiSSH3, "_encoding", "no-such-codec")
+	failures = []
+	monkeypatch.setattr(threading, "excepthook", lambda hook_args: failures.append(hook_args.exc_value))
+	host = multiSSH3.Host("h", "true", shell=True)
+
+	multiSSH3.run_command(host, threading.Semaphore(1), 20)
+
+	assert failures == []
+	assert host.returncode == 0
+	assert host.stdout == []
