@@ -54,17 +54,17 @@ def test_raw_c1_bytes_from_history_never_reach_the_shell():
 		for before, flags in (('mssh no', {}), ('mssh no', {'ghost': '1'}), ('mssh ', {'ghost': '1'}), ('mssh no', {'insert': '1'})):
 			response = engine(history).query(mc.Request(shell, before, '', '' if before.endswith(' ') else 'no', flags=flags))
 			assert b'\x9b' not in mc.format_response(response)
-	request = mc.Request('bash', 'mssh ', '', '', history=['mssh {} w'.format(RAW_CSI), 'mssh node1 w'])
+	history.append(line(NOW, '-su', 'node1', 'w'))
+	request = mc.Request('bash', 'mssh ', '', '', history=['mssh {} w'.format(RAW_CSI)])
 	_, _, items, _ = mc.picker_items(request, engine(history), history)
-	assert [item.text for item in items] == ['mssh node1 w']
+	assert [item.text for item in items] == ['mssh -su node1 w']
 
 
 def test_picker_history():
 	history = [line(NOW, '-su', 'node1', '"echo \x1b[2J"'), line(NOW, '-su', 'node1', 'uptime')]
-	shell = ['mssh node1 printf "\x1b]0;owned\x07"', 'mssh node1 w']
-	request = mc.Request('bash', 'mssh ', '', '', history=shell)
+	request = mc.Request('bash', 'mssh ', '', '', history=['mssh node1 printf "\x1b]0;owned\x07"'])
 	_, _, items, _ = mc.picker_items(request, engine(history), history)
-	assert sorted(item.text for item in items) == ['mssh -su node1 uptime', 'mssh node1 w']
+	assert [item.text for item in items] == ['mssh -su node1 uptime']
 
 
 def test_picker_draws_no_control_character():
