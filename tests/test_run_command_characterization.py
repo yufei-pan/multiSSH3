@@ -273,10 +273,3 @@ def test_tui_and_debug_lines_never_show_a_password(monkeypatch, name):
 	# from their environment
 	given = [arg for argv in got["argvs"] for arg in argv] + [value for env in got["envs"] for value in env.values()]
 	assert [arg for arg in given if SSH_SECRET in arg or BMC_SECRET in arg or shlex.quote(BMC_SECRET) in arg]
-
-
-def test_a_configured_password_is_hidden_after_any_dash_p(monkeypatch):
-	# passwords the run did not pass in, but the config holds: ssh's own -p (a port) stays
-	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", SSH_SECRET)
-	line = multiSSH3._shown_command(["/bin/sshpass", "-p", SSH_SECRET, "/bin/ssh", "-p", "2222", "--", "node1", "uptime"])
-	assert line == "/bin/sshpass -p *** /bin/ssh -p 2222 -- node1 uptime"

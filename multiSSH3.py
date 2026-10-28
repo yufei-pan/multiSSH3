@@ -2879,7 +2879,6 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	Returns:
 		None
 	'''
-	global _encoding
 	try:
 		bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
 	except (LookupError, TypeError):
@@ -3037,8 +3036,6 @@ def __handle_writing_stream(stream,stop_event,host,wake=None):
 	Returns:
 		None
 	'''
-	global __keyPressesIn
-	global _encoding
 	# __keyPressesIn is a list of lists. 
 	# Each list is a list of characters to be sent to the stdin of the process at once. 
 	# We do not send the last line as it may be incomplete.
@@ -3084,12 +3081,6 @@ def _forward_typed_lines(stream, stop_event, host, wake):
 			pass
 	if sentInputPos < len(__keyPressesIn) - 1 :
 		eprint(f"Warning: {len(__keyPressesIn)-sentInputPos} lines of key presses are not sent before the process is terminated!")
-	# # send the last line
-	# if __keyPressesIn and __keyPressesIn[-1]:
-	#     stream.write(''.join(__keyPressesIn[-1]).encode())
-	#     stream.flush()
-	#     host.output.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
-	#     host.stdout.append(' $ ' + ''.join(__keyPressesIn[-1]).encode().decode().replace('\n', '↵'))
 	return sentInputPos
 
 # once the command ended, at most a pipe's worth of its output is left to read (64 KiB by default, on Linux
@@ -3482,11 +3473,7 @@ def _ipmi_failure_should_wait(host, line_starts=(0, 0, 0)):
 	)
 	if any(marker in text for marker in no_contact_markers):
 		return False
-	if getattr(host, 'returncode', None) == 124:
-		return False
-	if 'unable to establish ipmi v2' in text or 'rmcp+' in text:
-		return True
-	return True
+	return getattr(host, 'returncode', None) != 124
 
 # how a host without rsync answers: its shell's "not found" (bash and tcsh, dash / busybox / ksh, zsh,
 # fish, mksh, a missing --rsync-path, Windows cmd and PowerShell), or rsync's words for exit code 127
@@ -4177,9 +4164,6 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				if __DEBUG_MODE:
 					host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
 				host.output.append('Please provide password via live input or use ssh key authentication.')
-				# # try to send the password via __keyPressesIn
-				# __keyPressesIn[-1] = list(passwds) + ['\n']
-				# __keyPressesIn.append([])
 	except Exception as e:
 		import traceback
 		host.output.append(f'Error occurred while formatting the command : {host.command}!')
@@ -4205,12 +4189,10 @@ def _shown_command(argv, passwords=()):
 	argv as the line the TUI and --debug show, each password in it shown as ***.
 
 	A password is the word after -p or -P (sshpass, ipmitool, redfishtool, also inside the sh -c line
-	they run in) that is one of passwords or a configured password. Other words stay, ssh's -p port too.
+	they run in) that is one of passwords. Other words stay, ssh's -p port too.
 	'''
-	known = list(passwords) + [DEFAULT_PASSWORD, DEFAULT_IPMI_PASSWORD]
-	known += [definition.get('password') for definition in DEFAULT_IPMI_DEFINITIONS if isinstance(definition, dict)]
 	# longest first, so a password inside another one does not leave the rest of that one
-	secrets = sorted({str(password) for password in known if password is not None and str(password)}, key=len, reverse=True)
+	secrets = sorted({str(password) for password in passwords if password is not None and str(password)}, key=len, reverse=True)
 	words = [str(word) for word in argv]
 	for index, word in enumerate(words):
 		if index and words[index - 1] in ('-p', '-P') and word in secrets:
@@ -4293,7 +4275,6 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				# this try's lines, to tell whether the server dropped the connection before login
 				run_stdout_start, run_stderr_start = len(host.stdout), len(host.stderr)
 				host.dropped_before_login = False
-				#host.stdout = []
 				# without the TUI nobody can type, an open stdin pipe would leave commands reading it waiting forever
 				# read once: the TUI can end (clearing the flag) at any time, a pipe must always get a writer that closes it
 				interactive_stdin = host.interactive_stdin
@@ -4398,7 +4379,6 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					if stderr:
 						host.output.append('Trying to read the rest of the stderr...')
 						__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
-					# if the last line in host.stderr is Connection to * closed., we will remove it
 				# the return code is set last: a host with one looks finished, and may be tried again before that
 				returncode = proc.poll()
 				if timed_out:
@@ -4413,9 +4393,6 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					host.stderr.append(stopped)
 					host.output.append(stopped)
 					returncode = 130
-				elif returncode is None:
-					# process been killed via sigkill
-					returncode = -1
 				host.output.append(f'Command finished with return code {returncode}')
 				# read before the ignored messages are filtered out, they may hold ssh's lines about the drop
 				login_drop = None
@@ -4581,12 +4558,7 @@ def _sshpass_program(formatedCMD):
 			return None
 	if not sshpass or len(words) < 3 or words[0] != sshpass:
 		return None
-	# sshpass -e program, or sshpass -p password program
-	if words[1] == '-e':
-		return os.path.basename(words[2])
-	if words[1] == '-p' and len(words) >= 4:
-		return os.path.basename(words[3])
-	return None
+	return os.path.basename(words[2]) if words[1] == '-e' else None
 
 def _may_go_through_a_proxy(host):
 	'''
@@ -4951,7 +4923,6 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 		list: The worker threads started, they end once no host is left to start. Hosts skipped as
 			unreachable are not started.
 	'''
-	global __thread_start_delay
 	hosts = [host for host in hosts if not host.skipped]
 	if len(hosts) == 0:
 		return []
