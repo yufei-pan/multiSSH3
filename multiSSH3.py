@@ -7647,27 +7647,6 @@ def _own_symlink(path):
 		return False
 	return not hasattr(os, 'getuid') or os.lstat(path).st_uid in (os.getuid(), 0)
 
-def _copy_to_backup(path, backup, mode):
-	'''Copy the file path leads to into a new file at backup (mode), replacing what is there, a symlink included.'''
-	with open(path, 'rb') as f:
-		content = f.read()
-	# a temporary file renamed over the backup: opening the backup itself would follow a link left there
-	temporary = '{}.{}.tmp'.format(backup, uuid4().hex)
-	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-	try:
-		with os.fdopen(fd, 'wb') as f:
-			if hasattr(os, 'fchmod'):
-				# O_CREAT's mode is reduced by the umask, set it exactly
-				os.fchmod(f.fileno(), mode)
-			f.write(content)
-		os.replace(temporary, backup)
-	except BaseException:
-		try:
-			os.unlink(temporary)
-		except OSError:
-			pass
-		raise
-
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
 	default_config = generate_default_config(args)
@@ -7698,7 +7677,8 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
 			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
 			# link aside would leave the file it points to as it was, copy that file instead
-			_copy_to_backup(CONFIG_FILE, CONFIG_FILE+'.bak', 0o600 if previous_mode is None else previous_mode & 0o600)
+			with open(CONFIG_FILE, 'rb') as f:
+				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False)
 		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only
@@ -7714,62 +7694,14 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		if not inStr or not inStr.lower().strip().startswith('y'):
 			_exit_with_code(0, "Aborted by user, no config file written")
 	try:
-		# configs can hold passwords: owner only, except the system-wide locations every user reads
-		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
 		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
 		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
 		if os.path.islink(CONFIG_FILE) and not _own_symlink(CONFIG_FILE):
 			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
-		target = os.path.realpath(CONFIG_FILE)
-		try:
-			st = os.stat(target)
-		except FileNotFoundError:
-			st = None
-		if st is None or not hasattr(os, 'getuid') or st.st_uid == os.getuid():
-			# new or ours: write a temporary file and rename it over, a failure never empties the old config
-			if st is not None:
-				# only tighten an existing file, an admin may have locked it down further
-				new_mode = stat.S_IMODE(st.st_mode) & mode
-			else:
-				# a file replacing a backed up one keeps its tighter mode
-				new_mode = mode if previous_mode is None else previous_mode & mode
-			temporary = '{}.{}.tmp'.format(target, uuid4().hex)
-			fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, new_mode)
-			try:
-				with os.fdopen(fd, 'w') as f:
-					if hasattr(os, 'fchmod'):
-						# O_CREAT's mode is reduced by the umask, set it exactly
-						os.fchmod(f.fileno(), new_mode)
-					if st is not None and hasattr(os, 'chown'):
-						try:
-							os.chown(temporary, -1, st.st_gid)
-						except OSError:
-							pass
-					json.dump(__configs_from_file,f,indent=4)
-					f.flush()
-					os.fsync(f.fileno())
-				os.replace(temporary, target)
-			except BaseException:
-				try:
-					os.unlink(temporary)
-				except OSError:
-					pass
-				raise
-		else:
-			# someone else's file we can write to: renaming over it would take it over, write it in place
-			new_mode = stat.S_IMODE(st.st_mode) & mode
-			fd = os.open(target, os.O_WRONLY)
-			with os.fdopen(fd, 'w') as f:
-				if hasattr(os, 'fchmod'):
-					try:
-						os.fchmod(fd, new_mode)
-					except OSError:
-						pass
-				# only write the passwords if it is no more open than new_mode
-				if stat.S_IMODE(os.fstat(fd).st_mode) & ~new_mode:
-					raise PermissionError('cannot restrict the permissions of {!r} to {:o}, not writing passwords to it'.format(CONFIG_FILE, new_mode))
-				f.truncate()
-				json.dump(__configs_from_file,f,indent=4)
+		# configs can hold passwords: owner only, except the system-wide locations every user reads, and
+		# never more open than the old file was (an admin may have locked it down further)
+		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
+		_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 		return True
 	except Exception as e:
@@ -8370,21 +8302,20 @@ def _old_control_paths(content):
 	ours = range(start, start + len(block_lines)) if start >= 0 else ()
 	return [index + 1 for index, line in enumerate(stripped) if line == _OLD_CONTROL_MASTER_LINES[2] and index not in ours]
 
-def _write_ssh_config(path, content, new_mode=0o644):
+def _replace_file(path, content, mode=None, follow=True):
 	'''
-	Write content to the ssh config at path, never leaving it half written.
-
-	A symlink (into a dotfiles repository) is written through. The file is replaced by a
-	temporary copy with its mode, owner and group, so a full disk or quota keeps the old one.
-	A config owned by another user (sudo keeping HOME) is only replaced if we can keep its
-	owner: ssh refuses a config that belongs to someone else.
+	Write content (bytes) to the file at path, never leaving it half written: a temporary copy with mode
+	(default: the old file's, else 0644) and the old file's owner and group is renamed over it, so a full
+	disk or quota keeps the old one. A symlink is written through (into a dotfiles repository), unless
+	follow is False. A file of another user (sudo keeping HOME) is only replaced if we can keep its owner.
 	'''
-	target = os.path.realpath(path)
+	target = os.path.realpath(path) if follow else path
 	try:
-		st = os.stat(target)
+		st = os.stat(target) if follow else os.lstat(target)
 	except FileNotFoundError:
 		st = None
-	mode = stat.S_IMODE(st.st_mode) if st is not None else new_mode
+	if mode is None:
+		mode = stat.S_IMODE(st.st_mode) if st is not None else 0o644
 	temporary = '{}.{}.tmp'.format(target, uuid4().hex)
 	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), mode)
 	try:
@@ -8425,7 +8356,7 @@ def process_control_master_config(args):
 			if change == 'unchanged':
 				eprint("ControlMaster configuration already in ~/.ssh/config, nothing changed.")
 			else:
-				_write_ssh_config(ssh_config_file, new_content)
+				_replace_file(ssh_config_file, new_content)
 				if change == 'replaced':
 					eprint("Replaced the ControlMaster configuration mssh added to ~/.ssh/config before (ssh failed without /run/user/<uid>) with:")
 				else:
