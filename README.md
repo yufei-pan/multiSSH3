@@ -1399,4 +1399,4 @@ A simplification pass: multiSSH3.py is about 740 lines shorter, mssh_complete.py
   - Run `mssh --completion install` again to get the new shell glue.
   - The index rebuild and the host prober hold a kernel lock (`flock`) on `complete-index.lock` and `probe.lock` while they run; the files stay as empty files and no lock is ever stale. A failed rebuild leaves `complete-index.failed`, and the next starts 60 s later. `mssh-complete rebuild --lock X` and `probe --lock X` are accepted and ignored.
   - Accepted and ignored, for callers written for 6.38: `hosts_only` of `compact_hostnames` / `expand_hostnames`, `create` of `runtime_dir` / `_unavailable_hosts_file_path`, and `mssh-complete edit --expand`.
-  - `mssh_complete.expand_ranges` gives a text that mixes number and letter groups (`n[1-2]x[a-b]`) back whole.
+  - `mssh_complete.expand_ranges` gives back whole, not half expanded, a text that mixes number and letter groups (`n[1-2]x[a-b]`), one with malformed brackets (`n[01-12][,-10]`) and one of several groups that expands to more than `limit` names (`a[1-3]b[1-9999]` with `limit=100`).
