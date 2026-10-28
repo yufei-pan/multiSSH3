@@ -638,6 +638,22 @@ def test_bash_a_delegated_file_name_with_a_space_reaches_the_line_as_it_does_nat
 	assert fresh_line(tmp_path, 'mssh', shell, 'mssh h scp ' + typed, **given) == 'mssh h scp ' + completed
 
 
+@needs_bash_completion
+@pytest.mark.skipif(not os.path.exists('/usr/share/bash-completion/completions/git') or not shutil.which('git'), reason='no git completion')
+def test_bash_delegation_of_real_completions_gives_what_bash_gives_the_command_itself(tmp_path):
+	# bash-completion's own specs, as a remote command meets them: functions with nospace and filenames (git, rsync, cd,
+	# scp), -F alone (systemctl, ls)
+	options = 'git init -q . && git checkout -q -b main && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m x; . ' + BASH_COMPLETION
+	session = ignoring_case(tmp_path, [], on=False, files=['solo one.txt'], options=options)
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		for line in ('git checko', 'git checkout ma', 'git log --form', 'git commit --am', 'systemctl rest', 'ls --alm', 'cd zzd',
+				'scp so', 'rsync --delete-af'):
+			assert session.line_after('mssh h ' + line) == 'mssh h ' + session.line_after(line), line
+	finally:
+		session.close()
+
+
 SENTINEL = '_zzs() { COMPREPLY=(""); }; '
 # the empty word, as git sparse-checkout, grub and pcp give it for no completions
 EMPTY_SPECS = [
