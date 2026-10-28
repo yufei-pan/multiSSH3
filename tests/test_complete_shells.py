@@ -373,6 +373,9 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -C "printf \'\\n\'" zzsvc', []),
 	('complete -o default -C "printf \'\\n\'" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
 	('complete -o dirnames -C "printf \'\\n\\n\'" zzsvc', ['zzdir', 'zzdirb']),
+	# a quote or a substitution does not join lines
+	('complete -C "printf \'zz\\"a\\nzzb\\n\'" zzsvc', ['zz"a', 'zzb']),
+	('complete -C "printf \'zz\\$(a\\nzzb)\\n\'" zzsvc', ['zz$(a', 'zzb)']),
 	# the last line needs no newline
 	('complete -C "printf zza" zzsvc', ['zza']),
 	# a function's empty word, the sentinel that git, grub and pcp give for no completions, is an answer as well
@@ -491,6 +494,7 @@ def completed_and_listed(session, typed, quoted=False):
 SAME_AS_BASH = [
 	(['-W', 'zzalpha zzb', '-S', ']'], 'zz', ''),
 	(['-W', 'a* a*x a*y', '-X', '&'], 'a*', ''),
+	(['-W', 'a* a*x a*y', '-X', '!&*'], 'a*', ''),
 	(['-W', 'a? a?x ab', '-X', '!&*'], 'a?', ''),
 	(['-W', 'Zza zzb'], 'zz', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza zzb', '-o', 'plusdirs'], 'ZZ', 'bind "set completion-ignore-case on"'),
@@ -507,12 +511,14 @@ SAME_AS_BASH_UNQUOTED = [
 	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.39: the glue does it
 	# itself)
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb', '-o', 'dirnames', '-o', 'default'], 'zzd', ''),
 ]
 
 # and where a filter leaving nothing makes bash offer nothing at all (the unquoted one is above, with -o default)
 SAME_AS_BASH_QUOTED = [
 	(['-W', 'zza zzb zzc', '-X', '!(zza)'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)'], 'zz', 'shopt -s extglob'),
 ]
 
 
