@@ -867,6 +867,15 @@ def test_bash_a_nospace_spec_lists_a_word_of_the_engine_and_the_spec_once(tmp_pa
 		session.close()
 
 
+@pytest.mark.parametrize('typed', ['mssh -f zznotes', 'mssh h zzcmd zznotes'])
+def test_bash_a_file_name_ending_in_a_space_is_listed_beside_the_name_without_it(tmp_path, typed):
+	session = ignoring_case(tmp_path, [], on=False, files=['zznotes', 'zznotes '])
+	try:
+		assert completed_and_listed(session, typed) == (typed, ['zznotes', 'zznotes'])
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('options, typed', [
 	('', 'mssh h othercmd '),
 	('complete -f zzsvc', 'mssh h zzsvc '),
