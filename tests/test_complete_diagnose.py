@@ -1307,14 +1307,11 @@ def test_a_remote_command_word_mssh_does_not_know(engine, line, marked):
 	assert warnings(engine, line, probe=False)[0] == expected
 
 
-def test_an_abbreviation_is_read_as_mssh_reads_it(engine):
+def test_an_abbreviation_is_no_option(engine):
 	# argparse takes -c for -ci (--copy_id); taking full names only, mssh stops at it with an error
 	found = warnings(engine, "mssh web1 bash -c 'echo hi'", probe=False)[0]
-	if mc._takes_abbreviations(SPEC):
-		assert found == [('-c', 'command', "-c is mssh's --copy_id here — quote the command: \"bash -c 'echo hi'\"")]
-	else:
-		assert found == ([('-c', 'command', "-c is not an mssh option (mssh stops with an error) — quote the command: \"bash -c 'echo hi'\"")]
-			if STOPS else [])
+	assert found == ([('-c', 'command', "-c is not an mssh option (mssh stops with an error) — quote the command: \"bash -c 'echo hi'\"")]
+		if STOPS else [])
 
 
 @pytest.mark.parametrize('line', [
@@ -1493,10 +1490,10 @@ def agrees(word, verdict, readings, outcome):
 	return (taken, took_x, code) == (dests, attached is None and option.nargs != '0', None)
 
 
-def disagreements(parser_factory, abbreviations):
+def disagreements(parser_factory):
 	found = []
 	for word in ORACLE_WORDS:
-		verdict, readings = mc.read_option_word(word, SPEC, abbreviations)
+		verdict, readings = mc.read_option_word(word, SPEC)
 		outcome = mssh_reads(word, parser_factory())
 		if not agrees(word, verdict, readings, outcome):
 			found.append((word, verdict, [(option.dest, attached) for option, attached, _ in readings], outcome))
@@ -1504,31 +1501,7 @@ def disagreements(parser_factory, abbreviations):
 
 
 def test_words_are_read_as_mssh_reads_them():
-	assert disagreements(multiSSH3.get_parser, mc._takes_abbreviations(SPEC)) == []
-
-
-def test_abbreviations_are_taken_as_mssh_takes_them():
-	# the spec looks names up as mssh does: abbreviations are read only when mssh reads them
-	assert mc._takes_abbreviations(SPEC) is (mssh_reads('--usernam', multiSSH3.get_parser())[0] == ['username'])
-
-
-class FullNamesParser(argparse.ArgumentParser):
-	'''argparse taking option names in full only, as mssh's parser does on patch/no-option-abbrev.'''
-	def _get_option_tuples(self, option_string):
-		readings = super(FullNamesParser, self)._get_option_tuples(option_string)
-		name = option_string.partition('=')[0]
-		if any(reading[1] in (name, option_string[:2]) for reading in readings):
-			return readings
-		return []
-
-
-def test_words_are_read_as_mssh_reads_them_when_it_takes_full_names_only(monkeypatch):
-	# multiSSH3's argparse with that parser (argparse's own code must keep its own ArgumentParser)
-	full_names = types.ModuleType('argparse')
-	full_names.__dict__.update(argparse.__dict__)
-	full_names.ArgumentParser = FullNamesParser
-	monkeypatch.setattr(multiSSH3, 'argparse', full_names)
-	assert disagreements(multiSSH3.get_parser, False) == []
+	assert disagreements(multiSSH3.get_parser) == []
 
 
 @pytest.mark.parametrize('word', ['-q=j', '-h=x', '-hz', '-Vz', '-pr=x', "'-q x'", '-qci'])
@@ -1538,17 +1511,14 @@ def test_words_pythons_read_differently_are_left_alone(engine, word):
 	# ambiguous), what follows a letter mssh does not have read again as a word (3.11: -q, "- x" a
 	# positional; -q -ci)
 	text = mc.lex(word)[0].text
-	assert mc.read_option_word(text, SPEC, True)[0] == mc.read_option_word(text, SPEC, False)[0] == 'unsure'
+	assert mc.read_option_word(text, SPEC)[0] == 'unsure'
 	assert warnings(engine, 'mssh web1 cmd {} x'.format(word), probe=False)[0] == []
 
 
 def test_the_oracle_covers_every_reading():
-	abbreviations = mc._takes_abbreviations(SPEC)
-	verdicts = [mc.read_option_word(word, SPEC, abbreviations)[0] for word in ORACLE_WORDS]
+	verdicts = [mc.read_option_word(word, SPEC)[0] for word in ORACLE_WORDS]
 	assert {'positional', 'options', 'unknown', 'error'} <= set(verdicts)
-	# -qc: -q then -c, an abbreviation of -ci that Python 3.11 reads again (when mssh takes abbreviations)
-	unsure = ['-qc'] if abbreviations else []
-	assert [word for word, verdict in zip(ORACLE_WORDS, verdicts) if verdict == 'unsure'] == unsure
+	assert [word for word, verdict in zip(ORACLE_WORDS, verdicts) if verdict == 'unsure'] == []
 
 
 def test_the_engine_works_out_whether_to_write_unicode_once(monkeypatch):

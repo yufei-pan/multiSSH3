@@ -390,27 +390,14 @@ def _negative_number(text):
 	whole, dot, fraction = rest.partition('.')
 	return whole.isdecimal() if not dot else (whole == '' or whole.isdecimal()) and fraction.isdecimal()
 
-def _takes_abbreviations(spec):
-	'''
-	Whether mssh reads an abbreviation alone ("--user") as the option it abbreviates, as argparse does
-	by default. The spec looks names up the way mssh does, so it is asked about a long name cut short.
-	'''
-	strings = spec.by_string
-	for string, option in strings.items():
-		short = string[:-1]
-		if string.startswith('--') and len(short) > 2 and short not in strings and all(
-				strings[other] is option for other in strings if other.startswith(short)):
-			return spec.lookup(short)[0] is option
-	return False
-
-def read_option_word(text, spec, abbreviations=True):
+def read_option_word(text, spec):
 	'''
 	How mssh's argument parsing reads one word: argparse's _parse_optional and consume_optional, after
 	process_args has read --config_file with a parser of its own.
 
-	A word names an option in full, as "name=value", as a short option with its value attached
-	("-uroot") or followed by more short flags ("-aux" is -a -u x), or as an abbreviation when
-	abbreviations is true (argparse's default; see _takes_abbreviations).
+	A word names an option in full, as "name=value", or as a short option with its value attached
+	("-uroot") or followed by more short flags ("-aux" is -a -u x); mssh takes no abbreviations
+	(_MsshArgumentParser), but argparse's answer stands beside a full-name reading ("-pr").
 
 	Returns:
 		tuple: (verdict, readings). verdict: 'positional'; 'options' (readings: (OptionSpec, the value
@@ -425,40 +412,32 @@ def read_option_word(text, spec, abbreviations=True):
 	name, sep, value = text.partition('=')
 	value = value if sep else None
 	double = text[1] == '-'
-	# the options a name abbreviates (the two-character word itself is a short option, not one of them)
-	longer = [string for string in strings if string.startswith(name) and string != text[:2]]
-	if abbreviations and double and text != '--':
-		# process_args first reads --config_file with a parser that knows no other option: there any
-		# abbreviation of it is unique ("--c", even "--=x")
-		for string in longer:
-			if strings[string].dest == 'config_file':
-				return _read_attached(spec, abbreviations, string, value, len(name), bool(sep))
 	if text in strings:
 		return 'options', [(strings[text], None, len(text))]
 	if sep and name in strings:
-		return _read_attached(spec, abbreviations, name, value, len(name), True)
+		return _read_attached(spec, name, value, len(name), True)
 	# argparse's _get_option_tuples: a short option with the rest of the word attached, and every option
-	# the word (up to "=") abbreviates. Taking full names only, abbreviations count only next to a full
-	# name (as on patch/no-option-abbrev: "-pr" stays "-p r" or "-pre", ambiguous)
+	# the word (up to "=") abbreviates; abbreviations count only next to the short option's reading
+	# ("-pr" is "-p r" or "-pre", ambiguous)
 	short = not double and text[:2] in strings
-	if not abbreviations and not short:
-		longer = []
+	# the options a name abbreviates (the two-character word itself is a short option, not one of them)
+	longer = [string for string in strings if string.startswith(name) and string != text[:2]] if short else []
 	if not double and sep and longer:
 		# older Pythons abbreviate the whole word, "=" included (so nothing), newer ones the name before it
 		return 'unsure', []
 	if short + len(longer) > 1:
 		return 'error', []
 	if short:
-		return _read_attached(spec, abbreviations, text[:2], text[2:], 2, False)
+		return _read_attached(spec, text[:2], text[2:], 2, False)
 	if longer:
-		return _read_attached(spec, abbreviations, longer[0], value, len(name), bool(sep))
+		return _read_attached(spec, longer[0], value, len(name), bool(sep))
 	if _negative_number(text) and not any(_negative_number(string) for string in strings):
 		return 'positional', []
 	if ' ' in text:
 		return 'positional', []
 	return 'unknown', []
 
-def _read_attached(spec, abbreviations, string, attached, end, with_sign):
+def _read_attached(spec, string, attached, end, with_sign):
 	'''
 	argparse's consume_optional for read_option_word: string is the option string the word matched,
 	attached the text after it (with_sign: after "="), end where the name ends in the word. A short flag
@@ -486,7 +465,7 @@ def _read_attached(spec, abbreviations, string, attached, end, with_sign):
 			# some (3.11) read the rest as a word of its own ("-q x" leaves "- x", a positional)
 			if any(item[0].dest in ('help', 'version') for item in readings):
 				return 'unsure', []
-			rest = read_option_word('-' + attached, spec, abbreviations)[0]
+			rest = read_option_word('-' + attached, spec)[0]
 			return ('error' if rest in ('unknown', 'error') else 'unsure'), []
 		end += 1
 		attached = attached[1:] or None
@@ -3995,7 +3974,6 @@ class Engine(object):
 		option (ends_line): a remote command's option is often its last word (`mssh all df -h`), and
 		Enter would run the line as it stands.
 		'''
-		abbreviations = _takes_abbreviations(self.spec)
 		have_hosts = False
 		run = None        # where the unquoted remote command starts in argv
 		pending = None    # nargs of an option still taking the words that follow as values
@@ -4015,7 +3993,7 @@ class Engine(object):
 			if token.text.startswith('-') and any(char in _EXPANDED for char in token.raw):
 				verdict, readings = 'unsure', []
 			else:
-				verdict, readings = read_option_word(token.text, self.spec, abbreviations)
+				verdict, readings = read_option_word(token.text, self.spec)
 			if verdict == 'positional':
 				if pending is not None:
 					pending = pending if pending == '+' else None
