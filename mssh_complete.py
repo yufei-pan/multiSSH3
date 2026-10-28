@@ -7396,6 +7396,28 @@ def render_glue(shell, command=None):
 # the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`
 SIGPIPE_STATUS = 141
 
+def _discard_stdout():
+	'''
+	Point stdout, and stderr when it is the same file (2>&1), at devnull after a write to it failed:
+	what is left in the buffer goes nowhere, and the flush at exit does not fail again.
+	'''
+	try:
+		fds = [sys.stdout.fileno()]
+		try:
+			if os.path.sameopenfile(fds[0], sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (a caller's own stream): nothing to redirect
+		pass
+
 def _quiet_when_stdout_is_gone(command):
 	'''
 	command, ending as SIGPIPE ends other tools when the reader of its output exits early
@@ -7411,17 +7433,12 @@ def _quiet_when_stdout_is_gone(command):
 				if sys.stdout is not None:
 					sys.stdout.flush()
 		except BrokenPipeError:
-			# what is left in the buffer goes nowhere, and the flush at exit does not fail again
-			try:
-				devnull = os.open(os.devnull, os.O_WRONLY)
-				try:
-					os.dup2(devnull, sys.stdout.fileno())
-				finally:
-					os.close(devnull)
-			except (OSError, ValueError, AttributeError):
-				# not a file descriptor (a caller's own stream): nothing to redirect
-				pass
+			_discard_stdout()
 			return SIGPIPE_STATUS
+		except OSError:
+			# a full disk: reported once, and the flush at exit does not report it again
+			_discard_stdout()
+			raise
 	run.__name__, run.__doc__, run.__wrapped__ = command.__name__, command.__doc__, command
 	return run
 
