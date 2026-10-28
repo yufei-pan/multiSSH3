@@ -8,7 +8,7 @@ import pytest
 
 import multiSSH3
 import mssh_complete as mc
-from complete_shell_harness import ENGINE, REPO, build_index, make_home, require_shell
+from complete_shell_harness import ENGINE, REPO, make_home, require_shell
 
 # -I as the engine is run, but mssh's entry point heeds PYTHONDONTWRITEBYTECODE, which -I drops: the glue it
 # prints carries -B then (module_command)
@@ -46,9 +46,7 @@ PRINTING = [
 	pytest.param(MSSH + ['--completion', 'install', 'zsh'], id='mssh-install'),
 	pytest.param(ENGINE + ['uninstall', 'bash'], id='uninstall'),
 	pytest.param(ENGINE + ['-V'], id='version'),
-	pytest.param(ENGINE + ['eval', '--help'], id='eval-help'),
 	pytest.param(ENGINE + ['edit', '--help'], id='edit-help'),
-	pytest.param(ENGINE + ['eval', '--synthetic', '--limit', '5'], id='eval-report'),
 	pytest.param(ENGINE + ['rebuild'], id='rebuild'),
 ]
 
@@ -256,37 +254,13 @@ def test_a_host_name_the_locale_cannot_encode_is_no_variable(tmp_path):
 	assert result.stdout.decode().splitlines() == ["(['h\\xe9llo'], ['h\\xe9llo'])", "[('unknown', 'h\\xe9llo: unknown host')]"]
 
 
-_EVAL_SCRIPT = '''
-import sys
-sys.path.insert(0, {repo!r})
-import multiSSH3, mssh_complete as mc
-# no DNS: every name is one the prober would reject; nothing starts in the background
-multiSSH3.host_validity = lambda name, timeout=2.0: 'invalid'
-mc.spawn_probe = mc.spawn_rebuild = lambda directory: False
-sys.exit(mc.main(['eval', '--diagnostics', {history!r}]))
-'''
-
-
-@pytest.mark.parametrize('host, printed, c_locale', [
-	# a name the C locale cannot print (Python 3.6): a backslash escape
-	(b'h\xc3\xa9llo', b'h\\xe9llo', True),
-	# bytes that are not UTF-8, which stdout's strict UTF-8 (en_US.UTF-8) could not print: the bytes themselves
-	(b'h\xffllo', b'h\xffllo', False),
-])
-def test_the_diagnostics_report_names_a_host_stdout_cannot_print(tmp_path, host, printed, c_locale):
-	env, home = make_home(tmp_path)
-	(home / '.mssh_history').write_bytes(b'1790000000\t/x/multiSSH3.py\t-su\t' + host + b'\t"uptime"\n')
-	# built now: the report would wait for it
-	build_index(env)
-	script = tmp_path / 'eval.py'
-	script.write_text(_EVAL_SCRIPT.format(repo=str(REPO), history=str(home / '.mssh_history')))
-
-	result = subprocess.run((C_LOCALE_PYTHON if c_locale else [sys.executable, '-I']) + [str(script)],
-		env=_c_locale_env(env) if c_locale else dict(env, LC_ALL='en_US.UTF-8'), stdout=subprocess.PIPE,
+def test_eval_names_the_script_it_moved_to(tmp_path):
+	env, _ = make_home(tmp_path)
+	result = subprocess.run(ENGINE + ['eval', '--synthetic'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
 		stderr=subprocess.PIPE, timeout=60)
 
-	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
-	assert b'    ' + printed + b'  1 line' in result.stdout
+	assert (result.returncode, result.stdout) == (2, b'')
+	assert result.stderr.decode().splitlines() == ['mssh-complete eval moved to the source tree: python3 tests/replay.py']
 
 
 def test_the_glue_runs_mssh_complete_when_it_is_on_path(tmp_path, monkeypatch):
