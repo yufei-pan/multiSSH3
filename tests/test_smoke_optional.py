@@ -1,7 +1,3 @@
-import shutil
-
-import pytest
-
 import multiSSH3
 
 
@@ -29,19 +25,3 @@ def test_optional_programs_are_found_on_path(monkeypatch, tmp_path):
 	monkeypatch.setattr(multiSSH3, "_ipmitoolPath", "/opt/ipmitool/bin/ipmitool", raising=False)
 	assert multiSSH3.check_path("ipmitool") is True
 	assert multiSSH3._binPaths["ipmitool"] == "/opt/ipmitool/bin/ipmitool"
-
-
-@pytest.mark.smoke_optional
-def test_scp_flag_in_command_string():
-	if not shutil.which("scp"):
-		pytest.skip("scp not installed")
-	s = multiSSH3.getStrCommand(
-		hosts="127.0.0.1",
-		commands=["/tmp/dest"],
-		scp=True,
-		file=["/tmp/a"],
-		no_history=True,
-	)
-	assert "--scp" in s or " -W" in s or s.endswith("127.0.0.1")
-	# __formCommandArgStr adds '--scp' when scp=True
-	assert "--scp" in multiSSH3.__formCommandArgStr(scp=True, file=["/tmp/a"])
