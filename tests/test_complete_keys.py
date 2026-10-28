@@ -2073,12 +2073,6 @@ def test_fish_ignores_the_operators_functions(home, where):
 		# TAB, from mssh's history and from fish's (roo: fish offers $USER too, which may start with r)
 		assert printed(session, 'mssh -u roo\t') == 'mssh -u root '
 		assert words(printed(session, '\x15mssh h "echo th\t')) == ['mssh', 'h', 'echo three']
-		# the picker's history tab holds the line fish's history has
-		session.send('\x15mssh zzq9 ')
-		time.sleep(0.5)
-		session.send('\x12')
-		session.read_until(b'commands for', 10)
-		assert printed(session, '\tfishonly\r') == 'mssh zzq9 fishonly'
 		if fish_major() >= 4:
 			session.send('\x15mssh gpu017 ')
 			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
