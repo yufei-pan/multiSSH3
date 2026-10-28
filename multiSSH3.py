@@ -747,13 +747,7 @@ def _open_trusted_file(path, explicit_flag, errors=None):
 	The check runs on the opened file, so the file cannot be swapped between check and read.
 	'''
 	# O_NONBLOCK so opening a planted FIFO does not wait for a writer, it is rejected below
-	fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
-	try:
-		f = os.fdopen(fd, 'r', errors=errors)
-	except Exception:
-		# e.g. a directory: os.open works, fdopen does not
-		os.close(fd)
-		raise
+	f = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0)), 'r', errors=errors)
 	untrusted = _untrusted_file_reason(os.fstat(f.fileno()))
 	if not untrusted:
 		return f

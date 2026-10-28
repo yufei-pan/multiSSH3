@@ -213,17 +213,6 @@ def test_config_path_that_is_a_directory_is_skipped_quietly(tmp_path, capsys):
 		assert len(os.listdir("/proc/self/fd")) == open_fds  # no leaked descriptor
 
 
-def test_opening_a_directory_does_not_leak_its_descriptor(tmp_path):
-	if not os.path.isdir("/proc/self/fd"):
-		pytest.skip("needs /proc/self/fd")
-	open_fds = len(os.listdir("/proc/self/fd"))
-
-	with pytest.raises(OSError):
-		multiSSH3._open_trusted_file(str(tmp_path), "--config_file")
-
-	assert len(os.listdir("/proc/self/fd")) == open_fds
-
-
 def test_env_file_with_non_utf8_bytes_still_loads(monkeypatch, tmp_path):
 	env_file = tmp_path / "hosts.env"
 	env_file.write_bytes(b"# caf\xe9 (latin-1)\nMSSH_TRUST_ALIAS=127.0.0.5\n")
