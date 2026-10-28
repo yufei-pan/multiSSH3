@@ -3041,31 +3041,27 @@ def __handle_writing_stream(stream,stop_event,host,wake=None):
 	# We do not send the last line as it may be incomplete.
 	if wake is None:
 		wake = threading.Event()
+	sentInputPos = 0
 	with _typed_line_waiters_lock:
 		_typed_line_waiters.add(wake)
 	try:
-		return _forward_typed_lines(stream, stop_event, host, wake)
+		while not stop_event.is_set() and host.interactive_stdin:
+			if sentInputPos < len(__keyPressesIn) - 1 :
+				stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
+				stream.flush()
+				line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
+				host.output.append(line)
+				host.stdout.append(line)
+				sentInputPos += 1
+				host.lastUpdateTime = time.monotonic()
+			else:
+				# until a line is typed or the command stops (see _typed_line_waiters), looking again every second
+				# for a change nobody announced. Cleared before looking: a wake set after it is not lost
+				wake.wait(1)
+				wake.clear()
 	finally:
 		with _typed_line_waiters_lock:
 			_typed_line_waiters.discard(wake)
-
-def _forward_typed_lines(stream, stop_event, host, wake):
-	'''__handle_writing_stream's work, while the thread is among _typed_line_waiters.'''
-	sentInputPos = 0
-	while not stop_event.is_set() and host.interactive_stdin:
-		if sentInputPos < len(__keyPressesIn) - 1 :
-			stream.write(_encode_typed_line(__keyPressesIn[sentInputPos]))
-			stream.flush()
-			line = '> ' + _typed_line_for_display(__keyPressesIn[sentInputPos]).replace('\n', '↵')
-			host.output.append(line)
-			host.stdout.append(line)
-			sentInputPos += 1
-			host.lastUpdateTime = time.monotonic()
-		else:
-			# until a line is typed or the command stops (see _typed_line_waiters), looking again every second
-			# for a change nobody announced. Cleared before looking: a wake set after it is not lost
-			wake.wait(1)
-			wake.clear()
 	if not stop_event.is_set():
 		# the TUI ended while the command runs: send the lines already typed, then end of input
 		try:
@@ -3395,6 +3391,17 @@ def _login_drop_is_safe_to_retry(host, drop, tool):
 		return _ssh_uses_proxy(host)
 	return all(_names_ssh_target(host, address) for _kind, address, _port in drop.drops)
 
+def _note(host, line):
+	'''A line for the host's output, and its stderr with --debug.'''
+	host.output.append(line)
+	if __DEBUG_MODE:
+		host.stderr.append(line)
+
+def _report(host, line):
+	'''A line for the host's output and its stderr.'''
+	host.output.append(line)
+	host.stderr.append(line)
+
 def _record_host_exception(host, exc):
 	'''Record an exception raised while running the host's command as a failure. Call from an except block.'''
 	import traceback
@@ -3585,10 +3592,12 @@ def _rsync_link_sources(files):
 		kept.append((path, target, 'directory' if is_directory else 'nothing' if not exists else 'with_directory'))
 	return copy_links, kept
 
-# ssh's options that take a value. rsync has most of these letters as options without one (-o
+# the ssh options that take a value (ssh(1)): a word after one of them is its value, not an option
+_SSH_OPTIONS_WITH_VALUE = frozenset('BbcDEeFIiJLlmOoPpQRSWw')
+# those -ea gives ssh in a copy over rsync. rsync has most of these letters as options without one (-o
 # owner, -p perms, -i itemize, ...) and took the value for a file to copy; -e and -B take a value in
 # rsync as well and stay rsync's
-_SSH_OPTIONS_WITH_VALUE = frozenset('bcDEFIiJLlmOoPpQRSWw')
+_SSH_OPTIONS_FOR_RSYNC = _SSH_OPTIONS_WITH_VALUE - frozenset('Be')
 
 def _ssh_options_in(words):
 	'''
@@ -3604,7 +3613,7 @@ def _ssh_options_in(words):
 	while i < len(words):
 		word = str(words[i])
 		letter = word[1:2] if word.startswith('-') and not word.startswith('--') else ''
-		if letter in _SSH_OPTIONS_WITH_VALUE and len(word) == 2 and i + 1 < len(words) and not str(words[i + 1]).startswith('-'):
+		if letter in _SSH_OPTIONS_FOR_RSYNC and len(word) == 2 and i + 1 < len(words) and not str(words[i + 1]).startswith('-'):
 			ssh_words += [word, str(words[i + 1])]
 			i += 2
 			continue
@@ -3935,8 +3944,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			if ipmi_definitions_list is ...:
 				ipmi_definitions_list = _ipmi_definitions_for_host(host.name)
 			if not ipmi_definitions_list:
-				host.output.append('Error: Exhausted all matching ipmi definitions!')
-				host.stderr.append('Error: Exhausted all matching ipmi definitions!')
+				_report(host, 'Error: Exhausted all matching ipmi definitions!')
 				host.returncode = 1
 				return attempt('stop')
 			ipmi_definition = dict(ChainMap(ipmi_definitions_list.pop(0),get_default_ipmi_definition()))
@@ -3946,15 +3954,11 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				else:
 					host.command = 'ipmitool '+host.command if not host.command.startswith('ipmitool ') else host.command
 				if username:
-					host.output.append(f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
-					if __DEBUG_MODE:
-						host.stderr.append(f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
+					_note(host, f'Warning:-u SSH_USERNAME {username} is provided in the host name! Using the username from the ipmi definition if provided: {ipmi_definition.get("username")}')
 				username = ipmi_definition.get('username',username)
 				if passwds:
 					# not the passwords themselves: the TUI shows this line
-					host.output.append('Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
-					if __DEBUG_MODE:
-						host.stderr.append('Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
+					_note(host, 'Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 				passwds = ipmi_definition.get('password',passwds)
 				if ipmi_definition.get('interface_ip_prefix') and ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
 					host.output.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
@@ -3991,9 +3995,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			else:
 				# run_command_on_hosts said so before the run too, outside the TUI
 				warning = _interface_prefix_warning(ip_prefix, [host.name])
-				host.output.append(warning)
-				if __DEBUG_MODE:
-					host.stderr.append(warning)
+				_note(host, warning)
 		if username:
 			host.resolvedName = username + '@' + host.address
 		else:
@@ -4006,9 +4008,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			#{interface_ip_prefix,username,password,args,ipmi_method,hostname_keyword,retry_lockout_time}
 			if ipmi_definition.get('ipmi_method') == 'ipmitool':
 				if 'ipmitool' not in _binPaths:
-					host.output.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
-					if __DEBUG_MODE:
-						host.stderr.append('Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
+					_note(host, 'Ipmitool not found on the local machine! Trying ipmitool on the remote machine...')
 					if ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
 						ipmi_definition['interface_ip_prefix'] = DEFAULT_INTERFACE_IP_PREFIX
 					ipmi_definition['username'] = username
@@ -4056,15 +4056,12 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				else:
 					formatedCMD = [_binPaths['redfishtool'],'-S', 'Always','-a','-r',host.address,'-u',ipmi_definition.get("username",username),'-p',ipmi_definition.get("password",passwds)] + [f'-{s}' for s in ipmi_args.split('-') if s] + [host.command]
 			else:
-				host.output.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
-				host.stderr.append(f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
+				_report(host, f'IPMI method {ipmi_definition.get("ipmi_method","None")} not supported!')
 				host.returncode = 1
 				return attempt('stop')
 		elif host.shell:
 			if 'sh' in _binPaths:
-				host.output.append('Running command in shell mode, ignoring the hosts...')
-				if __DEBUG_MODE:
-					host.stderr.append('Running command in shell mode, ignoring the hosts...')
+				_note(host, 'Running command in shell mode, ignoring the hosts...')
 				shellCommand = host.command
 				if passwds and 'sshpass' in _binPaths:
 					# for the password prompts of the command (ssh-copy-id). Not in host.command: mssh shows that,
@@ -4074,9 +4071,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				else:
 					formatedCMD = [_binPaths['sh'],'-c',shellCommand]
 			else:
-				host.output.append('shell not found on the local machine! Using ssh localhost instead...')
-				if __DEBUG_MODE:
-					host.stderr.append('shell not found on the local machine! Using ssh localhost instead...')
+				_note(host, 'shell not found on the local machine! Using ssh localhost instead...')
 				host.shell = False
 				host.name = 'localhost'
 				return attempt('rebuild')
@@ -4091,25 +4086,19 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 					if 'scp' in _binPaths:
 						useScp = True
 					elif 'rsync' in _binPaths:
-						host.output.append('scp not found on the local machine! Trying to use rsync...')
-						if __DEBUG_MODE:
-							host.stderr.append('scp not found on the local machine! Trying to use rsync...')
+						_note(host, 'scp not found on the local machine! Trying to use rsync...')
 						useScp = False
 					else:
-						host.output.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
-						host.stderr.append('scp not found on the local machine! Please install scp or rsync to use file sync mode.')
+						_report(host, 'scp not found on the local machine! Please install scp or rsync to use file sync mode.')
 						host.returncode = 1
 						return attempt('stop')
 				elif 'rsync' in _binPaths:
 					useScp = False
 				elif 'scp' in _binPaths:
-					host.output.append('rsync not found on the local machine! Trying to use scp...')
-					if __DEBUG_MODE:
-						host.stderr.append('rsync not found on the local machine! Trying to use scp...')
+					_note(host, 'rsync not found on the local machine! Trying to use scp...')
 					useScp = True
 				else:
-					host.output.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
-					host.stderr.append('rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
+					_report(host, 'rsync not found on the local machine! Please install rsync or scp to use file sync mode.')
 					host.returncode = 1
 					return attempt('stop')
 				# rsync and scp end the host at the first colon, an IPv6 address goes in brackets
@@ -4160,19 +4149,11 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 			if passwds and 'sshpass' in _binPaths:
 				formatedCMD = _sshpass_command(formatedCMD, passwds)
 			elif passwds:
-				host.output.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
-				if __DEBUG_MODE:
-					host.stderr.append('Warning: sshpass is not available. Please install sshpass to use password authentication.')
+				_note(host, 'Warning: sshpass is not available. Please install sshpass to use password authentication.')
 				host.output.append('Please provide password via live input or use ssh key authentication.')
 	except Exception as e:
-		import traceback
-		host.output.append(f'Error occurred while formatting the command : {host.command}!')
-		host.stderr.append(f'Error occurred while formatting the command : {host.command}!')
-		host.stderr.extend(str(e).split('\n'))
-		host.output.extend(str(e).split('\n'))
-		host.stderr.extend(traceback.format_exc().split('\n'))
-		host.output.extend(traceback.format_exc().split('\n'))
-		host.returncode = -1
+		_report(host, f'Error occurred while formatting the command : {host.command}!')
+		_record_host_exception(host, e)
 		return attempt('stop')
 	return attempt('run', formatedCMD)
 
@@ -4263,15 +4244,12 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 			if _emo:
 				# the first Ctrl C stops the running commands; a host still waiting for its turn does not
 				# start either: it would only be one more login attempt on that host
-				host.output.append('Not started: Ctrl C')
-				host.stderr.append('Not started: Ctrl C')
+				_report(host, 'Not started: Ctrl C')
 				host.returncode = 130
 				return True, retry_limit, attempt_line_starts
 			try:
 				shown = 'Running command: ' + _shown_command(formatedCMD, passwords)
-				host.output.append(shown)
-				if __DEBUG_MODE:
-					host.stderr.append(shown)
+				_note(host, shown)
 				# this try's lines, to tell whether the server dropped the connection before login
 				run_stdout_start, run_stderr_start = len(host.stdout), len(host.stderr)
 				host.dropped_before_login = False
@@ -4317,12 +4295,10 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					if timeout > 0:
 						if time.monotonic() - host.lastUpdateTime > timeout:
 							timed_out = True
-							host.stderr.append('Timeout!')
-							host.output.append('Timeout!')
+							_report(host, 'Timeout!')
 							# -t counts the time since the last output, not since the start
 							stopped = f'No output for {timeout} s, so {_stopped_command_note(formatedCMD)}.'
-							host.stderr.append(stopped)
-							host.output.append(stopped)
+							_report(host, stopped)
 							_stop_command(proc, formatedCMD)
 							break
 						elif time.monotonic() - host.lastUpdateTime >  max(1, timeout // 2):
@@ -4340,8 +4316,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 							host.lineNumToPrintSet.add(len(host.output)-1)
 							timeoutLineAppended = False
 					if _emo:
-						host.stderr.append('Ctrl C detected, Emergency Stop!')
-						host.output.append('Ctrl C detected, Emergency Stop!')
+						_report(host, 'Ctrl C detected, Emergency Stop!')
 						stopped_by_ctrl_c = True
 						_stop_command(proc, formatedCMD)
 						break
@@ -4387,11 +4362,9 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					# Ctrl C. The terminal's reaches the command too, which may end before mssh stops it: ssh then
 					# says only "Killed by signal 2." (hidden), sshpass exits 0. Either way it did not finish
 					if not stopped_by_ctrl_c:
-						host.stderr.append('Ctrl C detected, Emergency Stop!')
-						host.output.append('Ctrl C detected, Emergency Stop!')
+						_report(host, 'Ctrl C detected, Emergency Stop!')
 					stopped = _stopped_command_note(formatedCMD) + '.'
-					host.stderr.append(stopped)
-					host.output.append(stopped)
+					_report(host, stopped)
 					returncode = 130
 				host.output.append(f'Command finished with return code {returncode}')
 				# read before the ignored messages are filtered out, they may hold ssh's lines about the drop
@@ -4442,9 +4415,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 			retry_limit -= 1
 			delay = _login_drop_backoff_seconds(login_drop_retries)
 			message = f'Warning: The server dropped the connection before login (sshd MaxStartups?), retrying in {delay:.1f} s...'
-			host.output.append(message)
-			if __DEBUG_MODE:
-				host.stderr.append(message)
+			_note(host, message)
 			time.sleep(delay)
 			if _emo:
 				# Ctrl-C while waiting: the host ends as the dropped try left it
@@ -4457,8 +4428,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 			break
 		waiting_for_others = retry_reason == 'processes or threads' and bool(__running_procs)
 		if retry_limit <= 0 and not waiting_for_others:
-			host.output.append(f"Error: Retry limit reached after too many {retry_reason}!")
-			host.stderr.append(f"Error: Retry limit reached after too many {retry_reason}!")
+			_report(host, f"Error: Retry limit reached after too many {retry_reason}!")
 			host.returncode = 1
 			return True, retry_limit, attempt_line_starts
 		if retry_reason == previous_reason == 'processes or threads':
@@ -4613,9 +4583,6 @@ def _sshpass_failure(host, formatedCMD, line_starts=(0, 0, 0)):
 		return [said, f"SSH_STRICT_HOST_KEY_CHECKING is true, so ssh checks the key of {address} (and of any ProxyJump host): accept it by connecting once with ssh, or check it and add it with ssh-keyscan {address} >> ~/.ssh/known_hosts. StrictHostKeyChecking accept-new in ~/.ssh/config accepts new hosts' keys."]
 	return [said, f'If {address} is the host you expect (reinstalled, or {ip} belonged to another host before), remove the old key with ssh-keygen -R {ip}.']
 
-# the ssh options that take a value (ssh(1)): a word after one of them is its value, not an option
-_SSH_OPTIONS_WITH_VALUES = 'BbcDEeFIiJLlmOopQRSWw'
-
 def _copy_id_extra_args(extraargs):
 	'''
 	The words of -ea that every ssh-copy-id takes, read as ssh reads them: -o and -p, and ssh's -J as
@@ -4623,20 +4590,14 @@ def _copy_id_extra_args(extraargs):
 	left out, as is -F (the ssh-copy-id of OpenSSH 7.4 and 8.0 fails on it: "invalid option") and every word
 	ssh-copy-id has no option for (ssh's flags, rsync's options).
 	'''
-	if isinstance(extraargs, str):
-		try:
-			# as a shell splits them: -ea "-o ProxyCommand='ssh -W %h:%p bastion'" is two words
-			words = shlex.split(extraargs)
-		except ValueError:
-			words = extraargs.split()
-	else:
-		words = [str(word) for word in extraargs or ()]
+	# as a shell splits them: -ea "-o ProxyCommand='ssh -W %h:%p bastion'" is two words
+	words = _split_extra_args(extraargs) if isinstance(extraargs, str) else [str(word) for word in extraargs or ()]
 	taken = []
 	index = 0
 	while index < len(words):
 		word = words[index]
 		index += 1
-		if len(word) < 2 or word[0] != '-' or word[1] not in _SSH_OPTIONS_WITH_VALUES:
+		if len(word) < 2 or word[0] != '-' or word[1] not in _SSH_OPTIONS_WITH_VALUE:
 			continue
 		# -p 2222 or -p2222
 		value = word[2:]
@@ -4727,8 +4688,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 	gather_link_copies = []
 	while True:
 		if retry_limit < 0:
-			host.output.append('Error: Retry limit reached!')
-			host.stderr.append('Error: Retry limit reached!')
+			_report(host, 'Error: Retry limit reached!')
 			host.returncode = 1
 			return
 		line_counts = (len(host.output), len(host.stdout), len(host.stderr))
@@ -4779,16 +4739,12 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				try:
 					sleep_seconds = int(ipmi_definition.get('retry_lockout_time'))
 					if sleep_seconds >= 0 and should_wait:
-						host.output.append(f'Sleeping for {sleep_seconds} seconds...')
-						if __DEBUG_MODE:
-							host.stderr.append(f'Sleeping for {sleep_seconds} seconds...')
+						_note(host, f'Sleeping for {sleep_seconds} seconds...')
 						time.sleep(sleep_seconds)
 					elif sleep_seconds >= 0:
 						host.output.append('Skipping IPMI lockout wait; the controller was not reached.')
 				except Exception as e:
-					host.output.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
-					if __DEBUG_MODE:
-						host.stderr.append(f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
+					_note(host, f'Error: Failed to sleep for {ipmi_definition.get("retry_lockout_time")} seconds! {e}')
 					# fall back to the default lockout time, which is -1 (disabled) unless configured
 					try:
 						fallback_seconds = float(DEFAULT_IPMI_RETRY_LOCKOUT_TIME)
@@ -4830,8 +4786,7 @@ def run_command(host, sem, timeout=60,passwds=None, retry_limit = ...,ipmi_defin
 				return
 			problem = _scp_cannot_copy_like_rsync(host)
 			if problem:
-				host.output.append(f'{reason} Not trying scp: {problem}')
-				host.stderr.append(f'{reason} Not trying scp: {problem}')
+				_report(host, f'{reason} Not trying scp: {problem}')
 				return
 			host.returncode = None
 			host.output.append(f'{reason} Trying SCP connection...')
@@ -4900,8 +4855,7 @@ def _run_command_thread(host, sem, timeout, passwds):
 		_record_host_exception(host, e)
 	finally:
 		if host.returncode is None:
-			host.output.append('Error: Command thread exited without a return code!')
-			host.stderr.append('Error: Command thread exited without a return code!')
+			_report(host, 'Error: Command thread exited without a return code!')
 			host.returncode = -1
 
 def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_count()):
@@ -4974,8 +4928,7 @@ def start_run_on_hosts(hosts, timeout=60,password=None,max_connections=4 * _cpu_
 	if not threads:
 		message = 'Error: No thread could be started to run the command, the system allows no more processes or threads (ulimit -u, pids limit)!'
 		for host in waiting:
-			host.output.append(message)
-			host.stderr.append(message)
+			_report(host, message)
 			host.returncode = 1
 	elif pool['workers'] < min(max_connections, len(hosts)) and not __global_suppress_printout:
 		eprint(f"Warning: The system allows no more threads (ulimit -u, pids limit), running the hosts at most {pool['workers']} at a time.")
