@@ -3228,45 +3228,6 @@ def _shows_dropped_login(drop):
 	'''Whether a _login_drop result shows the connection ended before login: a lone reset can come later too.'''
 	return bool(drop) and (bool(drop.banners) or any(kind == 'closed' for kind, _address, _port in drop.drops))
 
-def _ssh_uses_proxy(host):
-	'''Whether ssh reaches host through a ProxyJump / ProxyCommand, given in -ea or the ssh config (ssh -G).'''
-	if isinstance(host.extraargs, str):
-		extraargs = host.extraargs.split()
-	else:
-		extraargs = [str(arg) for arg in host.extraargs or []]
-	for arg in extraargs:
-		if arg.startswith('-J') or 'proxyjump' in arg.lower() or 'proxycommand' in arg.lower():
-			return True
-	address = getattr(host, 'address', None) or host.name.rsplit('@', 1)[-1]
-	if 'ssh' not in _binPaths or not address or address.startswith('-'):
-		return False
-	config = _ssh_config_values(address)
-	return bool(config) and any(config.get(key, 'none').lower() != 'none' for key in ('proxyjump', 'proxycommand'))
-
-def _names_ssh_target(host, address):
-	'''
-	Whether address, from ssh's "Connection closed by ADDRESS port PORT", is where ssh connects for host:
-	the address mssh resolved, another address of the name (ssh may pick the IPv6 one), or of the
-	HostName the ssh config gives it.
-	'''
-	address = address.lower()
-	target = (getattr(host, 'address', None) or host.name.rsplit('@', 1)[-1]).strip()
-	if address == target.lower() or (host.ip and address == str(host.ip).lower()):
-		return True
-	names = [target]
-	if 'ssh' in _binPaths and target and not target.startswith('-'):
-		config = _ssh_config_values(target)
-		if config and config.get('hostname'):
-			names.append(config['hostname'])
-	for name in names:
-		try:
-			infos = socket.getaddrinfo(name, None, 0, socket.SOCK_STREAM)
-		except Exception:
-			continue
-		if any(str(info[4][0]).lower() == address for info in infos):
-			return True
-	return False
-
 def _dropped_login_hint(count, max_connections):
 	'''
 	The hint for a run whose failed hosts include count hosts the server dropped before login.
@@ -3283,33 +3244,19 @@ def _dropped_login_hint(count, max_connections):
 		"or a ProxyJump bastion, turns away connections opened at once; {}".format(
 		'1 connection' if count == 1 else '{} connections'.format(count), cure))
 
-def _login_drop_is_safe_to_retry(host, drop, tool):
+def _login_drop_is_safe_to_retry(drop, tool):
 	'''
-	Whether a run dropped before login can run again without running anything on the host twice.
-
-	The lines must be this ssh's own, not those of an ssh the remote command ran after mssh's ssh had
-	logged in: they name the address this ssh connected to, or UNKNOWN port 65535 when it goes through
-	a ProxyJump / ProxyCommand (the jump host's ssh reports first). Older OpenSSH (8.0 on RHEL 8) names
-	no address, so its drops are not tried again. rsync is: it received nothing, and running it again
-	only syncs again.
-
-	Args:
-		host (Host): The host object, after _build_command
-		drop (_LoginDrop): From _login_drop
-		tool (str): 'ssh', 'scp' or 'rsync'
-
-	Returns:
-		bool: True when the run may start again
+	Whether a run dropped before login (_login_drop) can run again without running anything on the
+	host twice: a reset reads the same before and after login, only the banner exchange line before it
+	tells. An ssh the remote command ran, turned away before login after the command printed nothing,
+	reads the same as mssh's own: the command runs again. rsync is when it received nothing: running it
+	again only syncs again.
 	'''
 	if tool == 'rsync':
 		return drop.nothing_received and _shows_dropped_login(drop)
-	if not drop.drops:
-		return False
 	if any(kind == 'reset' for kind, _address, _port in drop.drops) and _SSH_RESET_BANNER not in drop.banners:
 		return False
-	if drop.drops[-1][1:] == ('UNKNOWN', '65535'):
-		return _ssh_uses_proxy(host)
-	return all(_names_ssh_target(host, address) for _kind, address, _port in drop.drops)
+	return _shows_dropped_login(drop)
 
 def _note(host, line):
 	'''A line for the host's output, and its stderr with --debug.'''
@@ -4282,7 +4229,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				login_drop = None
 				if tool and not timed_out and not _emo:
 					login_drop = _login_drop(returncode, host.stdout[run_stdout_start:], host.stderr[run_stderr_start:], tool)
-				if login_drop and login_drop_retries < _LOGIN_DROP_RETRIES and retry_limit > 0 and _login_drop_is_safe_to_retry(host, login_drop, tool):
+				if login_drop and login_drop_retries < _LOGIN_DROP_RETRIES and retry_limit > 0 and _login_drop_is_safe_to_retry(login_drop, tool):
 					retry_after_login_drop = True
 					if not __DEBUG_MODE:
 						# the next try's lines take their place
