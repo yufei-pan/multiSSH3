@@ -7341,28 +7341,16 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	max_connections = _normalize_max_connections(max_connections)
 	commands = format_commands(commands)
 	this_run_only = False
-	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
+	if called and skip_unreachable is None:
+		skip_unreachable = True
+	# the hosts found unreachable in recent runs, else none: a library call then skips none, the command
+	# line (-a) those that this run's earlier commands found
+	unavailableHosts = __globalUnavailableHosts if skip_unreachable else {}
 	if called:
-		# if called,
-		# if skip_unreachable is not set, we default to skip unreachable hosts within one command call
-		if skip_unreachable is None:
-			skip_unreachable = True
-		if skip_unreachable:
-			unavailableHosts = __globalUnavailableHosts
-		else:
-			unavailableHosts = dict()
-		# set global input to empty
 		__keyPressesIn = [[]]
 		__global_suppress_printout = True
-	else:
-		# if run in command line ( or emulating running in command line, we default to skip unreachable hosts within one command call )
-		if skip_unreachable:
-			unavailableHosts = __globalUnavailableHosts
-		else:
-			unavailableHosts = dict()
-			skip_unreachable = True
-			# -a: only hosts found unreachable by this run's earlier commands are skipped
-			this_run_only = True
+	elif not skip_unreachable:
+		skip_unreachable = this_run_only = True
 	if pre_merge_hosts is ...:
 		pre_merge_hosts = not called
 	if no_output is ...:
@@ -7424,6 +7412,12 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			if not _interface_prefix_applies(ip) and host not in skipHostSet and ip not in skipHostSet]
 		if unprefixed:
 			eprint(_interface_prefix_warning(interface_ip_prefix, unprefixed))
+	def run(hosts):
+		processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
+			return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
+			unavailableHosts=unavailableHosts, will_update_unreachable_hosts=will_update_unreachable_hosts,
+			window_width=window_width, window_height=window_height, single_window=single_window,
+			unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
 	if copy_id:
 		if 'ssh-copy-id' in _binPaths:
 			# we will copy the id to the hosts
@@ -7451,11 +7445,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 						_emo = True
 						break
 			if hosts:
-				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
-					   window_width = window_width, window_height = window_height,
-					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry, pre_merge=pre_merge_hosts)
+				run(hosts)
 				copied += hosts
 			if not commands:
 				# main() counts the hosts ssh-copy-id failed on, as for any command
@@ -7506,9 +7496,19 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 					eprint('Warning: ' + _KEPT_LINK_WARNINGS[why].format(path=path, target=target))
 		if __DEBUG_MODE:
 			eprint(f"Files: {file!r}")
-	def recently_unreachable(host):
-		'''Whether host is skipped (not run, a failure) because it was unreachable in a recent run.'''
-		return not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic()
+	def new_host(host, command):
+		'''The Host running command on host: skipped (not run, a failure) if it was unreachable in a recent run.'''
+		if file_sync:
+			command, files = os.path.dirname(command) + os.path.sep, [command]
+		else:
+			files = file
+		new = Host(host, command, files=files, ipmi=ipmi, interface_ip_prefix=interface_ip_prefix, scp=scp, extraargs=extraargs,
+			gatherMode=gather_mode, identity_file=identity_file, ip=targetHostDic[host])
+		if not ipmi and skip_unreachable and host in unavailableHosts and unavailableHosts[host] > time.monotonic():
+			if not __global_suppress_printout:
+				eprint(f"Skipping unavailable host: {host}")
+			_mark_skipped_unreachable(new, unavailableHosts[host], this_run_only)
+		return new
 	if oneonone:
 		hosts = []
 		# skipped hosts get no command, unreachable hosts keep their command slot and are skipped below
@@ -7523,24 +7523,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			eprint('-'*80)
 			eprint("Running in one on one mode")
 		for host, command in zip(orderedHosts, commands):
-			if file_sync:
-				new_host = Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip = targetHostDic[host])
-			else:
-				new_host = Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
-			hosts.append(new_host)
-			if recently_unreachable(host):
-				eprint(f"Skipping unavailable host: {host}")
-				_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
-			elif not __global_suppress_printout: 
+			hosts.append(new_host(host, command))
+			if not hosts[-1].skipped and not __global_suppress_printout:
 				eprint(f"Running command: {command!r} on host: {host!r}")
 		if not __global_suppress_printout:
 			eprint('-'*80)
 		if not no_start: 
-			processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					  return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					  unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
-					  window_width = window_width, window_height = window_height,
-					  single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
+			run(hosts)
 		return hosts
 	else:
 		allHosts = []
@@ -7556,12 +7545,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 				elif file:
 					eprint("Error: files need to be specified with at least one path to sync")
 				else:
-					new_host = Host(host, '', files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,identity_file=identity_file,ip=targetHostDic[host])
-					hosts.append(new_host)
-					if recently_unreachable(host):
-						if not __global_suppress_printout:
-							eprint(f"Skipping unavailable host: {host}")
-						_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
+					hosts.append(new_host(host, ''))
 			if not __global_suppress_printout:
 				eprint('-'*80)
 				eprint(f"Running in interactive mode on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
@@ -7569,11 +7553,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			if no_start:
 				eprint("Warning: no_start is set, the command will not be started. As we are in interactive mode, no action will be done.")
 			else:
-				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
-					   window_width = window_width, window_height = window_height,
-					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
+				run(hosts)
 			return hosts
 		for command in commands:
 			if _emo:
@@ -7583,25 +7563,13 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 			for host in targetHostDic:
 				if host in skipHostSet or targetHostDic[host] in skipHostSet:
 					continue
-				if file_sync:
-					new_host = Host(host, os.path.dirname(command)+os.path.sep, files = [command],ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
-				else:
-					new_host = Host(host, command, files = file,ipmi=ipmi,interface_ip_prefix=interface_ip_prefix,scp=scp,extraargs=extraargs,gatherMode=gather_mode,identity_file=identity_file,ip=targetHostDic[host])
-				hosts.append(new_host)
-				if recently_unreachable(host):
-					if not __global_suppress_printout:
-						eprint(f"Skipping unavailable host: {host}")
-					_mark_skipped_unreachable(new_host, unavailableHosts[host], this_run_only)
+				hosts.append(new_host(host, command))
 			if not __global_suppress_printout and len(commands) > 1:
 				eprint('-'*80)
 				eprint(f"Running command: {command} on hosts: {hostStr}" + (f"; skipping: {skipHostStr}" if skipHostStr else ''))
 				eprint('-'*80)
 			if not no_start: 
-				processRunOnHosts(timeout=timeout, password=password, max_connections=max_connections, hosts=hosts,
-					   return_unfinished=return_unfinished, no_watch=no_watch, json=json, no_output=no_output, greppable=greppable,
-					   unavailableHosts=unavailableHosts,will_update_unreachable_hosts=will_update_unreachable_hosts,
-					   window_width = window_width, window_height = window_height,
-					   single_window=single_window,unavailable_host_expiry=unavailable_host_expiry,pre_merge=pre_merge_hosts)
+				run(hosts)
 			allHosts += hosts
 		return allHosts
 
