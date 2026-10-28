@@ -1596,6 +1596,20 @@ def test_zsh_a_completion_function_setting_names_of_its_own_leaves_the_glue_alon
 		session.close()
 
 
+def test_zsh_a_post_pattern_completion_adds_nothing_to_the_words_of_the_remote_command(setup):
+	# python-argcomplete installs `#compdef -P *`, a completion zsh runs after the command's own. For an mssh line
+	# that command is _mssh, whose _normal cleared the _compskip that keeps _dispatch from going on to it: it added
+	# local file names beside the remote command's words
+	env, home = setup
+	extra = '_zzdel() { compadd alpha alpine }\ncompdef _zzdel zzdel\n_zzpost() { compadd alzzpost }\ncompdef -P _zzpost "*"'
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=extra)
+	try:
+		assert session.line_after('zzdel al') == 'zzdel alp'
+		assert session.line_after('mssh h zzdel al') == 'mssh h zzdel alp'
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('option', ['ignore_braces', 'ignore_close_braces'])
 def test_zsh_glue_loads_with_brace_options(tmp_path, option):
 	# with either option a } closes a group only in command position: the glue must parse all the same

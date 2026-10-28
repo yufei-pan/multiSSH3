@@ -7362,6 +7362,9 @@ _mssh() {
 			words=("${(@)words[_mssh_complete_offset,-1]}")
 			(( CURRENT = CURRENT - _mssh_complete_offset + 1 ))
 			_normal
+			# _normal has done what zsh does for the remote command: without this, _dispatch goes on to the
+			# post-pattern completions (python-argcomplete's `#compdef -P *`), which add local file names
+			_compskip=all
 		fi
 	fi
 	# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
