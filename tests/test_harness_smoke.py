@@ -126,14 +126,14 @@ def test_the_tests_never_use_the_real_runtime_dir(monkeypatch, tmp_path_factory,
 def test_mssh_started_by_a_test_never_reads_the_real_runtime_dir(tmp_path):
 	# a test running mssh in a process of its own gives it a new $XDG_RUNTIME_DIR, and reading the
 	# unreachable hosts fell back to /run/user/<uid>/multiSSH3: hosts this machine's own runs found
-	# unreachable were skipped there
+	# unreachable were skipped there. Reading sets up the directory a write would use, and reads that
 	runtime = tmp_path / "run"
 	runtime.mkdir(mode=0o700)
-	child = subprocess.run([sys.executable, "-c", "import multiSSH3; print(multiSSH3._unavailable_hosts_file_path(create=False))"],
+	child = subprocess.run([sys.executable, "-c", "import multiSSH3; print(multiSSH3._unavailable_hosts_file_path())"],
 		stdout=subprocess.PIPE, universal_newlines=True, check=True, cwd=os.path.dirname(os.path.abspath(multiSSH3.__file__)),
 		env=dict(os.environ, XDG_RUNTIME_DIR=str(runtime)))
 
-	assert child.stdout.strip() == "None"
+	assert child.stdout.strip() == str(runtime / "multiSSH3" / "unavailable_hosts.csv")
 
 
 def test_the_tests_never_see_this_machine_s_host_names():

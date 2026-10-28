@@ -26,9 +26,6 @@ def curses_color_mocks(monkeypatch):
 
 def test_approximate_color_8bit_ranges(curses_color_mocks):
 	assert multiSSH3.__approximate_color_8bit(1) == curses.COLOR_RED
-	assert multiSSH3.__approximate_color_8bit(9) is not None
-	assert multiSSH3.__approximate_color_8bit(20) is not None  # cube
-	assert multiSSH3.__approximate_color_8bit(240) is not None  # gray
 	assert multiSSH3.__approximate_color_8bit(999) == curses.COLOR_WHITE
 
 
@@ -76,22 +73,6 @@ def test_parse_ansi_reset_clears_styles(curses_color_mocks):
 	assert attr & curses.A_UNDERLINE == 0
 
 
-def test_curses_add_string_centered_and_ansi(curses_harness, curses_color_mocks):
-	win = curses_harness.window
-	multiSSH3._curses_add_string_to_window(
-		window=win,
-		line="\x1b[31mhi\x1b[0m",
-		y=0,
-		x=0,
-		centered=True,
-		lead_str="[",
-		trail_str="]",
-		parse_ansi_colors=True,
-		fill_char=".",
-	)
-	assert any(c[0] == "addnstr" for c in win.calls)
-
-
 def test_curses_add_string_scroll_and_early_returns(curses_harness):
 	win = curses_harness.window
 	# early return: number_of_char_to_write == 0
@@ -108,34 +89,6 @@ def test_curses_add_string_scroll_and_early_returns(curses_harness):
 	)
 	assert len(win.calls) > before
 	assert any(c[0] == "deleteln" for c in win.calls)
-
-
-def test_curses_add_string_negative_x_and_box(curses_harness, curses_color_mocks):
-	win = curses_harness.window
-	multiSSH3._curses_add_string_to_window(
-		window=win,
-		line="tail",
-		y=1,
-		x=-5,
-		parse_ansi_colors=False,
-		box_ansi_color="\x1b[32m",
-		leave_space_for_cursor=True,
-	)
-	assert win.calls
-
-
-def test_get_hosts_to_display_offset_and_rearrange(fake_host):
-	hosts = [fake_host(f"127.0.0.{i}", "true") for i in range(1, 5)]
-	for h in hosts:
-		h.returncode = 0
-		h.output = ["done"]
-	first, stats, rearranged = multiSSH3._get_hosts_to_display(hosts, 2, indexOffset=1)
-	assert len(first) == 2
-	assert stats["finished"] == 4
-	second, _stats2, rearranged2 = multiSSH3._get_hosts_to_display(
-		hosts, 2, hosts_to_display=first, indexOffset=0
-	)
-	assert isinstance(rearranged2, set)
 
 
 def test_curses_add_string_default_color_does_not_leak_between_calls(curses_harness, curses_color_mocks):

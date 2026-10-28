@@ -17,6 +17,11 @@ MSSH = [sys.executable, '-I'] + (['-B'] if sys.dont_write_bytecode else []) + [s
 SIGPIPE_STATUS = 141
 
 
+def _sigpipe_statuses(argv):
+	# mssh lets SIGPIPE end it, so a Python parent sees -13; the engine exits 141 itself
+	return (SIGPIPE_STATUS, -13) if argv[:len(MSSH)] == MSSH else (SIGPIPE_STATUS,)
+
+
 def _closed_pipe():
 	'''A pipe nobody reads: its write end, the read end already closed (like head that has exited).'''
 	read_fd, write_fd = os.pipe()
@@ -59,7 +64,7 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 	result = _run_into_closed_pipe(tmp_path, argv)
 
 	assert result.stderr.decode('utf-8', 'replace') == ''
-	assert result.returncode == SIGPIPE_STATUS
+	assert result.returncode in _sigpipe_statuses(argv)
 
 
 @pytest.mark.parametrize('argv', [
@@ -69,7 +74,7 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 ])
 def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	# ... 2>&1 | head: the flush at exit must not fail on stderr either (Python would exit 120)
-	assert _run_into_closed_pipe(tmp_path, argv, stderr_too=True).returncode == SIGPIPE_STATUS
+	assert _run_into_closed_pipe(tmp_path, argv, stderr_too=True).returncode in _sigpipe_statuses(argv)
 
 
 @pytest.mark.parametrize('argv', [

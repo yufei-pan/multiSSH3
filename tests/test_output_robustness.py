@@ -257,7 +257,7 @@ def test_output_only_options_to_a_closed_stdout_exit_quietly_with_141(tmp_path, 
 	stderr = result.stderr.decode("utf-8", "replace")
 
 	assert "Traceback" not in stderr and "BrokenPipeError" not in stderr and "Exception ignored" not in stderr
-	assert result.returncode == 141, stderr
+	assert result.returncode in (141, -13), stderr
 	assert ran == []
 
 
@@ -268,7 +268,7 @@ def test_help_to_a_closed_stdout_and_stderr_pipe_exits_with_141(tmp_path):
 	finally:
 		os.close(write_fd)
 
-	assert result.returncode == 141
+	assert result.returncode in (141, -13)
 	assert ran == []
 
 
@@ -279,9 +279,28 @@ def test_a_usage_error_to_a_closed_stderr_exits_quietly_with_141(tmp_path):
 	finally:
 		os.close(write_fd)
 
-	assert result.returncode == 141
+	assert result.returncode in (141, -13)
 	assert result.stdout == b""
 	assert ran == []
+
+
+def test_a_message_that_cannot_reach_stderr_is_dropped_not_written_to_stdout(monkeypatch, capsys):
+	class BrokenStream(object):
+		def write(self, text):
+			raise BrokenPipeError(32, "Broken pipe")
+
+		def flush(self):
+			raise BrokenPipeError(32, "Broken pipe")
+
+	monkeypatch.setattr(sys, "stderr", BrokenStream())
+	errors = len(multiSSH3.ERRORS)
+
+	multiSSH3.eprint("lost")
+	multiSSH3.eprint("later")  # stderr is the null device now: nothing fails again
+
+	assert sys.stderr.name == os.devnull
+	assert capsys.readouterr().out == ""
+	assert multiSSH3.ERRORS[errors:] == ["lost", "later"]
 
 
 def test_characters_stdout_cannot_encode_print_as_escapes(tmp_path):

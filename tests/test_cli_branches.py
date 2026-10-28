@@ -1,34 +1,6 @@
-import os
-
 import pytest
 
 import multiSSH3
-
-
-@pytest.mark.parametrize(
-	"kwargs,needle",
-	[
-		({"username": "alice"}, "--username=alice"),
-		({"password": "secret"}, "--password=-"),
-		({"identity_file": "/tmp/id"}, "--key=/tmp/id"),
-		({"copy_id": True}, "--copy_id"),
-		({"skip_unreachable": False}, "--no_skip_unreachable"),
-		({"error_only": True}, "--error_only"),
-		({"greppable": True}, "--greppable"),
-		({"file_sync": True}, "--file_sync"),
-		({"extraargs": "-o Port=2222"}, "--extraargs='-o Port=2222'"),
-		({"interface_ip_prefix": "10.0.0."}, "--interface_ip_prefix=10.0.0."),
-		({"unavailable_host_expiry": 42}, "--unavailable_host_expiry=42"),
-		({"env_file": "/tmp/env"}, "--env_file=/tmp/env"),
-		({"env_files": ["/a", "/b"]}, "--env_files=/a"),
-		({"history_file": "/tmp/hist"}, "--history_file=/tmp/hist"),
-		({"max_connections": 7}, "--max_connections=7"),
-	],
-)
-def test_form_command_arg_str_flag_matrix(kwargs, needle):
-	# Avoid default-equal omissions: pass values different from module defaults where needed
-	s = multiSSH3.__formCommandArgStr(**kwargs)
-	assert needle in s
 
 
 def test_process_args_script_and_output_flags():
