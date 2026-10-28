@@ -130,6 +130,14 @@ def test_run_redraws_the_line_bash_cleared_and_ends_at_its_start():
 	assert grid.cursor == (0, 0)
 
 
+def test_a_glue_that_could_not_expand_the_prompt_gets_none_drawn(monkeypatch):
+	# expand=1 comes from a glue installed before 6.39, which sent bash 4.2/4.3's PS1 unexpanded
+	monkeypatch.setenv('MSSH_COMPLETE_PROMPT', 'ops@host:~$ ')
+	assert mc._prompt_from_flags({'redraw': '1'}) == mc._prompt_from_flags({'redraw': '1', 'expand': '0'}) == 'ops@host:~$ '
+	assert mc._prompt_from_flags({'redraw': '1', 'expand': '1'}) == ''
+	assert mc._prompt_from_flags({'expand': '1'}) is None
+
+
 def test_run_on_a_wrapped_line_opens_below_all_of_it():
 	grid = Grid(24, 20)
 	seen = []

@@ -5709,55 +5709,6 @@ def _completed_word_end(before):
 		return ('"' if open_quote == '"' else "'") + ' '
 	return '' if before.endswith('/') else ' '
 
-_PROMPT_ESCAPES = None
-
-def expand_prompt(ps1, environ=None, now=None):
-	'''
-	PS1 expanded the way bash does for its common escapes (\\u \\h \\H \\w \\W \\$ \\[ \\] \\e \\033 \\n
-	\\t \\d \\@ \\A \\T \\j \\s \\v \\V \\!), for bash 4.2 / 4.3 where ${PS1@P} does not exist.
-	$(...) and variables stay as they are.
-	'''
-	import socket
-	environ = os.environ if environ is None else environ
-	now = time.localtime(time.time() if now is None else now)
-	home = environ.get('HOME', '')
-	cwd = environ.get('PWD') or os.getcwd()
-	short = '~' + cwd[len(home):] if home and (cwd == home or cwd.startswith(home + '/')) else cwd
-	host = socket.gethostname()
-	user = environ.get('USER') or environ.get('LOGNAME') or ''
-	if not user:
-		import getpass
-		try:
-			user = getpass.getuser()
-		except Exception:
-			user = ''
-	version = environ.get('BASH_VERSION', '')
-	values = {
-		'u': user, 'h': host.split('.')[0], 'H': host, 'w': short, 'W': os.path.basename(short) if short not in ('/', '~') else short,
-		'$': '#' if hasattr(os, 'geteuid') and os.geteuid() == 0 else '$', '[': '\x01', ']': '\x02', 'e': '\x1b', 'n': '\n',
-		't': time.strftime('%H:%M:%S', now), 'T': time.strftime('%I:%M:%S', now), '@': time.strftime('%I:%M %p', now),
-		'A': time.strftime('%H:%M', now), 'd': time.strftime('%a %b %d', now), 'j': '0', 's': 'bash',
-		'v': '.'.join(version.split('.')[:2]), 'V': version.split('(')[0], '!': '!', '\\': '\\', 'a': '\a',
-	}
-	out = []
-	index = 0
-	while index < len(ps1):
-		char = ps1[index]
-		if char == '\\' and index + 1 < len(ps1):
-			name = ps1[index + 1]
-			digits = ps1[index + 1:index + 4]
-			if len(digits) == 3 and all(digit in '01234567' for digit in digits):
-				out.append(chr(int(digits, 8)))
-				index += 4
-				continue
-			if name in values:
-				out.append(values[name])
-				index += 2
-				continue
-		out.append(char)
-		index += 1
-	return ''.join(out)
-
 def readline_keyseq(raw):
 	'''raw key bytes written in readline's key sequence notation (for a bind macro).'''
 	out = []
@@ -6781,13 +6732,10 @@ _mssh_complete_expand_prompt() {
 
 _mssh_complete_prompt() {
 	# the prompt the picker and the editor redraw (bash clears the line before a bind -x command):
-	# expanded on bash 4.4 and later, else PS1 itself for the engine to expand
+	# expanded on bash 4.4 and later, none before (no ${PS1@P})
+	_mssh_complete_ps1=
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		_mssh_complete_operator _mssh_complete_expand_prompt
-		_mssh_complete_expand=0
-	else
-		_mssh_complete_ps1=$PS1
-		_mssh_complete_expand=1
 	fi
 }
 
@@ -6879,7 +6827,7 @@ _mssh_complete_start() {
 
 _mssh_complete_run_pick() {
 	# the picker, for _mssh_complete_start, on _mssh_complete_pick's line
-	_mssh_complete_request "pick=1 ready=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
+	_mssh_complete_request "pick=1 ready=1 redraw=1" "$_mssh_complete_before" "$_mssh_complete_after" |
 		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null
 	return "${PIPESTATUS[1]}"
 }
@@ -6890,7 +6838,7 @@ _mssh_complete_pick() {
 }
 
 _mssh_complete_pick_now() {
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_resp _mssh_complete_status
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_resp _mssh_complete_status
 	local _mssh_complete_action _mssh_complete_keys
 	_mssh_complete_cut
 	_mssh_complete_prompt
@@ -7003,7 +6951,6 @@ _mssh_complete_space_key() {
 		mssh|mssh3|multissh|multissh3|multiSSH3)
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
 				_mssh_complete_prompt
-				(( _mssh_complete_expand )) && _mssh_complete_edit_args=(--expand)
 				_mssh_complete_start _mssh_complete_run_edit
 				if (( _mssh_complete_status == 130 )); then
 					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
@@ -9256,13 +9203,12 @@ def _cmd_query():
 def _prompt_from_flags(flags):
 	'''
 	The prompt line to redraw when a request says redraw=1 (bash clears the line before running
-	pick or edit), or None. The prompt is in $MSSH_COMPLETE_PROMPT: expanded, or PS1 itself with expand=1.
+	pick or edit), or None. The prompt is in $MSSH_COMPLETE_PROMPT, expanded; expand=1 (a glue that could
+	not expand it) says there is none to draw.
 	'''
 	if flags.get('redraw') != '1':
 		return None
-	prompt = os.environ.get('MSSH_COMPLETE_PROMPT', '')
-	if flags.get('expand') == '1':
-		prompt = expand_prompt(prompt)
+	prompt = '' if flags.get('expand') == '1' else os.environ.get('MSSH_COMPLETE_PROMPT', '')
 	return prompt.rsplit('\n', 1)[-1].replace('\x01', '').replace('\x02', '')
 
 def _ready():
