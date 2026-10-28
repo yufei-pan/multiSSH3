@@ -179,7 +179,7 @@ def test_run_on_a_wrapped_line_draws_again_below_all_of_it():
 			return FakeTerminal.read_key(self, timeout)
 
 	line = '$ mssh gpu[01-16] nvidia-smi -q'
-	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts', unicode=True).run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
 	shown = seen[1]
 	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
 	assert ' 2/2 ' in shown[2] and '> gpu02' in shown[4] and shown[2 + 1 + 10].startswith('└') and shown[2 + 1 + 10 + 1] == ''
@@ -797,7 +797,6 @@ def test_reason_line_shows_the_first_warning_and_counts_the_rest(unicode, expect
 
 def test_picker_warnings_come_from_the_line(tmp_path, monkeypatch):
 	monkeypatch.setattr(mc, 'boot_id', lambda: 'boot-a')
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: True)
 	monkeypatch.setattr(mc.time, 'time', lambda: NOW)
 	monkeypatch.setattr(mc, 'spawn_probe', lambda directory: True)
 	warned = engine()

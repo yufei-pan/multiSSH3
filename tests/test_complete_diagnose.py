@@ -46,7 +46,6 @@ def index(tmp_path, hosts, aliases=None, alias_users=None):
 def engine(tmp_path, monkeypatch):
 	'''An engine with a runtime directory, a host table and host states; the prober is not started.'''
 	monkeypatch.setattr(mc, 'boot_id', lambda: 'boot-a')
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: True)
 	started = []
 	monkeypatch.setattr(mc, 'spawn_probe', lambda directory: started.append(directory) or True)
 	directory = tmp_path / 'run'
@@ -56,6 +55,7 @@ def engine(tmp_path, monkeypatch):
 	engine = mc.Engine(SPEC, [], mc.HostTable(index(tmp_path, hosts, {'all': ['node01', 'ghost1']})))
 	engine.directory = str(directory)
 	engine.started = started
+	engine.shell_utf8 = True
 	return engine
 
 
@@ -516,136 +516,10 @@ def test_an_alias_with_unknown_members(engine):
 	assert warnings(engine, 'mssh all uptime')[0] == [('all', 'range', 'all: 1 of 2 hosts unknown (ghost1)')]
 
 
-def test_an_ascii_terminal_gets_ascii_messages(engine, monkeypatch):
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: False)
+def test_an_ascii_terminal_gets_ascii_messages(engine):
+	engine.shell_utf8 = False
 	seed(engine, gpu017='invalid')
 	assert warnings(engine, 'mssh gpu017 uptime')[0][0][2] == 'gpu017: unknown host - did you mean gpu17?'
-
-
-# as a C library with these locales takes them (en_US: ISO-8859-1)
-SYSTEM_CODESETS = {'en_US.UTF-8': 'UTF-8', 'C.utf8': 'UTF-8', 'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1',
-	'en_US.ISO-8859-1': 'ISO-8859-1', 'tr_TR.ISO-8859-9': 'ISO-8859-9'}
-
-
-@pytest.fixture
-def system_locales(monkeypatch):
-	monkeypatch.setattr(mc, '_locale_codeset', lambda name: 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else SYSTEM_CODESETS.get(name))
-
-
-@pytest.mark.parametrize('variables, unicode', [
-	({'LANG': 'en_US.UTF-8'}, True),
-	({'LANG': 'C.utf8'}, True),
-	({'LANG': 'C'}, False),
-	({'LANG': 'POSIX'}, False),
-	({}, False),
-	({'LANG': 'en_US'}, False),
-	({'LANG': 'en_US.UTF-8', 'LC_ALL': 'C'}, False),
-	({'LANG': 'C', 'LC_ALL': 'en_US.UTF-8'}, True),
-	({'LANG': 'en_US.UTF-8', 'LC_ALL': ''}, True),
-	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8'}, True),
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C'}, False),
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
-	# as bash takes them (bash 4.2, 4.4 and 5.2 on glibc): LC_CTYPE=UTF-8 (macOS over ssh) is no locale
-	# here, and bash keeps LANG's; a LANG or LC_ALL the C library has not leaves C, whatever LC_CTYPE says
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}, True),
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'xx_YY.UTF-8'}, True),
-	({'LANG': 'xx_YY.UTF-8', 'LC_CTYPE': 'en_US.UTF-8'}, False),
-	({'LC_ALL': 'xx_YY.UTF-8', 'LANG': 'en_US.UTF-8'}, False),
-	({'LC_CTYPE': 'en_US.UTF-8'}, True),
-	({'LC_CTYPE': 'en_US.UTF-8', 'LC_MESSAGES': 'xx_YY.UTF-8'}, False),
-	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8', 'LC_MESSAGES': 'xx_YY.UTF-8'}, True),
-	({'LANG': 'xx_YY.UTF-8'}, False),
-	# the operator's C.UTF-8 in the variables the engine was started with: as bash takes it
-	({'LANG': 'C', 'LC_CTYPE': 'C.UTF-8'}, True),
-	({'LC_CTYPE': 'C.UTF-8'}, True),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'C.UTF-8'}, True),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'C'}, False),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'UTF-8'}, False),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'xx_YY.UTF-8'}, False),
-])
-def test_a_utf8_terminal_is_told_by_the_locale_variables_as_bash_takes_them(system_locales, variables, unicode):
-	assert mc._locale_variables_utf8(variables) is unicode
-
-
-@pytest.mark.parametrize('variables, unicode', [
-	# what Python 3.7+ sets where LC_CTYPE was C, UTF-8 or a locale the C library has not (PEP 538):
-	# it cannot be told from the operator's C.UTF-8, whatever LANG says, and draws ASCII
-	({'LANG': 'C', 'LC_CTYPE': 'C.UTF-8'}, False),
-	({'LC_CTYPE': 'C.UTF-8'}, False),
-	({'LC_CTYPE': 'C.utf8'}, False),
-	({'LC_CTYPE': 'UTF-8'}, False),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'C.UTF-8'}, False),
-	({'LANG': 'tr_TR.ISO-8859-9', 'LC_CTYPE': 'C.UTF-8'}, False),
-	({'LANG': 'xx_YY.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, False),
-	# LANG=en_US.UTF-8 LC_CTYPE=C: bash runs in C, Python sets LC_CTYPE=C.UTF-8
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, False),
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'C.utf8'}, False),
-	({'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}, False),
-	# Python leaves LC_CTYPE alone where LC_ALL is set, or LC_CTYPE takes another locale than C
-	({'LC_ALL': 'en_US.UTF-8', 'LC_CTYPE': 'C.UTF-8'}, True),
-	({'LANG': 'C', 'LC_CTYPE': 'en_US.UTF-8'}, True),
-	({'LANG': 'en_US.UTF-8'}, True),
-])
-def test_a_utf8_terminal_from_variables_python_may_have_changed_fails_safe_to_ascii(system_locales, variables, unicode):
-	assert mc._locale_variables_utf8(variables, coerced=True) is unicode
-
-
-@pytest.mark.parametrize('started, unicode', [
-	# LC_CTYPE was C, UTF-8 or a locale the C library has not: Python set C.UTF-8 in os.environ
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'C'}, False),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'UTF-8'}, False),
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'xx_YY.UTF-8'}, False),
-	# the operator set C.UTF-8: bash runs UTF-8
-	({'LANG': 'en_US.ISO-8859-1', 'LC_CTYPE': 'C.UTF-8'}, True),
-])
-def test_a_utf8_terminal_is_told_by_the_variables_the_engine_was_started_with(system_locales, monkeypatch, started, unicode):
-	# os.environ as Python 3.7 leaves it in each case; /proc/self/environ keeps what the process was started with
-	for name in ('LC_ALL', 'LANG') + mc._OTHER_CATEGORIES:
-		monkeypatch.delenv(name, raising=False)
-	monkeypatch.setenv('LANG', 'en_US.ISO-8859-1')
-	monkeypatch.setenv('LC_CTYPE', 'C.UTF-8')
-	monkeypatch.setattr(mc, '_exec_environ', lambda: dict(started))
-	assert mc._unicode_terminal() is unicode
-
-
-@pytest.mark.parametrize('ctype', [None, 'C', 'C.UTF-8'])
-@pytest.mark.parametrize('isolated, variables', [
-	# as this file is run (-I, which ignores the variables), and as the mssh-complete script pip or uv makes runs
-	# it, which reads them (an empty PYTHONUTF8 is none)
-	(True, {}), (True, {'PYTHONUTF8': '0'}), (True, {'PYTHONUTF8': '1'}),
-	(False, {}), (False, {'PYTHONUTF8': '0'}), (False, {'PYTHONUTF8': '1'}), (False, {'PYTHONUTF8': ''}),
-	(False, {'PYTHONCOERCECLOCALE': '0'})])
-def test_without_the_started_environment_python_s_utf8_mode_tells_a_changed_lc_ctype(ctype, isolated, variables):
-	# no /proc/self/environ (macOS, the BSDs): os.environ, where Python 3.7+ set LC_CTYPE=C.UTF-8 where
-	# it took C (PEP 538), and then runs in UTF-8 mode, which says so unless PYTHONUTF8 set the mode
-	utf8 = next((name for name in ('C.UTF-8', 'en_US.UTF-8') if mc._utf8_codeset(mc._locale_codeset(name))), None)
-	if utf8 is None:
-		pytest.skip('no UTF-8 locale here')
-	env = dict(variables, PATH=os.environ.get('PATH', '/usr/bin:/bin'), LANG=utf8)
-	if ctype is not None:
-		env['LC_CTYPE'] = ctype
-	code = ('import os, sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; mc._exec_environ = lambda: None; '
-		'print(mc._unicode_terminal(), os.environ.get("LC_CTYPE"))')
-	output = subprocess.run([sys.executable] + (['-I'] if isolated else []) + ['-c', code, os.path.dirname(mc.__file__)], env=env,
-		stdout=subprocess.PIPE, check=True, timeout=30).stdout
-	unicode, seen = output.decode().split()
-	if ctype == 'C' and seen != 'C' and sys.version_info < (3, 7):
-		# RHEL 8's 3.6 changes LC_CTYPE (a backport of PEP 538) with no UTF-8 mode to say so; it runs where /proc is
-		pytest.skip('this Python 3.6 changes LC_CTYPE with no UTF-8 mode')
-	if ctype is None:
-		expected = True
-	elif ctype == 'C':
-		# bash runs in C
-		expected = False
-	elif sys.version_info < (3, 7):
-		# the operator's own C.UTF-8: no UTF-8 mode, nothing changed, read as bash takes it
-		expected = True
-	else:
-		# told apart only where UTF-8 mode is off: not where the system has no C.UTF-8 (Python runs in C,
-		# in UTF-8 mode), not from 3.15 (always in UTF-8 mode), not where PYTHONUTF8 set the mode
-		expected = (mc._locale_codeset('C.UTF-8') is not None and sys.version_info < (3, 15)
-			and (isolated or not variables.get('PYTHONUTF8')))
-	assert unicode == str(expected)
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh'])
@@ -653,131 +527,44 @@ def test_without_the_started_environment_python_s_utf8_mode_tells_a_changed_lc_c
 def test_a_request_of_bash_or_zsh_says_the_locale_it_runs_in(monkeypatch, shell, flag):
 	# measured by the glue in the shell: it holds against the variables, for the engine the request makes
 	# (the picker, the editor and warnings take it from there); a request saying nothing of it (an older
-	# glue) reads the variables
+	# glue) draws ASCII
 	monkeypatch.setenv('LANG', 'C' if flag == '1' else 'C.UTF-8')
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: flag != '1')
 	engine = mc.engine_for(mc.Request(shell, 'mssh ', flags={'utf8': flag, 'turkic': '0'}), directory=None)
 	assert engine.unicode is (flag == '1')
 	assert engine.query(mc.Request(shell, 'mssh x ', flags={'utf8': flag, 'diag': '1'})).unicode is (flag == '1')
-	assert mc.engine_for(mc.Request(shell, 'mssh ', flags={'term': 'xterm'}), directory=None).unicode is (flag != '1')
+	monkeypatch.setenv('LANG', 'en_US.UTF-8')
+	assert mc.engine_for(mc.Request(shell, 'mssh ', flags={'term': 'xterm'}), directory=None).unicode is False
 
 
 @pytest.mark.parametrize('flags, unicode', [
 	('lc_all= lc_ctype= lang=en_US.UTF-8', True),
+	('lc_all= lc_ctype= lang=en_US.utf8', True),
 	('lc_all= lc_ctype= lang=C', False),
 	('lc_all= lc_ctype= lang=', False),
+	('lc_all= lc_ctype= lang=en_US', False),
+	('lc_all= lc_ctype= lang=en_US.ISO-8859-1', False),
+	# the first one set decides, by its name
 	('lc_all=C lc_ctype= lang=en_US.UTF-8', False),
 	('lc_all= lc_ctype=en_US.UTF-8 lang=C', True),
 	('lc_all= lc_ctype=C lang=en_US.UTF-8', False),
-	# resolved as bash takes them: LC_CTYPE=UTF-8 (macOS over ssh) is no locale here, and LANG's holds
-	('lc_all= lc_ctype=UTF-8 lang=en_US.UTF-8', True),
-	('lc_all= lc_ctype= lang=xx_YY.UTF-8', False),
-	# named by fish, not changed by Python: the operator's own C.UTF-8 leaves no doubt
 	('lc_all= lc_ctype=C.UTF-8 lang=C', True),
-	('lc_all= lc_ctype=C.UTF-8 lang=en_US.UTF-8', True),
+	# by name: macOS's LC_CTYPE=UTF-8, a locale this system lacks (fish reads UTF-8 in C too)
+	('lc_all= lc_ctype=UTF-8 lang=C', True),
+	('lc_all= lc_ctype= lang=xx_YY.UTF-8', True),
 	# escaped as in URLs (fish's string escape --style=url)
 	('lc_all= lc_ctype= lang=en%5FUS.UTF-8', True),
+	('lc_all= lc_ctype= lang=de_DE.UTF-8%40euro', True),
+	('lc_all= lc_ctype= lang=de_DE%40euro', False),
 	('lc_all= lc_ctype= lang=en_US.UTF-8%20x', False),
 	('lc_all=C%0A lc_ctype= lang=en_US.UTF-8', False),
 ])
-def test_a_request_of_fish_names_the_variables_of_its_locale(system_locales, monkeypatch, flags, unicode):
-	# fish reads text as UTF-8 in C too, so its glue names the LC_ALL, LC_CTYPE and LANG fish exports: they
-	# hold against the variables the engine was started with
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: not unicode)
+def test_a_request_of_fish_names_the_variables_of_its_locale(monkeypatch, flags, unicode):
+	# fish reads text as UTF-8 in C too, so its glue names the LC_ALL, LC_CTYPE and LANG fish exports: the
+	# first one set says it by its name, whatever the variables the engine was started with hold
+	monkeypatch.setenv('LANG', 'C' if unicode else 'en_US.UTF-8')
 	request = mc.Request('fish', 'mssh ', flags=mc.parse_flags('pick=1 nul=0 term=xterm ' + flags))
 	assert mc.engine_for(request, directory=None).unicode is unicode
-	assert mc.engine_for(mc.Request('fish', 'mssh ', flags={'term': 'xterm'}), directory=None).unicode is (not unicode)
-
-
-@pytest.mark.parametrize('escaped, text', [
-	# as fish 3.3.1 and 4.0.2 print them from `string escape --style=url`
-	('de_DE%40euro', 'de_DE@euro'), ('a%2Bb%20c', 'a+b c'), ('%C3%A9', '\u00e9'), ('%FF%FE', '\udcff\udcfe'),
-	('x~y.-_z', 'x~y.-_z'), ('/%3A%3B%3D', '/:;='), ('%25', '%'), ('AZaz09', 'AZaz09'),
-	# what no fish writes stays as it is, like urllib's unquote
-	('100%', '100%'), ('%zz', '%zz'), ('%4', '%4'), ('a+b', 'a+b'), ('%+1', '%+1'), ('%%41', '%A'),
-])
-def test_the_url_escape_of_fish_is_undone_exactly(escaped, text):
-	import urllib.parse
-	assert mc._url_unescape(escaped) == text == urllib.parse.unquote(escaped, errors='surrogateescape')
-
-
-def test_a_modifier_locale_of_fish_imports_no_url_module():
-	# fish writes the @ of de_DE@euro as %40: the TAB's path imports no package for it
-	code = ("import sys, mssh_complete as mc\n"
-		"request = mc.Request('fish', 'mssh ', flags=mc.parse_flags('lc_all= lc_ctype= lang=de_DE%40euro'))\n"
-		"mc._measured_utf8(request)\n"
-		"sys.exit('urllib.parse' in sys.modules)")
-	result = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(mc.__file__), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
-
-
-@pytest.mark.parametrize('shell, flags, unicode', [
-	('bash', 'icase=1', None), ('zsh', 'term=xterm', None), ('fish', 'term=xterm', None),
-	('zsh', 'utf8=1 turkic=0', True), ('zsh', 'utf8=0 turkic=0', False),
-	('fish', 'lc_all= lc_ctype=C.UTF-8 lang=', True), ('fish', 'lc_all= lc_ctype= lang=C', False)])
-def test_the_current_glues_say_the_locale_where_the_engine_doubts_its_variables(shell, flags, unicode):
-	# without /proc/self/environ (macOS, the BSDs) and in UTF-8 mode (Python 3.15 always), an LC_CTYPE of
-	# C.UTF-8 may be Python's, and a request saying nothing of the locale (an older glue) draws ASCII: zsh's
-	# measure and fish's variables, not read through Python, leave no such doubt
-	utf8 = next((name for name in ('C.UTF-8', 'en_US.UTF-8') if mc._utf8_codeset(mc._locale_codeset(name))), None)
-	if utf8 != 'C.UTF-8':
-		pytest.skip('no C.UTF-8 locale here')
-	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LC_CTYPE': 'C.UTF-8'}
-	code = ('import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; mc._exec_environ = lambda: None; '
-		'engine = mc.Engine(None, [], None); engine.shell_utf8 = mc._measured_utf8(mc.Request(sys.argv[2], "mssh ", flags=mc.parse_flags(sys.argv[3]))); '
-		'print(engine.unicode)')
-	output = subprocess.run([sys.executable, '-I', '-X', 'utf8=1', '-c', code, os.path.dirname(mc.__file__), shell, flags], env=env,
-		stdout=subprocess.PIPE, check=True, timeout=30).stdout
-	if unicode is None:
-		# UTF-8 mode came with Python 3.7: 3.6 reads the variables as given
-		unicode = sys.version_info < (3, 7)
-	assert output.decode().strip() == str(unicode)
-
-
-def test_a_utf8_locale_the_system_lacks_gets_ascii(monkeypatch):
-	# the shell runs in C there, and TAB in any case compares so too
-	if mc._locale_codeset('xx_YY.UTF-8') is not None:
-		pytest.skip('this C library takes any locale name (musl)')
-	assert mc._locale_variables_utf8({'LANG': 'xx_YY.UTF-8'}) is False
-
-
-@pytest.mark.parametrize('lang, ctype, unicode', [('C', None, False), ('POSIX', None, False), (None, None, False),
-	('C.UTF-8', None, mc._utf8_codeset(mc._locale_codeset('C.UTF-8'))), ('tr_TR.ISO-8859-9', 'C', False),
-	('tr_TR.ISO-8859-9', 'UTF-8', False)])
-def test_a_c_locale_gets_ascii_whatever_python_makes_of_it(lang, ctype, unicode):
-	# Python 3.7+ starts a C locale as C.UTF-8 (PEP 538), LC_CTYPE=C.UTF-8 in os.environ, and 3.15 always in
-	# UTF-8 mode: its own encoding says UTF-8 where the shell shows the bytes of a ⚠ as \M-b\M-^Z\M-.
-	# C.UTF-8 draws Unicode where the system has it (not CentOS 7's glibc 2.17)
-	if lang == 'tr_TR.ISO-8859-9' and mc._locale_codeset(lang) != 'ISO-8859-9':
-		pytest.skip('no tr_TR.ISO-8859-9 locale here (musl takes every name as UTF-8)')
-	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin')}
-	if lang is not None:
-		env['LANG'] = lang
-	if ctype is not None:
-		env['LC_CTYPE'] = ctype
-	code = 'import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete; print(mssh_complete._unicode_terminal())'
-	output = subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], env=env,
-		stdout=subprocess.PIPE, check=True, timeout=30).stdout
-	assert output.decode().strip() == str(unicode)
-
-
-@pytest.mark.parametrize('first', [True, False])
-def test_a_locale_variable_set_twice_is_read_as_its_first_value(first):
-	# as getenv, the C library's setlocale, os.environ, zsh and fish take it (bash takes the last one, but
-	# its glue measures the locale bash runs in): the environment the engine was started with holds both
-	if not os.path.exists('/proc/self/environ'):
-		pytest.skip('no /proc/self/environ here')
-	utf8 = next((name for name in ('C.UTF-8', 'en_US.UTF-8') if mc._utf8_codeset(mc._locale_codeset(name))), None)
-	if utf8 is None:
-		pytest.skip('no UTF-8 locale here')
-	values = [utf8, 'C'] if first else ['C', utf8]
-	# a str and a bytes name: the child gets LC_ALL twice, in this order
-	env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LC_ALL': values[0], b'LC_ALL': values[1].encode()}
-	code = ('import os, sys; sys.path.insert(0, sys.argv[1]); import mssh_complete; '
-		'print(mssh_complete._exec_environ()["LC_ALL"], os.environ["LC_ALL"], mssh_complete._unicode_terminal())')
-	output = subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], env=env,
-		stdout=subprocess.PIPE, check=True, timeout=30).stdout
-	assert output.decode().split() == [values[0], values[0], str(first)]
+	assert mc.engine_for(mc.Request('fish', 'mssh ', flags={'term': 'xterm'}), directory=None).unicode is False
 
 
 def test_a_range_mssh_completion_cannot_expand_says_nothing(engine):
@@ -1406,8 +1193,8 @@ def test_a_command_word_read_as_an_option_comes_first(engine):
 	assert [kind for _, kind, _ in found] == ['command', 'unknown', 'options']
 
 
-def test_an_ascii_terminal_gets_an_ascii_dash(engine, monkeypatch):
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: False)
+def test_an_ascii_terminal_gets_an_ascii_dash(engine):
+	engine.shell_utf8 = False
 	assert warnings(engine, 'mssh web1 df -h ', probe=False)[0][0][2] == "-h is mssh's --help here - quote the command: 'df -h'"
 
 
@@ -1549,20 +1336,6 @@ def test_the_oracle_covers_every_reading():
 	# -qc: -q then -c, an abbreviation of -ci that Python 3.11 reads again (when mssh takes abbreviations)
 	unsure = ['-qc'] if abbreviations else []
 	assert [word for word, verdict in zip(ORACLE_WORDS, verdicts) if verdict == 'unsure'] == unsure
-
-
-def test_the_engine_works_out_whether_to_write_unicode_once(monkeypatch):
-	# diagnose asks for every message: the variables are resolved at the first use only
-	calls = []
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: calls.append(1) or True)
-	engine = mc.Engine(SPEC, [], None)
-	assert [engine.unicode for _ in range(3)] == [True] * 3 and len(calls) == 1
-	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'utf8': '0'}), directory=None).unicode is False and len(calls) == 1
-	# bash's measure holds whenever it is set: also after the variables were worked out
-	engine.shell_utf8 = False
-	assert engine.unicode is False and len(calls) == 1
-	engine.shell_utf8 = None
-	assert engine.unicode is True and len(calls) == 1
 
 
 def test_request_flags_are_read_one_way():

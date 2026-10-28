@@ -23,6 +23,7 @@ def suggester(calls=None):
 
 def editor(text='mssh ', **kwargs):
 	kwargs.setdefault('suggest', suggester())
+	kwargs.setdefault('unicode', True)
 	return mc.LineEditor(text, **kwargs)
 
 
@@ -352,7 +353,6 @@ UNKNOWN = [mc.Diagnostic(5, 11, 'unknown', 'gpu017: unknown host')]
 @pytest.fixture
 def warning_terminal(monkeypatch):
 	monkeypatch.delenv('NO_COLOR', raising=False)
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: True)
 
 
 @pytest.mark.parametrize('no_color, style', [(False, '4;31'), (True, '4')])

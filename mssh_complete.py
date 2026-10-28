@@ -1197,50 +1197,28 @@ def _shell_locale(flags):
 	return None
 
 # fish's glue names fish's locale variables in these request flags
-_NAMED_VARIABLES = (('lc_all', 'LC_ALL'), ('lc_ctype', 'LC_CTYPE'), ('lang', 'LANG'))
-
-_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
-
-def _url_unescape(value):
-	'''
-	value with each %XX replaced by the byte it names, the bytes read as UTF-8 (what cannot be is kept as
-	surrogate escapes). This undoes fish's `string escape --style=url`, which writes every byte outside
-	letters, digits and -._~/ as %XX (a space is %20, '+' is %2B); a % that no two hex digits follow stays.
-	'''
-	if '%' not in value:
-		return value
-	first, *rest = value.split('%')
-	data = bytearray(first.encode('utf-8', 'surrogateescape'))
-	for part in rest:
-		if len(part) >= 2 and part[0] in _HEX_DIGITS and part[1] in _HEX_DIGITS:
-			data.append(int(part[:2], 16))
-			part = part[2:]
-		else:
-			data.append(0x25)
-		data += part.encode('utf-8', 'surrogateescape')
-	return data.decode('utf-8', 'surrogateescape')
+_NAMED_VARIABLES = ('lc_all', 'lc_ctype', 'lang')
 
 def _measured_utf8(request):
 	"""
 	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
-	older glue: Engine.unicode then reads the variables the engine was started with). bash's and zsh's
-	glues measure it in the shell (_shell_locale: ASCII where an older bash glue's lc= names no locale).
-	fish's names the LC_ALL, LC_CTYPE and LANG fish exports, the only ones it follows (lc_all=,
-	lc_ctype=, lang=, escaped as in URLs), resolved here as bash resolves them: in a single-byte locale,
-	C included, fish takes a UTF-8 one instead unless fish_allow_singlebyte_locale is set (fish 3.3 and
-	4.0 alike), so a measure there says UTF-8 where the terminal may show none of it; the variables the
-	operator set say what it shows.
+	older glue: Engine.unicode then draws ASCII). bash's and zsh's glues measure it in the shell
+	(_shell_locale: ASCII where an older bash glue's lc= names no locale). fish's names the LC_ALL,
+	LC_CTYPE and LANG fish exports (lc_all=, lc_ctype=, lang=, escaped as in URLs): the first one set
+	says it by its name (en_US.UTF-8, C.utf8, macOS's UTF-8). A measure would not: in a single-byte
+	locale fish takes a UTF-8 one for its own reading.
 	"""
 	measured = _shell_locale(request.flags)
 	if measured is not None:
 		return measured and measured[0]
 	if 'lang' not in request.flags:
 		return None
-	variables = {}
-	for flag, name in _NAMED_VARIABLES:
-		value = request.flags.get(flag, '')
-		variables[name] = _url_unescape(value)
-	return _locale_variables_utf8(variables)
+	name = next((request.flags[flag] for flag in _NAMED_VARIABLES if request.flags.get(flag)), '')
+	if '%' in name:
+		from urllib.parse import unquote
+		name = unquote(name, errors='surrogateescape')
+	codeset = name.partition('.')[2] if '.' in name else name
+	return codeset.partition('@')[0].lower().replace('-', '') == 'utf8'
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
@@ -3544,8 +3522,8 @@ class Response(object):
 		self.delegate = None
 		self.ghost = None
 		self.diagnostics = []
-		# whether the reason line may hold Unicode; None: as the variables say
-		self.unicode = None
+		# whether the reason line may hold Unicode
+		self.unicode = False
 
 def _mssh_start(tokens):
 	'''Index of the word that runs mssh in a command line (mssh, sudo mssh, python3 multiSSH3.py, ...), or None.'''
@@ -3706,20 +3684,11 @@ class Engine(object):
 		self.no_effect = []
 		# whether the shell runs in a UTF-8 locale, as its glue's request says (_measured_utf8), None if not said
 		self.shell_utf8 = None
-		# _unicode_terminal(), once asked
-		self._unicode = None
 
 	@property
 	def unicode(self):
-		'''
-		Whether to write in Unicode (messages, the picker): as the shell's glue said of its locale, else (an
-		older glue) as the variables say, which are worked out at the first use and kept.
-		'''
-		if self.shell_utf8 is not None:
-			return self.shell_utf8
-		if self._unicode is None:
-			self._unicode = _unicode_terminal()
-		return self._unicode
+		'''Whether to write in Unicode (messages, the picker): as the shell's glue said of its locale; an older glue says nothing, ASCII.'''
+		return bool(self.shell_utf8)
 
 	def query(self, request, deadline=None):
 		ghost = request.flags.get('ghost') == '1'
@@ -5194,81 +5163,6 @@ def _age(seconds):
 			return '{}{}'.format(int(seconds // size), unit)
 	return 'now'
 
-def _unicode_terminal():
-	'''
-	Whether the shell runs in a UTF-8 locale, from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them
-	(_locale_variables_utf8): for a request whose glue said nothing of it (Engine.unicode), as zsh's and
-	fish's before 6.38 and 6.36's bash glue do (an installed glue file stays until mssh --completion
-	install runs again). Python's own encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets
-	LC_CTYPE to C.UTF-8 in os.environ there (PEP 538), and 3.15 always runs in UTF-8 mode. The variables
-	are read as the process was started with them (_exec_environ), which that change leaves alone. Where
-	they cannot be (macOS, the BSDs), os.environ is read, where Python changed LC_CTYPE only where it
-	took C, which also starts its UTF-8 mode: then an
-	LC_CTYPE of C.UTF-8, C.utf8 or UTF-8 may be Python's and draws ASCII, whatever LANG says. UTF-8 mode
-	says so on 3.7 to 3.14, unless PYTHONUTF8 set it: this file runs isolated (-I), which ignores that,
-	but the mssh-complete script pip or uv makes does not, and with PYTHONUTF8 set in its environment
-	(CPython ignores it empty) the mode says nothing (PYTHONCOERCECLOCALE needs nothing: it keeps LC_CTYPE as given). 3.6 changes
-	nothing (RHEL 8's does, where /proc is), and 3.15 always runs in UTF-8 mode, where such an LC_CTYPE
-	always draws ASCII.
-	'''
-	started = _exec_environ()
-	if started is not None:
-		return _locale_variables_utf8(started)
-	mode = getattr(sys.flags, 'utf8_mode', None)
-	told = mode is None or sys.flags.ignore_environment or not os.environ.get('PYTHONUTF8')
-	return _locale_variables_utf8(os.environ, coerced=bool(mode) or not told)
-
-def _exec_environ():
-	'''
-	The environment this process was started with, as Linux keeps it in /proc/self/environ (setenv,
-	which Python's PEP 538 uses, does not change it); None where there is none. A variable set twice
-	is its first value, as getenv, the C library's setlocale, os.environ, zsh and fish take it (bash
-	takes the last, but its glue measures the locale bash runs in).
-	'''
-	try:
-		with open('/proc/self/environ', 'rb') as f:
-			data = f.read()
-	except (IOError, OSError):
-		return None
-	environ = {}
-	for item in data.split(b'\0'):
-		name, sep, value = item.partition(b'=')
-		if sep:
-			environ.setdefault(name.decode('utf-8', 'surrogateescape'), value.decode('utf-8', 'surrogateescape'))
-	return environ
-
-# the locale categories besides LC_CTYPE: with LANG unset, bash keeps C if the C library refuses any
-_OTHER_CATEGORIES = ('LC_NUMERIC', 'LC_TIME', 'LC_COLLATE', 'LC_MONETARY', 'LC_MESSAGES', 'LC_PAPER', 'LC_NAME',
-	'LC_ADDRESS', 'LC_TELEPHONE', 'LC_MEASUREMENT', 'LC_IDENTIFICATION')
-
-def _locale_variables_utf8(environ, coerced=False):
-	'''
-	Whether bash runs in a UTF-8 locale with these variables, resolved as bash does (bash 4.2, 4.4 and 5.2
-	on glibc, checked): LC_ALL if set, C if the C library refuses it; else LANG if set, which it must take
-	(else C), LC_CTYPE taking over if it takes that; else LC_CTYPE, C if it refuses any LC_ variable set.
-	A missing locale is C: ASCII. coerced: environ may be os.environ after Python's PEP 538, which sets
-	LC_CTYPE to C.UTF-8 (C.utf8, UTF-8) where it took C (C, UTF-8 or a missing locale), whatever LANG
-	is: with LC_ALL unset, that cannot be told from the operator's own C.UTF-8, and draws ASCII
-	(unreadable is worse than plain)
-	'''
-	def utf8(name):
-		return _utf8_codeset(_locale_codeset(name))
-	if environ.get('LC_ALL'):
-		return utf8(environ['LC_ALL'])
-	lang = environ.get('LANG')
-	ctype = environ.get('LC_CTYPE')
-	if coerced and ctype in ('C.UTF-8', 'C.utf8', 'UTF-8'):
-		return False
-	if lang:
-		if _locale_codeset(lang) is None:
-			return False
-		if ctype and _locale_codeset(ctype) is not None:
-			return utf8(ctype)
-		return utf8(lang)
-	if any(environ.get(name) and _locale_codeset(environ[name]) is None for name in _OTHER_CATEGORIES):
-		return False
-	return bool(ctype) and utf8(ctype)
-
 class Picker(object):
 	'''
 	The Ctrl-R menu as state: a slot tab (candidates for the word at the cursor) and a history tab
@@ -5284,7 +5178,7 @@ class Picker(object):
 		self.selected = 0
 		self.offset = 0
 		self.now = time.time() if now is None else now
-		self.unicode = _unicode_terminal() if unicode is None else unicode
+		self.unicode = bool(unicode)
 		# text typed right behind the Enter that chose: it goes after the choice (apply_pick)
 		self.typed_after = ''
 
@@ -5541,11 +5435,10 @@ class Picker(object):
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		return up, row, cursor
 
-def reason_line(diagnostics, unicode=None):
+def reason_line(diagnostics, unicode=False):
 	'''The one line shown under the prompt: the first warning, and how many more there are ('' for none).'''
 	if not diagnostics:
 		return ''
-	unicode = _unicode_terminal() if unicode is None else unicode
 	more = len(diagnostics) - 1
 	return '{} {}{}'.format('⚠' if unicode else '!', diagnostics[0].message, ' (+{} more)'.format(more) if more else '')
 
@@ -5989,7 +5882,7 @@ class LineEditor(object):
 		self.reason = ''
 		self._warned_for = None
 		self._asks = []
-		# whether the reason line may hold Unicode; None: as the variables say
+		# whether the reason line may hold Unicode
 		self.unicode = unicode
 
 	def refresh(self):
