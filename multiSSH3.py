@@ -3016,7 +3016,7 @@ def _login_drop_backoff_seconds(retry):
 # address ssh connected to, or UNKNOWN port 65535 through a ProxyJump / ProxyCommand. A reset reads the
 # same before and after login: only the banner exchange line before it tells.
 _SSH_BANNER_DROP = re.compile(r'(?:kex|ssh)_exchange_identification: (read: Connection reset by peer|Connection closed by remote host)')
-_SSH_CONNECTION_DROP = re.compile(r'Connection (closed|reset) by (\S+) port (\d+)')
+_SSH_CONNECTION_DROP = re.compile(r'Connection (closed|reset) by \S+ port \d+')
 _SSH_RESET_BANNER = 'read: Connection reset by peer'
 # what scp and rsync print when the ssh they run was dropped. scp's legacy protocol (before OpenSSH 9.0,
 # and scp -O) exits with 1; rsync with ssh's 255, or with 12 when it notices the closed stream first
@@ -3032,8 +3032,8 @@ _LoginDrop.__doc__ = '''
 A run that ended with the server dropping ssh's connection before login, from _login_drop.
 
 banners holds each banner exchange line's reason ('read: Connection reset by peer' or 'Connection
-closed by remote host'); drops the (closed or reset, address, port) of each "Connection closed / reset
-by" line, in order; nothing_received is True when rsync said it received 0 bytes.
+closed by remote host'); drops 'closed' or 'reset' for each "Connection closed / reset by" line, in
+order; nothing_received is True when rsync said it received 0 bytes.
 '''
 
 def _login_drop(returncode, stdout, stderr, tool):
@@ -3068,7 +3068,7 @@ def _login_drop(returncode, stdout, stderr, tool):
 			continue
 		match = _SSH_CONNECTION_DROP.fullmatch(line)
 		if match:
-			drops.append(match.groups())
+			drops.append(match.group(1))
 			continue
 		match = tool_lines.fullmatch(line) if tool_lines else None
 		if not match:
@@ -3081,7 +3081,7 @@ def _login_drop(returncode, stdout, stderr, tool):
 
 def _shows_dropped_login(drop):
 	'''Whether a _login_drop result shows the connection ended before login: a lone reset can come later too.'''
-	return bool(drop) and (bool(drop.banners) or any(kind == 'closed' for kind, _address, _port in drop.drops))
+	return bool(drop) and (bool(drop.banners) or 'closed' in drop.drops)
 
 def _dropped_login_hint(count, max_connections):
 	'''
@@ -3109,7 +3109,7 @@ def _login_drop_is_safe_to_retry(drop, tool):
 	'''
 	if tool == 'rsync':
 		return drop.nothing_received and _shows_dropped_login(drop)
-	if any(kind == 'reset' for kind, _address, _port in drop.drops) and _SSH_RESET_BANNER not in drop.banners:
+	if 'reset' in drop.drops and _SSH_RESET_BANNER not in drop.banners:
 		return False
 	return _shows_dropped_login(drop)
 
@@ -3683,9 +3683,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 					_note(host, 'Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 				passwds = ipmi_definition.get('password',passwds)
 				if ipmi_definition.get('interface_ip_prefix') and ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
-					host.output.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
-					if __DEBUG_MODE:
-						host.stderr.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
+					_note(host, 'Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
 			else:
 				ip_prefix = ipmi_definition.get('interface_ip_prefix')
 		host.command = replace_magic_strings(host.command,['#HOST#','#HOSTNAME#'],host.address,case_sensitive=False)
@@ -5081,7 +5079,7 @@ def _tui_typed_keys(key, decoder):
 	decoder.reset()
 	return (cut_short, key) if cut_short else (key,)
 
-def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
+def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False):
 	try:
 		box_ansi_color = None
 		refresh_all = True
@@ -5449,7 +5447,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 		stdscr.refresh()
 	except Exception:
 		pass
-	params = (-1,0 , min_char_len, min_line_len, single_window,False,'new config')
+	params = (-1,0 , min_char_len, min_line_len, single_window,False)
 	while params:
 		params = __generate_display(stdscr, hosts, *params)
 		if not params:
@@ -5470,7 +5468,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 			stdscr.refresh()
 		except Exception:
 			pass
-		params = params[:6] + ('new config',)
+		params = params[:6]
 		time.sleep(0.01)
 
 #%% ------------ Generate Output Block ----------------
@@ -6105,7 +6103,10 @@ def runtime_dir(create=True):
 	return None
 
 def _unavailable_hosts_file_path(create=True):
-	'''Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.'''
+	'''
+	Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.
+	create is ignored: callers written for 6.38 still work.
+	'''
 	directory = runtime_dir()
 	return os.path.join(directory, 'unavailable_hosts.csv') if directory else None
 
