@@ -9,7 +9,7 @@ import multiSSH3
 
 
 def legacy_reader(stream, target, host, buffer):
-	"""multiSSH3 6.26's byte-at-a-time reader, verbatim, the reference the chunked reader must match."""
+	"""multiSSH3 6.26's byte-at-a-time reader without its unicode line break split, the reference the chunked reader must match."""
 	_encoding = multiSSH3._encoding
 	def add_line(buffer,target, host):
 		current_line_str = buffer.getvalue().decode(_encoding,errors='backslashreplace')
@@ -39,23 +39,6 @@ def legacy_reader(stream, target, host, buffer):
 			else:
 				buffer.write(char)
 				host.output_buffer.write(char)
-			if buffer.tell() % 100 == 0 and buffer.tell() > 0:
-				try:
-					decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
-					lines = decodedLine.splitlines()
-					if len(lines) > 1:
-						for line in lines[:-1]:
-							target.append(line)
-							host.output.append(line)
-							host.lineNumToPrintSet.add(len(host.output)-1)
-						buffer.seek(0)
-						buffer.truncate(0)
-						buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-						host.output_buffer.seek(0)
-						host.output_buffer.truncate(0)
-						host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-				except UnicodeDecodeError:
-					continue
 	except ValueError:
 		pass
 	if buffer.tell() > 0:
@@ -105,11 +88,11 @@ CASES = [
 	b"x\x08\x08\x08\n",
 	b"bad \xff\xfe bytes\n",
 	"café 中文 \U0001F600\n".encode(),
-	("a" * 50 + "\x0c" + "b" * 100 + "\n").encode(),  # form feed before the 100 byte check
+	("a" * 50 + "\x0c" + "b" * 100 + "\n").encode(),  # a form feed does not end a line
 	("a" * 150 + " " + "b" * 200).encode(),
 	("x" * 99 + "\x1e" + "y" * 300 + "\n").encode(),
 	("p" * 120 + "\x85" + "q" * 100 + "\n").encode(),  # NEL
-	("o" * 98 + " ").encode() * 3,  # separator straddling the 100 byte check
+	("o" * 98 + " ").encode() * 3,  # a long line without a line break
 	b"y" * 70000 + b"\n" + b"tail",  # a line longer than one read
 	b"".join(b"line %d\n" % i for i in range(3000)) + b"unfinished",  # many short lines
 	b"".join(b"line %d\r\n" % i for i in range(3000)) + b"unfinished\r",  # windows line ends
@@ -118,9 +101,9 @@ CASES = [
 	b"bad \xff\xfe bytes\n\xc3\n\xe2\x80\n\xed\xa0\x80\nok\n" * 30,  # invalid utf-8 in whole lines
 	"café 中文 \U0001F600\n".encode() * 300,
 	b"plain\n" * 300 + ("x" * 150 + "\u2028" + "y" * 150 + "\n").encode() + b"plain\n" * 300,
-	b"plain\n" * 300 + b"form\x0cfeed\n" + b"plain\n" * 300,  # a short line holding a unicode line break
+	b"plain\n" * 300 + b"form\x0cfeed\n" + b"plain\n" * 300,  # a line holding a form feed
 	"中".encode() * 30000 + b"\nend\n",  # a long multibyte line
-	("\x0c" + "x" * 999 + "\n").encode() * 3,  # a unicode line break, then a long run
+	("\x0c" + "x" * 999 + "\n").encode() * 3,  # a form feed, then a long run
 	(("o" * 98 + "\x1c") * 30 + "\r" + ("p" * 98 + "\x1d") * 30 + "\n").encode(),
 	b"progress " + b"".join(b"%d%%\r" % i for i in range(300)) + b"\x08\x08done\n",
 	("r" * 180 + "\r" + "s" * 30 + " " + "t" * 150 + "\n").encode(),
@@ -187,19 +170,8 @@ def test_reader_adds_a_chunk_of_whole_lines_at_once(line_end):
 	assert buffer.writes == 2
 
 
-def test_reader_writes_a_run_holding_a_line_break_up_to_each_check_at_once():
-	# a form feed is a unicode line break: the line is split where it grows past each 100 bytes, and the
-	# bytes between two of those points are written at once (about 10 writes here, not 1000)
-	data = b"\x0c" + b"x" * 999 + b"\n"
-	host = multiSSH3.Host("h", "cmd", ip="127.0.0.1")
-	buffer = CountingBuffer()
-	multiSSH3.__handle_reading_stream(io.BytesIO(data), host.stdout, host, buffer)
-	assert host.stdout == ["", "x" * 999]
-	assert buffer.writes <= 15
-
-
-# in two reads: a first line with a \r and whole lines after it (added at once), then a line split on a
-# unicode line break as it grows past 100 bytes, and an unfinished line
+# in two reads: a first line with a \r and whole lines after it (added at once), then a line holding a
+# form feed, and an unfinished line
 TUI_LINES_READS = [b"a\rb\n" + b"whole\n" * 10 + b"x", ("x" * 49 + "\x0c" + "y" * 100 + "\n").encode() + b"unfinished"]
 
 
@@ -209,7 +181,7 @@ def test_reader_notes_no_lines_to_redraw(tui):
 	host.interactive_stdin = tui
 	stream = ChunkedPipe(b"".join(TUI_LINES_READS), [len(data) for data in TUI_LINES_READS])
 	multiSSH3.__handle_reading_stream(stream, host.stdout, host, host.stdout_buffer)
-	assert host.stdout == ["b"] + ["whole"] * 10 + ["x" * 50, "y" * 100, "unfinished"]
+	assert host.stdout == ["b"] + ["whole"] * 10 + ["x" * 50 + "\x0c" + "y" * 100, "unfinished"]
 	assert host.output == host.stdout
 	# the TUI draws the lines added since its last frame (Host.printedLines): a set of every new line's
 	# number held 136 MB per million lines when output came faster than frames

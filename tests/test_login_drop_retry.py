@@ -47,16 +47,12 @@ class FakeProc:
 		return b"", b""
 
 
-def run(monkeypatch, results, ssh_config=JUMP_CONFIG, retry_limit=..., passwds=None, debug=False,
-		addresses=None, **host_kwargs):
+def run(monkeypatch, results, ssh_config=JUMP_CONFIG, retry_limit=..., passwds=None, debug=False, **host_kwargs):
 	"""Run one host against fake processes, one result per process started; return (host, argvs, sleeps)."""
 	monkeypatch.setattr(multiSSH3, "_binPaths", dict(BINS))
 	monkeypatch.setattr(multiSSH3, "__DEBUG_MODE", debug)
 	monkeypatch.setattr(multiSSH3, "_emo", False)
 	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname: dict(ssh_config) if ssh_config else None)
-	# no DNS: the addresses each name has
-	monkeypatch.setattr(multiSSH3.socket, "getaddrinfo",
-		lambda name, *args: [(2, 1, 6, "", (address, 0)) for address in (addresses or {}).get(name, [])])
 	sem = threading.Semaphore(1)
 	results = list(results)
 	argvs = []
@@ -104,26 +100,6 @@ def test_other_failures_are_not_noted(monkeypatch, result):
 
 	assert host.returncode == result[2]
 	assert host.dropped_before_login is False
-
-
-def test_openssh_8_0_names_no_host_so_it_is_not_tried_again_but_noted(monkeypatch):
-	# a remote command's own ssh dropped the same way prints the very same lines
-	host, argvs, _ = run(monkeypatch, [(b"", JUMP_RESET_80, 255), OK])
-
-	assert len(argvs) == 1
-	assert host.returncode == 255
-	assert host.dropped_before_login is True
-
-
-def test_legacy_scp_naming_no_host_is_not_tried_again(monkeypatch):
-	# OpenSSH 8.0's scp: exit code 1, no host named
-	stderr = b"kex_exchange_identification: read: Connection reset by peer\r\nlost connection\n"
-	host, argvs, _ = run(monkeypatch, [(b"", stderr, 1), OK], ssh_config=DIRECT_CONFIG,
-		command="/dest/", files=["/src/a"], scp=True)
-
-	assert len(argvs) == 1
-	assert host.returncode == 1
-	assert host.dropped_before_login is True
 
 
 def test_dropped_host_is_not_marked_unreachable(tmp_path, monkeypatch):
@@ -218,11 +194,19 @@ def test_dropped_before_login_naming_the_host_is_tried_again(monkeypatch, stderr
 	assert host.returncode == 0
 
 
-def test_dropped_before_login_naming_another_address_of_the_host_is_tried_again(monkeypatch):
-	# ssh connected to the name's IPv6 address, mssh resolved the IPv4 one
-	stderr = b"Connection closed by 2001:db8::7 port 22\r\n"
-	host, argvs, _ = run(monkeypatch, [(b"", stderr, 255), OK], ssh_config=DIRECT_CONFIG,
-		addresses={"node1": ["10.0.0.7", "2001:db8::7"]})
+def test_openssh_8_0_naming_no_host_is_tried_again(monkeypatch):
+	host, argvs, _ = run(monkeypatch, [(b"", JUMP_RESET_80, 255), OK])
+
+	assert len(argvs) == 2
+	assert host.returncode == 0
+	assert host.dropped_before_login is False
+
+
+def test_legacy_scp_naming_no_host_is_tried_again(monkeypatch):
+	# OpenSSH 8.0's scp: exit code 1, no host named
+	stderr = b"kex_exchange_identification: read: Connection reset by peer\r\nlost connection\n"
+	host, argvs, _ = run(monkeypatch, [(b"", stderr, 1), OK], ssh_config=DIRECT_CONFIG,
+		command="/dest/", files=["/src/a"], scp=True)
 
 	assert len(argvs) == 2
 	assert host.returncode == 0
@@ -275,32 +259,14 @@ def test_debug_keeps_every_try_in_stderr(monkeypatch):
 	(b"", JUMP_RESET_10, 1),
 	# a line that is not about the dropped connection
 	(b"", b"Welcome to node1\r\n" + JUMP_RESET_10, 255),
-	# the remote command's own ssh to another host was dropped (after mssh's ssh logged in)
-	(b"", b"Connection closed by 10.0.0.50 port 2222\r\n", 255),
 	(b"", b"Warning: Permanently added 'node1' (ED25519) to the list of known hosts.\r\nConnection closed by 10.0.0.7 port 22\r\n", 255),
-], ids=["closed-after-login", "reset-without-banner", "stdout", "rc-1", "other-line", "other-host", "after-host-key"])
+], ids=["closed-after-login", "reset-without-banner", "stdout", "rc-1", "other-line", "after-host-key"])
 def test_anything_that_may_have_logged_in_is_not_tried_again(monkeypatch, result):
 	host, argvs, sleeps = run(monkeypatch, [result, OK], ssh_config=DIRECT_CONFIG)
 
 	assert len(argvs) == 1
 	assert host.returncode == result[2]
 	assert sleeps == []
-
-
-def test_unknown_port_without_a_proxy_is_not_tried_again(monkeypatch):
-	# no ProxyJump / ProxyCommand: UNKNOWN port 65535 is not this ssh's
-	host, argvs, _ = run(monkeypatch, [(b"", TARGET_BEHIND_JUMP_CLOSED_10, 255), OK], ssh_config=DIRECT_CONFIG)
-
-	assert len(argvs) == 1
-	assert host.returncode == 255
-
-
-def test_proxy_jump_in_extra_args_counts_as_a_proxy(monkeypatch):
-	host, argvs, _ = run(monkeypatch, [(b"", TARGET_BEHIND_JUMP_CLOSED_10, 255), OK], ssh_config=DIRECT_CONFIG,
-		extraargs="-J root@bastion")
-
-	assert len(argvs) == 2
-	assert host.returncode == 0
 
 
 def test_ctrl_c_is_not_tried_again(monkeypatch):

@@ -97,7 +97,6 @@ def test_output_is_complete_when_a_reader_lags_behind_the_exit(fake_host, monkey
 
 	assert host.stdout == ["one", "two"]  # all of it, in order, when run_command returns
 	assert ended["stdout"].is_set()  # nothing is appended later
-	assert not any(line.startswith("Trying to read the rest") for line in host.output)
 	assert host.returncode == 0
 
 

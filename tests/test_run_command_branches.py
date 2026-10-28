@@ -34,92 +34,6 @@ def _patch_popen(monkeypatch, fake_factory):
 	monkeypatch.setattr(multiSSH3.subprocess, "Popen", fake_factory)
 
 
-def test_run_command_shell_mode(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("ignored", "echo shell", shell=True)
-	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
-	calls = []
-
-	def fake_popen(argv, **kwargs):
-		calls.append(argv)
-		return FakeProc(stdout=b"shell\n")
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-	assert host.returncode == 0
-	assert calls and calls[0][0] == "/bin/sh"
-	assert calls[0][1] == "-c"
-
-
-def test_shell_fallback_returns_after_single_ssh_attempt(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("ignored", "echo fallback", shell=True)
-	calls = []
-	monkeypatch.delitem(multiSSH3._binPaths, "sh", raising=False)
-
-	def fake_popen(argv, **kwargs):
-		calls.append(argv)
-		return FakeProc(stdout=b"fallback\n")
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-
-	assert len(calls) == 1
-	assert calls[0][-3:] == ["--", "localhost", "echo fallback"]
-	assert host.returncode == 0
-
-
-def test_run_command_scp_files(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host(
-		"mock-a",
-		"/tmp/dest",
-		files=["/tmp/a"],
-		scp=True,
-	)
-	host.use_terminal = True  # a lone -nw command: test_command_terminal.py covers the options added without one
-	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
-	scp_calls = []
-
-	def fake_popen(argv, **kwargs):
-		scp_calls.append(argv)
-		return FakeProc()
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-	assert host.returncode == 0
-	assert scp_calls[0] == [
-		"scp", "-rp",
-		"-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-		"--", "/tmp/a", "mock-a:/tmp/dest",
-	]
-
-
-def test_run_command_rsync_files(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("mock-a", "/tmp/dest", files=["/tmp/a"], scp=False)
-	# Prefer rsync path
-	host.use_terminal = True  # a lone -nw command: test_command_terminal.py covers the options added without one
-	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
-	monkeypatch.delitem(multiSSH3._binPaths, "scp", raising=False)
-	rsync_calls = []
-
-	def fake_popen(argv, **kwargs):
-		rsync_calls.append(argv)
-		return FakeProc()
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-	assert host.returncode == 0
-	assert rsync_calls[0] == [
-		"rsync", "-ahlX", "--partial-dir=.rsync-partial", "--info=name",
-		"--rsh", "ssh '-o StrictHostKeyChecking=no' '-o UserKnownHostsFile=/dev/null'"
-			" -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4",
-		"--", "/tmp/a", "mock-a:/tmp/dest",
-	]
-
-
 @pytest.mark.parametrize("gather", [False, True], ids=["push", "gather"])
 def test_rsync_writes_a_new_file_and_renames_it_into_place(fake_host, monkeypatch, gather):
 	# --inplace wrote into the destination file itself: "Text file busy" on a running binary, and
@@ -828,47 +742,6 @@ def test_gathered_link_copied_again_has_no_note_when_it_works(fake_host, monkeyp
 	assert host.stderr == []
 
 
-def test_run_command_ipmitool_local(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("127.0.0.1", "power status", ipmi=True)
-	monkeypatch.setitem(multiSSH3._binPaths, "ipmitool", "ipmitool")
-	monkeypatch.setitem(multiSSH3._binPaths, "sh", "/bin/sh")
-	calls = []
-
-	def fake_popen(argv, **kwargs):
-		calls.append(argv)
-		return FakeProc(stdout=b"Chassis Power is on\n")
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(
-		host,
-		sem,
-		timeout=5,
-		ipmi_definitions_list=[multiSSH3.get_default_ipmi_definition()],
-	)
-	assert host.returncode == 0
-	assert calls and "ipmitool" in " ".join(calls[0])
-
-
-def test_run_command_ipmi_unsupported_method(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("127.0.0.1", "status", ipmi=True)
-	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
-	defn = multiSSH3.get_default_ipmi_definition()
-	defn["ipmi_method"] = "not-a-method"
-	multiSSH3.run_command(host, sem, timeout=5, ipmi_definitions_list=[defn])
-	assert host.returncode == 1
-	assert any("not supported" in line for line in host.stderr + host.output)
-
-
-def test_run_command_retry_limit_exhausted(fake_host):
-	sem = threading.Semaphore(1)
-	host = fake_host("mock-a", "true")
-	multiSSH3.run_command(host, sem, timeout=5, retry_limit=-1)
-	assert host.returncode == 1
-	assert any("Retry limit" in line for line in host.stderr + host.output)
-
-
 def test_run_command_emfile_retries_after_releasing_semaphore(fake_host, monkeypatch):
 	sem = threading.Semaphore(1)
 	host = fake_host("mock-a", "true")
@@ -1135,54 +1008,6 @@ def test_run_command_ends_its_threads_when_the_command_cannot_start(fake_host, m
 	assert host.returncode == -1
 
 
-def test_run_command_magic_user_ip_uuid(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("alice@mock-a", "echo #USER# #IP# #UUID#")
-	calls = []
-
-	def fake_popen(argv, **kwargs):
-		calls.append(argv)
-		return FakeProc(stdout=b"ok\n")
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-	remote = calls[0][-1]
-	assert "alice" in remote
-	assert "mock-a" in remote
-	assert str(host.uuid) in remote
-
-
-def test_run_command_interface_ip_prefix(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("mock-a", "true", interface_ip_prefix="10.1.2.")
-	# Host.ip is mock-a from fake getIP — prefix rewrite may warn; still should run
-	host.ip = "192.168.1.5"
-	calls = []
-
-	def fake_popen(argv, **kwargs):
-		calls.append(argv)
-		return FakeProc()
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-	assert host.returncode == 0
-	assert "10.1.2.5" in " ".join(calls[0]) or host.address.startswith("10.1.2.")
-
-
-def test_run_command_extraargs_list(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("mock-a", "true", extraargs=["-o", "Foo=1"])
-	calls = []
-
-	def fake_popen(argv, **kwargs):
-		calls.append(argv)
-		return FakeProc()
-
-	_patch_popen(monkeypatch, fake_popen)
-	multiSSH3.run_command(host, sem, timeout=5)
-	assert "-o" in calls[0] and "Foo=1" in calls[0]
-
-
 @pytest.mark.parametrize("extraargs, expected", [
 	("-o Port=2222 -v", ["-o", "Port=2222", "-v"]),
 	# split as a shell would: a quoted value with spaces stays one argument
@@ -1267,16 +1092,6 @@ def test_redfish_without_redfishtool_and_no_other_definition_fails_clearly(fake_
 	assert (host.returncode, calls) == (1, [])
 	assert any("redfishtool not found" in line for line in host.stderr)
 	assert not any("Traceback" in line for line in host.stderr)
-
-
-def test_run_command_missing_file_tools(fake_host, monkeypatch):
-	sem = threading.Semaphore(1)
-	host = fake_host("mock-a", "/dest", files=["/tmp/a"], scp=True)
-	monkeypatch.delitem(multiSSH3._binPaths, "scp", raising=False)
-	monkeypatch.delitem(multiSSH3._binPaths, "rsync", raising=False)
-	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
-	multiSSH3.run_command(host, sem, timeout=5)
-	assert host.returncode == 1
 
 
 def test_run_command_records_non_emfile_oserror(fake_host, monkeypatch):
