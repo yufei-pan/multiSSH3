@@ -69,6 +69,7 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 	pytest.param(ENGINE + ['glue', 'bash'], id='glue-bash'),
 	pytest.param(ENGINE + ['-V'], id='version'),
 	pytest.param(MSSH + ['--completion', 'fish'], id='mssh-fish'),
+	pytest.param(ENGINE + ['bogus'], id='usage-error'),
 ])
 def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	# ... 2>&1 | head: the flush at exit must not fail on stderr either (Python would exit 120)
@@ -89,8 +90,10 @@ def test_a_glue_that_could_not_be_written_fails(tmp_path, argv):
 	with open('/dev/full', 'w') as full:
 		result = subprocess.run(argv, env=env, cwd=str(tmp_path), stdout=full, stderr=subprocess.PIPE, timeout=60)
 
-	assert result.returncode not in (0, SIGPIPE_STATUS)
-	assert 'No space left on device' in result.stderr.decode('utf-8', 'replace')
+	stderr = result.stderr.decode('utf-8', 'replace')
+	assert result.returncode == 1
+	assert 'No space left on device' in stderr
+	assert 'Exception ignored' not in stderr
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])

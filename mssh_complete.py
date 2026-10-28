@@ -5808,7 +5808,8 @@ _mssh_complete_unspace() {
 		return 0
 	fi
 	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
-		[[ $_mssh_complete_item == *' ' ]] || return 0
+		# mixed: the words stay as given, and the dedup reads an engine's word the same as a spaced one of the delegate's
+		[[ $_mssh_complete_item == *' ' ]] || { _mssh_complete_trim=' '; return 0; }
 		_mssh_complete_words+=("${_mssh_complete_item% }")
 	done
 	_mssh_complete_delegated=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
@@ -5818,7 +5819,7 @@ _mssh_complete_unspace() {
 _mssh_complete_tab() {
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
-	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
+	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0 _mssh_complete_trim=
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A _mssh_complete_seen=()
@@ -5898,8 +5899,8 @@ _mssh_complete_tab() {
 	fi
 	COMPREPLY=()
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
-		[[ -n ${_mssh_complete_seen[x${_mssh_complete_item% }]-} ]] && continue
-		_mssh_complete_seen[x${_mssh_complete_item% }]=1
+		[[ -n ${_mssh_complete_seen[x${_mssh_complete_item%"$_mssh_complete_trim"}]-} ]] && continue
+		_mssh_complete_seen[x${_mssh_complete_item%"$_mssh_complete_trim"}]=1
 		COMPREPLY+=("$_mssh_complete_item")
 	done
 	if (( ${#COMPREPLY[@]} == 0 && _mssh_complete_dropped )); then
@@ -6200,6 +6201,9 @@ _mssh_complete_space_key() {
 	(( READLINE_POINT += 1 ))
 }
 
+# a shell of 6.38 put _mssh_complete_heal; in PROMPT_COMMAND, and an exported one reaches this shell (a tmux pane): this glue has no heal
+[[ ${PROMPT_COMMAND-} == *_mssh_complete_heal\;* ]] && PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_heal;/}
+
 if [[ -n ${BLE_VERSION-} ]]; then
 	_mssh_complete_bytes=0
 
@@ -6453,7 +6457,8 @@ ZSH_GLUE = r'''# MSSH_COMPLETE_GLUE @VERSION@ zsh: autocomplete for mssh (multiS
 
 _mssh() {
 	# without the modules that read the engine's answer: what zsh offers for a command it has no
-	# completion for (see the end)
+	# completion for (see the end). An if, not `|| { ...; return }`: ignore_braces and ignore_close_braces
+	# read a } after a command on the same line as its argument, and the whole file would not parse
 	if ! zmodload zsh/zselect zsh/system zsh/datetime 2>/dev/null; then
 		_default "$@"
 		return
@@ -7399,6 +7404,28 @@ def render_glue(shell, command=None):
 # the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`
 SIGPIPE_STATUS = 141
 
+def _discard_stdout():
+	'''
+	Point stdout, and stderr when it is the same file (2>&1), at devnull after a write to it failed:
+	what is left in the buffer goes nowhere, and the flush at exit does not fail again.
+	'''
+	try:
+		fds = [sys.stdout.fileno()]
+		try:
+			if os.path.sameopenfile(fds[0], sys.stderr.fileno()):
+				fds.append(sys.stderr.fileno())
+		except (OSError, ValueError, AttributeError):
+			pass
+		devnull = os.open(os.devnull, os.O_WRONLY)
+		try:
+			for fd in fds:
+				os.dup2(devnull, fd)
+		finally:
+			os.close(devnull)
+	except (OSError, ValueError, AttributeError):
+		# not a file descriptor (a caller's own stream): nothing to redirect
+		pass
+
 def _quiet_when_stdout_is_gone(command):
 	'''
 	command, ending as SIGPIPE ends other tools when the reader of its output exits early
@@ -7414,17 +7441,12 @@ def _quiet_when_stdout_is_gone(command):
 				if sys.stdout is not None:
 					sys.stdout.flush()
 		except BrokenPipeError:
-			# what is left in the buffer goes nowhere, and the flush at exit does not fail again
-			try:
-				devnull = os.open(os.devnull, os.O_WRONLY)
-				try:
-					os.dup2(devnull, sys.stdout.fileno())
-				finally:
-					os.close(devnull)
-			except (OSError, ValueError, AttributeError):
-				# not a file descriptor (a caller's own stream): nothing to redirect
-				pass
+			_discard_stdout()
 			return SIGPIPE_STATUS
+		except OSError:
+			# a full disk: reported once, and the flush at exit does not report it again
+			_discard_stdout()
+			raise
 	run.__name__, run.__doc__, run.__wrapped__ = command.__name__, command.__doc__, command
 	return run
 

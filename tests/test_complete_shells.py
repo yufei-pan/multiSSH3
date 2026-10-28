@@ -55,6 +55,20 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion, debug):
 		assert debug_log_size(env) == logged
 
 
+def test_bash_ignores_the_heal_a_shell_of_6_38_left_in_an_exported_prompt_command(tmp_path):
+	# 6.38 put _mssh_complete_heal; in PROMPT_COMMAND, which a tmux pane or a nested bash inherits when it is exported
+	env, home = make_home(tmp_path, HISTORY)
+	session = bash_session(home, dict(env, PROMPT_COMMAND='_mssh_complete_heal;history -a'), glue_file(home, 'bash'), False)
+	try:
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 5)
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 5)
+	finally:
+		session.close()
+	assert b'command not found' not in session.output
+
+
 def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 	# completion-ignore-case on: readline takes a candidate whose case differs from the word, and puts in its spelling
 	env, home = make_home(tmp_path, HISTORY)
@@ -359,6 +373,9 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -C "printf \'\\n\'" zzsvc', []),
 	('complete -o default -C "printf \'\\n\'" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
 	('complete -o dirnames -C "printf \'\\n\\n\'" zzsvc', ['zzdir', 'zzdirb']),
+	# a quote or a substitution does not join lines
+	('complete -C "printf \'zz\\"a\\nzzb\\n\'" zzsvc', ['zz"a', 'zzb']),
+	('complete -C "printf \'zz\\$(a\\nzzb)\\n\'" zzsvc', ['zz$(a', 'zzb)']),
 	# the last line needs no newline
 	('complete -C "printf zza" zzsvc', ['zza']),
 	# a function's empty word, the sentinel that git, grub and pcp give for no completions, is an answer as well
@@ -477,6 +494,7 @@ def completed_and_listed(session, typed, quoted=False):
 SAME_AS_BASH = [
 	(['-W', 'zzalpha zzb', '-S', ']'], 'zz', ''),
 	(['-W', 'a* a*x a*y', '-X', '&'], 'a*', ''),
+	(['-W', 'a* a*x a*y', '-X', '!&*'], 'a*', ''),
 	(['-W', 'a? a?x ab', '-X', '!&*'], 'a?', ''),
 	(['-W', 'Zza zzb'], 'zz', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza zzb', '-o', 'plusdirs'], 'ZZ', 'bind "set completion-ignore-case on"'),
@@ -490,15 +508,17 @@ SAME_AS_BASH = [
 # where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
 	# not compared with bash: the local file names of the file actions, -G and a command with no compspec, which the
-	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.39: the glue does it
+	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.40: the glue does it
 	# itself)
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb', '-o', 'dirnames', '-o', 'default'], 'zzd', ''),
 ]
 
 # and where a filter leaving nothing makes bash offer nothing at all (the unquoted one is above, with -o default)
 SAME_AS_BASH_QUOTED = [
 	(['-W', 'zza zzb zzc', '-X', '!(zza)'], 'zz', 'shopt -s extglob'),
+	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)'], 'zz', 'shopt -s extglob'),
 ]
 
 
@@ -853,6 +873,15 @@ def test_bash_a_nospace_spec_lists_a_word_of_the_engine_and_the_spec_once(tmp_pa
 		session.close()
 
 
+@pytest.mark.parametrize('typed', ['mssh -f zznotes', 'mssh h zzcmd zznotes'])
+def test_bash_a_file_name_ending_in_a_space_is_listed_beside_the_name_without_it(tmp_path, typed):
+	session = ignoring_case(tmp_path, [], on=False, files=['zznotes', 'zznotes '])
+	try:
+		assert completed_and_listed(session, typed) == (typed, ['zznotes', 'zznotes'])
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('options, typed', [
 	('', 'mssh h othercmd '),
 	('complete -f zzsvc', 'mssh h zzsvc '),
@@ -893,7 +922,7 @@ def test_bash_a_remote_command_name_matching_a_local_directory_keeps_its_space(t
 # sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
 # every glue function to the prefix
 BASH_GLUE_NAMES = ('cur resp line item one flags ble files ended delegate reply raws delegate_fields seen icase '
-	'word cword prefix cmd spec func lead words found kept typed keymap previous shown expand')
+	'word cword prefix cmd spec func lead words found kept typed keymap previous shown')
 
 
 @pytest.mark.parametrize('on', [True, False])
