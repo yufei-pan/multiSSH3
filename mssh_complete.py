@@ -3905,7 +3905,7 @@ class Engine(object):
 		'''
 		literal = (request.shell == 'bash' and request.flags.get('ble') != '1') or request.flags.get('insert') == '1'
 		# bash's own TAB quotes file names itself; what the picker inserts nobody quotes
-		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and bool({'files', 'dirs'} & set(directives))
+		bash_quotes = request.shell == 'bash' and request.flags.get('insert') != '1' and 'files' in directives
 		prefix = context.prefix
 		if base is None:
 			# the shell's word is not the end of what was parsed (e.g. backslash escapes): offer nothing
