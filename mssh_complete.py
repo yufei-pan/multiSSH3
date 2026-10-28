@@ -3652,6 +3652,14 @@ def _bang_in_double_quotes(shell, open_quote, text):
 	'''Whether text put inside an open double quote holds a ! that shell would expand.'''
 	return open_quote == '"' and shell in _BANG_SHELLS and '!' in text
 
+def _quote_command(command, shell):
+	'''The quote char for typing command inside quotes in shell, or None when that would need escapes.'''
+	if not any(char in command for char in '"\\$`') and not _bang_in_double_quotes(shell, '"', command):
+		return '"'
+	if "'" not in command:
+		return "'"
+	return None
+
 def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
@@ -5566,87 +5574,13 @@ def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
 	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
 
-# the options mssh may record in another form than the line typed for the run: 6.31 and earlier left
-# the script timeout (-t 50), 0 and '' values and these options out; it records -T as the timeout,
-# -uk and -k DIR as the key found, -s PATH as -f PATH -fs, and (later versions) --config_file absolute
-_RECORDED_AS = {'use_script_timeout': ('timeout',), 'use_key': ('identity_file',), 'file_sync': ('file',)}
-_RECORDED_LOOSELY = frozenset(('timeout', 'identity_file', 'config_file', 'host_file', 'window_width', 'window_height',
-	'single_window', 'no_output', 'success_hosts', 'return_zero', 'encoding', 'diff_display_threshold', 'force_truecolor',
-	'debug', 'ipmi_interface_ip_prefix', 'ipmi_username', 'ipmi_args', 'ipmi_method', 'ipmi_retry_lockout_time'))
-
-def _run_options(options, engine):
+def _history_items(engine, history_lines, name, features):
 	'''
-	The options of a run that change something, as sorted (dest, value) pairs, whatever their order
-	and spelling: a flag by the value it leaves ('on' / 'off') when that is not the default (mssh's
-	history has -su on every line), a value ('=' and the value) unless it is the default (mssh leaves
-	those out), an option without one by ''.
-
-	Args:
-		options (list): (OptionSpec, value or None) pairs
-		engine (Engine): Its flag_sets and flag_defaults say what the flags do
-	'''
-	flags = {}
-	pairs = []
-	for option, value in options:
-		if option.nargs == '0' and option.long in engine.flag_sets:
-			flags[option.dest] = engine.flag_sets[option.long]
-		elif value is None:
-			pairs.append((option.dest, ''))
-		elif value != option.default:
-			pairs.append((option.dest, '=' + value))
-	pairs.extend((dest, 'on' if on else 'off') for dest, on in flags.items() if on != engine.flag_defaults.get(dest, False))
-	return tuple(sorted(pairs))
-
-# options with which mssh records a run in no history (-I, --script) or in another file (-hf)
-_RECORDED_ELSEWHERE = frozenset(('no_history', 'script', 'history_file'))
-
-def _loose_dests(pairs):
-	'''The dests of a typed run's options (_run_options) whose record may differ from them.'''
-	dests = set()
-	for dest, value in pairs:
-		if dest in _RECORDED_AS:
-			dests.add(dest)
-			dests.update(_RECORDED_AS[dest])
-		elif dest in _RECORDED_LOOSELY or value in ('=', '=0'):
-			dests.add(dest)
-	return dests
-
-def _typed_run(line, engine):
-	'''
-	(run key, (options, hosts, commands)) of a shell line running mssh, or None when the history tab
-	cannot offer it. The run key is (hosts, commands, options as _run_options gives them).
-	'''
-	if 'mssh' not in line and 'multissh' not in line and 'multiSSH' not in line:
-		# most lines run something else: no need to read them
-		return None
-	tokens = lex(line)
-	if not tokens or os.path.basename(tokens[0].text) not in MSSH_NAMES or _has_control(line):
-		return None
-	words = tokens[1:]
-	roles = assign_roles(words, engine.spec)
-	if any(option is not None and option.dest in PASSWORD_DESTS for _, option in roles):
-		return None
-	options, hosts, commands = _collect(words, roles)
-	commands = _join_commands(commands)
-	return (hosts, tuple(commands), _run_options(options, engine)), (options, hosts, commands)
-
-def _history_items(request, engine, history_lines, name, features):
-	'''
-	The history tab: the past invocations, those most like the line first, then the newest.
-
-	A run is in mssh's history and, as typed, in the shell's: the shell's lines add the rows and
-	the uses mssh's history does not hold (runs with -I, and those it no longer holds).
-	HISTORY_LIMIT bounds the rows (lines of mssh's history past it are not read); every line the
-	shell sent is. With some of mssh's history unread, a shell line matching none of the rows counts
-	only when mssh records it nowhere there (-I, --script, -hf): the index counts the others.
-
-	Returns:
-		tuple: (PickItem list, MemoryKnowledge of the runs only the shell's history holds)
+	The history tab: the past invocations mssh's history holds, those most like the line first, then
+	the newest. HISTORY_LIMIT bounds the rows (lines of mssh's history past it are not read).
 	'''
 	entries = []   # [features shared with the line, unix time, text, uses]
 	numbers = {}   # text -> its number in entries
-	parsed = []    # (number in entries, hosts, commands, line) of mssh's history
-	unread = False # some of mssh's history is past the rows
 	for line in reversed(history_lines):
 		fields = line.rstrip('\r\n').split('\t')
 		if len(fields) != 5:
@@ -5658,76 +5592,26 @@ def _history_items(request, engine, history_lines, name, features):
 			entries[numbers[text]][3] += 1
 			continue
 		if len(entries) >= HISTORY_LIMIT:
-			unread = True
 			continue
 		if not safe_field(text) or _has_control(text) or _sets_password(lex(fields[2]), engine.spec):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		numbers[text] = len(entries)
+		if '"' in fields[4] and entry is not None:
+			# mssh 6.26 and older wrote commands in double quotes, where the shell expands $, ` and ! again:
+			# the commands mssh ran, quoted as mssh quotes them now
+			import shlex
+			text = ' '.join([name] + parts[:-1] + [shlex.quote(command) for command in entry.commands])
 		if entry is None:
 			entries.append([0, 0, text, 1])
-			continue
-		parsed.append((len(entries), entry.hosts, tuple(entry.commands), line))
-		entries.append([len(features & set(entry.features())), entry.ts, text, 1])
-	unrecorded = MemoryKnowledge()
-	typed = {}  # run key -> [times in the shell's history, its (options, hosts, commands), its newest line]
-	runs = []   # the run keys, newest first
-	keys = {}   # line -> run key (None: not offered), so a line typed often is read once
-	for line in request.history[::-1] if request.shell != 'fish' else request.history:
-		line = line.strip()
-		if line not in keys:
-			found = _typed_run(line, engine)
-			keys[line] = found[0] if found is not None else None
-			if found is not None and found[0] not in typed:
-				typed[found[0]] = [0, found[1], line]
-				runs.append(found[0])
-		if keys[line] is not None:
-			typed[keys[line]][0] += 1
-	# the entries of mssh's history with the hosts and commands of those runs, and their options
-	candidates = {}
-	wanted = set(key[:2] for key in runs)
-	for number, hosts, commands, line in parsed:
-		if (hosts, commands) in wanted:
-			options = history_options(line.rstrip('\r\n').split('\t')[2], engine.spec)[0]
-			candidates.setdefault((hosts, commands), []).append((number, _run_options(options, engine)))
-	pools = {}  # the entries some runs' lines count towards -> [times typed, the newest of those runs]
-	for key in runs:
-		count, parts, line = typed[key]
-		bucket = candidates.get(key[:2], ())
-		# the record of this run, else one mssh may have written in another form
-		found = [number for number, pairs in bucket if pairs == key[2]]
-		loose = _loose_dests(key[2]) if not found else ()
-		if loose:
-			kept = [pair for pair in key[2] if pair[0] not in loose]
-			found = [number for number, pairs in bucket if [pair for pair in pairs if pair[0] not in loose] == kept]
-		if found:
-			pool = pools.setdefault(tuple(found), [0, key])
-			pool[0] += count
-			continue
-		if unread and not any(dest in _RECORDED_ELSEWHERE and value != 'off' for dest, value in key[2]):
-			# its record may be past the rows: the index counts it already
-			continue
-		run_features = make_features(*parts)
-		if len(entries) < HISTORY_LIMIT:
-			# the newest spelling of a run only the shell's history holds
-			entries.append([len(features & set(run_features)), 0, line, count])
-		for _ in range(count):
-			unrecorded.add(run_features, 0.0)
-	for found, (count, key) in pools.items():
-		# mssh's history holds this many of the shell's lines; any more are runs it does not hold
-		count -= sum(entries[number][3] for number in found)
-		if count > 0:
-			entries[found[0]][3] += count
-			run_features = make_features(*typed[key][1])
-			for _ in range(count):
-				unrecorded.add(run_features, 0.0)
+		else:
+			entries.append([len(features & set(entry.features())), entry.ts, text, 1])
 	order = sorted(range(len(entries)), key=lambda number: (-entries[number][0], -entries[number][1], number))
-	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order], unrecorded
+	return [PickItem(entries[number][2], '', entries[number][3], entries[number][1]) for number in order]
 
 def picker_items(request, engine, history_lines, now=None):
 	'''
-	What the picker offers for a request. A row's uses count runs of mssh: one in mssh's history
-	and the shell's is one use, a local command none.
+	What the picker offers for a request. A row's uses count runs of mssh, as mssh's history holds them.
 
 	Returns:
 		tuple: (slot items, slot title, history items, word): word is the text before the cursor the
@@ -5740,7 +5624,7 @@ def picker_items(request, engine, history_lines, now=None):
 	if tokens and os.path.basename(tokens[0].text) in MSSH_NAMES:
 		name = tokens[0].raw
 	features = set(context.features) if context is not None else set()
-	history, unrecorded = _history_items(request, engine, history_lines, name, features)
+	history = _history_items(engine, history_lines, name, features)
 	slot = []
 	title = ''
 	word = None
@@ -5753,8 +5637,8 @@ def picker_items(request, engine, history_lines, now=None):
 			if tokens and tokens[-1].text == word and request.before.endswith(tokens[-1].raw):
 				asked = tokens[-1].raw
 		response = engine.query(Request(request.shell, request.before, request.after, asked, request.shell_version, dict(request.flags, insert='1')))
-		# the shell's history counts only for runs mssh's history does not hold
-		counted = [knowledge for knowledge in engine.knowledges if not getattr(knowledge, 'shell', False)] + [unrecorded]
+		# uses are runs of mssh: the shell's history does not count
+		counted = [knowledge for knowledge in engine.knowledges if not getattr(knowledge, 'shell', False)]
 		for candidate in response.candidates:
 			value = (candidate.raw or candidate.text)[context.value_start:]
 			uses, last = engine.usage(context, value, counted)
@@ -5766,69 +5650,11 @@ def picker_items(request, engine, history_lines, now=None):
 			title = 'commands for ' + context.hosts if context.hosts else 'commands'
 	return slot, title, history, word
 
-def _bangs_out(text, after_dollar):
-	'''Double quoted text (its quotes left out) as bangs_out_of_double_quotes writes it, quotes included.'''
-	pieces = ['']
-	position = 0
-	while position < len(text):
-		char = text[position]
-		if char == '\\':
-			pieces[-1] += text[position:position + 2]
-			position += 2
-			continue
-		# $! is a parameter (zsh also takes flags between: $=!, $#!)
-		if char == '!' and text[position + 1:position + 2] not in (' ', '\t', '=') and not pieces[-1].rstrip('=~^#+').endswith('$'):
-			pieces.append('')
-		else:
-			pieces[-1] += char
-		position += 1
-	if len(pieces) == 1:
-		return '"' + text + '"'
-	# no empty "" next to a ! (but the one after a $ stays: bash reads $"..." as a translated string)
-	return '\\!'.join('"' + piece + '"' if piece or (number == 0 and after_dollar) else '' for number, piece in enumerate(pieces))
-
-def bangs_out_of_double_quotes(line):
-	'''
-	line with each ! that bash or zsh would expand inside double quotes taken out of them, escaped:
-	"a!b" -> "a"\\!"b", "done!" -> "done"\\!. The words mean what they meant. Left as they are: a ! outside
-	double quotes, before a blank or =, or in $! (none of which bash expands), and the rest of the line
-	from double quotes holding ${, $( or ` on, since the shell reads quotes inside those again.
-	'''
-	out = []
-	index = 0
-	while index < len(line):
-		char = line[index]
-		end = index + 1
-		if char == '\\':
-			end = index + 2
-		elif char == "'" or line.startswith("$'", index):
-			# nothing expands in single quotes; in $'...' a backslash escapes the quote
-			end = index + (2 if char == '$' else 1)
-			while end < len(line) and line[end] != "'":
-				end += 2 if char == '$' and line[end] == '\\' else 1
-			end += 1
-		elif char == '"':
-			while end < len(line) and line[end] != '"':
-				end += 2 if line[end] == '\\' else 1
-			text = line[index + 1:end]
-			if end >= len(line) or '`' in text or '$(' in text or '${' in text:
-				# where these quotes end, and so how the rest reads, is not sure
-				out.append(line[index:])
-				break
-			out.append(_bangs_out(text, out[-1:] == ['$']))
-			index = end + 1
-			continue
-		out.append(line[index:end])
-		index = end
-	return ''.join(out)
-
 def apply_pick(request, picker, word, context):
 	'''The new line and cursor after a choice: (line, cursor); text typed right behind the Enter that chose follows it.'''
 	item = picker.chosen()
 	if picker.tab == 'history':
-		# a line recorded in double quotes (mssh 6.26 and older) may hold a ! the shell would expand
-		text = bangs_out_of_double_quotes(item.text) if request.shell in _BANG_SHELLS else item.text
-		return text + picker.typed_after, len(text) + len(picker.typed_after)
+		return item.text + picker.typed_after, len(item.text) + len(picker.typed_after)
 	suffix = ' '
 	if context is not None and context.open_quote:
 		suffix = ('"' if context.open_quote == '"' else "'") + ' '
@@ -5868,55 +5694,6 @@ def _completed_word_end(before):
 	if open_quote:
 		return ('"' if open_quote == '"' else "'") + ' '
 	return '' if before.endswith('/') else ' '
-
-_PROMPT_ESCAPES = None
-
-def expand_prompt(ps1, environ=None, now=None):
-	'''
-	PS1 expanded the way bash does for its common escapes (\\u \\h \\H \\w \\W \\$ \\[ \\] \\e \\033 \\n
-	\\t \\d \\@ \\A \\T \\j \\s \\v \\V \\!), for bash 4.2 / 4.3 where ${PS1@P} does not exist.
-	$(...) and variables stay as they are.
-	'''
-	import socket
-	environ = os.environ if environ is None else environ
-	now = time.localtime(time.time() if now is None else now)
-	home = environ.get('HOME', '')
-	cwd = environ.get('PWD') or os.getcwd()
-	short = '~' + cwd[len(home):] if home and (cwd == home or cwd.startswith(home + '/')) else cwd
-	host = socket.gethostname()
-	user = environ.get('USER') or environ.get('LOGNAME') or ''
-	if not user:
-		import getpass
-		try:
-			user = getpass.getuser()
-		except Exception:
-			user = ''
-	version = environ.get('BASH_VERSION', '')
-	values = {
-		'u': user, 'h': host.split('.')[0], 'H': host, 'w': short, 'W': os.path.basename(short) if short not in ('/', '~') else short,
-		'$': '#' if hasattr(os, 'geteuid') and os.geteuid() == 0 else '$', '[': '\x01', ']': '\x02', 'e': '\x1b', 'n': '\n',
-		't': time.strftime('%H:%M:%S', now), 'T': time.strftime('%I:%M:%S', now), '@': time.strftime('%I:%M %p', now),
-		'A': time.strftime('%H:%M', now), 'd': time.strftime('%a %b %d', now), 'j': '0', 's': 'bash',
-		'v': '.'.join(version.split('.')[:2]), 'V': version.split('(')[0], '!': '!', '\\': '\\', 'a': '\a',
-	}
-	out = []
-	index = 0
-	while index < len(ps1):
-		char = ps1[index]
-		if char == '\\' and index + 1 < len(ps1):
-			name = ps1[index + 1]
-			digits = ps1[index + 1:index + 4]
-			if len(digits) == 3 and all(digit in '01234567' for digit in digits):
-				out.append(chr(int(digits, 8)))
-				index += 4
-				continue
-			if name in values:
-				out.append(values[name])
-				index += 2
-				continue
-		out.append(char)
-		index += 1
-	return ''.join(out)
 
 def readline_keyseq(raw):
 	'''raw key bytes written in readline's key sequence notation (for a bind macro).'''
@@ -6941,13 +6718,10 @@ _mssh_complete_expand_prompt() {
 
 _mssh_complete_prompt() {
 	# the prompt the picker and the editor redraw (bash clears the line before a bind -x command):
-	# expanded on bash 4.4 and later, else PS1 itself for the engine to expand
+	# expanded on bash 4.4 and later, none before (no ${PS1@P})
+	_mssh_complete_ps1=
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		_mssh_complete_operator _mssh_complete_expand_prompt
-		_mssh_complete_expand=0
-	else
-		_mssh_complete_ps1=$PS1
-		_mssh_complete_expand=1
 	fi
 }
 
@@ -7039,7 +6813,7 @@ _mssh_complete_start() {
 
 _mssh_complete_run_pick() {
 	# the picker, for _mssh_complete_start, on _mssh_complete_pick's line
-	_mssh_complete_request "pick=1 ready=1 redraw=1 expand=$_mssh_complete_expand" "$_mssh_complete_before" "$_mssh_complete_after" |
+	_mssh_complete_request "pick=1 ready=1 redraw=1" "$_mssh_complete_before" "$_mssh_complete_after" |
 		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null
 	return "${PIPESTATUS[1]}"
 }
@@ -7050,7 +6824,7 @@ _mssh_complete_pick() {
 }
 
 _mssh_complete_pick_now() {
-	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_resp _mssh_complete_status
+	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_resp _mssh_complete_status
 	local _mssh_complete_action _mssh_complete_keys
 	_mssh_complete_cut
 	_mssh_complete_prompt
@@ -7163,7 +6937,6 @@ _mssh_complete_space_key() {
 		mssh|mssh3|multissh|multissh3|multiSSH3)
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
 				_mssh_complete_prompt
-				(( _mssh_complete_expand )) && _mssh_complete_edit_args=(--expand)
 				_mssh_complete_start _mssh_complete_run_edit
 				if (( _mssh_complete_status == 130 )); then
 					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
@@ -9076,325 +8849,6 @@ def completion_command(values):
 # as main is: mssh --completion calls this directly, not through main
 completion_command = _quiet_when_stdout_is_gone(completion_command)
 
-#%% ------------ Replay evaluation ----------------
-def _tab(candidates, typed, policy, quoted, nospace):
-	'''What one TAB inserts after typed: (text or None if it would change typed text, appended suffix).'''
-	texts = [candidate.text for candidate in candidates]
-	if not texts:
-		return '', ''
-	if policy == 'ranked' or len(set(texts)) == 1:
-		choice, unique = texts[0], True
-	else:
-		choice, unique = _common_prefix(texts), False
-	if not choice.startswith(typed):
-		return None, ''
-	suffix = ('"' if quoted else '') + ' ' if unique and not nospace else ''
-	return choice[len(typed):], suffix
-
-def simulate_slot(engine, before, after, intended, quoted=False, policy='bash', shell='zsh', equivalents=()):
-	'''
-	Simulate an operator typing intended after before (with after behind the cursor), using TAB.
-
-	The operator types a character at a time and presses TAB whenever it inserts the intended
-	continuation. An appended space or quote that the operator then has to delete costs one key.
-	equivalents are texts that do what intended does (the other strings of an option): a candidate
-	that is one of them ranks as intended does, and a TAB toward one is taken, the operator typing
-	on to its end.
-
-	Returns:
-		dict: keys, chars, rank (of intended at the start, 0 if absent), visited and divergent
-			(positions where TAB would insert something unwanted), altered (candidates not
-			extending what was typed: must stay 0), suffix_cost
-	'''
-	result = {'keys': 0, 'chars': len(intended), 'rank': 0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0}
-	targets = [intended] + [text for text in equivalents if text != intended]
-	target = intended
-	position = 0
-	while position < len(target):
-		typed = target[:position]
-		response = engine.query(Request(shell, before + typed, after, typed))
-		candidates = response.candidates
-		result['visited'] += 1
-		if position == 0:
-			for number, candidate in enumerate(candidates):
-				if candidate.text in targets:
-					result['rank'] = number + 1
-					break
-		result['altered'] += sum(1 for candidate in candidates if not candidate.text.startswith(typed))
-		inserted, suffix = _tab(candidates, typed, policy, quoted, 'nospace' in response.directives)
-		if inserted and not target.startswith(typed + inserted):
-			target = next((text for text in targets if text.startswith(typed + inserted)), target)
-		remaining = target[position:]
-		if inserted and remaining.startswith(inserted):
-			result['keys'] += 1
-			position += len(inserted)
-			if suffix and position < len(target):
-				result['keys'] += 1
-				result['suffix_cost'] += 1
-			continue
-		if inserted:
-			result['divergent'] += 1
-		result['keys'] += 1
-		position += 1
-	return result
-
-def _quote_command(command, shell):
-	'''The quote char for typing command inside quotes in shell, or None when that would need escapes.'''
-	if not any(char in command for char in '"\\$`') and not _bang_in_double_quotes(shell, '"', command):
-		return '"'
-	if "'" not in command:
-		return "'"
-	return None
-
-def simulate_ghost(engine, before, intended, quoted=False, ahead='', shell='bash', tab=True):
-	'''
-	Simulate an operator typing intended after before (nothing behind the cursor) with grey suggestions.
-
-	At each position the operator takes the suggestion when it is what they mean: all of it when the
-	rest of their line starts with it (ahead is what they would type after the slot), else its first
-	word when that matches; otherwise, with tab, they press TAB when bash's TAB would insert what they
-	mean (as simulate_slot's bash policy), else they type a character.
-
-	Returns:
-		dict: keys, chars, visited, shown (positions with a suggestion), divergent (shown but not
-			what the operator means), altered (TAB candidates not extending what was typed: must stay 0)
-	'''
-	result = {'keys': 0, 'chars': len(intended), 'visited': 0, 'shown': 0, 'divergent': 0, 'altered': 0}
-	target = intended + ('"' if quoted else '') + ahead
-	position = 0
-	while position < len(intended):
-		ghost = engine.suggest(Request(shell, before + intended[:position], '', ''))
-		result['visited'] += 1
-		if ghost is not None:
-			result['shown'] += 1
-			remaining = target[position:]
-			word = ghost.text.split(' ', 1)[0] if not ghost.text.startswith(' ') else ''
-			if remaining.startswith(ghost.text):
-				result['keys'] += 1
-				position += len(ghost.text)
-				continue
-			if word and remaining.startswith(word):
-				result['keys'] += 1
-				position += len(word)
-				continue
-			result['divergent'] += 1
-		if tab:
-			typed = intended[:position]
-			response = engine.query(Request('zsh', before + typed, '', typed))
-			result['altered'] += sum(1 for candidate in response.candidates if not candidate.text.startswith(typed))
-			inserted, suffix = _tab(response.candidates, typed, 'bash', quoted, 'nospace' in response.directives)
-			if inserted and intended[position:].startswith(inserted):
-				result['keys'] += 1
-				position += len(inserted)
-				if suffix and position < len(intended):
-					result['keys'] += 1
-				continue
-		result['keys'] += 1
-		position += 1
-	return result
-
-def slot_cases(entry):
-	'''
-	(slot, before, after, intended, quoted, ahead) cases to replay for one history entry.
-
-	ahead is how the positional slots after this one read when nothing follows the cursor yet
-	(the grey suggestions' continuation), '' when they are not suggested.
-	'''
-	import shlex
-	options = [(option, value, name) for (option, value), name in zip(entry.options, entry.option_texts) if option.dest not in PASSWORD_DESTS]
-	option_texts = [name if value is None else '{}={}'.format(name, shlex.quote(value)) for option, value, name in options]
-	commands = [command for command in entry.commands if command.strip()]
-	quoted_commands = []
-	for command in commands:
-		# the replay types as an operator does in bash
-		quote = _quote_command(command, 'bash')
-		if quote is None:
-			commands = []
-			quoted_commands = []
-			break
-		quoted_commands.append(quote + command + quote)
-	head = ' '.join(['mssh'] + option_texts) + ' '
-	tail = (' ' + ' '.join(quoted_commands)) if quoted_commands else ''
-	first_command = (' ' + quoted_commands[0]) if quoted_commands else ''
-	plain = not any(option.dest in ('file', 'file_sync', 'gather_mode', 'ipmi') for option, _, _ in options)
-	cases = []
-	if entry.hosts and not any(char in entry.hosts for char in ' \'"\\$`'):
-		cases.append(('hosts', head, '', entry.hosts, False, first_command if plain else ''))
-		if tail:
-			cases.append(('hosts-back', head, tail, entry.hosts, False, ''))
-		if commands and _quote_command(commands[0], 'bash') == '"':
-			cases.append(('command', head + entry.hosts + ' "', '', commands[0], True, ''))
-	for number, (_, value, name) in enumerate(options):
-		others = ' '.join(['mssh'] + option_texts[:number] + option_texts[number + 1:]) + ' '
-		rest = (' ' + entry.hosts + tail) if entry.hosts else ''
-		cases.append(('option', others + '-', rest, name[1:], False, ''))
-		if value and not any(char in value for char in ' \'"\\$`\t'):
-			ahead = ((' ' + entry.hosts) if entry.hosts else '') + first_command if plain else ''
-			cases.append(('value', others + name + ' ', rest, value, False, ahead))
-	return cases
-
-def _newest(items, limit):
-	'''The last limit items (the newest of a history), none when limit is 0 or less.'''
-	return items[-limit:] if limit > 0 else []
-
-def evaluate(lines, spec, since=0, limit=300, policies=('bash', 'ranked', 'ghost')):
-	'''
-	Replay history lines in time order: each entry is typed with only the entries before it known.
-
-	Args:
-		lines (list): ~/.mssh_history lines
-		spec (ParserSpec): The mssh options
-		since (int): Only replay entries from this timestamp on (older ones are still learned from)
-		limit (int): Replay at most this many of the newest entries
-
-	Returns:
-		dict: (policy, slot) -> totals of simulate_slot (or, for the ghost policy, simulate_ghost)
-			results plus 'cases'
-	'''
-	entries = sorted((entry for entry in (parse_history_line(line, spec) for line in lines) if entry is not None), key=lambda entry: entry.ts)
-	replay = _newest([number for number, entry in enumerate(entries) if entry.ts >= since], limit)
-	first = replay[0] if replay else len(entries)
-	memory = MemoryKnowledge()
-	reference = entries[-1].ts if entries else 0
-	for entry in entries[:first]:
-		memory.add(entry.features(), use_weight(reference - entry.ts))
-	totals = {}
-	for number in replay:
-		entry = entries[number]
-		engine = Engine(spec, [memory])
-		for slot, before, after, intended, quoted, ahead in slot_cases(entry):
-			if not intended:
-				continue
-			equivalents = ()
-			if slot == 'option':
-				# every string of the option typed does what it does (-u, --username): offering another
-				# is no miss. Strings of one action, not of one dest: -su and -nsu share their dest
-				option, _ = spec.lookup('-' + intended)
-				if option is not None:
-					equivalents = tuple(string[1:] for string in option.strings)
-			for policy in policies:
-				if policy == 'ghost':
-					# suggestions need the cursor at the end of the line: replay the slot typed last
-					if slot in ('hosts-back', 'option'):
-						continue
-					result = simulate_ghost(engine, before, intended, quoted, ahead)
-					total = totals.setdefault((policy, slot), {'cases': 0, 'keys': 0, 'chars': 0, 'visited': 0, 'shown': 0, 'divergent': 0, 'altered': 0})
-					total['cases'] += 1
-					for key in ('keys', 'chars', 'visited', 'shown', 'divergent', 'altered'):
-						total[key] += result[key]
-					continue
-				result = simulate_slot(engine, before, after, intended, quoted, policy, equivalents=equivalents)
-				total = totals.setdefault((policy, slot), {'cases': 0, 'keys': 0, 'chars': 0, 'top1': 0, 'top3': 0,
-					'mrr': 0.0, 'visited': 0, 'divergent': 0, 'altered': 0, 'suffix_cost': 0})
-				total['cases'] += 1
-				for key in ('keys', 'chars', 'visited', 'divergent', 'altered', 'suffix_cost'):
-					total[key] += result[key]
-				if result['rank']:
-					total['top1'] += result['rank'] == 1
-					total['top3'] += result['rank'] <= 3
-					total['mrr'] += 1.0 / result['rank']
-		memory.add(entry.features(), use_weight(reference - entry.ts))
-	return totals
-
-def format_report(totals):
-	'''The evaluation as text tables: TAB policies, then grey suggestions.'''
-	ghost = {key: total for key, total in totals.items() if key[0] == 'ghost'}
-	totals = {key: total for key, total in totals.items() if key[0] != 'ghost'}
-	lines = ['{:7} {:10} {:>6} {:>7} {:>6} {:>6} {:>6} {:>9} {:>8} {:>7}'.format(
-		'policy', 'slot', 'cases', 'saved', 'top1', 'top3', 'mrr', 'divergent', 'altered', 'suffix')]
-	for (policy, slot), total in sorted(totals.items()):
-		cases = total['cases'] or 1
-		lines.append('{:7} {:10} {:>6} {:>6.1%} {:>6.1%} {:>6.1%} {:>6.3f} {:>8.1%} {:>8} {:>7}'.format(
-			policy, slot, total['cases'], 1 - float(total['keys']) / (total['chars'] or 1),
-			float(total['top1']) / cases, float(total['top3']) / cases, total['mrr'] / cases,
-			float(total['divergent']) / (total['visited'] or 1), total['altered'], total['suffix_cost']))
-	if ghost:
-		lines.append('')
-		lines.append('{:7} {:10} {:>6} {:>7} {:>7} {:>7}'.format('policy', 'slot', 'cases', 'saved', 'shown', 'wrong'))
-		for (policy, slot), total in sorted(ghost.items()):
-			lines.append('{:7} {:10} {:>6} {:>6.1%} {:>6.1%} {:>6.1%}'.format(policy, slot, total['cases'],
-				1 - float(total['keys']) / (total['chars'] or 1), float(total['shown']) / (total['visited'] or 1),
-				float(total['divergent']) / (total['shown'] or 1)))
-	return '\n'.join(lines)
-
-def diagnostics_replay(lines, spec, validity, hosts=None, now=None):
-	'''
-	Replay history lines through the warnings. validity(name) -> 'valid', 'invalid' or 'unsure'
-	stands in for the prober (asked once per host); there is no ping and no unavailable list.
-
-	Returns:
-		dict: lines (replayed), warned (kind -> lines with such a warning), unknown (host -> {'lines':
-			lines naming it, 'meant': the host suggested or None}), checked (verdict -> hosts)
-	'''
-	now = time.time() if now is None else now
-	engine = Engine(spec, [], hosts)
-	verdicts = {}
-
-	class Answers(object):
-		'''host -> HostState, as the prober would have found it: validity(name), could not ping.'''
-		def get(self, name, default=None):
-			if name not in verdicts:
-				verdicts[name] = validity(name)
-			return HostState(verdicts[name], now, 'none', now)
-
-	answers = Answers()
-	report = {'lines': 0, 'warned': {kind: 0 for kind in DIAGNOSTIC_KINDS}, 'unknown': {}, 'checked': {}}
-	for line in lines:
-		fields = line.rstrip('\r\n').split('\t')
-		if len(fields) != 5:
-			continue
-		text = ' '.join(['mssh'] + [part for part in fields[2:5] if part and part != 'EMPTY_HOSTS']) + ' '
-		found, _ = engine.diagnose(Request('bash', text, '', ''), probe=False, now=now, states=answers)
-		report['lines'] += 1
-		for kind in set(item.kind for item in found):
-			report['warned'][kind] += 1
-		for item in found:
-			if item.kind == 'unknown':
-				name = item.message.split(':', 1)[0]
-				entry = report['unknown'].setdefault(name, {'lines': 0, 'meant': engine._did_you_mean(name, answers, now)})
-				entry['lines'] += 1
-	for verdict in verdicts.values():
-		report['checked'][verdict] = report['checked'].get(verdict, 0) + 1
-	return report
-
-def format_diagnostics_report(report):
-	'''The diagnostics replay as text: what was checked, which lines would warn, the hosts mssh would reject.'''
-	checked = report['checked']
-	out = ['warnings over {} history lines (DNS, no ping)'.format(report['lines']),
-		'  hosts checked: {} (valid {}, unsure {}, invalid {})'.format(sum(checked.values()), checked.get('valid', 0), checked.get('unsure', 0), checked.get('invalid', 0)),
-		'  lines warned: ' + ', '.join('{} {}'.format(kind, report['warned'][kind]) for kind in DIAGNOSTIC_KINDS)]
-	if report['unknown']:
-		out.append('  hosts mssh would reject:')
-		for name, entry in sorted(report['unknown'].items(), key=lambda item: (-item[1]['lines'], item[0])):
-			meant = '  (did you mean {}?)'.format(entry['meant']) if entry['meant'] else ''
-			out.append('    {}  {} line{}{}'.format(name, entry['lines'], '' if entry['lines'] == 1 else 's', meant))
-	return '\n'.join(out) + '\n'
-
-def synthetic_history(seed=1, entries=1500, start=1700000000):
-	'''
-	A deterministic ~/.mssh_history with known structure: host groups each with their own commands,
-	options and users, so ranking can be checked without anyone's real history.
-	'''
-	import random
-	import shlex
-	rng = random.Random(seed)
-	profiles = [
-		('gpu[01-16]', ['-u=root', '-t=30'], ['nvidia-smi', 'systemctl restart slurmd', 'nvidia-smi -q -d TEMPERATURE']),
-		('storage[1-4]', ['-u=admin'], ['df -h /data', 'zpool status', 'zfs list']),
-		('login[1-2]', [], ['uptime', 'who', 'free -h']),
-		('us_east', ['-t=10'], ['systemctl status nginx', 'journalctl -u nginx -n 50']),
-	]
-	lines = []
-	ts = start
-	for _ in range(entries):
-		ts += rng.randint(60, 7200)
-		hosts, options, commands = rng.choices(profiles, [0.4, 0.25, 0.2, 0.15])[0]
-		command = rng.choices(commands, [5, 3, 1][:len(commands)])[0]
-		if hosts.startswith('gpu') and rng.random() < 0.15:
-			hosts = 'gpu{:02d}'.format(rng.randint(1, 16))
-		lines.append('{}\t/usr/bin/multiSSH3.py\t{}\t{}\t{}'.format(ts, ' '.join(['-su'] + options), shlex.quote(hosts), shlex.quote(command)))
-	return lines
-
 #%% ------------ Command line ----------------
 def _cmd_query():
 	deadline = time.monotonic() + float(os.environ.get('MSSH_COMPLETE_SOFT_DEADLINE', '0.2'))
@@ -9416,13 +8870,12 @@ def _cmd_query():
 def _prompt_from_flags(flags):
 	'''
 	The prompt line to redraw when a request says redraw=1 (bash clears the line before running
-	pick or edit), or None. The prompt is in $MSSH_COMPLETE_PROMPT: expanded, or PS1 itself with expand=1.
+	pick or edit), or None. The prompt is in $MSSH_COMPLETE_PROMPT, expanded; expand=1 (a glue that could
+	not expand it) says there is none to draw.
 	'''
 	if flags.get('redraw') != '1':
 		return None
-	prompt = os.environ.get('MSSH_COMPLETE_PROMPT', '')
-	if flags.get('expand') == '1':
-		prompt = expand_prompt(prompt)
+	prompt = '' if flags.get('expand') == '1' else os.environ.get('MSSH_COMPLETE_PROMPT', '')
 	return prompt.rsplit('\n', 1)[-1].replace('\x01', '').replace('\x02', '')
 
 def _ready():
@@ -9715,51 +9168,6 @@ def _cmd_probe(args):
 		if lock:
 			release_lock(lock, owner)
 
-def _print_as_stdout_can(text):
-	'''
-	Print text that may hold host names from the history, as stdout can: characters that came from bytes
-	that are not UTF-8 as those bytes, characters stdout's encoding lacks (all but ASCII in the C locale
-	on Python 3.6) as backslash escapes. print() failed on either.
-	'''
-	import re
-	buffer = getattr(sys.stdout, 'buffer', None)
-	if buffer is None:
-		sys.stdout.write(text)
-		return
-	encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
-	parts = re.split('([\udc80-\udcff]+)', text)
-	sys.stdout.flush()
-	buffer.write(b''.join(part.encode('ascii', 'surrogateescape') if index % 2 else part.encode(encoding, 'backslashreplace')
-		for index, part in enumerate(parts)))
-
-def _cmd_eval(args):
-	import argparse
-	parser = argparse.ArgumentParser(prog='mssh-complete eval', description='Replay mssh history and report how much typing completion saves.')
-	parser.add_argument('history_file', nargs='?', help='history to replay (default: the one mssh writes)')
-	parser.add_argument('--since', type=int, default=0, help='only replay entries from this unix time on')
-	parser.add_argument('--limit', type=int, default=300, help='replay at most this many of the newest entries')
-	parser.add_argument('--synthetic', action='store_true', help='replay a generated history instead')
-	parser.add_argument('--diagnostics', action='store_true', help='replay the warnings instead, looking hosts up in DNS (no ping): lists the hosts mssh would reject')
-	options = parser.parse_args(args)
-	mssh = _import_mssh()
-	spec = spec_from_parser(mssh.get_parser())
-	if options.synthetic:
-		lines = synthetic_history()
-	else:
-		lines, _, _ = read_history(os.path.expanduser(options.history_file or mssh.DEFAULT_HISTORY_FILE))
-	if options.diagnostics:
-		lines = _newest([line for line in lines if _entry_time(line) >= options.since], options.limit)
-		hosts = engine_for(Request('bash', 'mssh ', '', '')).hosts
-		_print_as_stdout_can(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)))
-		return 0
-	print(format_report(evaluate(lines, spec, options.since, options.limit)))
-	return 0
-
-def _entry_time(line):
-	'''The unix time an mssh history line starts with, 0 when it has none.'''
-	head = line.split('\t', 1)[0]
-	return int(head) if _is_digits(head) else 0
-
 @_quiet_when_stdout_is_gone
 def main(argv=None):
 	argv = sys.argv[1:] if argv is None else argv
@@ -9771,7 +9179,8 @@ def main(argv=None):
 	if command == 'probe':
 		return _cmd_probe(argv[1:])
 	if command == 'eval':
-		return _cmd_eval(argv[1:])
+		print('mssh-complete eval moved to the source tree: python3 tests/replay.py', file=sys.stderr)
+		return 2
 	if command == 'pick':
 		return _cmd_pick()
 	if command == 'edit':
@@ -9781,7 +9190,7 @@ def main(argv=None):
 	if command in ('-V', '--version'):
 		print('mssh-complete {} (protocol {})'.format(version, PROTOCOL))
 		return 0
-	print('usage: mssh-complete query | pick | edit TEXT | rebuild | probe | eval [HISTORY_FILE] | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
+	print('usage: mssh-complete query | pick | edit TEXT | rebuild | probe | glue SHELL | install [SHELL] | uninstall [SHELL]', file=sys.stderr)
 	return 2
 
 if __name__ == '__main__':

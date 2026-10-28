@@ -130,6 +130,14 @@ def test_run_redraws_the_line_bash_cleared_and_ends_at_its_start():
 	assert grid.cursor == (0, 0)
 
 
+def test_a_glue_that_could_not_expand_the_prompt_gets_none_drawn(monkeypatch):
+	# expand=1 comes from a glue installed before 6.39, which sent bash 4.2/4.3's PS1 unexpanded
+	monkeypatch.setenv('MSSH_COMPLETE_PROMPT', 'ops@host:~$ ')
+	assert mc._prompt_from_flags({'redraw': '1'}) == mc._prompt_from_flags({'redraw': '1', 'expand': '0'}) == 'ops@host:~$ '
+	assert mc._prompt_from_flags({'redraw': '1', 'expand': '1'}) == ''
+	assert mc._prompt_from_flags({'expand': '1'}) is None
+
+
 def test_run_on_a_wrapped_line_opens_below_all_of_it():
 	grid = Grid(24, 20)
 	seen = []
@@ -179,7 +187,7 @@ def test_run_on_a_wrapped_line_draws_again_below_all_of_it():
 			return FakeTerminal.read_key(self, timeout)
 
 	line = '$ mssh gpu[01-16] nvidia-smi -q'
-	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts', unicode=True).run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
 	shown = seen[1]
 	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
 	assert ' 2/2 ' in shown[2] and '> gpu02' in shown[4] and shown[2 + 1 + 10].startswith('└') and shown[2 + 1 + 10 + 1] == ''
@@ -343,10 +351,9 @@ def test_a_choice_inside_an_ansi_c_quote_keeps_the_command():
 
 def test_history_tab_never_offers_passwords():
 	history = HISTORY + [line(NOW, '-su -p=hunter2', 'gpu[01-16]', '"nvidia-smi"'), line(NOW, '-su --ipmi_password=s3cret', 'bmc1', '"power status"')]
-	shell = ['mssh -p hunter2 storage1 uptime', 'mssh --password=hunter2 storage1 w', 'mssh storage1 df']
-	_, _, offered, _ = mc.picker_items(request('mssh ', history=shell), engine(history), history, NOW)
+	_, _, offered, _ = mc.picker_items(request('mssh '), engine(history), history, NOW)
 	texts = [item.text for item in offered]
-	assert 'mssh storage1 df' in texts
+	assert texts
 	assert not [text for text in texts if 'hunter2' in text or 's3cret' in text]
 
 
@@ -367,179 +374,33 @@ def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	req = request('multissh -u root ', history=['ls', 'multissh -u admin login1 uptime'])
 	_, _, history, _ = mc.picker_items(req, engine(), HISTORY, NOW)
 	texts = [item.text for item in history]
-	assert texts[0] == 'multissh -su -u=root storage1 "df -h /data"'
-	assert 'multissh -su gpu[01-16] "nvidia-smi"' in texts
-	assert 'multissh -u admin login1 uptime' in texts and 'ls' not in texts
+	assert texts[0] == "multissh -su -u=root storage1 'df -h /data'"
+	assert 'multissh -su gpu[01-16] nvidia-smi' in texts
+	assert 'multissh -u admin login1 uptime' not in texts and 'ls' not in texts
 	assert len(texts) == len(set(texts))
 	picker = mc.Picker([], history)
 	assert mc.apply_pick(req, picker, None, None) == (texts[0], len(texts[0]))
 
 
-FLAGS = mc.flag_settings(multiSSH3.get_parser())
-
-
-def shell_engine(history, shell, defaults=None):
-	'''An engine as the shells get one: mssh's history, the shell's lines of the request, mssh's flags.'''
+def test_the_shell_s_history_adds_no_rows_and_no_uses():
+	# a run is in mssh's history; the shell's lines (that run as typed, a -I run, local commands) add nothing
+	history = [line(NOW - 60, '-su', "'gpu[01-16]'", 'nvidia-smi')]
 	memory = mc.MemoryKnowledge()
 	memory.add_history(history, SPEC, NOW)
+	shell = ['mssh gpu[01-16] nvidia-smi', 'mssh -I login1 w', 'uptime']
 	built = mc.Engine(SPEC, [memory, mc.shell_history_knowledge(shell, SPEC)])
-	built.flag_sets, built.flag_defaults = FLAGS[0], dict(FLAGS[1], **(defaults or {}))
-	return built
-
-
-def offered(history, shell, before='mssh ', defaults=None):
-	'''The picker's slot rows and history rows as (text, uses).'''
-	built = shell_engine(history, shell, defaults)
-	slot, _, rows, _ = mc.picker_items(request(before, history=shell), built, history, NOW)
-	return [(item.text, item.uses) for item in slot], [(item.text, item.uses) for item in rows]
-
-
-def runs(count, options, hosts, command):
-	'''count runs as mssh records them, a minute apart, the newest last.'''
-	return [line(NOW - 60 * (count - number), options, hosts, command) for number in range(count)]
-
-
-def test_a_run_in_both_histories_is_used_once():
-	# mssh records `mssh gpu[01-16] nvidia-smi` its own way (short options, -su always, its quoting);
-	# the shell keeps the line as typed: one run all the same
-	assert offered(runs(1, '-su', "'gpu[01-16]'", 'nvidia-smi'), ['mssh gpu[01-16] nvidia-smi']) == (
-		[('gpu[01-16]', 1)], [("mssh -su 'gpu[01-16]' nvidia-smi", 1)])
-
-
-def test_each_run_is_counted_once():
-	history = runs(3, '-su', "'gpu[01-16]'", 'nvidia-smi')
-	expected = ([('gpu[01-16]', 3)], [("mssh -su 'gpu[01-16]' nvidia-smi", 3)])
-	assert offered(history, ['mssh gpu[01-16] nvidia-smi'] * 3) == expected
-	# the shell may keep fewer of them (ignoredups, its tail), or more: runs mssh's history no longer holds
-	assert offered(history, ['mssh gpu[01-16] nvidia-smi']) == expected
-	assert offered(history[-1:], ['mssh gpu[01-16] nvidia-smi'] * 3) == expected
-
-
-def test_a_line_mssh_did_not_record_counts_each_time():
-	# mssh records no -I run: the shell's history is all there is
-	assert offered([], ['mssh -I login1 w'] * 2) == ([('login1', 2)], [('mssh -I login1 w', 2)])
-
-
-def test_runs_only_the_shell_holds_count_with_the_history_tab_full(monkeypatch):
-	# HISTORY_LIMIT bounds the rows, not the uses
-	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 2)
-	history = runs(1, '-su', 'node1', 'uptime') + runs(1, '-su', 'node2', 'uptime') + runs(1, '-su', 'node1', 'df')
-	slot, rows = offered(history, ['mssh -I login1 w'] * 2 + ['mssh node1 df'])
-	assert ('login1', 2) in slot and ('node1', 2) in slot
-	assert rows == [('mssh -su node1 df', 1), ('mssh -su node2 uptime', 1)]
-
-
-def test_runs_past_the_history_tab_are_not_counted_twice(monkeypatch):
-	# mssh's history past HISTORY_LIMIT is not read, but its index counts the runs there: only a line
-	# mssh never records here (-I, --script, another history file) is a run of its own
-	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 2)
-	history = runs(1, '-su', 'node1', 'uptime') + runs(1, '-su', 'node2', 'uptime') + runs(1, '-su', 'node3', 'df')
-	shell = ['mssh node1 uptime', 'mssh --script node1 w', 'mssh -hf /tmp/h node1 w', 'mssh node3 df']
-	assert offered(history, shell)[0] == [('node1', 3), ('node3', 1), ('node2', 1)]
-
-
-def test_spellings_of_one_run_are_one_row():
-	# the program's name and path, option spellings, their order and quoting
-	shell = ['mssh3 -u root -t 5 storage1 "df -h /data"', "multissh storage1 --timeout=5 --username root 'df -h /data'",
-		'/usr/local/bin/mssh -t5 -u=root storage1 df\\ -h\\ /data']
-	assert offered(runs(3, '-u=root -t=5 -su', 'storage1', "'df -h /data'"), shell) == (
-		[('storage1', 3)], [("mssh -u=root -t=5 -su storage1 'df -h /data'", 3)])
-	# mssh runs unquoted words as one command
-	assert offered(runs(1, '-su', 'node1', "'df /data'"), ['mssh node1 df /data'])[1] == [("mssh -su node1 'df /data'", 1)]
-
-
-def test_runs_that_differ_stay_apart():
-	history = runs(1, '-nsu', 'node1', 'uptime') + runs(1, '-su', 'node1', 'uptime')
-	slot, rows = offered(history, ['mssh -nsu node1 uptime', 'mssh node1 uptime', 'mssh -q node1 uptime'])
-	assert slot == [('node1', 3)]
-	assert rows == [('mssh -su node1 uptime', 1), ('mssh -nsu node1 uptime', 1), ('mssh -q node1 uptime', 1)]
-	# with -nsu the default of mssh's config, mssh records it on every line
-	assert offered(runs(1, '-nsu', 'node1', 'uptime'), ['mssh node1 uptime'], defaults={'skip_unreachable': False})[1] == [
-		('mssh -nsu node1 uptime', 1)]
-
-
-# runs as typed, then as mssh 6.31 and as later versions record them (main() up to the history line):
-# 6.31 left many options out; both fold -uk and -k DIR into the key found, -s PATH into -f PATH -fs;
-# later versions record -T as -t=50 and --config_file absolute
-FOLDED_RUNS = [
-	('mssh -T node1 uptime', '-su', '-t=50 -su', 'uptime'),
-	('mssh -uk node1 uptime', "-k='~/.ssh/id_ed25519' -su", "-k='~/.ssh/id_ed25519' -su", 'uptime'),
-	('mssh --host_file hosts.txt node1 uptime', '-su', '-su --host_file=hosts.txt', 'uptime'),
-	('mssh -w node1 uptime', '-su', '-su -w', 'uptime'),
-	('mssh --config_file c.json node1 uptime', '-su', '-su --config_file=/home/u/c.json', 'uptime'),
-	('mssh -s /tmp/x node1', '-f=/tmp/x -su -fs', '-f=/tmp/x -fs -su', ''),
-	('mssh -k ~/.ssh/ node1 uptime', "-k='~/.ssh/id_ed25519' -su", "-k='~/.ssh/id_ed25519' -su", 'uptime'),
-	('mssh -t 50 node1 uptime', '-su', '-t=50 -su', 'uptime'),
-	('mssh -m 0 node1 uptime', '-su', '-m=0 -su', 'uptime'),
-]
-
-
-@pytest.mark.parametrize('version', [1, 2], ids=['6.31', 'later'])
-def test_runs_mssh_records_in_another_form_are_used_once(version):
-	history = [line(NOW - 60 * (len(FOLDED_RUNS) - number), run[version], 'node1', run[3]) for number, run in enumerate(FOLDED_RUNS)]
-	slot, rows = offered(history, [run[0] for run in FOLDED_RUNS])
-	assert slot == [('node1', len(FOLDED_RUNS))]
-	recorded = {}
-	for run in FOLDED_RUNS:
-		text = ' '.join(part for part in ('mssh', run[version], 'node1', run[3]) if part)
-		recorded[text] = recorded.get(text, 0) + 1
-	assert sorted(rows) == sorted(recorded.items())
-
-
-def test_a_line_counts_towards_its_own_record_first():
-	# mssh may record a timeout differently (6.31 left -t 50 out), but a record of this one is this run
-	history = [line(NOW - 120, '-t=5 -su', 'node1', 'uptime'), line(NOW - 60, '-t=10 -su', 'node1', 'uptime')]
-	assert offered(history, ['mssh -t 5 node1 uptime'] * 3)[1] == [('mssh -t=10 -su node1 uptime', 1), ('mssh -t=5 -su node1 uptime', 3)]
-	# runs only the shell's history holds stay apart however little they differ
-	_, rows = offered([], ['mssh -I -t 5 node1 uptime', 'mssh -I -t 10 node1 uptime', 'mssh -I -k /k/a node1 uptime', 'mssh -I --host_file a node1 uptime'])
-	assert len(rows) == 4
-
-
-def test_local_commands_are_not_mssh_uses():
-	slot, _ = offered(runs(1, '-su', 'node1', 'uptime'), ['uptime', 'uptime', 'mssh node1 uptime'], 'mssh node1 up')
-	assert slot == [('uptime', 1)]
-
-
-def test_a_line_typed_many_times_is_read_once(monkeypatch):
-	lex = mc.lex
-	parsed = []
-	monkeypatch.setattr(mc, 'lex', lambda text: parsed.append(text) or lex(text))
-	mc.picker_items(request('mssh ', history=['mssh node1 uptime', 'ls -la /tmp'] * 500), engine(), [], NOW)
-	assert parsed.count('mssh node1 uptime') == 1
-	# a line that cannot run mssh is not read at all
-	assert 'ls -la /tmp' not in parsed
+	slot, _, rows, _ = mc.picker_items(request('mssh ', history=shell), built, history, NOW)
+	assert [(item.text, item.uses) for item in rows] == [("mssh -su 'gpu[01-16]' nvidia-smi", 1)]
+	assert ('gpu[01-16]', 1) in [(item.text, item.uses) for item in slot]
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
-def test_history_tab_takes_a_bang_out_of_double_quotes(shell):
-	# mssh 6.26 and older recorded commands in double quotes, where bash and zsh expand ! when the line runs
-	history = [line(NOW, '-su', 'web1', '"grep !important /etc/x"')]
+def test_history_tab_gives_old_double_quoted_commands_as_mssh_ran_them(shell):
+	# mssh 6.26 and older recorded commands in double quotes, where the shell expands $, ` and ! again
+	history = [line(NOW, '-su', 'web1', '"grep !important $HOME/x"')]
 	req = mc.Request(shell, 'mssh ', '', '')
 	_, _, offered, _ = mc.picker_items(req, engine(history), history, NOW)
-	recorded = 'mssh -su web1 "grep !important /etc/x"'
-	assert [item.text for item in offered] == [recorded]
-	inserted = recorded if shell == 'fish' else 'mssh -su web1 "grep "\\!"important /etc/x"'
-	assert mc.apply_pick(req, mc.Picker([], offered), None, None) == (inserted, len(inserted))
-
-
-@pytest.mark.parametrize('text, moved', [
-	('mssh h "grep !x f"', 'mssh h "grep "\\!"x f"'),
-	('mssh h "echo done!"', 'mssh h "echo done"\\!'),
-	('mssh h "!x" "a!!b"', 'mssh h \\!"x" "a"\\!\\!"b"'),
-	('mssh h "a\\"!b"', 'mssh h "a\\""\\!"b"'),
-	# bash reads $"..." as "..." (translated), zsh as $ and "...": the quote after $ is never taken back
-	('mssh h $"!x"', 'mssh h $""\\!"x"'),
-	# never expanded: in single quotes, in $'...', escaped, before a blank or =, and $!
-	("mssh h 'a!b' $'c!d' e\\!f", None),
-	('mssh h "a != b" "a!=b" "$!"', None),
-	# expansions read the quotes inside them again
-	('mssh h "${!name}" "${x:-a!b}" "$(echo a!b)" "`echo a!b`"', None),
-])
-def test_bangs_out_of_double_quotes(text, moved):
-	moved = text if moved is None else moved
-	assert mc.bangs_out_of_double_quotes(text) == moved
-	# the words are what they were
-	assert [token.text for token in mc.lex(moved)] == [token.text for token in mc.lex(text)]
+	assert [item.text for item in offered] == ["mssh -su web1 'grep !important $HOME/x'"]
 
 
 def run_engine(args, data, env):
@@ -807,8 +668,7 @@ def test_picker_warnings_come_from_the_line(tmp_path, monkeypatch):
 
 
 def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
-	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed.
-	# The shell's lines are all read (they count as uses): the shell sends a bounded tail
+	# the history tab holds HISTORY_LIMIT entries: older lines (thousands on a cluster) are skipped unparsed
 	monkeypatch.setattr(mc, 'HISTORY_LIMIT', 10)
 	lex = mc.lex
 	shell = ['mssh -su host{} date'.format(number) for number in range(20)]
