@@ -354,31 +354,6 @@ def test_case_folds_as_bash_takes_its_locale(flags, ascii, turkic):
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
 
 
-# how the C library here takes some locale names
-OLD_GLUE_CODESETS = {'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1', 'tr_TR.UTF-8': 'UTF-8', 'tr_TR.ISO-8859-9': 'ISO-8859-9',
-	'az_AZ.UTF-8': 'UTF-8', 'tt_RU.UTF-8@iqtelif': 'UTF-8', 'tt_RU.UTF-8': 'UTF-8'}
-
-
-@pytest.fixture
-def old_glue_locales(monkeypatch):
-	monkeypatch.setattr(mc, '_locale_codeset', lambda name: OLD_GLUE_CODESETS.get(name, 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else None))
-
-
-@pytest.mark.parametrize('lc, folded, unicode', [
-	('C.UTF-8', (False, False), True), ('en_US', (True, False), False), ('C', (True, False), False), ('', (True, False), False),
-	('tr_TR.UTF-8', (False, True), True), ('tr_TR.ISO-8859-9', (True, True), False), ('az_AZ.UTF-8', (False, True), True),
-	('tt_RU.UTF-8@iqtelif', (False, True), True), ('tt_RU.UTF-8', (False, False), True),
-	# a locale the C library has not (macOS's LC_CTYPE=UTF-8 included): bash may run in LANG's, which lc did
-	# not say; no matching in any case, as 6.36 did none, and ASCII
-	('UTF-8', None, False), ('xx_YY.UTF-8', None, False)])
-def test_a_glue_sending_the_locale_name_folds_and_draws_by_it(old_glue_locales, lc, folded, unicode):
-	# lc=: the glue of main between 6.36 and its measure (never released), in a shell still running it
-	fold = mc.case_fold({'icase': '1', 'lc': lc})
-	assert (None if fold is None else (fold.ascii, fold.turkic)) == folded
-	# one answer for drawing too: the picker and warnings write ASCII where lc says C or names no locale
-	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'icase': '1', 'lc': lc}), directory=None).unicode is unicode
-
-
 def test_a_glue_of_6_36_gets_no_matching_in_any_case():
 	# 6.36's glue sends icase from a value read once per shell, and nothing of the locale; 6.36's engine
 	# matched in the case typed, and so does this one for it (an installed glue file stays until reinstalled)

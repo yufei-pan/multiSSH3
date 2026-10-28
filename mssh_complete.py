@@ -1131,10 +1131,8 @@ def case_fold(flags):
 	bash's glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
 	UTF-8 character as one, whether it lowers I to another letter than i): readline compares in the
 	locale bash runs in, whatever the variables name (zsh's glue measures them too, with icase=0).
-	Older glues get what their own engine did, as an installed glue file stays until mssh --completion
-	install runs again: main's between 6.36 and the measure (never released) sent the locale's name, lc=,
-	read through the C library (_named_locale), no matching in any case where it names no locale; 6.36's
-	sent icase alone, read once per shell, and its engine matched in the case typed.
+	An older glue gets what its own engine did, as an installed glue file stays until mssh --completion
+	install runs again: 6.36's sent icase alone, read once per shell, and its engine matched in the case typed.
 	"""
 	measured = _shell_locale(flags)
 	if not measured:
@@ -1145,34 +1143,14 @@ def case_fold(flags):
 		fold = _CASE_KINDS[kind] = CaseFold(*kind)
 	return fold
 
-# glibc's locales copying tr_TR's case table (lowering I to the dotless i), besides tr_*
-_TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
-
-def _named_locale(name):
-	"""
-	(utf8, turkic) of the locale an older glue named (lc=), as the C library has it, or None when it has
-	no such locale (bash then runs in C, or, for an LC_CTYPE it refused, in LANG's, which lc= did not say).
-	turkic as the name says, by glibc's Turkish case table.
-	"""
-	codeset = _locale_codeset(name)
-	if codeset is None:
-		return None
-	base, _, modifier = name.partition('@')
-	language = base.partition('.')[0]
-	turkic = language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
-	return _utf8_codeset(codeset), turkic
-
 def _shell_locale(flags):
 	"""
-	(utf8, turkic) of the locale the shell runs in, as its glue's request flags say: the measure bash's
-	and zsh's glues make in the shell (utf8=, turkic=), or the locale an older bash glue named (lc=,
-	_named_locale). False where lc= names a locale the C library has not, None where the flags say
-	nothing of it (fish, which names its variables instead: _measured_utf8; older glues).
+	(utf8, turkic) of the locale the shell runs in, as the measure bash's and zsh's glues make in the
+	shell says (utf8=, turkic=); None where the flags say nothing of it (fish, which names its variables
+	instead: _measured_utf8; older glues).
 	"""
 	if 'utf8' in flags:
 		return flags['utf8'] == '1', flags.get('turkic') == '1'
-	if 'lc' in flags:
-		return _named_locale(flags['lc']) or False
 	return None
 
 # fish's glue names fish's locale variables in these request flags
@@ -1203,7 +1181,7 @@ def _measured_utf8(request):
 	"""
 	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
 	older glue: Engine.unicode then reads the variables the engine was started with). bash's and zsh's
-	glues measure it in the shell (_shell_locale: ASCII where an older bash glue's lc= names no locale).
+	glues measure it in the shell (_shell_locale).
 	fish's names the LC_ALL, LC_CTYPE and LANG fish exports, the only ones it follows (lc_all=,
 	lc_ctype=, lang=, escaped as in URLs), resolved here as bash resolves them: in a single-byte locale,
 	C included, fish takes a UTF-8 one instead unless fish_allow_singlebyte_locale is set (fish 3.3 and
@@ -1212,7 +1190,7 @@ def _measured_utf8(request):
 	"""
 	measured = _shell_locale(request.flags)
 	if measured is not None:
-		return measured and measured[0]
+		return measured[0]
 	if 'lang' not in request.flags:
 		return None
 	variables = {}
