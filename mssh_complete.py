@@ -2761,6 +2761,9 @@ def _brace_split(token, shell, unicode):
 		return None
 	bounds = [0] + [edge for start, end, _, _ in groups for edge in (start, end)] + [len(raw)]
 	pieces = [raw[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
+	# braces the shell leaves around or between expanded ones change how it reads them (zsh and fish refuse a stray }): not worked out
+	if any('{' in piece or '}' in piece for piece in pieces):
+		return None
 	count = 1
 	for _, _, _, size in groups:
 		count *= size

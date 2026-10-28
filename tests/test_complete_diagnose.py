@@ -213,6 +213,8 @@ def test_a_brace_warning_without_a_suggestion(engine):
 	'mssh {,node1} uptime',       # the shell drops the empty word: one word
 	'mssh n{1,{2,3}} uptime',     # nested: not worked out
 	'mssh {2..{1..3}} uptime',     # braces the shell leaves around expanded ones: not worked out
+	'mssh node{1,2}} uptime',     # a stray }: zsh and fish refuse the line
+	'mssh login1,gpu{01..16}} uptime',
 	'mssh n{1,2}',                # still being typed
 ])
 def test_no_brace_warning_without_a_second_word(engine, line):
