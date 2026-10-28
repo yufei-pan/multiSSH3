@@ -2761,6 +2761,9 @@ def _brace_split(token, shell, unicode):
 		return None
 	bounds = [0] + [edge for start, end, _, _ in groups for edge in (start, end)] + [len(raw)]
 	pieces = [raw[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
+	# braces the shell leaves around or between expanded ones change how it reads them (zsh and fish refuse a stray }): not worked out
+	if any('{' in piece or '}' in piece for piece in pieces):
+		return None
 	count = 1
 	for _, _, _, size in groups:
 		count *= size
@@ -3095,7 +3098,7 @@ def _mssh_start(tokens):
 			return index
 	return None
 
-# tuned with `mssh-complete eval` (ghost policy): wrong suggestions under 10% of those shown on
+# tuned with `tests/replay.py` (ghost policy): wrong suggestions under 10% of those shown on
 # synthetic and real history, the most keys saved on top of TAB
 T_WORD = 0.7   # confidence the top value of the current word needs before its rest is suggested
 T_LINE = 0.6   # share each following slot's top value needs before the rest of the line is suggested
@@ -4242,7 +4245,7 @@ def engine_for(request, directory=Ellipsis, now=None, deadline=None):
 		parser = mssh.get_parser()
 		spec = spec_from_parser(parser)
 		flags = flag_settings(parser)
-		no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]
+		no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in mssh.OPTION_NO_EFFECT]
 	if tail:
 		memory = MemoryKnowledge()
 		memory.add_history(tail, spec, now)
@@ -5017,7 +5020,7 @@ def _history_items(engine, history_lines, name, features):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		numbers[text] = len(entries)
-		if '"' in fields[4] and entry is not None:
+		if fields[4].startswith('"') and entry is not None:
 			# mssh 6.26 and older wrote commands in double quotes, where the shell expands $, ` and ! again:
 			# the commands mssh ran, quoted as mssh quotes them now
 			import shlex

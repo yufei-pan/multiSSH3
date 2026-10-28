@@ -402,6 +402,15 @@ def test_history_tab_gives_old_double_quoted_commands_as_mssh_ran_them(shell):
 	assert [item.text for item in offered] == ["mssh -su web1 'grep !important $HOME/x'"]
 
 
+def test_history_tab_keeps_rows_mssh_quoted_with_control_characters_as_recorded():
+	# 6.27 and later write a command holding a newline or an escape as $'...': one line, no control character
+	for command in ("$'for i in 1 2; do\\necho \"$i\"\\ndone'", "$'echo \"\\x1b[1m\"'"):
+		history = [line(NOW, '-su', 'web1', command)]
+		req = mc.Request('bash', 'mssh ', '', '')
+		_, _, offered, _ = mc.picker_items(req, engine(history), history, NOW)
+		assert [item.text for item in offered] == ['mssh -su web1 ' + command]
+
+
 def run_engine(args, data, env):
 	'''Run the engine with no controlling terminal.'''
 	import subprocess

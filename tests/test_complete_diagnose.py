@@ -1,9 +1,7 @@
 '''Warnings before Enter: what the engine says about the words of an mssh line already typed.'''
-import argparse
 import contextlib
 import io
 import os
-import random
 import shutil
 import string
 import subprocess
@@ -139,6 +137,11 @@ def test_a_quoted_host_word_without_expansions_is_checked_as_mssh_reads_it(engin
 	assert warnings_if_all_unknown(engine, 'mssh $USER@gpu017,login1 uptime') == []
 
 
+def test_a_glob_is_checked_as_typed(engine):
+	# an unmatched glob reaches mssh as typed (mssh takes [ ], * and ? in ranges)
+	assert warnings_if_all_unknown(engine, 'mssh node* uptime')[0][2] == 'node*: unknown host'
+
+
 @pytest.mark.parametrize('shell, line, kinds', [
 	('zsh', 'mssh $NODES uptime', []),
 	('zsh', 'mssh !$ uptime', []),
@@ -213,6 +216,8 @@ def test_a_brace_warning_without_a_suggestion(engine):
 	'mssh {,node1} uptime',       # the shell drops the empty word: one word
 	'mssh n{1,{2,3}} uptime',     # nested: not worked out
 	'mssh {2..{1..3}} uptime',     # braces the shell leaves around expanded ones: not worked out
+	'mssh node{1,2}} uptime',     # a stray }: zsh and fish refuse the line
+	'mssh login1,gpu{01..16}} uptime',
 	'mssh n{1,2}',                # still being typed
 ])
 def test_no_brace_warning_without_a_second_word(engine, line):

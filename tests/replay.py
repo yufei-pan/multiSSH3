@@ -344,7 +344,10 @@ def main(argv=None):
 	if options.diagnostics:
 		lines = _newest([line for line in lines if _entry_time(line) >= options.since], options.limit)
 		hosts = mc.engine_for(mc.Request('bash', 'mssh ', '', '')).hosts
-		print(format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts)), end='')
+		report = format_diagnostics_report(diagnostics_replay(lines, spec, mssh.host_validity, hosts))
+		# host names come from the history: what stdout cannot encode (the C locale on Python 3.6, bytes that are not UTF-8) as escapes
+		encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+		sys.stdout.write(report.encode(encoding, 'backslashreplace').decode(encoding))
 		return 0
 	print(format_report(evaluate(lines, spec, options.since, options.limit)))
 	return 0

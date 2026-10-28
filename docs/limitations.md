@@ -152,8 +152,10 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - What the operator sees: no unknown-host, range or unreachable warning for any host of a hosts word that
   holds `$`, a backtick, `(`, `!` or a leading `~`, or braces with a quote or backslash in the word:
   `$NODES,gpu017`, `$USER@gpu017`, `'$NODES'` (single-quoted too), `!$` (fish too, which has no history
-  expansion). The brace warning covers unquoted lists and number sequences (`node{1,2}`, `gpu{01..16}`); letter
-  sequences, steps, zsh's character ranges and nested braces get none.
+  expansion). The same holds for unquoted braces the shell expands: `mssh login1,n{1,2}` gets the brace
+  warning only (6.38 also said `login1: unknown host`). The brace warning covers unquoted lists and number
+  sequences (`node{1,2}`, `gpu{01..16}`); letter sequences, steps, zsh's character ranges, nested braces
+  and a stray `}` get none.
 - Why: checking the pieces beside an expansion took a second shell lexer and each shell's expansion rules
   (about 190 lines) that had to agree with the first lexer character for character.
 - Revisit when: someone mixes variables and hosts in one word and misses the warning.
