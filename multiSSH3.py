@@ -8104,24 +8104,32 @@ def main(args = None):
 	if sigpipe is not None:
 		previous_sigpipe = signal.signal(sigpipe, signal.SIG_DFL)
 	try:
-		# before the parse: -h there prints mssh's help and exits
-		note = _options_after_the_command_note(sys.argv[1:] if args is None else args)
-	except Exception as e:
-		note = None
-		if __DEBUG_MODE:
-			eprint(f"Warning: cannot check the options after the command: {e!r}")
-	if note:
-		eprint(note)
-	args = process_args(args)
-	if args.completion:
-		_exit_with_code(_completion_command(args.completion))
-	args = _ask_for_password(args)
-	args = process_config_file(args)
-	args = process_commands(args)
-	args = process_keys(args)
-	args = process_control_master_config(args)
-	if sigpipe is not None:
-		signal.signal(sigpipe, previous_sigpipe)
+		try:
+			# before the parse: -h there prints mssh's help and exits
+			note = _options_after_the_command_note(sys.argv[1:] if args is None else args)
+		except Exception as e:
+			note = None
+			if __DEBUG_MODE:
+				eprint(f"Warning: cannot check the options after the command: {e!r}")
+		if note:
+			eprint(note)
+		args = process_args(args)
+		if args.completion:
+			_exit_with_code(_completion_command(args.completion))
+		args = _ask_for_password(args)
+		args = process_config_file(args)
+		args = process_commands(args)
+		args = process_keys(args)
+		args = process_control_master_config(args)
+	finally:
+		if sigpipe is not None:
+			# what an exit (-h, -V, a usage error) printed reaches the reader while SIGPIPE still ends mssh
+			for stream in (sys.stdout, sys.stderr):
+				try:
+					stream.flush()
+				except Exception:
+					pass
+			signal.signal(sigpipe, previous_sigpipe)
 	set_global_with_args(args)
 	
 	if args.use_script_timeout:

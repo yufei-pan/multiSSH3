@@ -2,6 +2,7 @@ import io
 import json
 import os
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -125,6 +126,20 @@ def test_cli_arguments_can_be_processed_off_the_main_thread():
 	thread.join()
 
 	assert errors == []
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="no SIGPIPE")
+@pytest.mark.parametrize("arguments", [["-V"], ["-h"], ["--bogus-flag-x"], ["--generate_config_file"], ["--completion", "bash"]])
+def test_main_leaves_sigpipe_as_it_was_when_it_exits_before_the_run(arguments, monkeypatch, tmp_path, capsys):
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setenv("HOME", str(tmp_path))
+	previous = signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+	try:
+		with pytest.raises(SystemExit):
+			multiSSH3.main(arguments)
+		assert signal.getsignal(signal.SIGPIPE) == signal.SIG_IGN
+	finally:
+		signal.signal(signal.SIGPIPE, previous)
 
 
 def test_signal_handlers_leave_an_ignored_sigterm_alone(monkeypatch):

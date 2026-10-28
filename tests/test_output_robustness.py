@@ -257,7 +257,7 @@ def test_output_only_options_to_a_closed_stdout_exit_quietly_with_141(tmp_path, 
 	stderr = result.stderr.decode("utf-8", "replace")
 
 	assert "Traceback" not in stderr and "BrokenPipeError" not in stderr and "Exception ignored" not in stderr
-	assert result.returncode in (141, -13), stderr
+	assert result.returncode == -13, stderr
 	assert ran == []
 
 
@@ -268,7 +268,7 @@ def test_help_to_a_closed_stdout_and_stderr_pipe_exits_with_141(tmp_path):
 	finally:
 		os.close(write_fd)
 
-	assert result.returncode in (141, -13)
+	assert result.returncode == -13
 	assert ran == []
 
 
@@ -279,7 +279,7 @@ def test_a_usage_error_to_a_closed_stderr_exits_quietly_with_141(tmp_path):
 	finally:
 		os.close(write_fd)
 
-	assert result.returncode in (141, -13)
+	assert result.returncode == -13
 	assert result.stdout == b""
 	assert ran == []
 
