@@ -24,3 +24,8 @@ def test_round_trip_expand_compact(no_hostname_validation):
 	compacted = multiSSH3.compact_hostnames(sorted(original))
 	expanded = multiSSH3.__expand_hostname(compacted[0], validate=False)
 	assert expanded == original
+
+
+def test_hosts_only_of_6_32_to_6_38_is_still_accepted(no_hostname_validation):
+	assert multiSSH3.compact_hostnames(["node1", "node2"], hosts_only=True) == ["node[1-2]"]
+	assert multiSSH3.expand_hostnames(["node1"], hosts_only=True) == multiSSH3.expand_hostnames(["node1"])

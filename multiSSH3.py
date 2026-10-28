@@ -46,8 +46,8 @@ VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-10-22'
 
-# no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
-# use --config_file to load one
+# no current-directory entry: a cloned repo or unpacked archive could set a setting or a program path
+# (e.g. _sshPath), use --config_file to load one
 CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 					 '~/.multiSSH3.config.json',
 					 '~/.config/multiSSH3/multiSSH3.config.json',
@@ -74,7 +74,7 @@ DEFAULT_FILE_SYNC = False
 DEFAULT_TIMEOUT = 50
 DEFAULT_CLI_TIMEOUT = 0
 # seconds after which ssh gives up on a host that does not answer (ConnectTimeout) or stops answering
-# (ServerAliveInterval x ServerAliveCountMax), unless -ea or the ssh config set them; 0 leaves them to ssh
+# (ServerAliveInterval x ServerAliveCountMax), after -ea's options so an -o there wins; 0 leaves one to ssh
 DEFAULT_SSH_CONNECT_TIMEOUT = 30
 DEFAULT_SSH_SERVER_ALIVE_INTERVAL = 15
 DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX = 4
@@ -387,7 +387,6 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 	if fd is None or os.name == 'nt':
 		# select() cannot wait on a Windows console, nor on a stdin without a file descriptor
 		return _input_with_timeout_by_thread(timeout, prompt)
-	import select
 	encoding = getattr(sys.stdin, 'encoding', None) or 'utf-8'
 	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
 	typed = b''
@@ -595,10 +594,10 @@ def _resolve_dns(hostname):
 _SSH_CONFIG_PROBE_NAME = 'multissh3-unknown-host.invalid'
 
 @cache_decorator
-def _ssh_config_values(hostname, config_file=None):
-	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None. config_file: ssh -F.'''
+def _ssh_config_values(hostname):
+	'''The ssh config for hostname from ssh -G (OpenSSH 6.8+, does not connect), or None.'''
 	try:
-		result = subprocess.run([_binPaths['ssh'], '-G'] + (['-F', config_file] if config_file else []) + ['--', hostname], stdout=subprocess.PIPE,
+		result = subprocess.run([_binPaths['ssh'], '-G', '--', hostname], stdout=subprocess.PIPE,
 						  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
 	except Exception:
 		return None
@@ -661,143 +660,25 @@ def _ssh_config_target(hostname):
 		return None
 	return target
 
-def _ssh_config_dirs():
-	'''
-	Where ssh reads its config: (the user's ~/.ssh, /etc/ssh). Like ssh, the user's home directory
-	is the passwd database's, not $HOME.
-	'''
-	try:
-		import pwd
-		home = pwd.getpwuid(os.getuid()).pw_dir
-	except Exception:
-		home = os.path.expanduser('~')
-	return os.path.join(home, '.ssh'), '/etc/ssh'
-
-# "keyword arguments" or "keyword=arguments", as ssh reads a config line; no match for comments and blank lines
-_SSH_CONFIG_LINE = re.compile(r'\s*([^\s=#]+)\s*=?\s*(.*)')
-
-@cache_decorator
-def _ssh_config_keywords(config_file=None):
-	'''
-	The keywords (lowercased) set anywhere in ssh's config files, for any host, or None when mssh
-	cannot tell which files ssh reads (an Include with %d or ${HOME}, which ssh expands itself).
-
-	Reads ~/.ssh/config and /etc/ssh/ssh_config, or config_file (ssh -F), and the files they
-	Include, without running anything: only an option the files mention is worth an ssh -G per
-	host, which runs their Match exec lines.
-	'''
-	user_dir, system_dir = _ssh_config_dirs()
-	if config_file:
-		files = [] if config_file.lower() == 'none' else [(config_file, user_dir)]
-	else:
-		files = [(os.path.join(user_dir, 'config'), user_dir), (os.path.join(system_dir, 'ssh_config'), system_dir)]
-	keywords = set()
-	read = set()
-	while files:
-		path, include_dir = files.pop()
-		# a file including itself, or includes without end, are read once; a pipe is left to ssh
-		if path in read or len(read) > 256 or not os.path.isfile(path):
-			continue
-		read.add(path)
-		try:
-			with open(path, errors='replace') as f:
-				lines = f.read().splitlines()
-		except OSError:
-			continue
-		for line in lines:
-			match = _SSH_CONFIG_LINE.match(line)
-			if not match:
-				continue
-			keyword = match.group(1).lower()
-			keywords.add(keyword)
-			if keyword != 'include':
-				continue
-			try:
-				patterns = shlex.split(match.group(2), comments=True)
-			except ValueError:
-				return None
-			for pattern in patterns:
-				if '%' in pattern or '$' in pattern:
-					return None
-				if pattern.startswith('~/'):
-					pattern = os.path.join(os.path.dirname(user_dir), pattern[2:])
-				# relative to ~/.ssh in the user's files, to /etc/ssh in the system's
-				pattern = os.path.join(include_dir, os.path.expanduser(pattern))
-				files.extend((included, include_dir) for included in glob.glob(pattern))
-	return keywords
-
-def _ssh_options_given(args):
-	'''
-	What the ssh options among args (-ea: its words, or the string) set: (the keywords of the -o
-	options, lowercased; the config file of -F, or None). For an rsync copy too: rsync's own -o and
-	-F take no value.
-	'''
-	keywords = set()
-	config_file = None
-	args = args.split() if isinstance(args, str) else [str(arg) for arg in args or ()]
-	for index, arg in enumerate(args):
-		if arg[:2] not in ('-o', '-F'):
-			continue
-		# -oKeyword=value, or -o Keyword=value: the keyword up to a space or =
-		value = arg[2:] if arg[2:] else (args[index + 1] if index + 1 < len(args) else '')
-		if not arg[2:] and value.startswith('-'):
-			continue
-		if arg[:2] == '-o':
-			keywords.add(re.split(r'[\s=]', value.strip().strip('\'"'), maxsplit=1)[0].lower())
-		elif value.strip().lower() == 'none' or os.path.isfile(value.strip()):
-			# not rsync's -FF (filter rules)
-			config_file = value.strip()
-	return keywords, config_file
-
-def _whole_number(value):
-	'''A DEFAULT_SSH_* setting as the whole number ssh takes (rounded up), 0 for none.'''
-	try:
-		return max(0, int(math.ceil(float(value))))
-	except (TypeError, ValueError, OverflowError):
-		return 0
-
-# many hosts start at once: at most this many ssh -G for _ssh_timeout_options at a time
-_ssh_config_slots = threading.BoundedSemaphore(8)
-
-def _ssh_timeout_options(destination, ssh_args=()):
+def _ssh_timeout_options():
 	'''
 	The -o options that make ssh give up on a host that does not answer, or stops answering, so it
 	cannot hold up the run: ConnectTimeout, ServerAliveInterval and ServerAliveCountMax from the
-	DEFAULT_SSH_* settings, 0 leaving one to ssh.
-
-	The operator's values win. ssh uses the first value it gets, and a command-line -o beats the
-	ssh config, so an option is left out when ssh_args (-ea) give it, or when the ssh config sets it
-	for this destination: ssh -G is asked only when the config files mention the option. mssh's
-	ServerAliveCountMax only goes with mssh's ServerAliveInterval.
-
-	Args:
-		destination (str): [user@]host, as ssh gets it
-		ssh_args (list): -ea's words
-
-	Returns:
-		list: '-o', 'Keyword=number' words
+	DEFAULT_SSH_* settings, 0 leaving one to ssh. They go after -ea's options: ssh uses the first
+	value it gets, so an -o in -ea wins.
 	'''
-	given, config_file = _ssh_options_given(ssh_args)
-	wanted = []
-	# (keyword, number, what ssh -G shows when nothing sets it)
-	for keyword, value, unset in (('ConnectTimeout', DEFAULT_SSH_CONNECT_TIMEOUT, 'none'),
-			('ServerAliveInterval', DEFAULT_SSH_SERVER_ALIVE_INTERVAL, '0'),
-			('ServerAliveCountMax', DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX, '3')):
-		number = _whole_number(value)
-		if number and keyword.lower() not in given:
-			wanted.append((keyword, number, unset))
-	mentioned = _ssh_config_keywords(config_file)
-	if wanted and (mentioned is None or any(keyword.lower() in mentioned for keyword, _, _ in wanted)):
-		with _ssh_config_slots:
-			config = _ssh_config_values(destination, config_file) if config_file else _ssh_config_values(destination)
-		if config:
-			wanted = [(keyword, number, unset) for keyword, number, unset in wanted if config.get(keyword.lower(), unset) == unset]
-	if not any(keyword == 'ServerAliveInterval' for keyword, _, _ in wanted):
-		# with the operator's keepalive interval (or none), the count is theirs too
-		wanted = [option for option in wanted if option[0] != 'ServerAliveCountMax']
 	options = []
-	for keyword, number, _ in wanted:
-		options += ['-o', '{}={}'.format(keyword, number)]
+	for keyword, value in (('ConnectTimeout', DEFAULT_SSH_CONNECT_TIMEOUT),
+			('ServerAliveInterval', DEFAULT_SSH_SERVER_ALIVE_INTERVAL),
+			('ServerAliveCountMax', DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX)):
+		try:
+			# ssh takes whole seconds: rounded up
+			number = max(0, int(math.ceil(float(value))))
+		except (TypeError, ValueError, OverflowError):
+			number = 0
+		# mssh's ServerAliveCountMax only goes with mssh's ServerAliveInterval
+		if number and (keyword != 'ServerAliveCountMax' or 'ServerAliveInterval=' in ' '.join(options)):
+			options += ['-o', '{}={}'.format(keyword, number)]
 	return options
 
 
@@ -865,13 +746,7 @@ def _open_trusted_file(path, explicit_flag, errors=None):
 	The check runs on the opened file, so the file cannot be swapped between check and read.
 	'''
 	# O_NONBLOCK so opening a planted FIFO does not wait for a writer, it is rejected below
-	fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
-	try:
-		f = os.fdopen(fd, 'r', errors=errors)
-	except Exception:
-		# e.g. a directory: os.open works, fdopen does not
-		os.close(fd)
-		raise
+	f = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0)), 'r', errors=errors)
 	untrusted = _untrusted_file_reason(os.fstat(f.fileno()))
 	if not untrusted:
 		return f
@@ -1104,7 +979,7 @@ def _read_config_file(config_file, check_trust=True):
 	return apply_config_key_compat(config)
 
 
-# The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.18,
+# The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.19,
 # --store_config_file wrote it into config files. Unanchored, it also hid remote programs' errors.
 _OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE = [
 	'Pseudo-terminal will not be allocated because stdin is not a terminal',
@@ -1991,7 +1866,6 @@ def __filterSumDic(sumDic):
 						# 4. the two hostnames have the same token groups
 						if len(hostnameTokens) == len(lastHostnameTokens) and \
 							lastSumHash in newSumDic and lastHostnameTokens in newSumDic[lastSumHash]:
-							#(diffIndex:=findDiffIndex(hostnameTokens, lastHostnameTokens)) != -1 and \
 							diffIndex=__findDiffIndex(hostnameTokens, lastHostnameTokens)
 							if diffIndex != -1 and \
 								sumDic[sumHash][hostnameTokens] == sumDic[lastSumHash][lastHostnameTokens]:
@@ -2126,8 +2000,7 @@ def compact_hostnames(Hostnames,verify = True, hosts_only = False):
 
 	Args:
 		Hostnames (list): A list of hostnames.
-		hosts_only (bool): The names are hosts mssh expanded already, to be shown: one that is
-			also an alias's name (web="web,web-b") is that host, not the alias.
+		hosts_only (bool): Ignored, kept for callers of 6.32 to 6.38 (mssh shows names with compact_hostnames_local now).
 
 	Returns:
 		list: A list of comapcted hostname list.
@@ -2147,18 +2020,14 @@ def compact_hostnames(Hostnames,verify = True, hosts_only = False):
 		['sub-s[1-2]']
 	"""
 	global __global_suppress_printout
-	# if not isinstance(Hostnames, frozenset):
-	# 	hostSet = frozenset(Hostnames)
-	# else:
-	# 	hostSet = Hostnames
 	hostSet = frozenset(expand_hostnames((
 		hostname.strip()
 		for hostnames_str in Hostnames
 		for hostname in hostnames_str.split(',')
-	), hosts_only=hosts_only))
+	)))
 	compact_hosts = __compact_hostnames(hostSet)
 	if verify:
-		if frozenset(expand_hostnames(compact_hosts, hosts_only=hosts_only)) != hostSet:
+		if frozenset(expand_hostnames(compact_hosts)) != hostSet:
 			if not __global_suppress_printout:
 				eprint(f"Error compacting hostnames: {hostSet} -> {compact_hosts}")
 			compact_hosts = hostSet
@@ -2319,16 +2188,6 @@ def _validate_host(hostname, loop=None):
 		counted.add(hostname)
 	return []
 
-def _validate_shown_hostname(hostname):
-	'''
-	__validate_expand_hostname for a host name mssh expanded already: an alias's name there is
-	the host of that name, which an alias inside its own expansion stands for (_alias_members).
-	'''
-	hostname = hostname.strip().strip('$')
-	if _local_hostname_source(hostname) in ('env', 'env_file'):
-		return [hostname]
-	return __validate_expand_hostname(hostname)
-
 def _alias_value(name, source):
 	'''The hosts string an alias holds: source 'env' (an environment variable) or 'env_file'.'''
 	value = _consult_env(name) if source == 'env' else readEnvFromFile().get(name)
@@ -2455,7 +2314,6 @@ def __expandIPv4Address(hosts):
 			expandedOctets[-1].remove('0')
 		if '255' in expandedOctets[-1]:
 			expandedOctets[-1].remove('255')
-		#print(expandedOctets)
 		# Generate the expanded hosts
 		for ip in list(product(expandedOctets[0],expandedOctets[1],expandedOctets[2],expandedOctets[3])):
 			expandedHost.append('.'.join(ip))
@@ -2512,11 +2370,7 @@ def __expand_hostname(text, validate=True):# -> set:
 		for part in parts:
 			part = part.strip()
 			if '-' in part:
-				try:
-					range_start,_, range_end = part.partition('-')
-				except ValueError:
-					expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
-					continue
+				range_start, _, range_end = part.partition('-')
 				range_start = range_start.strip()
 				range_end = range_end.strip()
 				if not range_start or not range_end:
@@ -2606,13 +2460,12 @@ def _run_in_threads(function, items, max_workers=32):
 			thread.join(0.1)
 
 @cache_decorator
-def __expand_hostnames(hosts, hosts_only=False) -> dict:
+def __expand_hostnames(hosts) -> dict:
 	'''
 	Expand the hostnames in the hosts into a dictionary
 
 	Args:
 		hosts (list): A list of hostnames
-		hosts_only (bool): Names that are also an alias's name are hosts (see compact_hostnames)
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -2639,9 +2492,6 @@ def __expand_hostnames(hosts, hosts_only=False) -> dict:
 			username = username.strip()
 			host = host.strip()
 		# first we check if the hostname is an range of IP addresses
-		# This is done by checking if the hostname follows four fields of 
-		# "(((\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?)|(\[(\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?\]))" 
-		# seperated by .
 		# If so, we expand the IP address range
 		iplist = []
 		if _IPV4_RANGE_RE.match(host):
@@ -2649,9 +2499,8 @@ def __expand_hostnames(hosts, hosts_only=False) -> dict:
 			iplist = hostSetToAdd
 		else:
 			# validate the names expanded (and cached) for the prefetch instead of expanding again
-			validate = _validate_shown_hostname if hosts_only else __validate_expand_hostname
 			hostSetToAdd = sorted(set(itertools.chain.from_iterable(
-				validate(name) for name in __expand_hostname(host, validate=False))))
+				__validate_expand_hostname(name) for name in __expand_hostname(host, validate=False))))
 			for host in hostSetToAdd:
 				iplist.append(getIP(host,local=False))
 		if username:
@@ -2671,8 +2520,7 @@ def expand_hostnames(hosts, hosts_only=False):
 
 	Args:
 		hosts (list): A list of hostnames
-		hosts_only (bool): The names are hosts mssh expanded already: one that is also an
-			alias's name is that host (see compact_hostnames)
+		hosts_only (bool): Ignored, kept for callers of 6.32 to 6.38
 
 	Returns:
 		dict: A dictionary of expanded hostnames with key: hostname, value: resolved IP address
@@ -2682,8 +2530,6 @@ def expand_hostnames(hosts, hosts_only=False):
 	# change data type to frozenset if it is not hashable
 	if not isinstance(hosts, frozenset):
 		hosts = frozenset(hosts)
-	if hosts_only:
-		return __expand_hostnames(hosts, hosts_only=True)
 	return __expand_hostnames(hosts)
 
 def expand_hostnames_local(hosts):
@@ -4094,11 +3940,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				host.name = 'localhost'
 				return attempt('rebuild')
 		else:
-			# ssh, scp and rsync's ssh give up on a host that does not answer, or stops answering. An -o
-			# or -F in -ea is ssh's for rsync too: rsync's own -o and -F take no value
-			timeoutOptions = _ssh_timeout_options(host.resolvedName, extraargs)
-			sshLocalExtraArgs += timeoutOptions
-			rsyncLocalExtraArgs[-1] += ''.join(' ' + option for option in timeoutOptions)
+			# ssh, scp and rsync's ssh give up on a host that does not answer, or stops answering. They
+			# come after -ea's options, which ssh takes first. An -o in -ea is ssh's for rsync too:
+			# rsync's own -o takes no value
+			timeoutOptions = _ssh_timeout_options()
 			if host.files:
 				if host.scp:
 					if 'scp' in _binPaths:
@@ -4129,7 +3974,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 				remoteName = host.resolvedName
 				if ':' in host.address and not host.address.startswith('['):
 					remoteName = f'{username}@[{host.address}]' if username else f'[{host.address}]'
-				scpOptions = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + _scp_port_option(extraargs) if useScp else []
+				scpOptions = [_binPaths['scp'],'-rp'] + sshLocalExtraArgs + _scp_port_option(extraargs) + timeoutOptions if useScp else []
 				if host.gatherMode:
 					sources = gather_links or host.files
 					if useScp:
@@ -4166,10 +4011,10 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 						formatedCMD.append('--no-recursive')
 					# -ea's ssh options go to ssh, after mssh's own as for a command
 					ssh_words, rsync_words = _ssh_options_in(extraargs)
-					rsh = ' '.join([rsyncLocalExtraArgs[1]] + [shlex.quote(word) for word in ssh_words])
+					rsh = ' '.join([rsyncLocalExtraArgs[1]] + [shlex.quote(word) for word in ssh_words] + timeoutOptions)
 					formatedCMD += ['--rsh', rsh] + rsync_words +['--']+fileArgs
 			else:
-				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs +['--']+ [host.resolvedName, host.command]
+				formatedCMD = [_binPaths['ssh']] + sshLocalExtraArgs + extraargs + timeoutOptions +['--']+ [host.resolvedName, host.command]
 			if passwds and 'sshpass' in _binPaths:
 				formatedCMD = _sshpass_command(formatedCMD, passwds)
 			elif passwds:
@@ -4695,9 +4540,8 @@ def _copy_id_command(host, identity_file=None, extraargs=None):
 		words += ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
 	# a host that does not answer must not hold up the others (without -p they run one by one); the
 	# operator's options are the ones ssh-copy-id gets (it drops -F)
-	extra = _copy_id_extra_args(extraargs)
-	words += _ssh_timeout_options(host, extra)
-	words += extra
+	words += _copy_id_extra_args(extraargs)
+	words += _ssh_timeout_options()
 	words.append(host)
 	return ' '.join(shlex.quote(word) for word in words)
 
@@ -6049,7 +5893,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				working_index_keys -= buddy
 		if not defer:
 			if buddy != previousBuddies:
-				hostnameStr = ','.join(compact_hostnames(buddy, hosts_only=True))
+				hostnameStr = ','.join(compact_hostnames_local(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
@@ -6110,7 +5954,7 @@ def _merged_output_pieces(pieces_by_hostname, merge_groups, remaining_hostnames,
 		yield divider
 		yield ('', output)
 	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
-		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames([hostname], hosts_only=True)))
+		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames_local([hostname])))
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
 		yield divider
@@ -6122,7 +5966,7 @@ def pre_merge_hosts(hosts):
 	Merge hosts with identical outputs.
 
 	Note: After merging, the surviving host's `.name` is rewritten to a comma-joined
-	`compact_hostnames(...)` summary of the group (e.g. `node[1-3]`). Callers that need
+	`compact_hostnames_local(...)` summary of the group (e.g. `node[1-3]`). Callers that need
 	per-host identity after merge should snapshot names beforehand; this rewrite is
 	intentional for compact human-readable summaries.
 	'''
@@ -6132,7 +5976,7 @@ def pre_merge_hosts(hosts):
 		identity = host.get_output_hash()
 		output_groups[identity].append(host)
 	for group in output_groups.values():
-		group[0].name = ','.join(compact_hostnames((host.name for host in group), hosts_only=True))
+		group[0].name = ','.join(compact_hostnames_local(host.name for host in group))
 		for i in range(1,len(group)):
 			hosts.remove(group[i])
 	return hosts
@@ -7531,7 +7375,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	# hosts reachable only through the ssh config have no IP (None), which must not match other such hosts
 	skipHostSet = set(skipHostsDic).union(ip for ip in skipHostsDic.values() if ip)
 	if skipHostSet:
-		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames(skipHostSet, hosts_only=True))}\"")
+		eprint(f"Skipping hosts: \"{' '.join(compact_hostnames_local(skipHostSet))}\"")
 	if not called:
 		_report_tokens_naming_no_hosts(hostTokens)
 		if not targetHostDic:
