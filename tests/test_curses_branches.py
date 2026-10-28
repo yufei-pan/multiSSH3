@@ -91,6 +91,20 @@ def test_curses_add_string_scroll_and_early_returns(curses_harness):
 	assert any(c[0] == "deleteln" for c in win.calls)
 
 
+def test_get_hosts_to_display_offset_and_rearrange(fake_host):
+	hosts = [fake_host(f"127.0.0.{i}", "true") for i in range(1, 5)]
+	for h in hosts:
+		h.returncode = 0
+		h.output = ["done"]
+	first, stats, rearranged = multiSSH3._get_hosts_to_display(hosts, 2, indexOffset=1)
+	assert len(first) == 2
+	assert stats["finished"] == 4
+	second, _stats2, rearranged2 = multiSSH3._get_hosts_to_display(
+		hosts, 2, hosts_to_display=first, indexOffset=0
+	)
+	assert isinstance(rearranged2, set)
+
+
 def test_curses_add_string_default_color_does_not_leak_between_calls(curses_harness, curses_color_mocks):
 	win = curses_harness.window
 	# the first line leaves red switched on at its end
