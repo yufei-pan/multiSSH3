@@ -3098,7 +3098,7 @@ def _mssh_start(tokens):
 			return index
 	return None
 
-# tuned with `mssh-complete eval` (ghost policy): wrong suggestions under 10% of those shown on
+# tuned with `tests/replay.py` (ghost policy): wrong suggestions under 10% of those shown on
 # synthetic and real history, the most keys saved on top of TAB
 T_WORD = 0.7   # confidence the top value of the current word needs before its rest is suggested
 T_LINE = 0.6   # share each following slot's top value needs before the rest of the line is suggested
@@ -4245,7 +4245,7 @@ def engine_for(request, directory=Ellipsis, now=None, deadline=None):
 		parser = mssh.get_parser()
 		spec = spec_from_parser(parser)
 		flags = flag_settings(parser)
-		no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]
+		no_effect = [(option, kind, tuple(others), why) for option, kind, others, why in mssh.OPTION_NO_EFFECT]
 	if tail:
 		memory = MemoryKnowledge()
 		memory.add_history(tail, spec, now)
