@@ -5162,7 +5162,6 @@ def __approximate_color_24bit(r, g, b):
 		# Initiate a new color if it does not exist
 		if (r, g, b) not in __curses_color_table:
 			if __curses_current_color_index >= curses.COLORS:
-				eprint("Warning: Maximum number of colors reached. Wrapping around.")
 				__curses_current_color_index = 10
 			curses.init_color(__curses_current_color_index, int(r/255*1000), int(g/255*1000), int(b/255*1000))
 			__curses_color_table[(r, g, b)] = __curses_current_color_index
@@ -5206,7 +5205,6 @@ def __get_curses_color_pair(fg, bg):
 	global __curses_global_color_pairs, __curses_current_color_pair_index
 	if (fg, bg) not in __curses_global_color_pairs:
 		if __curses_current_color_pair_index >= curses.COLOR_PAIRS:
-			print("Warning: Maximum number of color pairs reached, wrapping around.")
 			__curses_current_color_pair_index = 1
 		curses.init_pair(__curses_current_color_pair_index, fg, bg)
 		__curses_global_color_pairs[(fg, bg)] = __curses_current_color_pair_index
@@ -5505,8 +5503,6 @@ def _tui_typed_keys(key, decoder):
 	return (cut_short, key) if cut_short else (key,)
 
 def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
-	global _encoding
-	_ = config_reason
 	try:
 		box_ansi_color = None
 		refresh_all = True
@@ -5524,19 +5520,13 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		# return True if the terminal is too small
 		if max_x < 2 or max_y < 2:
 			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal too small')
-		if min_char_len_local < 1 or min_line_len_local < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Minimum character or line length too small')
 		# We need to figure out how many hosts we can fit in the terminal
 		# We will need at least 2 lines per host, one for its name, one for its output
 		# Each line will be at least 61 characters long (60 for the output, 1 for the borders)
 		max_num_hosts_x = max_x // (min_char_len_local + 1)
 		max_num_hosts_y = max_y // (min_line_len_local + 1)
 		max_num_hosts = max_num_hosts_x * max_num_hosts_y
-		if max_num_hosts < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal too small to display any hosts')
 		hosts_to_display , host_stats, rearrangedHosts = _get_hosts_to_display(hosts, max_num_hosts)
-		if len(hosts_to_display) == 0:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'No hosts to display')
 		# Now we calculate the actual number of hosts we will display for x and y
 		optimal_len_x = max(min_char_len_local, 80)
 		num_hosts_x = min(max(min(max_num_hosts_x, max_x // optimal_len_x),1),len(hosts_to_display))
@@ -5556,15 +5546,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		# We calculate the size of each window
 		host_window_height = max_y // num_hosts_y
 		host_window_width = max_x // num_hosts_x
-		if host_window_height < 1 or host_window_width < 1:
-			return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Host window too small')
 
 		old_stat = ''
 		old_bottom_stat = ''
 		# we refresh the screen every 0.1 seconds
 		last_refresh_time = time.perf_counter()
 		stdscr.clear()
-		#host_window.refresh()
 		global __keyPressesIn
 		stdscr.nodelay(True)
 		# we generate a stats window at the top of the screen
@@ -5577,7 +5564,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			# We need to add 1 to y for the stats line
 			y = (i // num_hosts_x) * host_window_height +1
 			x = (i % num_hosts_x) * host_window_width
-			#print(f"Creating a window at {y},{x}")
 			# We create the window
 			host_window = curses.newwin(host_window_height, host_window_width + 1, y, x)
 			host_window.idlok(True)
@@ -5589,8 +5575,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 		if y + host_window_height  < org_dim[0]:
 			bottom_border = curses.newwin(1, max_x + 1, y + host_window_height, 0)
 			bottom_border.leaveok(True)
-			#bottom_border.clear()
-			#bottom_border.addnstr(0, 0, '-' * (max_x - 1), max_x - 1)
 			_curses_add_string_to_window(window=bottom_border, y=0, line='-' * (max_x - 1),fill_char='-',box_ansi_color=box_ansi_color)
 			bottom_border.refresh()
 		help_window_hight = min(14, max_y)
@@ -5628,8 +5612,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				# we store the keypresses in a list of lists.
 				# Each list is a list of characters to be sent to the stdin of the process at once.
 				# When we encounter a newline, we add a new list to the list of lists. ( a new line of input )
-				# with open('keylog.txt','a') as f:
-				#     f.write(str(key)+'\n')
 				if key == 410 or key == curses.KEY_RESIZE: # 410 is the key code for resize
 					return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize requested')    
 				# if the user pressed ctrl + d and the last line is empty, we will exit by adding 'exit\n' to the last line
@@ -5702,7 +5684,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 						help_panel.hide()
 						help_shown = False
 						refresh_all = True
-						#return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window, 'Help closed')
 					curses.panel.update_panels()
 				elif not isinstance(key, str) and key > 255 and key not in (263, 330, curses.KEY_ENTER):
 					# a function key without a binding (F2, Insert, ...; 263 Backspace, 330 Delete and KEY_ENTER are handled below):
@@ -5745,12 +5726,10 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				return (lineToDisplay,curserPosition , min_char_len, min_line_len, single_window,help_shown, 'Terminal resize detected')
 			# We generate the aggregated stats if user did not input anything
 			if not __keyPressesIn[lineToDisplay]:
-				#stats = '┍'+ f" Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} "[:max_x - 2].center(max_x - 2, "━")
 				stats = f"Total: {len(hosts)} Running: {host_stats['running']} Failed: {host_stats['failed']} Finished: {host_stats['finished']} Waiting: {host_stats['waiting']}  ww: {min_char_len} wh:{min_line_len} i:{indexOffset} "
 			else:
 				# we use the stat bar to display the key presses
 				encodedLine = _typed_line_for_display(__keyPressesIn[lineToDisplay]).strip('\n') + ' '
-				#stats = '┍'+ f"Send CMD: {encodedLine}"[:max_x - 2].center(max_x - 2, "━")
 				# format the stats line with chracter at curser position inverted using ansi escape sequence
 				# displayCurserPosition is needed as the curserPosition can be larger than the length of the encodedLine. This is wanted to keep scrolling through the history less painful
 				# it counts the shown text before the cursor: a byte outside the encoding shows as 4 characters (\xe9)
@@ -5758,28 +5737,12 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 				stats = f'Send CMD: {encodedLine[:displayCurserPosition]}\x1b[7m{encodedLine[displayCurserPosition]}\x1b[0m{encodedLine[displayCurserPosition + 1:]}'
 			if stats != old_stat or refresh_all:
 				old_stat = stats
-				# calculate the real curser position in stats as we centered the stats
-				# if 'Send CMD: ' in stats:
-				# 	curserPositionStats = min(min(curserPosition,len(encodedLine) -1) + stats.find('Send CMD: ')+len('Send CMD: '), max_x -2)
-				# else:
-				# 	curserPositionStats = max_x -2
-				#stat_window.clear()
-				#stat_window.addstr(0, 0, stats)
-				# add the line with curser that inverses the color at the curser position
-				# stat_window.addstr(0, 0, stats[:curserPositionStats])
-				# stat_window.addch(0,curserPositionStats, stats[curserPositionStats], curses.A_REVERSE)
-				# stat_window.addnstr(0, curserPositionStats + 1, stats[curserPositionStats + 1:], max_x - 1 - curserPositionStats)
-				# stat_window.refresh()
 				_curses_add_string_to_window(window=stat_window, y=0, line=stats, color_pair_list=[-1, -1, 1],centered=True,fill_char='━',lead_str='┍',box_ansi_color=box_ansi_color)
 				stat_window.refresh()
 			if bottom_border:
-				#target_length = max_x - 2 + len('\x1b[33m\x1b[0m\x1b[31m\x1b[0m\x1b[32m\x1b[0m')
-				#bottom_stats = '└'+ f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "[:target_length].center(target_length, "─")
 				bottom_stats = f" Total: {len(hosts)} Running: \x1b[33m{host_stats['running']}\x1b[0m Failed: \x1b[31m{host_stats['failed']}\x1b[0m Finished: \x1b[32m{host_stats['finished']}\x1b[0m Waiting: {host_stats['waiting']} "
 				if bottom_stats != old_bottom_stat or refresh_all:
 					old_bottom_stat = bottom_stats
-					#bottom_border.clear()
-					#bottom_border.addnstr(0, 0, bottom_stats, max_x - 1)
 					_curses_add_string_to_window(window=bottom_border, y=0, line=bottom_stats,fill_char='─',centered=True,lead_str='└',box_ansi_color=box_ansi_color)
 					bottom_border.refresh()
 			# set the maximum refresh rate to 100 Hz
@@ -5788,7 +5751,6 @@ def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min
 			if refresh_all:
 				rearrangedHosts = set(hosts_to_display)
 				refresh_all = False
-			#stdscr.clear()
 			hostWindowUpdated = False
 			for host_window, host in zip(host_windows, hosts_to_display):
 				# we will only update the window if there is new output or the window is not fully printed
@@ -5929,54 +5891,8 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 			stdscr.refresh()
 		except Exception:
 			pass
-		reason = params[6]
 		params = params[:6] + ('new config',)
-		if reason in _TUI_NO_ROOM_REASONS:
-			# nothing to show until the terminal grows: wait for it (or a key) instead of redrawing
-			if not _tui_wait_for_room(stdscr, hosts):
-				break
-		else:
-			time.sleep(0.01)
-		#time.sleep(0.25)
-
-# what __generate_display returns, before it reads any key, when the terminal has no room for the display
-_TUI_NO_ROOM_REASONS = frozenset(('Terminal too small', 'Minimum character or line length too small',
-	'Terminal too small to display any hosts', 'Host window too small'))
-
-def _tui_wait_for_room(stdscr, hosts):
-	'''
-	Wait, while the terminal is too small for the display, for a resize or for the hosts to finish.
-
-	Esc on an empty input line leaves the display, as it does when the hosts are shown. Other keys typed
-	meanwhile are put back, in their order, for the display to read once it is shown again.
-
-	Returns:
-		bool: False to leave the display: Esc, or no host is running any more
-	'''
-	size = stdscr.getmaxyx()
-	typed = []
-	stdscr.timeout(250)
-	try:
-		while any(host.returncode is None for host in hosts):
-			key = stdscr.getch()
-			if key == -1:
-				if stdscr.getmaxyx() != size:
-					break
-				continue
-			if key == curses.KEY_RESIZE:
-				break
-			if key == curses.KEY_EXIT or (key == 27 and not __keyPressesIn[-1] and not typed):
-				return False
-			typed.append(key)
-	finally:
-		stdscr.nodelay(True)
-		# ungetch puts a key in front of the others
-		for key in reversed(typed):
-			try:
-				curses.ungetch(key)
-			except Exception:
-				pass
-	return any(host.returncode is None for host in hosts)
+		time.sleep(0.01)
 
 #%% ------------ Generate Output Block ----------------
 def can_merge(line_bag1, line_bag2, threshold):
@@ -6237,20 +6153,13 @@ def _host_output_pieces(hosts, terminal_width):
 		for line in host.command.splitlines():
 			commandLines.extend(wrap(line))
 		hostPrintOut = [('', commandLines)]
-		# hostPrintOut.extend(itertools.chain.from_iterable(text_wrapper.wrap(line) for line in host['command'].splitlines()))
 		lineBag = {(0,host.command)}
 		prevLine = host.command
 		if host.stdout:
 			hostPrintOut.append(('', [f'{blue_str}▓{color_reset_str} STDOUT:']))
-			# for line in host.stdout:
-			# 	if len(line) < terminal_width - 2:
-			# 		hostPrintOut.append(f" {line}")
-			# 	else:
-			# 		hostPrintOut.extend(text_wrapper.wrap(line))
 			hostPrintOut.append((' ', host.stdout))
 			# in terminal columns: the dividers between host blocks are as wide as the widest line
 			max_length = max(max_length, max(map(_text_columns, host.stdout)))
-			# hostPrintOut.extend(text_wrapper.wrap(line) for line in host.stdout)
 			lineBag.add((prevLine,1))
 			lineBag.add((1,host.stdout[0]))
 			if len(host.stdout) > 1:
@@ -6260,11 +6169,6 @@ def _host_output_pieces(hosts, terminal_width):
 		stderr = _displayed_stderr(host)
 		if stderr:
 			hostPrintOut.append(('', [f'{red_str}▒{color_reset_str} STDERR:']))
-			# for line in stderr:
-			# 	if len(line) < terminal_width - 2:
-			# 		hostPrintOut.append(f" {line}")
-			# 	else:
-			# 		hostPrintOut.extend(text_wrapper.wrap(line))
 			hostPrintOut.append((' ', stderr))
 			max_length = max(max_length, max(map(_text_columns, stderr)))
 			lineBag.add((prevLine,2))
@@ -6290,8 +6194,6 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 	for lbl_i, line_bag_len in enumerate(sorted_hostnames_by_line_bag_len_keys):
 		# in natural order, not a set's: which hosts form a group depends on the host it starts from
 		for this_hostname in sorted(hostnames_by_line_bag_len.get(line_bag_len, ()), key=_natural_sort_key):
-			# if this_hostname not in hostnames_by_line_bag_len.get(line_bag_len, set()):
-			# 	continue
 			try:
 				this_line_bag = line_bag_by_hostname.pop(this_hostname)
 				hostnames_by_line_bag_len.get(line_bag_len, set()).discard(this_hostname)
@@ -6302,8 +6204,6 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 			for other_line_bag_len in sorted_hostnames_by_line_bag_len_keys[lbl_i:]:
 				if other_line_bag_len > target_threshold:
 					break
-				# if other_line_bag_len < line_bag_len:
-				# 	continue
 				for other_hostname in hostnames_by_line_bag_len.get(other_line_bag_len, set()).copy():
 					if other_hostname in line_bag_by_hostname and can_merge(this_line_bag, line_bag_by_hostname[other_hostname], diff_display_threshold):
 						merge_group.append(other_hostname)
@@ -6314,7 +6214,6 @@ def form_merge_groups(hostnames_by_line_bag_len, sorted_hostnames_by_line_bag_le
 			if merge_group:
 				merge_group.append(this_hostname)
 				merge_groups.append(merge_group)
-				# del line_bag_by_hostname[this_hostname]
 			else:
 				remaining_hostnames.add(this_hostname)
 	return merge_groups, remaining_hostnames
@@ -6951,7 +6850,6 @@ def processRunOnHosts(timeout, password, max_connections, hosts, return_unfinish
 		_reset_shared_lines(sharing=False)
 	else:
 		__running_threads.update(threads)
-	# print the output, if the output of multiple hosts are the same, we aggragate them
 
 
 #%% ------------ Stringfy Block ----------------
@@ -7174,12 +7072,6 @@ def _typed_host_str(hosts):
 	return ','.join(str(host) for host in hosts)
 
 def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSeperated = False,typed_hosts = False,**kwargs) -> str:
-	# Allow explicit kwargs to override base parameters when forwarding dicts.
-	hosts = kwargs.get('hosts', hosts)
-	commands = kwargs.get('commands', commands)
-	shortend = kwargs.get('shortend', shortend)
-	tabSeperated = kwargs.get('tabSeperated', tabSeperated)
-	typed_hosts = kwargs.get('typed_hosts', typed_hosts)
 	if typed_hosts:
 		# the history keeps what was typed: aliases and ranges unexpanded, unresolvable names kept
 		hostStr = _typed_host_str(hosts) or 'EMPTY_HOSTS'
@@ -7187,11 +7079,6 @@ def getStrCommand(hosts = DEFAULT_HOSTS,commands = None,shortend = False,tabSepe
 		hosts = hosts if isinstance(hosts,str) else frozenset(hosts)
 		hostStr = formHostStr(hosts)
 	commandArgKwargs = dict(kwargs)
-	commandArgKwargs.pop('hosts', None)
-	commandArgKwargs.pop('commands', None)
-	commandArgKwargs.pop('shortend', None)
-	commandArgKwargs.pop('tabSeperated', None)
-	commandArgKwargs.pop('typed_hosts', None)
 	# run_command_on_hosts' deprecated files= adds to file=
 	if commandArgKwargs.get('files'):
 		commandArgKwargs['file'] = list(commandArgKwargs.get('file') or []) + list(commandArgKwargs['files'])
@@ -7442,7 +7329,6 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 	# processRunOnHosts switches sharing on for each command: not here, as no_start runs none
 	_reset_shared_lines(sharing=False)
 	if not no_history:
-		_ = history_file
 		record_command_history(locals())
 	if error_only:
 		__global_suppress_printout = True
@@ -7452,16 +7338,9 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		__globalUnavailableHosts.update(loaded_unavailable)
 		if loaded_unavailable and not __global_suppress_printout:
 			eprint("Read unavailable hosts from the file {}".format(unavailable_path))
-	elif "__multiSSH3_UNAVAILABLE_HOSTS" in readEnvFromFile():
-		__globalUnavailableHosts.update({
-			host: int(time.monotonic() + unavailable_host_expiry)
-			for host in readEnvFromFile()["__multiSSH3_UNAVAILABLE_HOSTS"].split(",")
-			if host
-		})
 	max_connections = _normalize_max_connections(max_connections)
 	commands = format_commands(commands)
 	this_run_only = False
-	#verify_ssh_config()
 	# load global unavailable hosts only if the function is called (so using --repeat will not load the unavailable hosts again)
 	if called:
 		# if called,
@@ -8099,7 +7978,6 @@ def get_parser():
 	parser.add_argument('-s','-fs','--file_sync',nargs='?', action='append', help=_plain_help(f'Operate in file sync mode, sync path in <COMMANDS> from this machine to <HOSTS>. Treat --file <FILE> and <COMMANDS> both as source and source and destination will be the same in this mode. Infer destination from source path. (default: {DEFAULT_FILE_SYNC})'),const=True, default=[DEFAULT_FILE_SYNC])
 	parser.add_argument('-W','--scp', action='store_true', help=_plain_help(f'Use scp for copying files instead of rsync. Need to use this on windows. (default: {DEFAULT_SCP})'), default=DEFAULT_SCP)
 	parser.add_argument('-G','-gm','--gather_mode', action='store_true', help='Gather files from the hosts instead of sending files to the hosts. Will send remote files specified in <FILE> to local path specified in <COMMANDS>  (default: False)', default=False)
-	#parser.add_argument("-d",'-c',"--destination", type=str, help="The destination of the files. Same as specify with commands. Added for compatibility. Use #HOST# or #HOSTNAME# to replace the host name in the destination")
 	parser.add_argument("-t","--timeout", type=int, help=_plain_help(f"Idle timeout in seconds: stop a host's command after this long without output. Set default value via DEFAULT_CLI_TIMEOUT in config file. Use 0 for disabling timeout. (default: {DEFAULT_CLI_TIMEOUT})"), default=DEFAULT_CLI_TIMEOUT)
 	parser.add_argument('-T','--use_script_timeout',action='store_true', help=_plain_help(f'Use shortened timeout suitable to use in a script. Set value via DEFAULT_TIMEOUT field in config file. (current: {DEFAULT_TIMEOUT})'), default=False)
 	parser.add_argument("-r","--repeat", type=_positive_int, help=_plain_help(f"Repeat the command for a number of times (default: {DEFAULT_REPEAT})"), default=DEFAULT_REPEAT)
@@ -8937,8 +8815,6 @@ def main(args = None):
 
 	if threading.active_count() > 1 and not __global_suppress_printout: 
 		eprint(f'Remaining active thread: {threading.active_count()}')
-		# os.system(f'pkill -ef  {os.path.basename(__file__)}')
-		# os._exit(mainReturnCode)
 	
 	_exit_with_code(__mainReturnCode)
 
