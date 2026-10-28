@@ -46,8 +46,8 @@ VERSION = version
 __version__ = version
 COMMIT_DATE = '2026-10-22'
 
-# no current-directory entry: a cloned repo or unpacked archive could set any global (e.g. _sshPath),
-# use --config_file to load one
+# no current-directory entry: a cloned repo or unpacked archive could set a setting or a program path
+# (e.g. _sshPath), use --config_file to load one
 CONFIG_FILE_CHAIN = ['~/multiSSH3.config.json',
 					 '~/.multiSSH3.config.json',
 					 '~/.config/multiSSH3/multiSSH3.config.json',
@@ -387,7 +387,6 @@ def input_with_timeout_and_countdown(timeout, prompt='Please enter your selectio
 	if fd is None or os.name == 'nt':
 		# select() cannot wait on a Windows console, nor on a stdin without a file descriptor
 		return _input_with_timeout_by_thread(timeout, prompt)
-	import select
 	encoding = getattr(sys.stdin, 'encoding', None) or 'utf-8'
 	eprint(f"{prompt} [{timeout}s]: ", end='', flush=True)
 	typed = b''
@@ -980,7 +979,7 @@ def _read_config_file(config_file, check_trust=True):
 	return apply_config_key_compat(config)
 
 
-# The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.18,
+# The built-in ERROR_MESSAGES_TO_IGNORE from 4.81 to 6.31; 4.81 started with the first five. Up to 6.19,
 # --store_config_file wrote it into config files. Unanchored, it also hid remote programs' errors.
 _OLD_DEFAULT_ERROR_MESSAGES_TO_IGNORE = [
 	'Pseudo-terminal will not be allocated because stdin is not a terminal',
@@ -1867,7 +1866,6 @@ def __filterSumDic(sumDic):
 						# 4. the two hostnames have the same token groups
 						if len(hostnameTokens) == len(lastHostnameTokens) and \
 							lastSumHash in newSumDic and lastHostnameTokens in newSumDic[lastSumHash]:
-							#(diffIndex:=findDiffIndex(hostnameTokens, lastHostnameTokens)) != -1 and \
 							diffIndex=__findDiffIndex(hostnameTokens, lastHostnameTokens)
 							if diffIndex != -1 and \
 								sumDic[sumHash][hostnameTokens] == sumDic[lastSumHash][lastHostnameTokens]:
@@ -2022,10 +2020,6 @@ def compact_hostnames(Hostnames,verify = True, hosts_only = False):
 		['sub-s[1-2]']
 	"""
 	global __global_suppress_printout
-	# if not isinstance(Hostnames, frozenset):
-	# 	hostSet = frozenset(Hostnames)
-	# else:
-	# 	hostSet = Hostnames
 	hostSet = frozenset(expand_hostnames((
 		hostname.strip()
 		for hostnames_str in Hostnames
@@ -2320,7 +2314,6 @@ def __expandIPv4Address(hosts):
 			expandedOctets[-1].remove('0')
 		if '255' in expandedOctets[-1]:
 			expandedOctets[-1].remove('255')
-		#print(expandedOctets)
 		# Generate the expanded hosts
 		for ip in list(product(expandedOctets[0],expandedOctets[1],expandedOctets[2],expandedOctets[3])):
 			expandedHost.append('.'.join(ip))
@@ -2377,11 +2370,7 @@ def __expand_hostname(text, validate=True):# -> set:
 		for part in parts:
 			part = part.strip()
 			if '-' in part:
-				try:
-					range_start,_, range_end = part.partition('-')
-				except ValueError:
-					expandedhosts.update(__validate_expand_hostname(hostname) if validate else [hostname])
-					continue
+				range_start, _, range_end = part.partition('-')
 				range_start = range_start.strip()
 				range_end = range_end.strip()
 				if not range_start or not range_end:
@@ -2503,9 +2492,6 @@ def __expand_hostnames(hosts) -> dict:
 			username = username.strip()
 			host = host.strip()
 		# first we check if the hostname is an range of IP addresses
-		# This is done by checking if the hostname follows four fields of 
-		# "(((\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?)|(\[(\d{1,3}|x|\*|\?)(-(\d{1,3}|x|\*|\?))?\]))" 
-		# seperated by .
 		# If so, we expand the IP address range
 		iplist = []
 		if _IPV4_RANGE_RE.match(host):
