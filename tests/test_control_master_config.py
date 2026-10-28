@@ -288,7 +288,7 @@ def test_without_run_user_ssh_uses_a_private_directory_it_makes(places, monkeypa
 	assert stat.S_IMODE(places['fallback'].stat().st_mode) == 0o700
 	# the same directory mssh keeps its runtime state in, there
 	monkeypatch.delenv('XDG_RUNTIME_DIR', raising=False)
-	assert multiSSH3.runtime_dir(create=False) == str(places['fallback'])
+	assert multiSSH3.runtime_dir() == str(places['fallback'])
 
 
 @pytest.mark.skipif(not hasattr(os, 'geteuid') or os.geteuid() == 0, reason='root can write anywhere')

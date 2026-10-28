@@ -6441,21 +6441,19 @@ def _output_reader_gone():
 		pass
 
 #%% ------------ Run / Process Hosts Block ----------------
-def _private_dir(path, create=True):
+def _private_dir(path):
 	'''
-	Return True if path is a directory only we control, creating it (mode 0700) if create.
+	Return True if path is a directory only we control, creating it (mode 0700).
 
 	A directory in a shared place like /tmp could have been created by someone else first,
 	so it must not be a symlink, must be owned by us and must not be accessible to others.
-	Without create, nothing is changed on disk.
 	'''
-	if create:
-		try:
-			os.mkdir(path, 0o700)
-		except FileExistsError:
-			pass
-		except OSError:
-			return False
+	try:
+		os.mkdir(path, 0o700)
+	except FileExistsError:
+		pass
+	except OSError:
+		return False
 	try:
 		st = os.lstat(path)
 	except OSError:
@@ -6470,8 +6468,6 @@ def _private_dir(path, create=True):
 		# others could already have put files in it
 		return False
 	if st.st_mode & 0o077:
-		if not create:
-			return False
 		# ours but readable by others (an older tool or the user made it), tighten it
 		try:
 			os.chmod(path, 0o700)
@@ -6479,24 +6475,6 @@ def _private_dir(path, create=True):
 		except OSError:
 			return False
 	return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
-
-def _could_be_private_dir(path):
-	'''
-	Whether _private_dir(path, create=True) would take path, without changing anything: a directory
-	ours and only ours to write to (it makes one readable by others 0700), or none yet where we can
-	make it.
-	'''
-	try:
-		st = os.lstat(path)
-	except FileNotFoundError:
-		return os.access(os.path.dirname(path), os.W_OK | os.X_OK)
-	except OSError:
-		return False
-	if not stat.S_ISDIR(st.st_mode):
-		return False
-	if not hasattr(os, 'getuid'):
-		return True
-	return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
 def _owned_and_not_writable_by_others(path):
 	'''Whether path exists, is owned by us and only we can write to it.'''
@@ -6516,9 +6494,9 @@ def runtime_dir(create=True):
 	'''
 	mssh's private directory for state that must not outlive a reboot, or None to run without it.
 
-	create: set up the directory (for writing). Without it, the directory a write would use if it
-	is there already, else None: reading changes nothing on disk, and never reads a later place (an
-	older session's state, or this machine's own when $XDG_RUNTIME_DIR is set to a new directory).
+	Reading and writing set it up alike, so a read never finds a later place (an older session's
+	state, or this machine's own when $XDG_RUNTIME_DIR is set to a new directory). create is ignored:
+	callers written for 6.38, when a read could ask for no change on disk, still work.
 
 	The first of these that is a directory only we control (_private_dir):
 	1. $XDG_RUNTIME_DIR/multiSSH3, when $XDG_RUNTIME_DIR is ours and only we can write to it
@@ -6542,21 +6520,13 @@ def runtime_dir(create=True):
 			candidates.append(os.path.join(_SHM_DIR, 'multiSSH3-{}'.format(user_id)))
 	candidates.append(os.path.join(tempfile.gettempdir(), 'multiSSH3-{}'.format(user_id)))
 	for directory in candidates:
-		if create:
-			if _private_dir(directory):
-				return directory
-		elif _could_be_private_dir(directory):
-			return directory if _private_dir(directory, create=False) else None
+		if _private_dir(directory):
+			return directory
 	return None
 
 def _unavailable_hosts_file_path(create=True):
-	'''
-	Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.
-
-	create: set up the runtime directory (for writing). Without it only an existing one is used,
-	so reading the cache changes nothing on disk.
-	'''
-	directory = runtime_dir(create)
+	'''Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.'''
+	directory = runtime_dir()
 	return os.path.join(directory, 'unavailable_hosts.csv') if directory else None
 
 
@@ -7326,7 +7296,7 @@ def run_command_on_hosts(hosts = DEFAULT_HOSTS,commands = None,oneonone = DEFAUL
 		record_command_history(locals())
 	if error_only:
 		__global_suppress_printout = True
-	unavailable_path = _unavailable_hosts_file_path(create=False)
+	unavailable_path = _unavailable_hosts_file_path()
 	if unavailable_path and os.path.exists(unavailable_path):
 		loaded_unavailable = _read_unavailable_hosts_file(unavailable_path, max_ttl=unavailable_host_expiry)
 		__globalUnavailableHosts.update(loaded_unavailable)
