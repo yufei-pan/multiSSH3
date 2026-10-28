@@ -74,7 +74,7 @@ DEFAULT_FILE_SYNC = False
 DEFAULT_TIMEOUT = 50
 DEFAULT_CLI_TIMEOUT = 0
 # seconds after which ssh gives up on a host that does not answer (ConnectTimeout) or stops answering
-# (ServerAliveInterval x ServerAliveCountMax), unless -ea or the ssh config set them; 0 leaves them to ssh
+# (ServerAliveInterval x ServerAliveCountMax), after -ea's options so an -o there wins; 0 leaves one to ssh
 DEFAULT_SSH_CONNECT_TIMEOUT = 30
 DEFAULT_SSH_SERVER_ALIVE_INTERVAL = 15
 DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX = 4
