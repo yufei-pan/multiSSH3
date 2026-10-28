@@ -206,29 +206,17 @@ def _one_line(text):
 	'''text on one line, with NUL, tabs and newlines turned into single spaces.'''
 	return ' '.join(str(text).replace('\0', ' ').split())
 
-def _password_free_help(help, password):
-	'''
-	The help of a password option with the password taken out. Older multiSSH3 wrote the configured
-	password into the help as "(default: ...)", and older indexes keep that help and the password.
-	'''
-	if not password:
-		return help
-	help = help.replace('(default: {})'.format(password), '(default: set, not shown)')
-	# named some other way: the whole text goes rather than any part of the password
-	return 'A password (not shown)' if password in help else help
-
 class OptionSpec(object):
 	'''
 	One mssh option: its dest, every string naming it and how many values it takes.
 
-	A password option keeps no default, and no password in its help: both reach the index, the
-	descriptions zsh and fish show and the picker.
+	A password option keeps no default: it would reach the index, the descriptions zsh and fish show
+	and the picker (mssh's help shows none since 6.32).
 	'''
 	__slots__ = ('dest', 'strings', 'nargs', 'repeat', 'group', 'default', 'help')
 
 	def __init__(self, dest, strings, nargs='0', repeat=False, group='', default='', help=''):
 		if dest in PASSWORD_DESTS:
-			help = _password_free_help(help, default)
 			default = ''
 		self.dest = dest
 		self.strings = tuple(strings)
@@ -919,7 +907,7 @@ def parse_history_line(line, spec):
 
 #%% ------------ Index storage (NSV) ----------------
 INDEX_MAGIC = 'MSSHCIDX'
-INDEX_FORMAT = '2'
+INDEX_FORMAT = '3'
 INDEX_NAME = 'complete-index.v1.nsv'
 
 class IndexCorrupt(Exception):
@@ -1356,12 +1344,7 @@ class SnapshotKnowledge(object):
 
 	def feature_uses(self, key):
 		'''(times used, last used unix time) of a feature.'''
-		counts = self.index.single('fcounts')
-		lasts = self.index.single('flast')
-		try:
-			return int(counts[key]), int(lasts[key])
-		except (IndexError, ValueError):
-			return 0, 0
+		return int(self.index.single('fcounts')[key]), int(self.index.single('flast')[key])
 
 #%% ------------ Ranking ----------------
 BETA = 0.1                  # weight of plain frecency next to similarity with the line
@@ -1437,12 +1420,9 @@ class HostTable(object):
 	def sources(self, name):
 		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
 		number = bisect_left(self.names, name)
-		if number >= len(self.names) or self.names[number] != name or number >= self.index.count('host_meta'):
+		if number >= len(self.names) or self.names[number] != name:
 			return 0
-		try:
-			return int(self.index.row('host_meta', number)[0])
-		except (IndexError, ValueError):
-			return 0
+		return int(self.index.row('host_meta', number)[0])
 
 	def alias_index(self, name):
 		index = bisect_left(self.alias_names, name)
@@ -1454,7 +1434,7 @@ class HostTable(object):
 
 	def alias_member_users(self, index):
 		'''The user each member of the alias at index is written with (user@host), '' for none.'''
-		users = self.index.row('alias_users', index) if index < self.index.count('alias_users') else []
+		users = self.index.row('alias_users', index)
 		return users + [''] * (self.alias_size(index) - len(users))
 
 	def alias_size(self, index):
@@ -2136,7 +2116,7 @@ def build_index(directory, now=None, mssh=None):
 		('groups', group_rows),
 		('unavailable', [unavailable]),
 		# option combinations main() ignores: [option, kind, why, others...]
-		('no_effect', [[option, kind, why] + list(others) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]),
+		('no_effect', [[option, kind, why] + list(others) for option, kind, others, why in mssh.OPTION_NO_EFFECT]),
 	]
 	path = os.path.join(directory, INDEX_NAME)
 	write_nsv(path, header, sections)

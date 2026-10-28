@@ -22,9 +22,8 @@ HOSTS_FILE, HISTORY = mc.SRC_HOSTS_FILE, mc.SRC_HISTORY
 
 def index(tmp_path, hosts, aliases=None, alias_users=None):
 	'''
-	An index holding hosts (name -> sources) and aliases (name -> members). alias_users (name -> the
-	user of each member, '' for none) adds the section for members written user@host; without it the
-	index is like one built before that section existed.
+	An index holding hosts (name -> sources) and aliases (name -> members). alias_users: name -> the
+	user of each member, '' for none (members written user@host).
 	'''
 	names = sorted(hosts)
 	number = {name: str(position) for position, name in enumerate(names)}
@@ -35,9 +34,8 @@ def index(tmp_path, hosts, aliases=None, alias_users=None):
 		('host_meta', [[str(hosts[name]), ''] for name in names]),
 		('alias_names', [sorted(aliases)]),
 		('aliases', [['env'] + [number[member] for member in aliases[name]] for name in sorted(aliases)]),
+		('alias_users', [(alias_users or {}).get(name, []) for name in sorted(aliases)]),
 	]
-	if alias_users is not None:
-		sections.append(('alias_users', [alias_users.get(name, []) for name in sorted(aliases)]))
 	mc.write_nsv(path, {}, sections)
 	return mc.NsvIndex.load(path)
 

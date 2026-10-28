@@ -454,7 +454,7 @@ def test_an_index_of_the_previous_format_is_not_read(home):
 		data = f.read()
 	assert data.startswith(mc.INDEX_MAGIC + '\0' + mc.INDEX_FORMAT + '\0')
 	with open(path, 'w', encoding='utf-8') as f:
-		f.write(mc.INDEX_MAGIC + '\0' + '1' + data[len(mc.INDEX_MAGIC) + 1 + len(mc.INDEX_FORMAT):])
+		f.write(mc.INDEX_MAGIC + '\0' + '2' + data[len(mc.INDEX_MAGIC) + 1 + len(mc.INDEX_FORMAT):])
 	with pytest.raises(mc.IndexCorrupt):
 		mc.NsvIndex.load(path)
 
