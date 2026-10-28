@@ -1201,7 +1201,8 @@ def test_run_command_extraargs_string_is_split_like_a_shell(fake_host, monkeypat
 
 	_patch_popen(monkeypatch, fake_popen)
 	multiSSH3.run_command(host, sem, timeout=5)
-	end = calls[0].index("--")
+	# mssh's timeout options (3 x 2 words) come last, after -ea's
+	end = calls[0].index("--") - 6
 	assert calls[0][end - len(expected):end] == expected
 
 
@@ -1225,7 +1226,8 @@ def test_run_command_extraargs_backslashes_by_platform(fake_host, monkeypatch, o
 	monkeypatch.setattr(multiSSH3.os, "name", os_name)
 	multiSSH3.run_command(host, sem, timeout=5)
 	monkeypatch.undo()  # os.name back before pytest reports
-	end = calls[0].index("--")
+	# mssh's timeout options (3 x 2 words) come last, after -ea's
+	end = calls[0].index("--") - 6
 	assert calls[0][end - len(expected):end] == expected
 
 

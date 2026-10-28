@@ -10,8 +10,6 @@ import multiSSH3
 
 # what mssh gives ssh by default (DEFAULT_SSH_CONNECT_TIMEOUT, DEFAULT_SSH_SERVER_ALIVE_*)
 DEFAULTS = {"connecttimeout": "30", "serveraliveinterval": "15", "serveralivecountmax": "4"}
-# what ssh -G shows for options nothing sets
-SSH_BUILT_IN = {"connecttimeout": "none", "serveraliveinterval": "0", "serveralivecountmax": "3"}
 
 
 class FakeProc:
@@ -96,34 +94,26 @@ def test_rsync_gets_the_timeouts_in_the_ssh_it_runs(fake_host, monkeypatch):
 	["-o ConnectTimeout=5"],
 ])
 def test_a_connect_timeout_given_with_extraargs_wins(fake_host, monkeypatch, extraargs):
-	# ssh uses the first value it gets, and mssh's own options come first
+	# ssh uses the first value it gets: mssh's own options come after -ea's
 	argv = _run(fake_host, monkeypatch, extraargs=extraargs)
 
 	options = _timeout_options(_before_destination(argv))
-	assert options["connecttimeout"] == "5"
+	assert options["connecttimeout"] == ["5", "30"]
 	assert options["serveraliveinterval"] == "15"
 
 
-@pytest.mark.parametrize("extraargs", [None, "", "-o ConnectTimeout=5", "-o 'ConnectTimeout 5'"])
-def test_extraargs_may_be_given_as_they_are_stored(extraargs):
-	# as Host.extraargs and DEFAULT_EXTRA_ARGS hold them: None, or the string as typed
-	options = _timeout_options(multiSSH3._ssh_timeout_options("mock-a", extraargs))
-
-	assert options.get("connecttimeout") == (None if extraargs and "5" in extraargs else "30")
-
-
-def test_a_keepalive_interval_given_with_extraargs_leaves_the_count_to_ssh_too(fake_host, monkeypatch):
+def test_a_keepalive_interval_given_with_extraargs_wins_and_mssh_still_gives_the_count(fake_host, monkeypatch):
 	argv = _run(fake_host, monkeypatch, extraargs="-o ServerAliveInterval=60")
 
-	assert _timeout_options(_before_destination(argv)) == {"connecttimeout": "30", "serveraliveinterval": "60"}
+	assert _timeout_options(_before_destination(argv)) == {"connecttimeout": "30", "serveraliveinterval": ["60", "15"],
+		"serveralivecountmax": "4"}
 
 
 def test_a_keepalive_count_given_with_extraargs_wins(fake_host, monkeypatch):
-	argv = _run(fake_host, monkeypatch, command="/tmp/dest", files=["/tmp/a"], scp=True,
-		extraargs="-o ServerAliveCountMax=10")
+	argv = _run(fake_host, monkeypatch, extraargs="-o ServerAliveCountMax=10")
 
 	assert _timeout_options(_before_destination(argv)) == {"connecttimeout": "30", "serveraliveinterval": "15",
-		"serveralivecountmax": "10"}
+		"serveralivecountmax": ["10", "4"]}
 
 
 def _rsh_options(argv):
@@ -141,8 +131,8 @@ def test_an_ssh_option_in_an_rsync_copys_extraargs_wins_too(fake_host, monkeypat
 	# rsync's own -o takes no value: -o ConnectTimeout=5 can only be meant for its ssh
 	argv = _run(fake_host, monkeypatch, command="/tmp/dest", files=["/tmp/a"], extraargs="-o ConnectTimeout=5")
 
-	# file-copy-real-tools puts -ea's ssh options into --rsh too: -ea's ConnectTimeout, not mssh's
-	assert _rsh_options(argv) == {"connecttimeout": "5", "serveraliveinterval": "15", "serveralivecountmax": "4"}
+	# -ea's ssh options go into --rsh too, before mssh's: ssh takes -ea's ConnectTimeout
+	assert _rsh_options(argv) == dict(DEFAULTS, connecttimeout=["5", "30"])
 
 
 def test_zero_leaves_an_option_to_ssh(fake_host, monkeypatch):
@@ -173,160 +163,19 @@ def test_the_settings_are_in_a_generated_config():
 	assert config["DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX"] == 4
 
 
-def _ssh_config(tmp_path, monkeypatch, user="", system=""):
-	'''Make ssh's config files (user: ~/.ssh/config, system: /etc/ssh/ssh_config) the given text.'''
-	user_dir = tmp_path / "user-ssh"
-	system_dir = tmp_path / "etc-ssh"
-	user_dir.mkdir()
-	system_dir.mkdir()
-	(user_dir / "config").write_text(user)
-	(system_dir / "ssh_config").write_text(system)
-	monkeypatch.setattr(multiSSH3, "_ssh_config_dirs", lambda: (str(user_dir), str(system_dir)))
-	multiSSH3._ssh_config_keywords.cache_clear()
-	return user_dir, system_dir
-
-
-def _fake_ssh_g(monkeypatch, settings_by_destination):
-	'''ssh -G stubbed: settings_by_destination[destination] over ssh's built-in values. Returns the asked destinations.'''
-	asked = []
-
-	def fake(hostname, config_file=None):
-		asked.append(hostname if config_file is None else (hostname, config_file))
-		return dict(SSH_BUILT_IN, **settings_by_destination.get(hostname, {}))
-
-	monkeypatch.setattr(multiSSH3, "_ssh_config_values", fake)
-	return asked
-
-
-def test_an_ssh_config_without_these_options_is_not_asked_about_each_host(fake_host, monkeypatch, tmp_path):
-	# ssh -G runs the Match exec lines of the ssh config: not for every host of every run
-	_ssh_config(tmp_path, monkeypatch, user="Host *\n  ControlMaster auto\n  # ConnectTimeout 5\n",
-		system="Host *\n    SendEnv LANG LC_*\n#   ConnectTimeout 0\n#   ServerAliveInterval 0\n")
-	asked = _fake_ssh_g(monkeypatch, {})
-
-	argv = _run(fake_host, monkeypatch)
-
-	assert asked == []
-	assert _timeout_options(argv) == DEFAULTS
-
-
-def test_a_connect_timeout_from_the_ssh_config_wins(fake_host, monkeypatch, tmp_path):
-	# a command-line -o beats the ssh config: mssh adds its own only where the config sets none
-	_ssh_config(tmp_path, monkeypatch, user="Host slow\n  ConnectTimeout 120\n")
-	asked = _fake_ssh_g(monkeypatch, {"root@slow": {"connecttimeout": "120"}})
-
-	slow = _run(fake_host, monkeypatch, name="root@slow")
-	fast = _run(fake_host, monkeypatch, name="root@fast")
-
-	assert asked == ["root@slow", "root@fast"]
-	assert _timeout_options(slow) == {"serveraliveinterval": "15", "serveralivecountmax": "4"}
-	assert _timeout_options(fast) == DEFAULTS
-
-
-def test_no_connect_timeout_set_on_purpose_in_the_ssh_config_wins(fake_host, monkeypatch, tmp_path):
-	_ssh_config(tmp_path, monkeypatch, user="Host lab*\n  ConnectTimeout 0\n")
-	_fake_ssh_g(monkeypatch, {"lab1": {"connecttimeout": "0"}})
-
-	assert "connecttimeout" not in _timeout_options(_run(fake_host, monkeypatch, name="lab1"))
-
-
-def test_keepalive_from_the_ssh_config_wins(fake_host, monkeypatch, tmp_path):
-	_ssh_config(tmp_path, monkeypatch, system="Host *\n  ServerAliveInterval 60\n")
-	_fake_ssh_g(monkeypatch, {"mock-a": {"serveraliveinterval": "60"}})
-
-	assert _timeout_options(_run(fake_host, monkeypatch)) == {"connecttimeout": "30"}
-
-
-def test_a_keepalive_count_from_the_ssh_config_wins(fake_host, monkeypatch, tmp_path):
-	_ssh_config(tmp_path, monkeypatch, user="ServerAliveCountMax=10\n")
-	_fake_ssh_g(monkeypatch, {"mock-a": {"serveralivecountmax": "10"}})
-
-	assert _timeout_options(_run(fake_host, monkeypatch)) == {"connecttimeout": "30", "serveraliveinterval": "15"}
-
-
-def test_an_ssh_config_ssh_cannot_read_leaves_mssh_its_defaults(fake_host, monkeypatch, tmp_path):
-	_ssh_config(tmp_path, monkeypatch, user="Host *\n  ConnectTimeout 5\n")
-	monkeypatch.setattr(multiSSH3, "_ssh_config_values", lambda hostname, config_file=None: None)
-
-	assert _timeout_options(_run(fake_host, monkeypatch)) == DEFAULTS
-
-
-def test_options_in_included_files_count(tmp_path, monkeypatch):
-	user_dir, system_dir = _ssh_config(tmp_path, monkeypatch,
-		user="Host *\n  Include conf.d/*.conf\n",
-		system="Include {}/ssh_config.d/*.conf\n".format(tmp_path / "etc-ssh"))
-	(user_dir / "conf.d").mkdir()
-	(user_dir / "conf.d" / "a.conf").write_text("Host db*\n\tServerAliveInterval 30\n")
-	(system_dir / "ssh_config.d").mkdir()
-	(system_dir / "ssh_config.d" / "50-site.conf").write_text("Match host *.lab\n  ConnectTimeout = 3\n")
-
-	keywords = multiSSH3._ssh_config_keywords()
-
-	assert {"serveraliveinterval", "connecttimeout"} <= keywords
-	assert "serveralivecountmax" not in keywords
-
-
-def test_an_include_ssh_expands_itself_makes_every_option_count(tmp_path, monkeypatch):
-	# tokens (%d) and variables (${HOME}): mssh cannot tell which file ssh reads, so ssh -G is asked
-	_ssh_config(tmp_path, monkeypatch, user="Include %d/.ssh/more.conf\n")
-
-	assert multiSSH3._ssh_config_keywords() is None
-
-
-def test_an_include_loop_ends(tmp_path, monkeypatch):
-	user_dir, _ = _ssh_config(tmp_path, monkeypatch, user="Include config\nConnectTimeout 4\n")
-
-	assert "connecttimeout" in multiSSH3._ssh_config_keywords()
-
-
-def test_a_config_file_given_with_extraargs_is_the_one_read(fake_host, monkeypatch, tmp_path):
-	# ssh -F reads that file only
-	_ssh_config(tmp_path, monkeypatch, user="Host *\n  ConnectTimeout 5\n")
-	cluster = tmp_path / "cluster.conf"
-	cluster.write_text("Host *\n  ServerAliveInterval 20\n")
-	asked = _fake_ssh_g(monkeypatch, {"mock-a": {"serveraliveinterval": "20"}})
-
-	argv = _run(fake_host, monkeypatch, extraargs="-F {}".format(cluster))
-
-	assert asked == [("mock-a", str(cluster))]
-	assert _timeout_options(argv) == {"connecttimeout": "30"}
-
-
-@pytest.mark.parametrize("extraargs", ["-FF", "-F --delete", "-F no-such-file"])
-def test_an_F_that_names_no_file_leaves_the_ssh_config_as_it_is(fake_host, monkeypatch, tmp_path, extraargs):
-	# rsync's -FF are filter rules
-	_ssh_config(tmp_path, monkeypatch, user="Host *\n  ConnectTimeout 5\n")
-	asked = _fake_ssh_g(monkeypatch, {"mock-a": {"connecttimeout": "5"}})
-
-	argv = _run(fake_host, monkeypatch, command="/tmp/dest", files=["/tmp/a"], extraargs=extraargs)
-
-	assert asked == ["mock-a"]
-	assert _rsh_options(argv) == {"serveraliveinterval": "15", "serveralivecountmax": "4"}
-
-
 @pytest.mark.skipif(not shutil.which("ssh"), reason="needs OpenSSH's ssh (ssh -G does not connect)")
-def test_real_ssh_reads_the_ssh_config_as_mssh_expects(tmp_path, monkeypatch):
-	# -F: only this file, not the ssh config of the machine running the tests
+def test_real_ssh_takes_extraargs_values_over_the_options_as_mssh_writes_them(tmp_path):
+	# -F: only this file. A command-line -o beats the ssh config, and the first one beats the later
 	config = tmp_path / "config"
-	config.write_text("Host slow\n  ConnectTimeout 120\nHost *\n  ServerAliveInterval 1m\n")
-	monkeypatch.setitem(multiSSH3._binPaths, "ssh", shutil.which("ssh"))
+	config.write_text("Host *\n  ConnectTimeout 7\n  ServerAliveInterval 9\n")
+	options = multiSSH3._ssh_timeout_options()
+	for extra, expected in (([], DEFAULTS), (["-o", "ConnectTimeout=5"], dict(DEFAULTS, connecttimeout="5"))):
+		result = subprocess.run([shutil.which("ssh"), "-F", str(config), "-G"] + extra + options + ["--", "mock-a"],
+			stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
 
-	slow = multiSSH3._ssh_timeout_options("root@slow", ["-F", str(config)])
-	other = multiSSH3._ssh_timeout_options("other", ["-F", str(config)])
-
-	assert _timeout_options(slow) == {}
-	assert _timeout_options(other) == {"connecttimeout": "30"}
-
-
-@pytest.mark.skipif(not shutil.which("ssh"), reason="needs OpenSSH's ssh (ssh -G does not connect)")
-def test_real_ssh_accepts_the_options_as_mssh_writes_them():
-	options = multiSSH3._ssh_timeout_options("mock-a")
-	result = subprocess.run([shutil.which("ssh"), "-F", "/dev/null", "-G"] + options + ["--", "mock-a"],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, universal_newlines=True, timeout=10)
-
-	assert result.returncode == 0, result.stderr
-	shown = dict(line.split(" ", 1) for line in result.stdout.splitlines() if " " in line)
-	assert {keyword: shown[keyword] for keyword in DEFAULTS} == DEFAULTS
+		assert result.returncode == 0, result.stderr
+		shown = dict(line.split(" ", 1) for line in result.stdout.splitlines() if " " in line)
+		assert {keyword: shown[keyword] for keyword in DEFAULTS} == expected
 
 
 def _copy_id_commands(monkeypatch, tmp_path, **kwargs):
