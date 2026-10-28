@@ -508,7 +508,7 @@ SAME_AS_BASH = [
 # where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
 	# not compared with bash: the local file names of the file actions, -G and a command with no compspec, which the
-	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.39: the glue does it
+	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.40: the glue does it
 	# itself)
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
