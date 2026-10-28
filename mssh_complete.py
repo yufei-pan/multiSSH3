@@ -14,7 +14,6 @@ import itertools
 import math
 import os
 import sys
-import stat
 import time
 from bisect import bisect_left
 try:
@@ -1147,50 +1146,27 @@ def _shell_locale(flags):
 	return None
 
 # fish's glue names fish's locale variables in these request flags
-_NAMED_VARIABLES = (('lc_all', 'LC_ALL'), ('lc_ctype', 'LC_CTYPE'), ('lang', 'LANG'))
-
-_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
-
-def _url_unescape(value):
-	'''
-	value with each %XX replaced by the byte it names, the bytes read as UTF-8 (what cannot be is kept as
-	surrogate escapes). This undoes fish's `string escape --style=url`, which writes every byte outside
-	letters, digits and -._~/ as %XX (a space is %20, '+' is %2B); a % that no two hex digits follow stays.
-	'''
-	if '%' not in value:
-		return value
-	first, *rest = value.split('%')
-	data = bytearray(first.encode('utf-8', 'surrogateescape'))
-	for part in rest:
-		if len(part) >= 2 and part[0] in _HEX_DIGITS and part[1] in _HEX_DIGITS:
-			data.append(int(part[:2], 16))
-			part = part[2:]
-		else:
-			data.append(0x25)
-		data += part.encode('utf-8', 'surrogateescape')
-	return data.decode('utf-8', 'surrogateescape')
+_NAMED_VARIABLES = ('lc_all', 'lc_ctype', 'lang')
 
 def _measured_utf8(request):
 	"""
 	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
-	older glue: Engine.unicode then reads the variables the engine was started with). bash's and zsh's
-	glues measure it in the shell (_shell_locale).
-	fish's names the LC_ALL, LC_CTYPE and LANG fish exports, the only ones it follows (lc_all=,
-	lc_ctype=, lang=, escaped as in URLs), resolved here as bash resolves them: in a single-byte locale,
-	C included, fish takes a UTF-8 one instead unless fish_allow_singlebyte_locale is set (fish 3.3 and
-	4.0 alike), so a measure there says UTF-8 where the terminal may show none of it; the variables the
-	operator set say what it shows.
+	older glue: Engine.unicode then draws ASCII). bash's and zsh's glues measure it in the shell
+	(_shell_locale). fish's names the LC_ALL, LC_CTYPE and LANG fish exports (lc_all=, lc_ctype=, lang=,
+	escaped as in URLs): the first one set says it by its name (en_US.UTF-8, C.utf8, macOS's UTF-8). A
+	measure would not: in a single-byte locale fish takes a UTF-8 one for its own reading.
 	"""
 	measured = _shell_locale(request.flags)
 	if measured is not None:
 		return measured[0]
 	if 'lang' not in request.flags:
 		return None
-	variables = {}
-	for flag, name in _NAMED_VARIABLES:
-		value = request.flags.get(flag, '')
-		variables[name] = _url_unescape(value)
-	return _locale_variables_utf8(variables)
+	name = next((request.flags[flag] for flag in _NAMED_VARIABLES if request.flags.get(flag)), '')
+	if '%' in name:
+		from urllib.parse import unquote
+		name = unquote(name, errors='surrogateescape')
+	codeset = name.partition('.')[2] if '.' in name else name
+	return codeset.partition('@')[0].lower().replace('-', '') == 'utf8'
 
 _CODESETS = {}   # locale name -> _locale_codeset(name)
 
@@ -3135,8 +3111,8 @@ class Response(object):
 		self.delegate = None
 		self.ghost = None
 		self.diagnostics = []
-		# whether the reason line may hold Unicode; None: as the variables say
-		self.unicode = None
+		# whether the reason line may hold Unicode
+		self.unicode = False
 
 def _mssh_start(tokens):
 	'''Index of the word that runs mssh in a command line (mssh, sudo mssh, python3 multiSSH3.py, ...), or None.'''
@@ -3277,6 +3253,14 @@ def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
+def _suggested_text(shell, context, rest):
+	'''rest, the text a suggestion adds to the current word, as that word takes it: None in an open quote where it holds what the quote makes special (or a !), else escaped.'''
+	if context.open_quote:
+		if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(shell, context.open_quote, rest):
+			return None
+		return rest
+	return _shell_escape(shell, rest, _literal_word(context)) if rest else rest
+
 def _path_start(path):
 	'''Where a path's last part starts: readline's file name completion matches only that part in any case.'''
 	return path.rfind('/') + 1
@@ -3305,20 +3289,11 @@ class Engine(object):
 		self.no_effect = []
 		# whether the shell runs in a UTF-8 locale, as its glue's request says (_measured_utf8), None if not said
 		self.shell_utf8 = None
-		# _unicode_terminal(), once asked
-		self._unicode = None
 
 	@property
 	def unicode(self):
-		'''
-		Whether to write in Unicode (messages, the picker): as the shell's glue said of its locale, else (an
-		older glue) as the variables say, which are worked out at the first use and kept.
-		'''
-		if self.shell_utf8 is not None:
-			return self.shell_utf8
-		if self._unicode is None:
-			self._unicode = _unicode_terminal()
-		return self._unicode
+		'''Whether to write in Unicode (messages, the picker): as the shell's glue said of its locale; an older glue says nothing, ASCII.'''
+		return bool(self.shell_utf8)
 
 	def query(self, request, deadline=None):
 		ghost = request.flags.get('ghost') == '1'
@@ -3354,14 +3329,7 @@ class Engine(object):
 			# among the hosts listed beside the groups), and _frame drops it
 			if base is not None:
 				context.fold_start = max(context.fold_start, len(base))
-		if context.slot == SLOT_OPTION:
-			candidates = self._options(context, request.shell)
-		elif context.slot == SLOT_VALUE:
-			candidates = self._values(context, response, deadline)
-		elif context.slot == SLOT_HOSTS:
-			candidates = self._hosts(context.value, context, deadline)
-		else:
-			candidates = self._commands(context, response, deadline)
+		candidates = self._slot_candidates(context, deadline, request.shell, response)
 		if request.flags.get('nosort') == '1':
 			response.directives.add('nosort')
 		response.candidates = self._frame(candidates, context, request, base, response.directives)
@@ -3416,12 +3384,7 @@ class Engine(object):
 			if role == ROLE_HOSTS:
 				if not _shell_expands(token, request.shell):
 					found.extend(self._host_diagnostics(token, states, now, wanted, reach))
-				try:
-					split = _brace_split(token, request.shell, self.unicode)
-				except Exception as e:
-					# a word of odd braces must not cost the line its other warnings
-					_debug(lambda: 'brace warning failed: {!r}'.format(e))
-					split = None
+				split = _brace_split(token, request.shell, self.unicode)
 				if split is not None:
 					found.append(split)
 		found.extend(self._option_diagnostics(options))
@@ -3818,15 +3781,11 @@ class Engine(object):
 		share *= self._support(context, top)
 		if share < T_WORD:
 			return self._suggest_shared_start(context, typed, values, request.shell)
-		rest = top[len(typed):]
-		if context.open_quote:
-			closing = '"' if context.open_quote == '"' else "'"
-			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(request.shell, context.open_quote, rest):
-				return None
-			if context.slot == SLOT_COMMAND:
-				rest += closing
-		elif rest:
-			rest = _shell_escape(request.shell, rest, _literal_word(context))
+		rest = _suggested_text(request.shell, context, top[len(typed):])
+		if rest is None:
+			return None
+		if context.open_quote and context.slot == SLOT_COMMAND:
+			rest += '"' if context.open_quote == '"' else "'"
 		continuation, rest_share = self._continuation(context, top, request.shell, deadline)
 		if continuation and rest_share >= T_LINE:
 			return Ghost('line', rest + continuation, min(share, rest_share))
@@ -3842,23 +3801,16 @@ class Engine(object):
 		common = _common_prefix(list(values))
 		if len(common) <= len(typed):
 			return None
-		support = 1.0
-		if SUPPORT > 0:
-			uses = 0
-			for value in values:
-				uses += self.usage(context, value)[0]
-				support = float(uses) / (uses + SUPPORT)
-				if support >= T_WORD:
-					break
+		uses = 0
+		for value in values:
+			uses += self.usage(context, value)[0]
+			support = float(uses) / (uses + SUPPORT)
+			if support >= T_WORD:
+				break
 		if support < T_WORD:
 			return None
-		rest = common[len(typed):]
-		if context.open_quote:
-			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(shell, context.open_quote, rest):
-				return None
-		else:
-			rest = _shell_escape(shell, rest, _literal_word(context))
-		return Ghost('word', rest, support)
+		rest = _suggested_text(shell, context, common[len(typed):])
+		return None if rest is None else Ghost('word', rest, support)
 
 	def _suggest_command_words(self, context, shell, deadline):
 		'''
@@ -3878,13 +3830,13 @@ class Engine(object):
 		top, share = _top_share(commands)
 		if top is None:
 			return None
-		uses = sum(self._uses(feature) for feature in features[top])
-		share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
+		uses = sum(self._uses(feature)[0] for feature in features[top])
+		share *= float(uses) / (uses + SUPPORT)
 		next_words = {}
 		for words, score in commands.items():
 			next_words[words[len(typed) - 1]] = next_words.get(words[len(typed) - 1], 0.0) + score
 		word, word_share = _top_share(next_words)
-		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
+		word_share *= float(uses) / (uses + SUPPORT)
 		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
 		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
 		if more and share >= T_LINE and all(_joinable(extra) for extra in top[len(typed) - 1:]):
@@ -3894,14 +3846,16 @@ class Engine(object):
 			return Ghost('word', word_rest, word_share)
 		return None
 
-	def _uses(self, feature):
-		'''How many times a feature was used, over all knowledge.'''
-		count = 0
-		for knowledge in self.knowledges:
+	def _uses(self, feature, knowledges=None):
+		'''(times used, last used unix time) of a feature, over all knowledge (or the given knowledges).'''
+		count = last = 0
+		for knowledge in self.knowledges if knowledges is None else knowledges:
 			key = knowledge.feature_key(feature)
-			if key is not None and hasattr(knowledge, 'feature_uses'):
-				count += knowledge.feature_uses(key)[0]
-		return count
+			if key is not None:
+				uses, when = knowledge.feature_uses(key)
+				count += uses
+				last = max(last, when)
+		return count, last
 
 	def usage(self, context, value, knowledges=None):
 		'''(times used, last used unix time) of a value of the current slot, over all knowledge (or the given knowledges).'''
@@ -3914,36 +3868,23 @@ class Engine(object):
 			features = ['o:' + option.long] if option else []
 		else:
 			features = [('f:' if context.mode in PATH_MODES else 'c:') + value]
-		best = (0, 0)
-		for feature in features:
-			count = 0
-			last = 0
-			for knowledge in self.knowledges if knowledges is None else knowledges:
-				key = knowledge.feature_key(feature)
-				if key is not None and hasattr(knowledge, 'feature_uses'):
-					uses, when = knowledge.feature_uses(key)
-					count += uses
-					last = max(last, when)
-			best = max(best, (count, last))
-		return best
+		return max([(0, 0)] + [self._uses(feature, knowledges) for feature in features])
 
 	def _support(self, context, value):
 		'''uses / (uses + SUPPORT) for a value of the current slot: evidence behind a suggestion.'''
-		if SUPPORT <= 0:
-			return 1.0
 		uses = self.usage(context, value)[0]
 		return float(uses) / (uses + SUPPORT)
 
-	def _slot_candidates(self, context, deadline):
-		'''The slot values the providers rank for the current slot, unframed.'''
-		scratch = Response(context)
+	def _slot_candidates(self, context, deadline, shell='zsh', response=None):
+		'''The slot values the providers rank for the current slot, unframed (they note directives on response).'''
+		response = Response(context) if response is None else response
 		if context.slot == SLOT_OPTION:
-			return self._options(context, 'zsh')
+			return self._options(context, shell)
 		if context.slot == SLOT_VALUE:
-			return self._values(context, scratch, deadline)
+			return self._values(context, response, deadline)
 		if context.slot == SLOT_HOSTS:
 			return self._hosts(context.value, context, deadline)
-		return self._commands(context, scratch, deadline)
+		return self._commands(context, response, deadline)
 
 	def _continuation(self, context, value, shell, deadline):
 		'''
@@ -4515,7 +4456,7 @@ def fit(text, width):
 	while index < len(text) and used < width:
 		match = None
 		if text[index] in '\x1b\x01\x02':
-			match = _ESCAPES.match(text, index) if _ESCAPES is not None else None
+			match = _ESCAPES.match(text, index)
 		if match:
 			out.append(match.group())
 			index = match.end()
@@ -4790,81 +4731,6 @@ def _age(seconds):
 			return '{}{}'.format(int(seconds // size), unit)
 	return 'now'
 
-def _unicode_terminal():
-	'''
-	Whether the shell runs in a UTF-8 locale, from LC_ALL, LC_CTYPE and LANG resolved as bash resolves them
-	(_locale_variables_utf8): for a request whose glue said nothing of it (Engine.unicode), as zsh's and
-	fish's before 6.38 and 6.36's bash glue do (an installed glue file stays until mssh --completion
-	install runs again). Python's own encoding says UTF-8 in a C or POSIX locale too: from 3.7 it sets
-	LC_CTYPE to C.UTF-8 in os.environ there (PEP 538), and 3.15 always runs in UTF-8 mode. The variables
-	are read as the process was started with them (_exec_environ), which that change leaves alone. Where
-	they cannot be (macOS, the BSDs), os.environ is read, where Python changed LC_CTYPE only where it
-	took C, which also starts its UTF-8 mode: then an
-	LC_CTYPE of C.UTF-8, C.utf8 or UTF-8 may be Python's and draws ASCII, whatever LANG says. UTF-8 mode
-	says so on 3.7 to 3.14, unless PYTHONUTF8 set it: this file runs isolated (-I), which ignores that,
-	but the mssh-complete script pip or uv makes does not, and with PYTHONUTF8 set in its environment
-	(CPython ignores it empty) the mode says nothing (PYTHONCOERCECLOCALE needs nothing: it keeps LC_CTYPE as given). 3.6 changes
-	nothing (RHEL 8's does, where /proc is), and 3.15 always runs in UTF-8 mode, where such an LC_CTYPE
-	always draws ASCII.
-	'''
-	started = _exec_environ()
-	if started is not None:
-		return _locale_variables_utf8(started)
-	mode = getattr(sys.flags, 'utf8_mode', None)
-	told = mode is None or sys.flags.ignore_environment or not os.environ.get('PYTHONUTF8')
-	return _locale_variables_utf8(os.environ, coerced=bool(mode) or not told)
-
-def _exec_environ():
-	'''
-	The environment this process was started with, as Linux keeps it in /proc/self/environ (setenv,
-	which Python's PEP 538 uses, does not change it); None where there is none. A variable set twice
-	is its first value, as getenv, the C library's setlocale, os.environ, zsh and fish take it (bash
-	takes the last, but its glue measures the locale bash runs in).
-	'''
-	try:
-		with open('/proc/self/environ', 'rb') as f:
-			data = f.read()
-	except (IOError, OSError):
-		return None
-	environ = {}
-	for item in data.split(b'\0'):
-		name, sep, value = item.partition(b'=')
-		if sep:
-			environ.setdefault(name.decode('utf-8', 'surrogateescape'), value.decode('utf-8', 'surrogateescape'))
-	return environ
-
-# the locale categories besides LC_CTYPE: with LANG unset, bash keeps C if the C library refuses any
-_OTHER_CATEGORIES = ('LC_NUMERIC', 'LC_TIME', 'LC_COLLATE', 'LC_MONETARY', 'LC_MESSAGES', 'LC_PAPER', 'LC_NAME',
-	'LC_ADDRESS', 'LC_TELEPHONE', 'LC_MEASUREMENT', 'LC_IDENTIFICATION')
-
-def _locale_variables_utf8(environ, coerced=False):
-	'''
-	Whether bash runs in a UTF-8 locale with these variables, resolved as bash does (bash 4.2, 4.4 and 5.2
-	on glibc, checked): LC_ALL if set, C if the C library refuses it; else LANG if set, which it must take
-	(else C), LC_CTYPE taking over if it takes that; else LC_CTYPE, C if it refuses any LC_ variable set.
-	A missing locale is C: ASCII. coerced: environ may be os.environ after Python's PEP 538, which sets
-	LC_CTYPE to C.UTF-8 (C.utf8, UTF-8) where it took C (C, UTF-8 or a missing locale), whatever LANG
-	is: with LC_ALL unset, that cannot be told from the operator's own C.UTF-8, and draws ASCII
-	(unreadable is worse than plain)
-	'''
-	def utf8(name):
-		return _utf8_codeset(_locale_codeset(name))
-	if environ.get('LC_ALL'):
-		return utf8(environ['LC_ALL'])
-	lang = environ.get('LANG')
-	ctype = environ.get('LC_CTYPE')
-	if coerced and ctype in ('C.UTF-8', 'C.utf8', 'UTF-8'):
-		return False
-	if lang:
-		if _locale_codeset(lang) is None:
-			return False
-		if ctype and _locale_codeset(ctype) is not None:
-			return utf8(ctype)
-		return utf8(lang)
-	if any(environ.get(name) and _locale_codeset(environ[name]) is None for name in _OTHER_CATEGORIES):
-		return False
-	return bool(ctype) and utf8(ctype)
-
 class Picker(object):
 	'''
 	The Ctrl-R menu as state: a slot tab (candidates for the word at the cursor) and a history tab
@@ -4880,7 +4746,7 @@ class Picker(object):
 		self.selected = 0
 		self.offset = 0
 		self.now = time.time() if now is None else now
-		self.unicode = _unicode_terminal() if unicode is None else unicode
+		self.unicode = bool(unicode)
 		# text typed right behind the Enter that chose: it goes after the choice (apply_pick)
 		self.typed_after = ''
 
@@ -5137,11 +5003,10 @@ class Picker(object):
 		term.write('\n' * lines + '\x1b[{}A\x1b7'.format(lines))
 		return up, row, cursor
 
-def reason_line(diagnostics, unicode=None):
+def reason_line(diagnostics, unicode=False):
 	'''The one line shown under the prompt: the first warning, and how many more there are ('' for none).'''
 	if not diagnostics:
 		return ''
-	unicode = _unicode_terminal() if unicode is None else unicode
 	more = len(diagnostics) - 1
 	return '{} {}{}'.format('⚠' if unicode else '!', diagnostics[0].message, ' (+{} more)'.format(more) if more else '')
 
@@ -5153,32 +5018,6 @@ def picker_warnings(engine, request):
 		_debug(lambda: 'diagnostics failed: {!r}'.format(e))
 		return []
 	return [item.message for item in found[:3]]
-
-def _without_passwords(line, spec):
-	'''
-	An mssh line with the passwords it gives shown as ***, for the debug log: -p VALUE, -pVALUE, -p=VALUE,
-	--password VALUE, the abbreviations mssh took before 6.32, -qpVALUE, the ipmi password's spellings.
-	'''
-	tokens = lex(line)
-	start = _mssh_start(tokens)
-	if start is None:
-		return line
-	words = tokens[start + 1:]
-	parts = []
-	end = 0
-	for token, (role, option) in zip(words, assign_roles(words, spec)):
-		if option is None or option.dest not in PASSWORD_DESTS or role not in (ROLE_OPTION, ROLE_VALUE):
-			continue
-		if role == ROLE_VALUE:
-			shown = '***'
-		else:
-			attached = spec.lookup(token.text)[1]
-			if attached is None:
-				continue
-			shown = token.text[:len(token.text) - len(attached)] + '***'
-		parts.append(line[end:token.start] + shown)
-		end = token.start + len(token.raw)
-	return ''.join(parts) + line[end:]
 
 def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
@@ -5354,8 +5193,10 @@ class LineEditor(object):
 		self.reason = ''
 		self._warned_for = None
 		self._asks = []
-		# whether the reason line may hold Unicode; None: as the variables say
+		# whether the reason line may hold Unicode
 		self.unicode = unicode
+		# the row of the cursor below the prompt's row, as drawn
+		self._row = 0
 
 	def refresh(self):
 		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
@@ -5565,7 +5406,7 @@ class LineEditor(object):
 		ghost = (style + self.ghost + '\x1b[0m') if (style and self.ghost) else ''
 		reason = fit(_printable(self.reason), width - 1) if self.reason else ''
 		out = []
-		if getattr(self, '_row', 0):
+		if self._row:
 			out.append('\x1b[{}A'.format(self._row))
 		out.append('\r' + prompt + self._marked_text() + ghost)
 		end_row = rows - 1
@@ -5587,7 +5428,7 @@ class LineEditor(object):
 
 	def erase(self, term):
 		'''Erase what the editor drew; the cursor ends at the start of the prompt's row.'''
-		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r\x1b[J')
+		term.write(('\x1b[{}A'.format(self._row) if self._row else '') + '\r\x1b[J')
 		self._row = 0
 
 	def interrupted(self, term, prompt):
@@ -5595,7 +5436,7 @@ class LineEditor(object):
 		Leave the screen as bash leaves it after Ctrl-C: the prompt and the text as typed (no grey
 		suggestion, no warning), ^C, and the cursor at the start of the next row.
 		'''
-		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r' + prompt + self.text + '^C\x1b[J\r\n')
+		term.write(('\x1b[{}A'.format(self._row) if self._row else '') + '\r' + prompt + self.text + '^C\x1b[J\r\n')
 		self._row = 0
 
 	def run(self, term, prompt, style=None):
@@ -6528,7 +6369,7 @@ _mssh_complete_run_edit() {
 	local _mssh_complete_locale
 	_mssh_complete_read_locale
 	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" ${_mssh_complete_edit_args[@]+"${_mssh_complete_edit_args[@]}"} -- "$READLINE_LINE " 2>/dev/null
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" -- "$READLINE_LINE " 2>/dev/null
 	return "${PIPESTATUS[1]}"
 }
 
@@ -6541,7 +6382,6 @@ _mssh_complete_space_key() {
 	# prefixed: the prompt's expansions run inside (_mssh_complete_prompt)
 	local _mssh_complete_shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
-	local -a _mssh_complete_edit_args=()
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
 		mssh|mssh3|multissh|multissh3|multiSSH3)
@@ -8500,35 +8340,14 @@ def _ready():
 	except OSError:
 		return False
 
-def _launch_age(fd=1):
-	'''
-	Seconds since the shell's glue started the picker, None where that cannot be told.
-
-	START_SCRIPT makes the file the picker's answer goes to just before it starts the picker, and
-	nothing is written to it until the picker is done: when fd (the picker's stdout) is that file, its
-	modification time is the launch. This counts what the picker's own clock cannot, python starting
-	and loading this file, which is most of what a shell's MSSH_COMPLETE_START_TIMEOUT is spent on.
-	It is the wall clock against the file system's, so a few milliseconds are rounding.
-	'''
-	try:
-		status = os.fstat(fd)
-		if not stat.S_ISREG(status.st_mode):
-			return None
-		return max(0.0, time.time() - status.st_mtime)
-	except OSError:
-		return None
-
-def _claim_terminal(started=None):
+def _claim_terminal():
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
 
 	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
 	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
-	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
-	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
-	Both times are given: since the picker's command ran, and since the shell launched it (_launch_age,
-	which includes starting python).
+	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -8537,17 +8356,11 @@ def _claim_terminal(started=None):
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		def took():
-			if started is None:
-				return ''
-			age = _launch_age()
-			return ', {:.3f} s into the picker{}'.format(time.monotonic() - started,
-				'' if age is None else ', {:.3f} s since the shell launched it'.format(age))
 		if isinstance(e, (FileExistsError, FileNotFoundError)):
 			# the shell claimed it first (its directory is there), or cleaned its directory up
-			_debug(lambda: 'pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took(), e))
+			_debug(lambda: 'pick: the shell went on before the claim: the terminal is left alone ({!r})'.format(e))
 		else:
-			_debug(lambda: 'pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took(), e))
+			_debug(lambda: 'pick: the claim on the terminal failed: the terminal is left alone ({!r})'.format(e))
 		return False
 
 def _cmd_pick():
@@ -8578,7 +8391,7 @@ def _cmd_pick():
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
 		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
-		if not _claim_terminal(started):
+		if not _claim_terminal():
 			return 2
 		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
@@ -8627,7 +8440,7 @@ def editor_completions(engine, before):
 		return [], ''
 	response = engine.query(Request('bash', before, '', context.prefix, flags={'insert': '1'}))
 	texts = [word + candidate.text[len(context.prefix):] for candidate in response.candidates if candidate.text.startswith(context.prefix)]
-	if {'files', 'dirs'} & set(response.directives):
+	if 'files' in response.directives:
 		directory, slash, start = context.value.rpartition('/')
 		listed = os.path.expanduser(directory + slash) if slash else '.'
 		try:
@@ -8642,8 +8455,6 @@ def editor_completions(engine, before):
 			if not name.startswith(start) or _has_control(name):
 				continue
 			is_dir = os.path.isdir(os.path.join(listed, name))
-			if not is_dir and 'files' not in response.directives:
-				continue
 			rest = name[len(start):] + ('/' if is_dir else '')
 			if context.open_quote:
 				if any(char in unsafe for char in rest):
@@ -8656,9 +8467,9 @@ def editor_completions(engine, before):
 
 def _cmd_edit(args):
 	'''
-	mssh-complete edit [--expand] [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line.
+	mssh-complete edit [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line (bash 4.4+).
 
-	The prompt to redraw is in $MSSH_COMPLETE_PROMPT (PS1 itself with --expand); stdin holds the
+	The prompt to redraw is in $MSSH_COMPLETE_PROMPT, expanded; stdin holds the
 	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
 	replays keys, written as a readline key sequence; abandon: drop the line), E. Exit 3 when the
 	editor cannot start; the shell then goes on as if it had not been asked. With --ready, "ready"
@@ -8666,15 +8477,16 @@ def _cmd_edit(args):
 	'''
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
-	parser.add_argument('--expand', action='store_true')
 	parser.add_argument('--ready', action='store_true')
+	# taken and ignored: no released glue passes it (the editor needs bash 4.4, which expands PS1 itself)
+	parser.add_argument('--expand', action='store_true', help=argparse.SUPPRESS)
 	# request flags from bash's glue: the locale it measured in the shell (utf8, turkic)
 	parser.add_argument('--flags', default='')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
 	flags = parse_flags(options.flags)
 	started = time.monotonic()
-	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
+	prompt = _prompt_from_flags({'redraw': '1'}) or ''
 	history = []
 	if not sys.stdin.isatty():
 		data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')
@@ -8720,7 +8532,7 @@ def _cmd_edit(args):
 	try:
 		with term:
 			# logged once the terminal is taken, as pick does: keys typed before that are echoed by it
-			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
+			_debug(lambda: 'edit: ready {:.3f} s in'.format(time.monotonic() - started))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
 		_debug(lambda: 'editor failed: {!r}\n{}'.format(e, _traceback()))
@@ -8733,8 +8545,7 @@ def _cmd_edit(args):
 		_debug(lambda: 'edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
-	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
-		time.monotonic() - started))
+	_debug(lambda: 'edit: {}, {:.3f} s in'.format(action or 'done', time.monotonic() - started))
 	return 0
 
 def _cmd_rebuild(args):
