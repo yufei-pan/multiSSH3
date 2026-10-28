@@ -5611,6 +5611,11 @@ def _history_items(engine, history_lines, name, features):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		numbers[text] = len(entries)
+		if '"' in fields[4] and entry is not None:
+			# mssh 6.26 and older wrote commands in double quotes, where the shell expands $, ` and ! again:
+			# the commands mssh ran, quoted as mssh quotes them now
+			import shlex
+			text = ' '.join([name] + parts[:-1] + [shlex.quote(command) for command in entry.commands])
 		if entry is None:
 			entries.append([0, 0, text, 1])
 		else:
@@ -5659,69 +5664,11 @@ def picker_items(request, engine, history_lines, now=None):
 			title = 'commands for ' + context.hosts if context.hosts else 'commands'
 	return slot, title, history, word
 
-def _bangs_out(text, after_dollar):
-	'''Double quoted text (its quotes left out) as bangs_out_of_double_quotes writes it, quotes included.'''
-	pieces = ['']
-	position = 0
-	while position < len(text):
-		char = text[position]
-		if char == '\\':
-			pieces[-1] += text[position:position + 2]
-			position += 2
-			continue
-		# $! is a parameter (zsh also takes flags between: $=!, $#!)
-		if char == '!' and text[position + 1:position + 2] not in (' ', '\t', '=') and not pieces[-1].rstrip('=~^#+').endswith('$'):
-			pieces.append('')
-		else:
-			pieces[-1] += char
-		position += 1
-	if len(pieces) == 1:
-		return '"' + text + '"'
-	# no empty "" next to a ! (but the one after a $ stays: bash reads $"..." as a translated string)
-	return '\\!'.join('"' + piece + '"' if piece or (number == 0 and after_dollar) else '' for number, piece in enumerate(pieces))
-
-def bangs_out_of_double_quotes(line):
-	'''
-	line with each ! that bash or zsh would expand inside double quotes taken out of them, escaped:
-	"a!b" -> "a"\\!"b", "done!" -> "done"\\!. The words mean what they meant. Left as they are: a ! outside
-	double quotes, before a blank or =, or in $! (none of which bash expands), and the rest of the line
-	from double quotes holding ${, $( or ` on, since the shell reads quotes inside those again.
-	'''
-	out = []
-	index = 0
-	while index < len(line):
-		char = line[index]
-		end = index + 1
-		if char == '\\':
-			end = index + 2
-		elif char == "'" or line.startswith("$'", index):
-			# nothing expands in single quotes; in $'...' a backslash escapes the quote
-			end = index + (2 if char == '$' else 1)
-			while end < len(line) and line[end] != "'":
-				end += 2 if char == '$' and line[end] == '\\' else 1
-			end += 1
-		elif char == '"':
-			while end < len(line) and line[end] != '"':
-				end += 2 if line[end] == '\\' else 1
-			text = line[index + 1:end]
-			if end >= len(line) or '`' in text or '$(' in text or '${' in text:
-				# where these quotes end, and so how the rest reads, is not sure
-				out.append(line[index:])
-				break
-			out.append(_bangs_out(text, out[-1:] == ['$']))
-			index = end + 1
-			continue
-		out.append(line[index:end])
-		index = end
-	return ''.join(out)
-
 def apply_pick(request, picker, word, context):
 	'''The new line and cursor after a choice: (line, cursor); text typed right behind the Enter that chose follows it.'''
 	item = picker.chosen()
 	if picker.tab == 'history':
-		# a line recorded in double quotes (mssh 6.26 and older) may hold a ! the shell would expand
-		text = bangs_out_of_double_quotes(item.text) if request.shell in _BANG_SHELLS else item.text
-		return text + picker.typed_after, len(text) + len(picker.typed_after)
+		return item.text + picker.typed_after, len(item.text) + len(picker.typed_after)
 	suffix = ' '
 	if context is not None and context.open_quote:
 		suffix = ('"' if context.open_quote == '"' else "'") + ' '

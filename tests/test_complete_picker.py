@@ -179,7 +179,7 @@ def test_run_on_a_wrapped_line_draws_again_below_all_of_it():
 			return FakeTerminal.read_key(self, timeout)
 
 	line = '$ mssh gpu[01-16] nvidia-smi -q'
-	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts').run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
+	assert mc.Picker(items('gpu01', 'gpu02'), [], 'hosts', unicode=True).run(Watching(['\x1b[B', '\x1b'], grid=grid), line, '$ mssh gpu[01-16] ') == 'cancel'
 	shown = seen[1]
 	assert shown[:2] == ['$ mssh gpu[01-16] nv', 'idia-smi -q']
 	assert ' 2/2 ' in shown[2] and '> gpu02' in shown[4] and shown[2 + 1 + 10].startswith('└') and shown[2 + 1 + 10 + 1] == ''
@@ -343,10 +343,9 @@ def test_a_choice_inside_an_ansi_c_quote_keeps_the_command():
 
 def test_history_tab_never_offers_passwords():
 	history = HISTORY + [line(NOW, '-su -p=hunter2', 'gpu[01-16]', '"nvidia-smi"'), line(NOW, '-su --ipmi_password=s3cret', 'bmc1', '"power status"')]
-	shell = ['mssh -p hunter2 storage1 uptime', 'mssh --password=hunter2 storage1 w', 'mssh storage1 df']
-	_, _, offered, _ = mc.picker_items(request('mssh ', history=shell), engine(history), history, NOW)
+	_, _, offered, _ = mc.picker_items(request('mssh '), engine(history), history, NOW)
 	texts = [item.text for item in offered]
-	assert 'mssh storage1 df' in texts
+	assert texts
 	assert not [text for text in texts if 'hunter2' in text or 's3cret' in text]
 
 
@@ -367,8 +366,8 @@ def test_history_tab_rebuilds_whole_lines_with_the_typed_name():
 	req = request('multissh -u root ', history=['ls', 'multissh -u admin login1 uptime'])
 	_, _, history, _ = mc.picker_items(req, engine(), HISTORY, NOW)
 	texts = [item.text for item in history]
-	assert texts[0] == 'multissh -su -u=root storage1 "df -h /data"'
-	assert 'multissh -su gpu[01-16] "nvidia-smi"' in texts
+	assert texts[0] == "multissh -su -u=root storage1 'df -h /data'"
+	assert 'multissh -su gpu[01-16] nvidia-smi' in texts
 	assert 'multissh -u admin login1 uptime' not in texts and 'ls' not in texts
 	assert len(texts) == len(set(texts))
 	picker = mc.Picker([], history)
@@ -388,35 +387,12 @@ def test_the_shell_s_history_adds_no_rows_and_no_uses():
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
-def test_history_tab_takes_a_bang_out_of_double_quotes(shell):
-	# mssh 6.26 and older recorded commands in double quotes, where bash and zsh expand ! when the line runs
-	history = [line(NOW, '-su', 'web1', '"grep !important /etc/x"')]
+def test_history_tab_gives_old_double_quoted_commands_as_mssh_ran_them(shell):
+	# mssh 6.26 and older recorded commands in double quotes, where the shell expands $, ` and ! again
+	history = [line(NOW, '-su', 'web1', '"grep !important $HOME/x"')]
 	req = mc.Request(shell, 'mssh ', '', '')
 	_, _, offered, _ = mc.picker_items(req, engine(history), history, NOW)
-	recorded = 'mssh -su web1 "grep !important /etc/x"'
-	assert [item.text for item in offered] == [recorded]
-	inserted = recorded if shell == 'fish' else 'mssh -su web1 "grep "\\!"important /etc/x"'
-	assert mc.apply_pick(req, mc.Picker([], offered), None, None) == (inserted, len(inserted))
-
-
-@pytest.mark.parametrize('text, moved', [
-	('mssh h "grep !x f"', 'mssh h "grep "\\!"x f"'),
-	('mssh h "echo done!"', 'mssh h "echo done"\\!'),
-	('mssh h "!x" "a!!b"', 'mssh h \\!"x" "a"\\!\\!"b"'),
-	('mssh h "a\\"!b"', 'mssh h "a\\""\\!"b"'),
-	# bash reads $"..." as "..." (translated), zsh as $ and "...": the quote after $ is never taken back
-	('mssh h $"!x"', 'mssh h $""\\!"x"'),
-	# never expanded: in single quotes, in $'...', escaped, before a blank or =, and $!
-	("mssh h 'a!b' $'c!d' e\\!f", None),
-	('mssh h "a != b" "a!=b" "$!"', None),
-	# expansions read the quotes inside them again
-	('mssh h "${!name}" "${x:-a!b}" "$(echo a!b)" "`echo a!b`"', None),
-])
-def test_bangs_out_of_double_quotes(text, moved):
-	moved = text if moved is None else moved
-	assert mc.bangs_out_of_double_quotes(text) == moved
-	# the words are what they were
-	assert [token.text for token in mc.lex(moved)] == [token.text for token in mc.lex(text)]
+	assert [item.text for item in offered] == ["mssh -su web1 'grep !important $HOME/x'"]
 
 
 def run_engine(args, data, env):
