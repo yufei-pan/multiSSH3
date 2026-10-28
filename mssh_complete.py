@@ -13,7 +13,6 @@ building the index (`mssh-complete rebuild`) imports multiSSH3.
 import math
 import os
 import sys
-import stat
 import time
 from bisect import bisect_left
 
@@ -5451,32 +5450,6 @@ def picker_warnings(engine, request):
 		return []
 	return [item.message for item in found[:3]]
 
-def _without_passwords(line, spec):
-	'''
-	An mssh line with the passwords it gives shown as ***, for the debug log: -p VALUE, -pVALUE, -p=VALUE,
-	--password VALUE, the abbreviations mssh took before 6.32, -qpVALUE, the ipmi password's spellings.
-	'''
-	tokens = lex(line)
-	start = _mssh_start(tokens)
-	if start is None:
-		return line
-	words = tokens[start + 1:]
-	parts = []
-	end = 0
-	for token, (role, option) in zip(words, assign_roles(words, spec)):
-		if option is None or option.dest not in PASSWORD_DESTS or role not in (ROLE_OPTION, ROLE_VALUE):
-			continue
-		if role == ROLE_VALUE:
-			shown = '***'
-		else:
-			attached = spec.lookup(token.text)[1]
-			if attached is None:
-				continue
-			shown = token.text[:len(token.text) - len(attached)] + '***'
-		parts.append(line[end:token.start] + shown)
-		end = token.start + len(token.raw)
-	return ''.join(parts) + line[end:]
-
 def _sets_password(words, spec):
 	'''Whether mssh words (options, hosts, commands; no program name) give a password option.'''
 	return any(option is not None and option.dest in PASSWORD_DESTS for _, option in assign_roles(words, spec))
@@ -9352,35 +9325,14 @@ def _ready():
 	except OSError:
 		return False
 
-def _launch_age(fd=1):
-	'''
-	Seconds since the shell's glue started the picker, None where that cannot be told.
-
-	START_SCRIPT makes the file the picker's answer goes to just before it starts the picker, and
-	nothing is written to it until the picker is done: when fd (the picker's stdout) is that file, its
-	modification time is the launch. This counts what the picker's own clock cannot, python starting
-	and loading this file, which is most of what a shell's MSSH_COMPLETE_START_TIMEOUT is spent on.
-	It is the wall clock against the file system's, so a few milliseconds are rounding.
-	'''
-	try:
-		status = os.fstat(fd)
-		if not stat.S_ISREG(status.st_mode):
-			return None
-		return max(0.0, time.time() - status.st_mtime)
-	except OSError:
-		return None
-
-def _claim_terminal(started=None):
+def _claim_terminal():
 	'''
 	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
 
 	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
 	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
 	only, so a picker slow to start never draws after the shell went on. True when the terminal is
-	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it). started, the time.monotonic() the picker
-	started at, puts how slowly it did into the log line of a claim refused: that explains a lost claim.
-	Both times are given: since the picker's command ran, and since the shell launched it (_launch_age,
-	which includes starting python).
+	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -9389,17 +9341,11 @@ def _claim_terminal(started=None):
 		os.mkdir(path, 0o700)
 		return True
 	except OSError as e:
-		def took():
-			if started is None:
-				return ''
-			age = _launch_age()
-			return ', {:.3f} s into the picker{}'.format(time.monotonic() - started,
-				'' if age is None else ', {:.3f} s since the shell launched it'.format(age))
 		if isinstance(e, (FileExistsError, FileNotFoundError)):
 			# the shell claimed it first (its directory is there), or cleaned its directory up
-			_debug(lambda: 'pick: the shell went on before the claim{}: the terminal is left alone ({!r})'.format(took(), e))
+			_debug(lambda: 'pick: the shell went on before the claim: the terminal is left alone ({!r})'.format(e))
 		else:
-			_debug(lambda: 'pick: the claim on the terminal failed{}: the terminal is left alone ({!r})'.format(took(), e))
+			_debug(lambda: 'pick: the claim on the terminal failed: the terminal is left alone ({!r})'.format(e))
 		return False
 
 def _cmd_pick():
@@ -9430,7 +9376,7 @@ def _cmd_pick():
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
 		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
-		if not _claim_terminal(started):
+		if not _claim_terminal():
 			return 2
 		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
@@ -9572,7 +9518,7 @@ def _cmd_edit(args):
 	try:
 		with term:
 			# logged once the terminal is taken, as pick does: keys typed before that are echoed by it
-			_debug(lambda: 'edit: ready {:.3f} s in, on {!r}'.format(time.monotonic() - started, _without_passwords(options.text, engine.spec)))
+			_debug(lambda: 'edit: ready {:.3f} s in'.format(time.monotonic() - started))
 			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
 	except Exception as e:
 		_debug(lambda: 'editor failed: {!r}\n{}'.format(e, _traceback()))
@@ -9585,8 +9531,7 @@ def _cmd_edit(args):
 		_debug(lambda: 'edit: the answer did not reach the shell: {!r}'.format(e))
 		raise
 	# after the answer: nothing here may change the exit status (the glue drops the answer of a failure)
-	_debug(lambda: 'edit: {} {!r} at {}, {:.3f} s in'.format(action or 'done', _without_passwords(editor.text, engine.spec), editor.cursor,
-		time.monotonic() - started))
+	_debug(lambda: 'edit: {}, {:.3f} s in'.format(action or 'done', time.monotonic() - started))
 	return 0
 
 def _cmd_rebuild(args):

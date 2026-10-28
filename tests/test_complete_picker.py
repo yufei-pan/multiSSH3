@@ -1,5 +1,4 @@
 '''The Ctrl-R picker: fuzzy filter, keys, drawing below the prompt, and what a choice does to the line.'''
-import re
 import sys
 import time
 
@@ -657,33 +656,6 @@ def patched_engine(patch, ascii_locale=False):
 	return [sys.executable, '-I'] + (['-X', 'utf8=0'] if ascii_locale else []) + ['-c', PATCHED_ENGINE, os.path.dirname(mc.__file__), patch]
 
 
-@pytest.mark.parametrize('debug', ['1', '0'])
-def test_edit_delivers_its_answer_whatever_its_debug_messages_do(tmp_path, debug):
-	# _without_passwords made the editor's debug messages, debug on or off: raising before the editor ran it
-	# fell back to pass, and after the answer was written it made the exit status 1, so the glue dropped the line
-	import os
-	import subprocess
-	from complete_shell_harness import make_home, with_debug_log
-	env, _ = make_home(tmp_path, HISTORY)
-	env = with_debug_log(env, debug)
-	patch = 'def boom(*args): raise RuntimeError("boom")\nmc._without_passwords = boom'
-	process, master, read_end = start_on_a_terminal(['edit', '--ready', '--', 'mssh '], None, env, listening=True,
-		command=patched_engine(patch), stderr=subprocess.PIPE)
-	try:
-		assert terminal_output(read_end, 10.0, until=b'\n') == b'ready\n'
-		assert b'mssh ' in terminal_output(master, 10.0, until=b'mssh ')
-		os.write(master, b'h\r')
-		assert process.wait(20) == 0, process.stderr.read()
-		# the line the editor made, and Enter handed back to readline (the fallback hands back no key)
-		assert terminal_output(read_end, 2.0) == b'MSSHC1\nL 6\tmssh h\nK pass\t\\C-m\nE\n'
-	finally:
-		process.kill()
-		process.wait()
-		process.stderr.close()
-		os.close(master)
-		os.close(read_end)
-
-
 def test_a_debug_message_the_locale_cannot_write_still_lets_pick_fall_back(tmp_path):
 	# in C, not in UTF-8 mode (Python 3.6 there), the log took the locale's encoding: the failure message,
 	# quoting "— … ⚠", raised writing it, and pick ended 1 (cancelled) for 2 (do what Ctrl-R did)
@@ -824,19 +796,6 @@ def test_history_past_what_the_picker_shows_is_not_parsed(monkeypatch):
 	assert parses(2000) == parses(20)
 
 
-@pytest.mark.parametrize('line', [
-	'mssh -p hunter2 web1 uptime', 'mssh -phunter2 web1 uptime', 'mssh -p=hunter2 web1 uptime',
-	'mssh --password hunter2 web1 uptime', 'mssh --password=hunter2 web1 uptime', 'mssh --pass hunter2 web1 uptime',
-	'mssh -qp hunter2 web1 uptime', 'mssh -qphunter2 web1 uptime', 'mssh -ip hunter2 -M bmc1 power status',
-	"mssh --ipmi_password='hunter2' -M bmc1 power status", 'mssh web1 -p hunter2 uptime'])
-def test_the_debug_log_shows_a_line_without_its_passwords(line):
-	# make_home turns the log on for every shell test, and a failed test's report carries it
-	masked = mc._without_passwords(line, SPEC)
-	assert 'hunter2' not in masked and '***' in masked
-	assert masked.replace('***', '') == line.replace('hunter2', '').replace("''", '')
-	assert mc._without_passwords('mssh -u root web1 uptime', SPEC) == 'mssh -u root web1 uptime'
-
-
 def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
 	# zsh and fish make the claim: when the shell went on, its own line said so, and a second blamed "ready",
 	# which zsh never asked for
@@ -852,39 +811,7 @@ def test_pick_refused_the_terminal_logs_once_why(tmp_path, monkeypatch):
 	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK)))
 	assert mc._cmd_pick() == 2
 	logged = [message for message in logged if message.startswith('pick:')]
-	assert len(logged) == 1 and 'claim' in logged[0] and 'ready' not in logged[0], logged
-	# how slowly the picker started is what explains a lost claim
-	assert 's in' in logged[0] and 'went on' in logged[0], logged
-
-
-def test_a_refused_claim_logs_the_time_since_the_shell_launched_the_picker(tmp_path, monkeypatch):
-	# python starting and loading the module come before the picker's own clock and are what use up the
-	# shell's timeout: the launch is the creation of the file the answer goes to (START_SCRIPT)
-	import io
-	import os
-	claim = tmp_path / 'claim'
-	claim.mkdir()
-	answer = tmp_path / 'answer'
-	answer.write_bytes(b'')
-	os.utime(str(answer), (time.time() - 1.9, time.time() - 1.9))
-	logged = []
-	monkeypatch.setattr(mc, '_debug', lambda message: logged.append(message() if callable(message) else message))
-	monkeypatch.setenv('MSSH_COMPLETE_CLAIM', str(claim))
-	real = mc._launch_age
-	with open(str(answer), 'ab') as f:
-		with monkeypatch.context() as patch:
-			patch.setattr(mc, '_launch_age', lambda fd=1: real(f.fileno()))
-			assert mc._claim_terminal(time.monotonic()) is False
-	assert len(logged) == 1 and 'went on' in logged[0], logged
-	match = re.search(r'([0-9.]+) s into the picker, ([0-9.]+) s since the shell launched it', logged[0])
-	assert match and float(match.group(1)) < 0.5 and 1.8 < float(match.group(2)) < 5, logged
-	# stdout that is no file (bash's pipe) tells nothing
-	read, write = os.pipe()
-	try:
-		assert mc._launch_age(write) is None
-	finally:
-		os.close(read)
-		os.close(write)
+	assert len(logged) == 1 and 'claim' in logged[0] and 'ready' not in logged[0] and 'went on' in logged[0], logged
 
 
 @pytest.mark.parametrize('error', [PermissionError(13, 'Permission denied'), OSError(30, 'Read-only file system'), OSError(28, 'No space left on device')])
@@ -898,8 +825,8 @@ def test_a_claim_that_failed_for_another_reason_does_not_blame_the_shell(tmp_pat
 	def refuse(*args):
 		raise error
 	monkeypatch.setattr(os, 'mkdir', refuse)
-	assert mc._claim_terminal(time.monotonic()) is False
-	assert len(logged) == 1 and 'went on' not in logged[0] and error.strerror in logged[0] and ' s in' in logged[0], logged
+	assert mc._claim_terminal() is False
+	assert len(logged) == 1 and 'went on' not in logged[0] and error.strerror in logged[0], logged
 
 
 def test_pick_falls_back_when_the_failure_cannot_be_shown(tmp_path, monkeypatch):
