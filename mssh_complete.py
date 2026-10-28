@@ -3655,6 +3655,14 @@ def _literal_word(context):
 	'''Whether the current word is taken literally: a word of the remote command, or a path.'''
 	return context.slot == SLOT_COMMAND or (context.slot == SLOT_VALUE and context.option.dest in PATH_DESTS)
 
+def _suggested_text(shell, context, rest):
+	'''rest, the text a suggestion adds to the current word, as that word takes it: None in an open quote where it holds what the quote makes special (or a !), else escaped.'''
+	if context.open_quote:
+		if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(shell, context.open_quote, rest):
+			return None
+		return rest
+	return _shell_escape(shell, rest, _literal_word(context)) if rest else rest
+
 def _path_start(path):
 	'''Where a path's last part starts: readline's file name completion matches only that part in any case.'''
 	return path.rfind('/') + 1
@@ -3723,14 +3731,7 @@ class Engine(object):
 			# among the hosts listed beside the groups), and _frame drops it
 			if base is not None:
 				context.fold_start = max(context.fold_start, len(base))
-		if context.slot == SLOT_OPTION:
-			candidates = self._options(context, request.shell)
-		elif context.slot == SLOT_VALUE:
-			candidates = self._values(context, response, deadline)
-		elif context.slot == SLOT_HOSTS:
-			candidates = self._hosts(context.value, context, deadline)
-		else:
-			candidates = self._commands(context, response, deadline)
+		candidates = self._slot_candidates(context, deadline, request.shell, response)
 		if request.flags.get('nosort') == '1':
 			response.directives.add('nosort')
 		response.candidates = self._frame(candidates, context, request, base, response.directives)
@@ -4185,15 +4186,11 @@ class Engine(object):
 		share *= self._support(context, top)
 		if share < T_WORD:
 			return self._suggest_shared_start(context, typed, values, request.shell)
-		rest = top[len(typed):]
-		if context.open_quote:
-			closing = '"' if context.open_quote == '"' else "'"
-			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(request.shell, context.open_quote, rest):
-				return None
-			if context.slot == SLOT_COMMAND:
-				rest += closing
-		elif rest:
-			rest = _shell_escape(request.shell, rest, _literal_word(context))
+		rest = _suggested_text(request.shell, context, top[len(typed):])
+		if rest is None:
+			return None
+		if context.open_quote and context.slot == SLOT_COMMAND:
+			rest += '"' if context.open_quote == '"' else "'"
 		continuation, rest_share = self._continuation(context, top, request.shell, deadline)
 		if continuation and rest_share >= T_LINE:
 			return Ghost('line', rest + continuation, min(share, rest_share))
@@ -4217,13 +4214,8 @@ class Engine(object):
 				break
 		if support < T_WORD:
 			return None
-		rest = common[len(typed):]
-		if context.open_quote:
-			if any(char in _QUOTE_SPECIAL[context.open_quote] for char in rest) or _bang_in_double_quotes(shell, context.open_quote, rest):
-				return None
-		else:
-			rest = _shell_escape(shell, rest, _literal_word(context))
-		return Ghost('word', rest, support)
+		rest = _suggested_text(shell, context, common[len(typed):])
+		return None if rest is None else Ghost('word', rest, support)
 
 	def _suggest_command_words(self, context, shell, deadline):
 		'''
@@ -4288,16 +4280,16 @@ class Engine(object):
 		uses = self.usage(context, value)[0]
 		return float(uses) / (uses + SUPPORT)
 
-	def _slot_candidates(self, context, deadline):
-		'''The slot values the providers rank for the current slot, unframed.'''
-		scratch = Response(context)
+	def _slot_candidates(self, context, deadline, shell='zsh', response=None):
+		'''The slot values the providers rank for the current slot, unframed (they note directives on response).'''
+		response = Response(context) if response is None else response
 		if context.slot == SLOT_OPTION:
-			return self._options(context, 'zsh')
+			return self._options(context, shell)
 		if context.slot == SLOT_VALUE:
-			return self._values(context, scratch, deadline)
+			return self._values(context, response, deadline)
 		if context.slot == SLOT_HOSTS:
 			return self._hosts(context.value, context, deadline)
-		return self._commands(context, scratch, deadline)
+		return self._commands(context, response, deadline)
 
 	def _continuation(self, context, value, shell, deadline):
 		'''
