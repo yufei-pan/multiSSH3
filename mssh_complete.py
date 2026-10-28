@@ -5017,7 +5017,7 @@ def _history_items(engine, history_lines, name, features):
 			continue
 		entry = parse_history_line(line, engine.spec)
 		numbers[text] = len(entries)
-		if '"' in fields[4] and entry is not None:
+		if fields[4].startswith('"') and entry is not None:
 			# mssh 6.26 and older wrote commands in double quotes, where the shell expands $, ` and ! again:
 			# the commands mssh ran, quoted as mssh quotes them now
 			import shlex
