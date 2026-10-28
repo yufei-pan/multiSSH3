@@ -876,7 +876,7 @@ def test_bash_a_remote_command_name_matching_a_local_directory_keeps_its_space(t
 # names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
 # sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
 # every glue function to the prefix
-BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '
+BASH_GLUE_NAMES = ('cur resp line item one flags ble files ended delegate reply raws delegate_fields seen icase '
 	'word cword prefix cmd spec func lead words found kept typed keymap previous shown expand')
 
 

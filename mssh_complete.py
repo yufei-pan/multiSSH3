@@ -6638,7 +6638,7 @@ _mssh_complete_unspace() {
 _mssh_complete_tab() {
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
-	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_dirs=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
+	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local -a _mssh_complete_reply=() _mssh_complete_raws=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A _mssh_complete_seen=()
@@ -6673,10 +6673,9 @@ _mssh_complete_tab() {
 				_mssh_complete_split "${_mssh_complete_line:2}" ' '
 				for _mssh_complete_item in "${_mssh_complete_fields[@]}"; do
 					case $_mssh_complete_item in
-						nospace|filenames|nosort) compopt -o "$_mssh_complete_item" 2>/dev/null || : ;;
+						nosort) compopt -o nosort 2>/dev/null || : ;;
 						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
 						files) _mssh_complete_files=1 ;;
-						dirs) _mssh_complete_dirs=1 ;;
 						icase) _mssh_complete_icase=1 ;;
 					esac
 				done
@@ -6706,16 +6705,16 @@ _mssh_complete_tab() {
 		_mssh_complete_item+=' '
 		if [[ $_mssh_complete_item == *' -o fullquote '* ]] || [[ $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ]]; then
 			_mssh_complete_reply=(${_mssh_complete_raws[@]+"${_mssh_complete_raws[@]}"})
-		elif [[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_files && ! _mssh_complete_dirs )); then
+		elif [[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_files )); then
 			_mssh_complete_unspace
 		fi
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
 	fi
-	if (( _mssh_complete_files || _mssh_complete_dirs )); then
+	if (( _mssh_complete_files )); then
 		compopt -o filenames 2>/dev/null || :
 		while IFS= read -r _mssh_complete_item; do
 			_mssh_complete_reply+=("$_mssh_complete_item")
-		done < <(if (( _mssh_complete_files )); then compgen -f -- "$_mssh_complete_cur"; else compgen -d -- "$_mssh_complete_cur"; fi 2>/dev/null || :)
+		done < <(compgen -f -- "$_mssh_complete_cur" 2>/dev/null || :)
 	fi
 	COMPREPLY=()
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
@@ -7328,7 +7327,7 @@ _mssh() {
 			(D)
 				# split on spaces, whatever IFS the shell has
 				for _mssh_complete_item in ${(s: :)_mssh_complete_rest}; do
-					[[ $_mssh_complete_item == (files|dirs) ]] && _mssh_complete_files=1
+					[[ $_mssh_complete_item == files ]] && _mssh_complete_files=1
 					[[ $_mssh_complete_item == nodefault ]] && _mssh_complete_nodefault=1
 				done
 				;;
@@ -7984,7 +7983,7 @@ switch "$FISH_VERSION"
 				switch (string sub -l 1 -- "$line")
 					case D
 						for item in (string split ' ' -- "$rest")
-							contains -- $item files dirs; and set files 1
+							contains -- $item files; and set files 1
 						end
 					case C
 						set -l fields (string split \t -- "$rest")
@@ -8195,7 +8194,7 @@ def _zsh_guard(text):
 	The zsh glue as zsh must read it: after its comment lines, read by eval in zsh's own options.
 
 	zsh parses what it sources in the options of the moment, and a .zshrc can set them before the mssh
-	block: sh_glob made `(files|dirs)` a parse error, ignore_braces made `exec {fd}< <(...)` run a
+	block: sh_glob made `(<->|<->.<->|.<->)` a parse error, ignore_braces made `exec {fd}< <(...)` run a
 	command named {fd} (the shell exited), ksh_arrays kept compdef from running, and aliases were
 	expanded into the functions. emulate -L in an anonymous function gives the operator's options back
 	when it returns, however loading ended (no_aliases is set apart: zsh 5.0.2 forgets -L when emulate
