@@ -1,3 +1,4 @@
+import io
 import os
 import subprocess
 import sys
@@ -170,6 +171,21 @@ def test_replay_limit_of_zero_or_less_replays_nothing(tmp_path, monkeypatch, cap
 	assert capsys.readouterr().out.startswith('warnings over 5 history lines') and asked
 	# as the replay of typing reads it
 	assert replay.evaluate(replay.synthetic_history(entries=20), SPEC, limit=limit, policies=('bash',)) == {}
+
+
+@pytest.mark.parametrize('host, printed', [(b'h\xc3\xa9llo', 'h\\xe9llo'), (b'h\xffllo', 'h\\udcffllo')])
+def test_the_diagnostics_report_names_a_host_stdout_cannot_print(tmp_path, monkeypatch, host, printed):
+	# an ASCII stdout (the C locale on Python 3.6), and a name from bytes that are not UTF-8
+	path = tmp_path / 'history'
+	path.write_bytes(b'1790000000\t/x/multiSSH3.py\t-su\t' + host + b'\t"uptime"\n')
+	monkeypatch.setattr(multiSSH3, 'host_validity', lambda name: 'invalid')
+	monkeypatch.setattr(mc, '_import_mssh', lambda: multiSSH3)
+	monkeypatch.setattr(mc, 'engine_for', lambda request: mc.Engine(SPEC, []))
+	raw = io.BytesIO()
+	monkeypatch.setattr(sys, 'stdout', io.TextIOWrapper(raw, encoding='ascii', errors='strict'))
+	assert replay.main(['--diagnostics', str(path)]) == 0
+	sys.stdout.flush()
+	assert ('    ' + printed + '  1 line').encode() in raw.getvalue()
 
 
 def test_the_script_runs_from_a_checkout(tmp_path):
