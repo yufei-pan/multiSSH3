@@ -78,13 +78,22 @@ def debug_log_size(env):
 	path = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
 	return os.path.getsize(path) if os.path.exists(path) else 0
 
+# descriptors holding the probers' locks of the latest tests (tests run one at a time)
+_HELD = []
+
+def hold_lock(path):
+	'''Hold the lock at path as a running prober or rebuild holds it; returns the descriptor.'''
+	fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+	fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+	return fd
+
 def make_home(tmp_path, history_lines=()):
 	'''
 	A private HOME and XDG_RUNTIME_DIR holding the given mssh history, its fixed times aged. Returns (env, home).
 
-	The prober's lock is taken, so no prober runs (no DNS, no ping): tests that want answers about
-	hosts write host-state.tsv themselves. An mssh config in HOME keeps this machine's /etc/hosts and
-	/etc/profile.d/hosts.sh out of the host names the engine offers.
+	The prober's lock is held while the test runs, so no prober runs (no DNS, no ping): tests that want
+	answers about hosts write host-state.tsv themselves. An mssh config in HOME keeps this machine's
+	/etc/hosts and /etc/profile.d/hosts.sh out of the host names the engine offers.
 	'''
 	import multiSSH3
 	home = tmp_path / 'home'
@@ -92,7 +101,9 @@ def make_home(tmp_path, history_lines=()):
 	home.mkdir()
 	runtime.mkdir(mode=0o700)
 	(runtime / 'multiSSH3').mkdir(mode=0o700)
-	(runtime / 'multiSSH3' / 'probe.lock').write_text('')
+	_HELD.append(hold_lock(str(runtime / 'multiSSH3' / 'probe.lock')))
+	while len(_HELD) > 8:
+		os.close(_HELD.pop(0))
 	(home / '.mssh_history').write_text(''.join(_aged_line(line) + '\n' for line in history_lines))
 	(home / '.multiSSH3.config.json').write_text(json.dumps({'DEFAULT_HOST_FILE': str(home / 'hosts'),
 		'DEFAULT_ENV_FILES': [path for path in multiSSH3.DEFAULT_ENV_FILES if path.startswith('~')]}))

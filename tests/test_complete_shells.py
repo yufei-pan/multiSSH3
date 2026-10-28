@@ -13,7 +13,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
-	debug_log_size, fish_complete, fish_session, make_home, require_shell, with_debug_log, without_command, zsh_session)
+	debug_log_size, fish_complete, fish_session, hold_lock, make_home, require_shell, with_debug_log, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -1917,9 +1917,10 @@ def test_zsh_gives_up_on_a_slow_engine(setup):
 def first_build(tmp_path):
 	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
 	env, home = make_home(tmp_path, HISTORY)
-	assert mc.take_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
+	fd = hold_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
 	# more than the engine needs, less than the 2 s it used to wait for the first build
-	return dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+	yield dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+	os.close(fd)
 
 
 def test_bash_first_tab_answers_while_the_first_build_runs(first_build):

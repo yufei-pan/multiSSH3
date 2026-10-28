@@ -121,28 +121,6 @@ def test_the_index_spec_holds_no_configured_password(monkeypatch):
 	assert [option.default for option in spec.options if option.dest in mc.PASSWORD_DESTS] == ['', '']
 
 
-def test_index_rows_written_before_lose_their_password():
-	# indexes built by 0.4 hold the configured passwords in the spec rows: in the default and the help
-	rows = [
-		['password', '1', '0', '', "Hunter2 pa%ss it's", "The password to use to connect to the hosts via ssh, (default: Hunter2 pa%ss it's)", '-p', '--password'],
-		['ipmi_password', '1', '0', '', 'Bmc 100% s3cret', 'The password to use to connect to the hosts via ipmi. (default: Bmc 100% s3cret)', '-ip', '--ipmi_password'],
-		['username', '1', '0', '', 'root', 'The general username to use (default: root)', '-u', '--username'],
-	]
-	spec = mc.ParserSpec.from_rows(rows)
-	assert not [option for option in spec.options if holds_a_password(option.default + option.help)]
-	assert spec.options[0].help == 'The password to use to connect to the hosts via ssh, (default: set, not shown)'
-	assert (spec.options[2].default, spec.options[2].help) == ('root', 'The general username to use (default: root)')
-	for before in ('mssh -', 'mssh -p '):
-		response = mc.Engine(spec, [], None).query(mc.Request('zsh', before, '', before.split(' ')[-1]))
-		assert not holds_a_password(mc.format_response(response, nul=False).decode('utf-8'))
-
-
-def test_a_password_left_anywhere_in_a_help_is_never_shown():
-	# a help that names the password other than as "(default: ...)" loses its text, not just the password
-	option = mc.OptionSpec('password', ['-p'], '1', default='Hunter2', help='The password, Hunter2 by default')
-	assert not holds_a_password(option.help) and option.help and option.default == ''
-
-
 def test_option_descriptions_show_a_percent_once(monkeypatch):
 	monkeypatch.setattr(multiSSH3, 'DEFAULT_EXTRA_ARGS', '-o ControlPath=~/.ssh/cm-%r@%h:%p')
 	option, _ = mc.spec_from_parser(multiSSH3.get_parser()).lookup('-ea')
@@ -352,31 +330,6 @@ def test_case_folds_as_bash_takes_its_locale(flags, ascii, turkic):
 	# tolower on bytes elsewhere, where only ASCII letters reach the engine as letters
 	fold = mc.case_fold(dict(flags, icase='1'))
 	assert (fold.ascii, fold.turkic) == (ascii, turkic)
-
-
-# how the C library here takes some locale names
-OLD_GLUE_CODESETS = {'C.UTF-8': 'UTF-8', 'en_US': 'ISO-8859-1', 'tr_TR.UTF-8': 'UTF-8', 'tr_TR.ISO-8859-9': 'ISO-8859-9',
-	'az_AZ.UTF-8': 'UTF-8', 'tt_RU.UTF-8@iqtelif': 'UTF-8', 'tt_RU.UTF-8': 'UTF-8'}
-
-
-@pytest.fixture
-def old_glue_locales(monkeypatch):
-	monkeypatch.setattr(mc, '_locale_codeset', lambda name: OLD_GLUE_CODESETS.get(name, 'ANSI_X3.4-1968' if name in ('', 'C', 'POSIX') else None))
-
-
-@pytest.mark.parametrize('lc, folded, unicode', [
-	('C.UTF-8', (False, False), True), ('en_US', (True, False), False), ('C', (True, False), False), ('', (True, False), False),
-	('tr_TR.UTF-8', (False, True), True), ('tr_TR.ISO-8859-9', (True, True), False), ('az_AZ.UTF-8', (False, True), True),
-	('tt_RU.UTF-8@iqtelif', (False, True), True), ('tt_RU.UTF-8', (False, False), True),
-	# a locale the C library has not (macOS's LC_CTYPE=UTF-8 included): bash may run in LANG's, which lc did
-	# not say; no matching in any case, as 6.36 did none, and ASCII
-	('UTF-8', None, False), ('xx_YY.UTF-8', None, False)])
-def test_a_glue_sending_the_locale_name_folds_and_draws_by_it(old_glue_locales, lc, folded, unicode):
-	# lc=: the glue of main between 6.36 and its measure (never released), in a shell still running it
-	fold = mc.case_fold({'icase': '1', 'lc': lc})
-	assert (None if fold is None else (fold.ascii, fold.turkic)) == folded
-	# one answer for drawing too: the picker and warnings write ASCII where lc says C or names no locale
-	assert mc.engine_for(mc.Request('bash', 'mssh ', flags={'icase': '1', 'lc': lc}), directory=None).unicode is unicode
 
 
 def test_a_glue_of_6_36_gets_no_matching_in_any_case():

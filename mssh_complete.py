@@ -10,12 +10,17 @@ Shells send the command line to `mssh-complete query` (protocol MSSHC1 on stdin)
 ranked candidates back. Answering reads a precomputed index that is decoded lazily; only
 building the index (`mssh-complete rebuild`) imports multiSSH3.
 '''
+import itertools
 import math
 import os
 import sys
 import stat
 import time
 from bisect import bisect_left
+try:
+	import fcntl
+except ImportError:  # not POSIX: the shells are, so nothing starts the detached processes there
+	fcntl = None
 
 version = '0.11'
 __version__ = version
@@ -201,29 +206,17 @@ def _one_line(text):
 	'''text on one line, with NUL, tabs and newlines turned into single spaces.'''
 	return ' '.join(str(text).replace('\0', ' ').split())
 
-def _password_free_help(help, password):
-	'''
-	The help of a password option with the password taken out. Older multiSSH3 wrote the configured
-	password into the help as "(default: ...)", and older indexes keep that help and the password.
-	'''
-	if not password:
-		return help
-	help = help.replace('(default: {})'.format(password), '(default: set, not shown)')
-	# named some other way: the whole text goes rather than any part of the password
-	return 'A password (not shown)' if password in help else help
-
 class OptionSpec(object):
 	'''
 	One mssh option: its dest, every string naming it and how many values it takes.
 
-	A password option keeps no default, and no password in its help: both reach the index, the
-	descriptions zsh and fish show and the picker.
+	A password option keeps no default: it would reach the index, the descriptions zsh and fish show
+	and the picker (mssh's help shows none since 6.32).
 	'''
 	__slots__ = ('dest', 'strings', 'nargs', 'repeat', 'group', 'default', 'help')
 
 	def __init__(self, dest, strings, nargs='0', repeat=False, group='', default='', help=''):
 		if dest in PASSWORD_DESTS:
-			help = _password_free_help(help, default)
 			default = ''
 		self.dest = dest
 		self.strings = tuple(strings)
@@ -390,27 +383,14 @@ def _negative_number(text):
 	whole, dot, fraction = rest.partition('.')
 	return whole.isdecimal() if not dot else (whole == '' or whole.isdecimal()) and fraction.isdecimal()
 
-def _takes_abbreviations(spec):
-	'''
-	Whether mssh reads an abbreviation alone ("--user") as the option it abbreviates, as argparse does
-	by default. The spec looks names up the way mssh does, so it is asked about a long name cut short.
-	'''
-	strings = spec.by_string
-	for string, option in strings.items():
-		short = string[:-1]
-		if string.startswith('--') and len(short) > 2 and short not in strings and all(
-				strings[other] is option for other in strings if other.startswith(short)):
-			return spec.lookup(short)[0] is option
-	return False
-
-def read_option_word(text, spec, abbreviations=True):
+def read_option_word(text, spec):
 	'''
 	How mssh's argument parsing reads one word: argparse's _parse_optional and consume_optional, after
 	process_args has read --config_file with a parser of its own.
 
-	A word names an option in full, as "name=value", as a short option with its value attached
-	("-uroot") or followed by more short flags ("-aux" is -a -u x), or as an abbreviation when
-	abbreviations is true (argparse's default; see _takes_abbreviations).
+	A word names an option in full, as "name=value", or as a short option with its value attached
+	("-uroot") or followed by more short flags ("-aux" is -a -u x); mssh takes no abbreviations
+	(_MsshArgumentParser), but argparse's answer stands beside a full-name reading ("-pr").
 
 	Returns:
 		tuple: (verdict, readings). verdict: 'positional'; 'options' (readings: (OptionSpec, the value
@@ -425,40 +405,32 @@ def read_option_word(text, spec, abbreviations=True):
 	name, sep, value = text.partition('=')
 	value = value if sep else None
 	double = text[1] == '-'
-	# the options a name abbreviates (the two-character word itself is a short option, not one of them)
-	longer = [string for string in strings if string.startswith(name) and string != text[:2]]
-	if abbreviations and double and text != '--':
-		# process_args first reads --config_file with a parser that knows no other option: there any
-		# abbreviation of it is unique ("--c", even "--=x")
-		for string in longer:
-			if strings[string].dest == 'config_file':
-				return _read_attached(spec, abbreviations, string, value, len(name), bool(sep))
 	if text in strings:
 		return 'options', [(strings[text], None, len(text))]
 	if sep and name in strings:
-		return _read_attached(spec, abbreviations, name, value, len(name), True)
+		return _read_attached(spec, name, value, len(name), True)
 	# argparse's _get_option_tuples: a short option with the rest of the word attached, and every option
-	# the word (up to "=") abbreviates. Taking full names only, abbreviations count only next to a full
-	# name (as on patch/no-option-abbrev: "-pr" stays "-p r" or "-pre", ambiguous)
+	# the word (up to "=") abbreviates; abbreviations count only next to the short option's reading
+	# ("-pr" is "-p r" or "-pre", ambiguous)
 	short = not double and text[:2] in strings
-	if not abbreviations and not short:
-		longer = []
+	# the options a name abbreviates (the two-character word itself is a short option, not one of them)
+	longer = [string for string in strings if string.startswith(name) and string != text[:2]] if short else []
 	if not double and sep and longer:
 		# older Pythons abbreviate the whole word, "=" included (so nothing), newer ones the name before it
 		return 'unsure', []
 	if short + len(longer) > 1:
 		return 'error', []
 	if short:
-		return _read_attached(spec, abbreviations, text[:2], text[2:], 2, False)
+		return _read_attached(spec, text[:2], text[2:], 2, False)
 	if longer:
-		return _read_attached(spec, abbreviations, longer[0], value, len(name), bool(sep))
+		return _read_attached(spec, longer[0], value, len(name), bool(sep))
 	if _negative_number(text) and not any(_negative_number(string) for string in strings):
 		return 'positional', []
 	if ' ' in text:
 		return 'positional', []
 	return 'unknown', []
 
-def _read_attached(spec, abbreviations, string, attached, end, with_sign):
+def _read_attached(spec, string, attached, end, with_sign):
 	'''
 	argparse's consume_optional for read_option_word: string is the option string the word matched,
 	attached the text after it (with_sign: after "="), end where the name ends in the word. A short flag
@@ -486,7 +458,7 @@ def _read_attached(spec, abbreviations, string, attached, end, with_sign):
 			# some (3.11) read the rest as a word of its own ("-q x" leaves "- x", a positional)
 			if any(item[0].dest in ('help', 'version') for item in readings):
 				return 'unsure', []
-			rest = read_option_word('-' + attached, spec, abbreviations)[0]
+			rest = read_option_word('-' + attached, spec)[0]
 			return ('error' if rest in ('unknown', 'error') else 'unsure'), []
 		end += 1
 		attached = attached[1:] or None
@@ -935,7 +907,7 @@ def parse_history_line(line, spec):
 
 #%% ------------ Index storage (NSV) ----------------
 INDEX_MAGIC = 'MSSHCIDX'
-INDEX_FORMAT = '2'
+INDEX_FORMAT = '3'
 INDEX_NAME = 'complete-index.v1.nsv'
 
 class IndexCorrupt(Exception):
@@ -1152,10 +1124,8 @@ def case_fold(flags):
 	bash's glue sends utf8 and turkic, measured in the running shell (whether bash counts a two-byte
 	UTF-8 character as one, whether it lowers I to another letter than i): readline compares in the
 	locale bash runs in, whatever the variables name (zsh's glue measures them too, with icase=0).
-	Older glues get what their own engine did, as an installed glue file stays until mssh --completion
-	install runs again: main's between 6.36 and the measure (never released) sent the locale's name, lc=,
-	read through the C library (_named_locale), no matching in any case where it names no locale; 6.36's
-	sent icase alone, read once per shell, and its engine matched in the case typed.
+	An older glue gets what its own engine did, as an installed glue file stays until mssh --completion
+	install runs again: 6.36's sent icase alone, read once per shell, and its engine matched in the case typed.
 	"""
 	measured = _shell_locale(flags)
 	if not measured:
@@ -1166,34 +1136,14 @@ def case_fold(flags):
 		fold = _CASE_KINDS[kind] = CaseFold(*kind)
 	return fold
 
-# glibc's locales copying tr_TR's case table (lowering I to the dotless i), besides tr_*
-_TURKIC_LOCALES = frozenset(('az_AZ', 'crh_UA', 'ku_TR', 'tt_RU@iqtelif'))
-
-def _named_locale(name):
-	"""
-	(utf8, turkic) of the locale an older glue named (lc=), as the C library has it, or None when it has
-	no such locale (bash then runs in C, or, for an LC_CTYPE it refused, in LANG's, which lc= did not say).
-	turkic as the name says, by glibc's Turkish case table.
-	"""
-	codeset = _locale_codeset(name)
-	if codeset is None:
-		return None
-	base, _, modifier = name.partition('@')
-	language = base.partition('.')[0]
-	turkic = language.partition('_')[0] == 'tr' or language in _TURKIC_LOCALES or language + '@' + modifier in _TURKIC_LOCALES
-	return _utf8_codeset(codeset), turkic
-
 def _shell_locale(flags):
 	"""
-	(utf8, turkic) of the locale the shell runs in, as its glue's request flags say: the measure bash's
-	and zsh's glues make in the shell (utf8=, turkic=), or the locale an older bash glue named (lc=,
-	_named_locale). False where lc= names a locale the C library has not, None where the flags say
-	nothing of it (fish, which names its variables instead: _measured_utf8; older glues).
+	(utf8, turkic) of the locale the shell runs in, as the measure bash's and zsh's glues make in the
+	shell says (utf8=, turkic=); None where the flags say nothing of it (fish, which names its variables
+	instead: _measured_utf8; older glues).
 	"""
 	if 'utf8' in flags:
 		return flags['utf8'] == '1', flags.get('turkic') == '1'
-	if 'lc' in flags:
-		return _named_locale(flags['lc']) or False
 	return None
 
 # fish's glue names fish's locale variables in these request flags
@@ -1224,7 +1174,7 @@ def _measured_utf8(request):
 	"""
 	Whether the shell runs in a UTF-8 locale, as its glue's request says, None where it says nothing (an
 	older glue: Engine.unicode then reads the variables the engine was started with). bash's and zsh's
-	glues measure it in the shell (_shell_locale: ASCII where an older bash glue's lc= names no locale).
+	glues measure it in the shell (_shell_locale).
 	fish's names the LC_ALL, LC_CTYPE and LANG fish exports, the only ones it follows (lc_all=,
 	lc_ctype=, lang=, escaped as in URLs), resolved here as bash resolves them: in a single-byte locale,
 	C included, fish takes a UTF-8 one instead unless fish_allow_singlebyte_locale is set (fish 3.3 and
@@ -1233,7 +1183,7 @@ def _measured_utf8(request):
 	"""
 	measured = _shell_locale(request.flags)
 	if measured is not None:
-		return measured and measured[0]
+		return measured[0]
 	if 'lang' not in request.flags:
 		return None
 	variables = {}
@@ -1394,12 +1344,7 @@ class SnapshotKnowledge(object):
 
 	def feature_uses(self, key):
 		'''(times used, last used unix time) of a feature.'''
-		counts = self.index.single('fcounts')
-		lasts = self.index.single('flast')
-		try:
-			return int(counts[key]), int(lasts[key])
-		except (IndexError, ValueError):
-			return 0, 0
+		return int(self.index.single('fcounts')[key]), int(self.index.single('flast')[key])
 
 #%% ------------ Ranking ----------------
 BETA = 0.1                  # weight of plain frecency next to similarity with the line
@@ -1475,12 +1420,9 @@ class HostTable(object):
 	def sources(self, name):
 		'''The SRC_* bits of a host name in the table, 0 for a name it does not hold.'''
 		number = bisect_left(self.names, name)
-		if number >= len(self.names) or self.names[number] != name or number >= self.index.count('host_meta'):
+		if number >= len(self.names) or self.names[number] != name:
 			return 0
-		try:
-			return int(self.index.row('host_meta', number)[0])
-		except (IndexError, ValueError):
-			return 0
+		return int(self.index.row('host_meta', number)[0])
 
 	def alias_index(self, name):
 		index = bisect_left(self.alias_names, name)
@@ -1492,7 +1434,7 @@ class HostTable(object):
 
 	def alias_member_users(self, index):
 		'''The user each member of the alias at index is written with (user@host), '' for none.'''
-		users = self.index.row('alias_users', index) if index < self.index.count('alias_users') else []
+		users = self.index.row('alias_users', index)
 		return users + [''] * (self.alias_size(index) - len(users))
 
 	def alias_size(self, index):
@@ -1566,34 +1508,12 @@ def expand_ranges(text, limit=100000):
 	Expand [a-b] and [a,b] number ranges in a host name, the common part of mssh's range syntax.
 
 	Text with letter or hex ranges, or that would expand to more than limit names, is returned
-	as it is (in a one-item list).
+	as it is (in a one-item list), without writing it out (node[1-10000000] took 1.5 s).
 	'''
-	start = text.find('[')
-	end = text.find(']', start + 1)
-	if start < 0 or end < 0:
+	count = _range_size(text)
+	if count is None or count > limit:
 		return [text]
-	head, body, tail = text[:start], text[start + 1:end], text[end + 1:]
-	values = []
-	for part in body.split(','):
-		low, sep, high = part.strip().partition('-')
-		if sep and _is_digits(low) and _is_digits(high):
-			if len(values) + int(high) - int(low) >= limit:
-				# past the limit: given back whole without writing it out (node[1-10000000] took 1.5 s)
-				return [text]
-			width = min(len(low), len(high))
-			values.extend('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
-		elif not sep and part.strip():
-			values.append(part.strip())
-		else:
-			return [text]
-		if len(values) > limit:
-			return [text]
-	out = []
-	for value in values:
-		out.extend(expand_ranges(head + value + tail, limit))
-		if len(out) > limit:
-			return [text]
-	return out
+	return list(_range_names(text))
 
 def range_union(texts, limit, budget):
 	'''
@@ -1669,7 +1589,7 @@ def range_union(texts, limit, budget):
 		members = expand_ranges(text, limit)
 		names.update(members)
 		# a range past the limit comes back whole after about the limit's worth of names
-		count = _range_count(text)
+		count = _range_size(text)
 		written += max(len(members), min(count, limit) if count is not None else 0)
 	return names
 
@@ -2035,7 +1955,6 @@ def _import_mssh():
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
 RANGE_MEMBERS_LIMIT = 4096   # a range typed before adds its members as hosts up to this many
-RANGE_COUNT_LIMIT = 16384    # a range whose names may repeat is expanded to count its hosts up to this many names
 
 def serialize_knowledge(memory):
 	'''
@@ -2175,7 +2094,7 @@ def build_index(directory, now=None, mssh=None):
 		('groups', group_rows),
 		('unavailable', [unavailable]),
 		# option combinations main() ignores: [option, kind, why, others...]
-		('no_effect', [[option, kind, why] + list(others) for option, kind, others, why in getattr(mssh, 'OPTION_NO_EFFECT', ())]),
+		('no_effect', [[option, kind, why] + list(others) for option, kind, others, why in mssh.OPTION_NO_EFFECT]),
 	]
 	path = os.path.join(directory, INDEX_NAME)
 	write_nsv(path, header, sections)
@@ -2186,8 +2105,8 @@ TAIL_LIMIT_BYTES = 64 * 1024
 TAIL_LIMIT_ENTRIES = 500
 ARP_TTL = 300.0
 LOCK_NAME = 'complete-index.lock'
-LOCK_STALE = 60.0
-LOCK_FAILED = 'failed'  # the last line of a rebuild lock kept after the build failed
+FAILED_NAME = 'complete-index.failed'  # touched by a rebuild that failed: the next starts RETRY_AFTER later
+RETRY_AFTER = 60.0
 FIRST_BUILD_BUDGET = 2.0    # seconds the picker and the editor (no deadline) wait for the first index
 FIRST_BUILD_RESERVE = 0.1   # a query stops waiting for the first index this long before its deadline
 
@@ -2230,106 +2149,42 @@ def check_freshness(index, now):
 		return 'rebuild', []
 	return 'tail', lines
 
-def take_lock(path, now=None):
-	'''
-	Create the rebuild lock file, or return False if another rebuild holds it (and it is not stale).
-
-	The file says who took it (pid, time and a random token), so the process the lock was taken for
-	can tell later whether it still holds it (see release_lock).
-	'''
-	import binascii
-	now = time.time() if now is None else now
-	for _ in range(2):
-		try:
-			fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-		except FileExistsError:
-			try:
-				age = now - os.stat(path).st_mtime
-			except OSError:
-				continue
-			if age < LOCK_STALE:
-				return False
-			try:
-				os.unlink(path)
-			except OSError:
-				pass
-			continue
-		except OSError:
-			return False
-		with os.fdopen(fd, 'w') as f:
-			f.write('{} {} {}\n'.format(os.getpid(), int(now), binascii.hexlify(os.urandom(8)).decode('ascii')))
-		return True
-	return False
-
-def read_lock(path):
-	'''What the lock file at path says, or None when it cannot be read (gone, for one).'''
-	try:
-		with open(path, encoding='utf-8', errors='replace') as f:
-			return f.read()
-	except OSError:
-		return None
-
-def release_lock(path, owner):
-	'''
-	Remove the lock at path if it still says owner (what read_lock gave when its holder started).
-
-	A lock older than LOCK_STALE is taken over by the next process that wants it, even when its
-	holder is still running (stuck past that, or the machine was suspended): that holder must leave
-	the new lock alone, or a third process would start beside the second.
-	'''
-	if owner is None or read_lock(path) != owner:
-		return
-	try:
-		os.unlink(path)
-	except OSError:
-		pass
-
-def keep_failed_lock(path, owner):
-	'''
-	After a failed run, keep the lock at path (if it still says owner) and add that it failed: the
-	next run starts once the lock goes stale, LOCK_STALE from now, instead of at the next query. A
-	failure that repeats (a full runtime directory, multiSSH3.py missing) would otherwise cost a
-	full run on every query.
-	'''
-	if owner is None or read_lock(path) != owner:
-		return
-	try:
-		with open(path, 'a') as f:
-			f.write(LOCK_FAILED + '\n')
-	except OSError:
-		# not marked (a query without an index waits its budget out), but kept all the same
-		try:
-			os.utime(path, None)
-		except OSError:
-			pass
-
 def rebuild_failed(directory):
-	'''Whether the last rebuild failed, less than LOCK_STALE ago (see keep_failed_lock).'''
-	content = read_lock(os.path.join(directory, LOCK_NAME))
-	return content is not None and content.endswith('\n' + LOCK_FAILED + '\n')
+	"""Whether the last rebuild failed, less than RETRY_AFTER ago (a failure that repeats, a full runtime
+	directory or multiSSH3.py missing, would otherwise cost a full rebuild on every query)."""
+	try:
+		return time.time() - os.stat(os.path.join(directory, FAILED_NAME)).st_mtime < RETRY_AFTER
+	except OSError:
+		return False
 
 def _spawn_detached(directory, lock_name, command):
-	'''Start `mssh-complete <command> --lock <lock>` detached unless one is running. Returns whether one was started.'''
-	lock = os.path.join(directory, lock_name)
-	if not take_lock(lock):
-		return False
+	"""
+	Start `mssh-complete <command>` detached unless one is running. Returns whether one was started.
+
+	It inherits the flock taken here on the lock file and holds it until it exits, however it ends: the
+	kernel releases it, so no lock is ever stale or taken over, and one runs at a time.
+	"""
 	import subprocess
 	try:
-		subprocess.Popen(module_command() + [command, '--lock', lock],
-			stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-			close_fds=True, start_new_session=True, cwd='/')
-	except OSError as e:
-		_debug(lambda: 'cannot start {}: {!r}'.format(command, e))
-		try:
-			os.unlink(lock)
-		except OSError:
-			pass
+		fd = os.open(os.path.join(directory, lock_name), os.O_WRONLY | os.O_CREAT, 0o600)
+	except OSError:
 		return False
-	return True
+	try:
+		if fcntl:
+			fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+		subprocess.Popen(module_command() + [command], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+			stderr=subprocess.DEVNULL, pass_fds=(fd,) if fcntl else (), start_new_session=True, cwd='/')
+		return True
+	except OSError as e:
+		# held by one running (EWOULDBLOCK), or it could not start
+		_debug(lambda: 'not starting {}: {!r}'.format(command, e))
+		return False
+	finally:
+		os.close(fd)
 
 def spawn_rebuild(directory):
-	'''Start a detached `rebuild` unless one is running. Returns whether one was started.'''
-	return _spawn_detached(directory, LOCK_NAME, 'rebuild')
+	"""Start a detached `rebuild` unless one is running or the last one failed. Returns whether one was started."""
+	return not rebuild_failed(directory) and _spawn_detached(directory, LOCK_NAME, 'rebuild')
 
 def _load_index(path):
 	try:
@@ -2345,8 +2200,8 @@ def load_for_query(directory, now, deadline=None):
 	Starts a rebuild when the index is stale. Without an index, starts the first build and waits for
 	it up to FIRST_BUILD_BUDGET; with a deadline (time.monotonic()), only until FIRST_BUILD_RESERVE
 	before it: the shell stops waiting at its deadline, so the query then answers without the index
-	while the build goes on. It stops waiting when that build failed (the next one starts when its
-	lock goes stale).
+	while the build goes on. It stops waiting when that build failed (the next one starts RETRY_AFTER
+	later).
 
 	Returns:
 		tuple: (NsvIndex or None, history tail lines)
@@ -2713,7 +2568,7 @@ def _probe_batch(mssh, hosts, states, now, ping_available):
 		thread.join()
 	return sorted(retry, key=hosts.index)
 
-def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=None):
+def run_probe(directory, now=time.time, limit=PROBE_RUN_LIMIT):
 	'''
 	One prober run, at low CPU priority: check the queued hosts, newest first, recording what is
 	learned in host-state.tsv after each batch (without what no query can use any more:
@@ -2721,15 +2576,9 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=
 	back into the queue. Never connects to a host itself: only DNS, ssh -G (which reads the ssh
 	config, running the commands of its Match exec lines) and ping.
 
-	With lock (the lock file this run holds; owner is what it said when the run started, read now
-	when not given), the run keeps the lock fresh after each batch, and stops, leaving its hosts
-	queued, once the lock says something else: another prober took it over as stale.
-
 	Returns:
 		dict: {'checked': hosts looked at, 'parallel': hosts checked at once at the end}
 	'''
-	if lock and owner is None:
-		owner = read_lock(lock)
 	try:
 		os.nice(10)
 	except (AttributeError, OSError):
@@ -2756,20 +2605,8 @@ def run_probe(directory, lock=None, now=time.time, limit=PROBE_RUN_LIMIT, owner=
 				ping_available = [ping_works()]
 			batch, todo = todo[:parallel], todo[parallel:]
 			retry = _probe_batch(mssh, batch, states, now, ping_available)
-			if lock and read_lock(lock) != owner:
-				# the lock was taken over (this batch ran past LOCK_STALE, or the machine was
-				# suspended): the prober holding it writes host-state.tsv now, and writing ours would
-				# undo its results; it takes these hosts from the queue instead
-				queue_probes(directory, (batch + todo)[::-1])
-				return {'checked': checked, 'parallel': parallel}
 			checked += len(batch) - len(retry)
 			write_host_states(directory, prune_host_states(states, now(), horizon))
-			if lock:
-				# a lock that keeps changing is not stale
-				try:
-					os.utime(lock, None)
-				except OSError:
-					pass
 			if retry:
 				if parallel == 1:
 					queue_probes(directory, (retry + todo)[::-1])
@@ -2897,181 +2734,22 @@ def _run_name(host, typed_user, line_user, own_user=''):
 	user = typed_user or own_user or line_user
 	return user + '@' + host if user else host
 
-# characters that can start an expansion the shell makes before mssh sees the word
-_EXPANSION_STARTS = frozenset('$`~{!(')
-# what follows a $ that the shell expands: a name, a digit, ${...}, $(...), $[...], a special parameter, zsh's flags
-_PARAMETER_STARTS = frozenset('_{([@*#?$!-=~^+')
+# characters starting an expansion the shell makes before mssh sees a word ($NAME, $(...), `...`, bash's
+# and zsh's !$, fish's (...)), and the quoting that may keep braces from expanding
+_EXPANSION_CHARS = frozenset('$`(!')
+_QUOTING_CHARS = frozenset('\'"\\')
 
-def _quoting(raw):
+def _shell_expands(token, shell):
 	'''
-	How each character of a word's dequoted text (lex's Token.text) was typed: (how, stretch),
-	how 'u' unquoted, 'd' in "...", 'l' taken literally (in '...' or $'...', or after a backslash);
-	stretch numbers the quoted and unquoted stretches of the word. Reads quotes as lex does.
+	Whether the shell may rewrite a hosts word before mssh sees it: an expansion in it, a leading ~, or
+	braces it expands (node{1,2}, gpu{01..16}), quoted ones too, which are not worked out. mssh gets
+	something else: nothing is said about its hosts. Globs are left alone: one matching no file reaches
+	mssh as typed, and mssh takes [ ], * and ? in ranges.
 	'''
-	marks = []
-	stretch = 0
-	index = 0
-	length = len(raw)
-	while index < length:
-		char = raw[index]
-		if char == '\\':
-			if index + 1 < length and raw[index + 1] != '\n':
-				marks.append(('l', stretch + 1))
-			index += 2
-			stretch += 2
-		elif char == "'":
-			end = raw.find("'", index + 1)
-			end = length if end < 0 else end
-			marks.extend([('l', stretch + 1)] * (end - index - 1))
-			index = end + 1
-			stretch += 2
-		elif char == '"':
-			index += 1
-			while index < length and raw[index] != '"':
-				if raw[index] == '\\' and index + 1 < length and raw[index + 1] in '"\\$`\n':
-					if raw[index + 1] != '\n':
-						marks.append(('l', stretch + 1))
-					index += 2
-				else:
-					marks.append(('d', stretch + 1))
-					index += 1
-			index += 1
-			stretch += 2
-		elif char == '$' and index + 1 < length and raw[index + 1] == "'":
-			index += 2
-			while index < length and raw[index] != "'":
-				if raw[index] == '\\' and index + 1 < length:
-					text, index = _ansi_c_escape(raw, index + 1)
-					marks.extend([('l', stretch + 1)] * len(text))
-				else:
-					marks.append(('l', stretch + 1))
-					index += 1
-			index += 1
-			stretch += 2
-		else:
-			marks.append(('u', stretch))
-			index += 1
-	return marks
-
-def _shell_expansions(text, marks, shell):
-	'''
-	(start, end) stretches of a word's dequoted text that the shell replaces before it runs the
-	command: $NAME, ${...}, $(...), $((...)), `...`, a leading ~, {a,b}, and in bash and zsh
-	{1..3} and history's !$; also an unquoted (...) (fish's command substitution; a glob pattern
-	or an error in bash and zsh). Globs are left alone: one matching no file reaches mssh as
-	typed, and mssh takes [ ], * and ? in ranges. marks: _quoting's.
-	'''
-	length = len(text)
-
-	def closing(index, how):
-		'''The index after the bracket matching the one at index (nested ones skipped), or None.'''
-		opening = text[index]
-		close = {'{': '}', '(': ')', '[': ']'}[opening]
-		depth = 0
-		for end in range(index, length):
-			if marks[end][0] not in how:
-				continue
-			if text[end] == opening:
-				depth += 1
-			elif text[end] == close:
-				depth -= 1
-				if depth == 0:
-					return end + 1
-		return None
-
-	# unquoted braces: where each one closes, and whether it holds a , of its own
-	braces = {}
-	stack = []
-	for position in range(length):
-		char = text[position]
-		if marks[position][0] != 'u':
-			continue
-		if char == '{':
-			stack.append([position, False])
-		elif char == '}' and stack:
-			start, listed = stack.pop()
-			braces[start] = (position + 1, listed)
-		elif stack and char == ',':
-			stack[-1][1] = True
-
-	found = []
-	index = 0
-	while index < length:
-		char, how = text[index], marks[index][0]
-		end = None
-		# the next character, typed in the same stretch: "$" and $"..." are no expansions
-		following = text[index + 1] if index + 1 < length and marks[index + 1] == marks[index] else ''
-		if how == 'l':
-			pass
-		elif char == '$' and following and (following.isalnum() or following in _PARAMETER_STARTS):
-			if following in '{([':
-				# unclosed: the shell asks for more or fails, mssh gets nothing of it either way
-				end = closing(index + 1, 'ud') or length
-			elif following.isalnum() or following == '_':
-				end = index + 2
-				while end < length and (text[end].isalnum() or text[end] == '_') and marks[end] == marks[index]:
-					end += 1
-			else:
-				end = index + 2
-		elif char == '`':
-			end = next((position + 1 for position in range(index + 1, length) if text[position] == '`' and marks[position][0] != 'l'), length)
-		elif char == '!' and shell != 'fish' and following and following not in ' \t\n=(':
-			# history expansion, in "..." too: how far the event reaches is hard to tell
-			end = length
-		elif how != 'u':
-			pass
-		elif char == '~' and index == 0:
-			end = text.find('/') if '/' in text else length
-		elif char == '{' and index in braces:
-			close, listed = braces[index]
-			if listed or (all(how == 'u' for how, _ in marks[index:close]) and _brace_sequence(text[index + 1:close - 1], shell)):
-				end = close
-		elif char == '(':
-			end = closing(index, 'u') or length
-		if end is None:
-			index += 1
-		else:
-			found.append((index, end))
-			index = max(end, index + 1)
-	return found
-
-def _without_shell_expansions(token, shell, users=False):
-	'''
-	A hosts word with the hosts the shell rewrites before mssh sees them ($NODES, $(cat file),
-	node{1,2}, ~, !$, ...) blanked out: mssh gets something else, nothing can be said about them.
-	Text the shell passes as typed (in '...', after a backslash) stays: mssh reads it itself.
-
-	users: the word with only the hosts the shell rewrites just the user of ($USER@gpu017) kept
-	instead, or None when it has none: mssh gets the host as typed, under a user not known here.
-	'''
-	if not _EXPANSION_STARTS.intersection(token.raw):
-		return None if users else token
-	text = token.text
-	marks = _quoting(token.raw)
-	# lex read the word another way: say nothing about it
-	spans = _shell_expansions(text, marks, shell) if len(marks) == len(text) else [(0, len(text))]
-	if not spans:
-		return None if users else token
-	expanded = [False] * len(text)
-	for start, end in spans:
-		expanded[start:end] = [True] * (end - start)
-	blanked = list(text)
-	kept = False
-	word, _ = _host_patterns()
-	for found in word.finditer(text):
-		position, end = found.span()
-		at = text.rfind('@', position, end)
-		# the shell rewrites a piece of the host, or only of its user@
-		user_only = any(expanded[position:end]) and at >= 0 and not any(expanded[at:end])
-		keep = user_only if users else not any(expanded[position:end])
-		if keep:
-			kept = True
-		else:
-			blanked[position:end] = ' ' * (end - position)
-	if users and not kept:
-		return None
-	blanked = ''.join(blanked)
-	return Token(blanked, blanked if token.raw == text else token.raw, token.quoted, token.open_quote, token.start)
+	raw = token.raw
+	if raw.startswith('~') or _EXPANSION_CHARS.intersection(raw):
+		return True
+	return '{' in raw and (bool(_QUOTING_CHARS.intersection(raw)) or _brace_groups(raw, shell) != [])
 
 # a brace warning lists the hosts to write instead up to this many
 BRACE_LIST_LIMIT = 16
@@ -3079,53 +2757,36 @@ BRACE_LIST_LIMIT = 16
 def _is_integer(text):
 	return _is_digits(text[1:] if text.startswith('-') else text)
 
-def _brace_sequence(inside, shell):
+def _brace_groups(raw, shell):
 	'''
-	What the shell puts in place of a {x..y} or {x..y..step}, given what is inside the braces:
-	(a range of numbers, the width the shell pads them to, 0 for none), or (a list of characters,
-	0). None when the shell leaves the braces as typed (always in fish, which has no sequences).
+	The braces the shell expands in an unquoted word: (start, end, values, how many) each, values a list for
+	{a,b} or (bash, zsh) the range of {1..16}, padded as (width, 0 for none); None for braces not worked
+	out (nested, other sequences). Braces the shell leaves as typed (node{1}, {1..3} in fish) are no group.
 	'''
-	fields = inside.split('..')
-	if shell == 'fish' or len(fields) not in (2, 3):
-		return None
-	first, last = fields[0], fields[1]
-	step = abs(int(fields[2])) if len(fields) == 3 and _is_integer(fields[2]) else (1 if len(fields) == 2 else 0)
-	if not step:
-		return None
-	if _is_integer(first) and _is_integer(last):
-		low, high = int(first), int(last)
-		# a leading zero on either end pads every number to the longer end
-		padded = any(len(field.lstrip('-')) > 1 and field.lstrip('-').startswith('0') for field in (first, last))
-		numbers = range(low, high + 1, step) if low <= high else range(low, high - 1, -step)
-		return numbers, max(len(first), len(last)) if padded else 0
-	# letters; zsh takes any two characters
-	if len(first) == 1 and len(last) == 1 and (shell == 'zsh' or ((first + last).isalpha() and max(first, last) < '\x80')):
-		low, high = ord(first), ord(last)
-		codes = range(low, high + 1, step) if low <= high else range(low, high - 1, -step)
-		return [chr(code) for code in codes], 0
-	return None
-
-def _brace_values(text, marks, start, end, shell):
-	'''
-	(values, width) for the braces text[start:end] the shell expands: a list for {a,b}, else
-	_brace_sequence's. (None, 0) when they nest or the shell leaves them as typed.
-	'''
-	inner = range(start + 1, end - 1)
-	if any(text[position] in '{}' and marks[position][0] == 'u' for position in inner):
-		return None, 0
-	cuts = [position for position in inner if text[position] == ',' and marks[position][0] == 'u']
-	if cuts:
-		bounds = [start] + cuts + [end - 1]
-		return [text[low + 1:high] for low, high in zip(bounds, bounds[1:])], 0
-	if any(marks[position][0] != 'u' for position in inner):
-		return None, 0
-	return _brace_sequence(text[start + 1:end - 1], shell) or (None, 0)
-
-def _count(values):
-	'''How many values a list or range holds: len() of a range stops at sys.maxsize ({1..99999999999999999999}).'''
-	if isinstance(values, list):
-		return len(values)
-	return max(0, (values.stop - values.start - (1 if values.step > 0 else -1)) // values.step + 1)
+	groups = []
+	start = raw.find('{')
+	while start >= 0:
+		end = raw.find('}', start)
+		if end < 0:
+			break
+		inside = raw[start + 1:end]
+		if '{' in inside:
+			return None
+		first, dots, last = inside.partition('..')
+		if ',' in inside:
+			values = inside.split(',')
+			groups.append((start, end + 1, (values, 0), len(values)))
+		elif dots and shell != 'fish' and _is_integer(first) and _is_integer(last):
+			low, high = int(first), int(last)
+			# a leading zero on either end pads every number to the longer end
+			padded = any(len(field.lstrip('-')) > 1 and field.lstrip('-').startswith('0') for field in (first, last))
+			numbers = range(low, high + 1) if low <= high else range(low, high - 1, -1)
+			groups.append((start, end + 1, (numbers, max(len(first), len(last)) if padded else 0), abs(high - low) + 1))
+		elif dots and shell != 'fish':
+			# letters, a step, zsh's characters: not worked out
+			return None
+		start = raw.find('{', end)
+	return groups
 
 def _closed_brackets(text):
 	'''Whether every [ of text closes before another opens: mssh pairs its [ ] as typed when more are added around it.'''
@@ -3141,66 +2802,54 @@ def _closed_brackets(text):
 
 def _brace_split(token, shell, unicode):
 	'''
-	The warning for a hosts word the shell makes several words of by brace expansion (node{1,2},
-	gpu{01..16}): mssh takes the first as its hosts and runs the second as the command. It says
-	what to write instead (a list, an mssh range) for a word typed without quotes. None for any
-	other word.
+	The warning for an unquoted hosts word the shell makes several words of by brace expansion (node{1,2},
+	gpu{01..16}): mssh takes the first as its hosts and runs the second as the command. It says what to
+	write instead (an mssh range, a list). None for any other word.
 	'''
-	if '{' not in token.raw:
+	raw = token.raw
+	if '{' not in raw or _EXPANSION_CHARS.intersection(raw) or _QUOTING_CHARS.intersection(raw) or raw.startswith('~'):
 		return None
-	text = token.text
-	marks = _quoting(token.raw)
-	if len(marks) != len(text):
+	groups = _brace_groups(raw, shell)
+	if not groups:
 		return None
-	groups = []
-	for start, end in _shell_expansions(text, marks, shell):
-		if text[start] == '{':
-			values, width = _brace_values(text, marks, start, end, shell)
-			if values is None:
-				return None
-			groups.append((start, end, values, width))
-	bounds = [0] + [edge for start, end, _, _ in groups for edge in (start, end)] + [len(text)]
-	# braces the shell leaves around or between expanded ones change how it reads them: not worked out
-	if any(text[position] in '{}' and marks[position][0] == 'u' for low, high in zip(bounds[::2], bounds[1::2]) for position in range(low, high)):
-		return None
-	pieces = [text[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
+	bounds = [0] + [edge for start, end, _, _ in groups for edge in (start, end)] + [len(raw)]
+	pieces = [raw[low:high] for low, high in zip(bounds[::2], bounds[1::2])]
 	count = 1
-	for _, _, values, _ in groups:
-		count *= _count(values)
+	for _, _, _, size in groups:
+		count *= size
 	# the shell drops an empty word: what it leaves is not worked out
-	if count < 2 or (not ''.join(pieces) and any('' in values for _, _, values, _ in groups if isinstance(values, list))):
+	if count < 2 or (not ''.join(pieces) and any('' in values for _, _, (values, _), _ in groups if isinstance(values, list))):
 		return None
 
 	def value(group, number):
-		_, _, values, width = group
+		values, width = group[2]
 		return values[number] if isinstance(values, list) else '{:0{width}d}'.format(values[number], width=width)
-
-	def mssh_range(group):
-		'''A {1..16} as an mssh range, [1-16]. mssh pads to the shorter end: both ends get the shell's width.'''
-		_, _, numbers, width = group
-		low, high = sorted((numbers[0], numbers[-1]))
-		return '[{:0{width}d}-{:0{width}d}]'.format(low, high, width=width)
 
 	def word(number):
 		'''Word number (0: the first) of those the shell makes: bash and zsh vary the last braces fastest, fish the first.'''
 		chosen = {}
 		for index in (range(len(groups)) if shell == 'fish' else range(len(groups) - 1, -1, -1)):
-			number, chosen[index] = divmod(number, _count(groups[index][2]))
+			number, chosen[index] = divmod(number, groups[index][3])
 		return pieces[0] + ''.join(value(groups[index], chosen[index]) + pieces[index + 1] for index in range(len(groups)))
 
+	def mssh_range(group):
+		'''A {1..16} as an mssh range, [1-16]. mssh pads to the shorter end: both ends get the shell's width.'''
+		numbers, width = group[2]
+		low, high = sorted((numbers[0], numbers[-1]))
+		return '[{:0{width}d}-{:0{width}d}]'.format(low, high, width=width)
+
 	dash, _ = _punctuation(unicode)
-	message = '{}: the shell makes {} words of this; mssh would run {} as the command'.format(token.raw, count, word(1))
-	meant = None
-	if token.raw == text:
-		if (all(isinstance(values, range) and abs(values.step) == 1 and min(values[0], values[-1]) >= 0 for _, _, values, _ in groups)
-				and all(_closed_brackets(piece) for piece in pieces)):
-			meant = pieces[0] + ''.join(mssh_range(group) + pieces[index + 1] for index, group in enumerate(groups))
-		elif count <= BRACE_LIST_LIMIT:
-			# hosts beside the braces once, split as mssh splits them; none in words of separators alone
-			meant = ','.join(_unique(host for number in range(count) for host in split_hosts(word(number)))) or None
+	message = '{}: the shell makes {} words of this; mssh would run {} as the command'.format(raw, count, word(1))
+	if all(isinstance(group[2][0], range) and min(group[2][0][0], group[2][0][-1]) >= 0 for group in groups) and all(_closed_brackets(piece) for piece in pieces):
+		meant = pieces[0] + ''.join(mssh_range(group) + pieces[index + 1] for index, group in enumerate(groups))
+	elif count <= BRACE_LIST_LIMIT:
+		# hosts beside the braces once, split as mssh splits them; none in words of separators alone
+		meant = ','.join(_unique(host for number in range(count) for host in split_hosts(word(number)))) or None
+	else:
+		meant = None
 	if meant is not None and len(message) + len(dash) + len(meant) + len('did you mean ?') <= MAX_MESSAGE:
 		message += dash + 'did you mean {}?'.format(meant)
-	return Diagnostic(token.start, token.start + len(token.raw), 'range', message)
+	return Diagnostic(token.start, token.start + len(raw), 'range', message)
 
 def _is_ip_address(name):
 	'''A dotted IPv4 address, or anything with a colon (IPv6: host names hold none).'''
@@ -3259,46 +2908,27 @@ def _ipv4_members(name, limit=None):
 
 def _range_size(text):
 	'''
-	(how many names expand_ranges makes of text, repeats included, whether a name may come more
-	than once), or None when it cannot expand text (letters, hex, a [ inside [ ]).
-
-	No name comes twice when each [ ] holds one value or one a-b range, and each range but the
-	last makes values of one width or is followed by a character that is not a digit: a name then
-	splits into its values one way only. node[1-16], n[1-9][1-16] and rack[1-12]-n[1-64] cannot
-	repeat; n[1-11][1-11] makes n111 twice (1 then 11, 11 then 1), and [1-2,2-3] makes 2 twice.
+	How many names expand_ranges makes of text, without making them, a name made twice counted twice
+	(n[1-11][1-11] makes n111 from 1 and 11, and from 11 and 1); None when it cannot expand text
+	(letters, hex, a [ inside [ ]).
 	'''
 	count = 1
-	repeats = False
-	# whether the value of the [ ] before may run on into the next [ ]'s
-	runs_on = False
 	position = 0
 	while True:
 		start = text.find('[', position)
 		end = text.find(']', start + 1)
 		if start < 0 or end < 0:
-			return count, repeats
-		repeats = repeats or runs_on
-		parts = text[start + 1:end].split(',')
+			return count
 		size = 0
-		widths = set()
-		for part in parts:
+		for part in text[start + 1:end].split(','):
 			low, sep, high = part.strip().partition('-')
 			if sep and _is_digits(low) and _is_digits(high):
-				first, last = int(low), int(high)
-				if last >= first:
-					size += last - first + 1
-					# zero padded to the shorter bound's width, longer numbers as they are
-					width = min(len(low), len(high))
-					widths.update((max(width, len(str(first))), max(width, len(str(last)))))
+				size += max(int(high) - int(low) + 1, 0)
 			elif not sep and part.strip() and '[' not in part:
 				size += 1
-				widths.add(len(part.strip()))
 			else:
 				return None
 		count *= size
-		repeats = repeats or len(parts) > 1
-		following = text[end + 1:end + 2]
-		runs_on = len(widths) > 1 and (following == '[' or _is_digits(following))
 		position = end + 1
 
 def _has_open_range(text):
@@ -3315,27 +2945,10 @@ def _has_open_range(text):
 		start = text.find('[', end + 1)
 	return False
 
-def _range_count(text):
-	'''
-	How many hosts expand_ranges makes of text: each name once, as mssh keeps it. None when it
-	cannot expand text, or when its names may repeat (_range_size) and there are more than
-	RANGE_COUNT_LIMIT of them: those are counted by expanding them, any other range without.
-	'''
-	size = _range_size(text)
-	if size is None:
-		return None
-	count, repeats = size
-	if not repeats:
-		return count
-	return len(set(_range_names(text))) if count <= RANGE_COUNT_LIMIT else None
-
 def _iter_range(text):
-	'''The names expand_ranges makes of text, one at a time, each once (text must be one _range_count can count).'''
-	names = _range_names(text)
-	if not _range_size(text)[1]:
-		return names
+	'''The names expand_ranges makes of text, one at a time, each once (text must be one _range_size can count).'''
 	seen = set()
-	return (name for name in names if not (name in seen or seen.add(name)))
+	return (name for name in _range_names(text) if not (name in seen or seen.add(name)))
 
 def _range_names(text):
 	'''The names expand_ranges makes of text, one at a time, repeats included.'''
@@ -3801,11 +3414,8 @@ class Engine(object):
 				# still being typed
 				continue
 			if role == ROLE_HOSTS:
-				found.extend(self._host_diagnostics(_without_shell_expansions(token, request.shell), states, now, wanted, reach))
-				users = _without_shell_expansions(token, request.shell, users=True)
-				if users is not None:
-					# mssh skips unreachable hosts by the name it runs them under, user@ included: unknown here
-					found.extend(item for item in self._host_diagnostics(users, states, now, wanted, reach) if item.kind != 'unreachable')
+				if not _shell_expands(token, request.shell):
+					found.extend(self._host_diagnostics(token, states, now, wanted, reach))
 				try:
 					split = _brace_split(token, request.shell, self.unicode)
 				except Exception as e:
@@ -3876,7 +3486,7 @@ class Engine(object):
 		'''
 		(members, how many, the user each member is written with or '') for an alias or a range, the
 		members up to RANGE_MEMBERS_LIMIT; None for one host; () for a range that cannot be expanded or
-		counted here (letters, hex, _range_count): nothing is said about it. The members of an IPv4 range
+		counted here (letters, hex, _range_size): nothing is said about it. The members of an IPv4 range
 		are addresses: they are only pinged, never unknown. Only alias members have users (an env file's
 		dbs=postgres@db1). A range makes each name once, as mssh checks it once (n[1-11][1-11] makes n111
 		twice); an alias lists a host once per user it is written with (a@node1,b@node1 are two runs of
@@ -3895,14 +3505,15 @@ class Engine(object):
 			return [member for member, _ in pairs], len(set(members)), [user for _, user in pairs]
 		if '[' not in name or _has_open_range(name):
 			return None
-		total = _range_count(name)
+		total = _range_size(name)
 		if total is None:
 			return ()
-		members = []
-		for member in _iter_range(name):
-			if len(members) >= RANGE_MEMBERS_LIMIT:
-				break
-			members.append(member)
+		members = list(itertools.islice(_iter_range(name), RANGE_MEMBERS_LIMIT + 1))
+		if len(members) > RANGE_MEMBERS_LIMIT:
+			# past the limit: counted, a name made twice twice
+			members = members[:RANGE_MEMBERS_LIMIT]
+		else:
+			total = len(members)
 		return (members, total, [''] * len(members)) if members != [name] else None
 
 	def _mssh_may_know(self, name, reach):
@@ -3981,7 +3592,6 @@ class Engine(object):
 		option (ends_line): a remote command's option is often its last word (`mssh all df -h`), and
 		Enter would run the line as it stands.
 		'''
-		abbreviations = _takes_abbreviations(self.spec)
 		have_hosts = False
 		run = None        # where the unquoted remote command starts in argv
 		pending = None    # nargs of an option still taking the words that follow as values
@@ -4001,7 +3611,7 @@ class Engine(object):
 			if token.text.startswith('-') and any(char in _EXPANDED for char in token.raw):
 				verdict, readings = 'unsure', []
 			else:
-				verdict, readings = read_option_word(token.text, self.spec, abbreviations)
+				verdict, readings = read_option_word(token.text, self.spec)
 			if verdict == 'positional':
 				if pending is not None:
 					pending = pending if pending == '+' else None
@@ -9128,45 +8738,41 @@ def _cmd_edit(args):
 	return 0
 
 def _cmd_rebuild(args):
-	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
-	# what the query that started us wrote into the lock, read before anything else
-	owner = read_lock(lock) if lock else None
-	built = False
+	# args: --lock PATH, which an engine of 0.11 still running passes, is ignored (the flock is inherited)
+	directory = cache_dir()
+	if directory is None:
+		print('mssh-complete: no private cache directory', file=sys.stderr)
+		return 1
+	failed = os.path.join(directory, FAILED_NAME)
 	try:
-		directory = cache_dir()
-		if directory is None:
-			print('mssh-complete: no private cache directory', file=sys.stderr)
-			return 1
 		path = build_index(directory)
-		built = True
-		print(path)
-		return 0
 	except Exception as e:
 		_debug(lambda: 'rebuild failed: {!r}'.format(e))
 		print('mssh-complete: rebuild failed: {!r}'.format(e), file=sys.stderr)
+		try:
+			with open(failed, 'a'):
+				os.utime(failed, None)
+		except OSError:
+			pass
 		return 1
-	finally:
-		if lock and built:
-			release_lock(lock, owner)
-		elif lock:
-			keep_failed_lock(lock, owner)
+	try:
+		os.unlink(failed)
+	except OSError:
+		pass
+	print(path)
+	return 0
 
 def _cmd_probe(args):
-	lock = args[1] if len(args) == 2 and args[0] == '--lock' else None
-	# what the query that started us wrote into the lock, read before anything else
-	owner = read_lock(lock) if lock else None
+	# args: --lock PATH, as for rebuild
 	try:
 		directory = cache_dir()
 		if directory is None:
 			return 1
-		run_probe(directory, lock, owner=owner)
+		run_probe(directory)
 		return 0
 	except Exception as e:
 		_debug(lambda: 'probe failed: {!r}'.format(e))
 		return 1
-	finally:
-		if lock:
-			release_lock(lock, owner)
 
 @_quiet_when_stdout_is_gone
 def main(argv=None):

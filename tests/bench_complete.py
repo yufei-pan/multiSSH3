@@ -162,7 +162,9 @@ def main():
 				timings.append((time.monotonic() - started) * 1000)
 			timings.sort()
 			print('suggest {!r:30} p50 {:6.1f} ms  p95 {:6.1f} ms'.format(line, statistics.median(timings), timings[int(len(timings) * 0.95) - 1]))
-		(runtime / 'multiSSH3' / 'probe.lock').write_text('')
+		import fcntl
+		held = os.open(str(runtime / 'multiSSH3' / 'probe.lock'), os.O_WRONLY | os.O_CREAT, 0o600)
+		fcntl.flock(held, fcntl.LOCK_EX)
 		warnings(engine, env, '')
 		rows = host_states(runtime / 'multiSSH3')
 		warnings(engine, env, ' ({} host states)'.format(rows))
