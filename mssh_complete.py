@@ -6335,44 +6335,19 @@ _mssh_complete_split() {
 _mssh_complete_default_ifs=$' \t\n'
 
 _mssh_complete_guard() {
-	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off: the glue's own tests
-	# compare exactly (with it on, complete -p's -f passed for -F, and a remote command ran here as its
-	# completion function). The shell's setting comes back on every return, also after a command's
-	# completion function changed it; after a Ctrl-C cut a call short (bash 5 cuts bind -x commands, and
-	# every bash a completion function running a command), at the next prompt (_mssh_complete_heal), else
-	# at the next call, unless the shell changed it since. It runs it with IFS at bash's default too (space,
-	# tab, newline), for the glue's splits and joins whatever the shell's: a local, which a return and a cut
-	# alike unwind.
-	# _mssh_complete_operator runs the shell's own code in its setting and its IFS. Its variables are
-	# prefixed: the shell's code runs inside it. _mssh_complete_held: the shell's setting while a call runs;
-	# _mssh_complete_left: the setting the glue last made, noted before the glue turns the shell's off and
-	# after it puts the shell's back: a cut between the two finds the shell's setting where the note
-	# differs, which the heal keeps. The glue never switches between two settings of its own, where no
-	# order would do
-	local _mssh_complete_outer=${_mssh_complete_nocase-} _mssh_complete_was=0 _mssh_complete_rc=0
-	if [[ -z $_mssh_complete_outer ]]; then
-		_mssh_complete_heal || :
-		# the shell's IFS, and whether it has one: unset, it is no empty one ("${a[*]}" joins with spaces)
-		local _mssh_complete_ifs=${IFS-} _mssh_complete_ifs_set=0
-		[[ -n ${IFS+1} ]] && _mssh_complete_ifs_set=1
-	fi
-	local IFS=$_mssh_complete_default_ifs
+	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off (with it on, the glue's own
+	# [[ ]] tests matched in any case: complete -p's -f passed for -F, and a remote command ran here as its
+	# completion function) and IFS at bash's default (space, tab, newline), a local, for the glue's splits and
+	# joins. The shell's nocasematch comes back on return, also after the shell's code changed it; a Ctrl-C
+	# that cuts a call short leaves it off
+	local IFS=$_mssh_complete_default_ifs _mssh_complete_was=0 _mssh_complete_rc=0
 	shopt -q nocasematch && _mssh_complete_was=1
-	# the shell's setting, as the outermost call found it (one inside is called with it off, or as ble.sh set it)
-	local _mssh_complete_nocase=${_mssh_complete_outer:-$_mssh_complete_was}
-	[[ -n $_mssh_complete_outer ]] || _mssh_complete_held=$_mssh_complete_was
-	_mssh_complete_left=0
 	shopt -u nocasematch
 	"$@" || _mssh_complete_rc=$?
 	if (( _mssh_complete_was )); then
 		shopt -s nocasematch
 	else
 		shopt -u nocasematch
-	fi
-	_mssh_complete_left=$_mssh_complete_was
-	if [[ -z $_mssh_complete_outer ]]; then
-		_mssh_complete_held=
-		_mssh_complete_left=
 	fi
 	return $_mssh_complete_rc
 }
@@ -6387,42 +6362,11 @@ _mssh_complete_read_locale() {
 	_mssh_complete_locale="utf8=$(( ${#_mssh_complete_two_bytes} == 1 && ${#_mssh_complete_gb_pair} == 2 )) turkic=$_mssh_complete_turkic"
 }
 
-_mssh_complete_heal() {
-	# PROMPT_COMMAND (ble.sh: PRECMD), and the next glue call: a glue call a Ctrl-C cut short left the
-	# setting it had made; the shell's comes back, at the prompt before the next command line is read.
-	# Where the setting is no longer what the glue left, the shell changed it since: it stays. Left
-	# alike by the shell (shopt -u after a cut that left it off) it cannot be told, and comes back
-	local _mssh_complete_heal_status=$? _mssh_complete_now=0
-	if [[ -n ${_mssh_complete_held-} ]]; then
-		shopt -q nocasematch && _mssh_complete_now=1
-		if (( _mssh_complete_now == ${_mssh_complete_left:-0} )); then
-			if (( _mssh_complete_held )); then
-				shopt -s nocasematch
-			else
-				shopt -u nocasematch
-			fi
-		fi
-		_mssh_complete_held=
-		_mssh_complete_left=
-	fi
-	return $_mssh_complete_heal_status
-}
-
 _mssh_complete_operator() {
-	# run "$@", the shell's own code (a command's completion function, the binding ours took over), in
-	# the shell's nocasematch and its IFS (the one the guard noted: called without the guard, IFS stays as it
-	# is); the glue's come back after, the local IFS unwinding on a return and on a cut alike
+	# run "$@", the shell's own code (a command's completion function, a loader, the binding ours took over):
+	# one that turns nocasematch on leaves the glue's own tests exact all the same
 	local _mssh_complete_rc=0
-	case ${_mssh_complete_ifs_set-} in
-		1) local IFS=$_mssh_complete_ifs ;;
-		0) local IFS; unset IFS ;;
-	esac
-	if (( ${_mssh_complete_nocase:-0} )); then
-		shopt -s nocasematch
-		_mssh_complete_left=1
-	fi
 	"$@" || _mssh_complete_rc=$?
-	_mssh_complete_left=0
 	shopt -u nocasematch
 	return $_mssh_complete_rc
 }
@@ -6614,7 +6558,7 @@ _mssh_complete_delegate() {
 	# the same and can be shorter (it stops at ":" and "="): drop what comes before that word, as typed.
 	# The word itself in any case when the engine matched so (_mssh_complete_icase), as compgen and
 	# readline do (stor gives Storage-File): lowered, as nocasematch compares (bash 4.2 to 5.3, Turkish
-	# locales too), with no setting to change and so no window for a Ctrl-C between it and its note
+	# locales too)
 	_mssh_complete_fold=${_mssh_complete_icase-0}
 	_mssh_complete_lead=$_mssh_complete_prefix$_mssh_complete_current
 	_mssh_complete_lead=${_mssh_complete_lead%"$_mssh_complete_word"}
@@ -7270,7 +7214,6 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		blehook PRECMD+=_mssh_complete_ble_warn_reset
 	}
 	_mssh_complete_ble_warnings
-	blehook PRECMD+=_mssh_complete_heal
 elif [[ $- == *i* ]]; then
 	# readline counts READLINE_POINT in bytes before bash 5
 	_mssh_complete_bytes=0
@@ -7328,7 +7271,6 @@ elif [[ $- == *i* ]]; then
 		return $_mssh_complete_keys_status
 	}
 	[[ ${PROMPT_COMMAND-} == *_mssh_complete_keys\;* ]] || PROMPT_COMMAND="_mssh_complete_keys;${PROMPT_COMMAND-}"
-	[[ ${PROMPT_COMMAND-} == *_mssh_complete_heal\;* ]] || PROMPT_COMMAND="_mssh_complete_heal;${PROMPT_COMMAND-}"
 fi
 '''
 

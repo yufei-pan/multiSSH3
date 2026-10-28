@@ -422,28 +422,6 @@ def test_bash_delegation_without_a_compspec_offers_file_names(tmp_path):
 
 
 @pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
-def test_bash_the_glue_runs_with_the_default_ifs_and_the_shells_code_with_the_shells(tmp_path, shell_ifs):
-	# a -F function sees the shell's IFS (unset is no empty IFS); the glue's own joins and splits see bash's
-	# default, whatever the shell's: COMP_LINE is joined by spaces
-	setup = ('_zzifs() { COMPREPLY=("zzifs[${IFS-unset}]" "zzline[$COMP_LINE]" "zzstar[${COMP_WORDS[*]}]"); }; complete -F _zzifs zzsvc')
-	expected = {'IFS=:': 'zzifs[:]', 'IFS=': 'zzifs[]', 'unset IFS': 'zzifs[unset]'}[shell_ifs]
-	assert delegated(tmp_path, setup, before=shell_ifs + '; ') == [expected, 'zzline[zzsvc zz]',
-		'zzstar[{}]'.format({'IFS=:': 'zzsvc:zz', 'IFS=': 'zzsvczz', 'unset IFS': 'zzsvc zz'}[shell_ifs])]
-
-
-@pytest.mark.parametrize('shell_ifs, expected', [('IFS=:', '[a][b]'), ('IFS=', '[a:b][]'), ('unset IFS', '[a:b][]')])
-def test_bash_the_prompt_the_picker_redraws_is_expanded_in_the_shells_ifs(tmp_path, shell_ifs, expected):
-	# PS1's command substitutions are the shell's code: they split on the shell's IFS, not the glue's
-	script = ('. "$1"; ' + shell_ifs + '; PS1=\'$(echo a:b | { read x y; echo "[$x][$y]"; })\'; '
-		'_mssh_complete_guard _mssh_complete_prompt; printf "%s" "$_mssh_complete_ps1"')
-	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-	if output.stdout.decode().startswith('$('):
-		pytest.skip('this bash has no ${PS1@P}')
-	assert output.stdout.decode() == expected, output
-
-
-@pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
 def test_bash_the_glue_puts_the_shells_ifs_back(tmp_path, shell_ifs):
 	script = ('. "$1"; _zzreal() { COMPREPLY=(zzalpha); }; complete -F _zzreal zzsvc; ' + shell_ifs + '; '
 		'_mssh_complete_guard _mssh_complete_delegate zz 1 "" zzsvc zz; printf "[%s][%s]" "${IFS+set}" "$IFS"')
@@ -946,8 +924,7 @@ def nocasematch(session):
 
 
 def test_bash_glue_gives_the_shell_back_its_nocasematch(tmp_path):
-	# the glue sets nocasematch to match delegated words as the engine matched them (on while ignoring case,
-	# whatever the shell had), and puts back what the shell had
+	# the glue turns nocasematch off for its own tests, and puts back what the shell had
 	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-x"']
 	session = ignoring_case(tmp_path, history, files=['Storage-File'])
 	try:
@@ -1157,137 +1134,6 @@ def test_bash_tab_runs_no_command_complete_f_names_and_gives_file_names(tmp_path
 		assert nocasematch(session) == setting
 	finally:
 		session.close()
-
-
-@pytest.mark.parametrize('setting, prompt_command', [('on', 'kept'), ('on', 'replaced'), ('off', 'replaced')])
-def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting, prompt_command):
-	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function is cut too):
-	# here the Ctrl-R binding the glue took over, a slow one, with the glue's note of the shell's
-	# nocasematch left. The shell then sets it the other way, and TAB must leave that: the note came back
-	# at the next glue call (round 5's heal at the next prompt fixed that only where PROMPT_COMMAND
-	# still holds it, 'kept'). With 'off' nothing came back before; it guards the note of an off setting
-	env, home = make_home(tmp_path, [])
-	pre = '''shopt -{} nocasematch
-_slow() {{ printf '@@SLOW''@@\\n'; local end=$((SECONDS + 2)); while (( SECONDS < end )); do :; done; }}
-bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
-	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, pre=pre)
-	try:
-		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
-		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
-		session.read_until(b'@@READY@@')
-		session.send('echo a\x12')
-		session.read_until(b'@@SLOW@@')
-		session.send('\x03')
-		# the binding is over once a command runs; bash 4 kept the line and drops a key: cancel, clear, a space
-		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
-		session.read_until(b'@@ALIVE@@', 15)
-		session.read_until(b'@@READY@@')
-		other = 'off' if setting == 'on' else 'on'
-		session.send(' shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
-		session.read_until(b'@@READY@@')
-		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
-		assert nocasematch(session) == other
-	finally:
-		session.close()
-
-
-@pytest.mark.parametrize('prompt_command', ['kept', 'replaced'])
-def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back_its_nocasematch(tmp_path, prompt_command):
-	# a Ctrl-C landing in the glue's own code, while it holds nocasematch off for a shell that has it on:
-	# here Ctrl-R's picker expanding the prompt, a slow $(...) in PS1. The shell gets nocasematch back at
-	# the next prompt (PROMPT_COMMAND's heal, 'kept'), or at the next glue call when PROMPT_COMMAND was
-	# replaced
-	env, home = make_home(tmp_path, [])
-	major = subprocess.run([require_shell('bash'), '-c', 'echo ${BASH_VERSINFO[0]}'], env=env, stdout=subprocess.PIPE).stdout
-	if int(major) < 5:
-		# 4.4 ends the picker's start without the engine, 4.2 does not expand PS1 there
-		pytest.skip('bash 4 runs a bind -x command to its end on Ctrl-C: no cut lands in the glue')
-	armed = tmp_path / 'armed'
-	never = tmp_path / 'never'
-	os.mkfifo(str(never))
-	# the prompt's command: once armed, says so and waits on a pipe nobody writes to, until Ctrl-C
-	(tmp_path / 'zzwait').write_text('#!/bin/sh\n[ -e {0} ] || exit 0\nmv {0} {0}.taken\nprintf "@@WAIT""@@\\n" >&2\nread x < {1}\n'.format(armed, never))
-	(tmp_path / 'zzwait').chmod(0o755)
-	# an engine noting what it was asked: the picker must not start, the cut came first
-	asked = tmp_path / 'asked'
-	(tmp_path / 'zzengine').write_text('#!/bin/sh\necho "$1" >> {}\nexit 1\n'.format(asked))
-	(tmp_path / 'zzengine').chmod(0o755)
-	glue = glue_file(home, 'bash', command=str(tmp_path / 'zzengine'))
-	extra = "PS1='$({})@@READY@@ '".format(tmp_path / 'zzwait')
-	session = bash_session(home, env, glue, bash_completion=False, pre='shopt -s nocasematch', extra=extra)
-	try:
-		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
-		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
-		session.read_until(b'@@READY@@')
-		armed.write_text('')
-		session.send('mssh h\x12')
-		assert '@@WAIT@@' in session.read_until(b'@@WAIT@@')
-		session.send('\x03')
-		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
-		session.read_until(b'@@ALIVE@@', 15)
-		session.read_until(b'@@READY@@')
-		assert not asked.exists(), asked.read_text()
-		if prompt_command == 'kept':
-			assert nocasematch(session) == 'on'
-		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
-		assert nocasematch(session) == 'on'
-	finally:
-		session.close()
-
-
-CUT_PROBE = r'''
-. "$1"
-# a command's completion function, for the delegate path, and one a loader registers at the first TAB
-_zzstand() { COMPREPLY=(Alpha alpine beta); }
-complete -F _zzstand zzcmd
-# a compspec built on a word list and a filter, and one on a command (run in a subshell, as bash runs it)
-complete -W "Alpha alpine beta" -X "beta" zzwords
-complete -C "printf '%s\\n' Alpha alpine; :" zzcomm
-_completion_loader() { [[ $1 == zzlazy ]] && complete -F _zzstand zzlazy; }
-# the probe writes to fd 3: command substitutions in the glue take its stdout
-exec 3>&1
-_probe() {
-	# before each command of the glue's and of the stand-in's: what the heal makes of a cut landing
-	# there (in a subshell: the call goes on)
-	case ${FUNCNAME[1]-} in _mssh_complete_*|_zzstand|_completion_loader) ;; *) return 0 ;; esac
-	local got
-	got=$(trap - DEBUG; _mssh_complete_heal; shopt -q nocasematch && echo on || echo off)
-	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got" >&3
-}
-shopt -$2 nocasematch
-set -T
-trap _probe DEBUG
-eval "$3"
-trap - DEBUG
-printf 'delegated: %s\n' "${_mssh_complete_delegated[*]-}"
-'''
-
-
-@pytest.mark.parametrize('setting', ['on', 'off'])
-@pytest.mark.parametrize('call, delegated', [
-	# the shell's code run by the glue (a delegated completion, the Ctrl-R binding it took over)
-	('_mssh_complete_guard _mssh_complete_operator true', ''),
-	# a glue call made from there (ble.sh's hooks)
-	('_mssh_complete_guard _mssh_complete_operator _mssh_complete_guard true', ''),
-	# a command's completion function, run and its words filtered by the word typed: in any case, and as typed
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'Alpha alpine'),
-	('_mssh_complete_icase=0 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'alpine'),
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzlazy al', 'Alpha alpine'),
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzwords al', 'alpine'),
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcomm al', 'Alpha alpine'),
-])
-def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call, delegated):
-	# a cut between turning nocasematch off and noting it left the glue's off where its note said the
-	# shell's on: the heal took that for the shell's doing and kept it off. A cut can land before any
-	# command of a call (a completion function too, where it runs a command); the heal from there must
-	# give the shell back its setting
-	glue = glue_file(tmp_path, 'bash')
-	output = subprocess.run([require_shell('bash'), '-c', CUT_PROBE, 'probe', str(glue), 's' if setting == 'on' else 'u', call],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-	lines = output.stdout.decode().splitlines()
-	assert lines[-1:] == ['delegated: ' + delegated], output
-	assert len(lines) > 20, output
-	assert [line for line in lines[:-1] if not line.endswith('-> ' + setting)] == []
 
 
 @pytest.mark.parametrize('icase', ['on', 'off'])
