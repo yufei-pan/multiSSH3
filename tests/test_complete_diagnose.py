@@ -1,9 +1,7 @@
 '''Warnings before Enter: what the engine says about the words of an mssh line already typed.'''
-import argparse
 import contextlib
 import io
 import os
-import random
 import shutil
 import string
 import subprocess
@@ -137,6 +135,11 @@ def test_a_quoted_host_word_without_expansions_is_checked_as_mssh_reads_it(engin
 	# with an expansion beside it (a variable, $USER@) nothing is said about the word
 	assert warnings_if_all_unknown(engine, "mssh 'gpu017',login1 uptime")[0][2] == 'gpu017: unknown host'
 	assert warnings_if_all_unknown(engine, 'mssh $USER@gpu017,login1 uptime') == []
+
+
+def test_a_glob_is_checked_as_typed(engine):
+	# an unmatched glob reaches mssh as typed (mssh takes [ ], * and ? in ranges)
+	assert warnings_if_all_unknown(engine, 'mssh node* uptime')[0][2] == 'node*: unknown host'
 
 
 @pytest.mark.parametrize('shell, line, kinds', [
