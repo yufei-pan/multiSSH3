@@ -3887,10 +3887,12 @@ def _shown_command(argv, passwords=()):
 	argv as the line the TUI and --debug show, each password in it shown as ***.
 
 	A password is the word after -p or -P (sshpass, ipmitool, redfishtool, also inside the sh -c line
-	they run in) that is one of passwords. Other words stay, ssh's -p port too.
+	they run in) that is one of passwords or a configured password. Other words stay, ssh's -p port too.
 	'''
+	known = list(passwords) + [DEFAULT_PASSWORD, DEFAULT_IPMI_PASSWORD]
+	known += [definition.get('password') for definition in DEFAULT_IPMI_DEFINITIONS if isinstance(definition, dict)]
 	# longest first, so a password inside another one does not leave the rest of that one
-	secrets = sorted({str(password) for password in passwords if password is not None and str(password)}, key=len, reverse=True)
+	secrets = sorted({str(password) for password in known if password is not None and str(password)}, key=len, reverse=True)
 	words = [str(word) for word in argv]
 	for index, word in enumerate(words):
 		if index and words[index - 1] in ('-p', '-P') and word in secrets:
