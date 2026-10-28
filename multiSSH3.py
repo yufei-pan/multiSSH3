@@ -4166,7 +4166,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 							# -t counts the time since the last output, not since the start
 							stopped = f'No output for {timeout} s, so {_stopped_command_note(formatedCMD)}.'
 							_report(host, stopped)
-							_stop_command(proc, formatedCMD)
+							_stop_command(proc)
 							break
 						elif time.monotonic() - host.lastUpdateTime >  max(1, timeout // 2):
 							timeoutLine = f'Timeout in [{timeout - int(time.monotonic() - host.lastUpdateTime)}] seconds!'
@@ -4185,7 +4185,7 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 					if _emo:
 						_report(host, 'Ctrl C detected, Emergency Stop!')
 						stopped_by_ctrl_c = True
-						_stop_command(proc, formatedCMD)
+						_stop_command(proc)
 						break
 					# until the command's output ends, which it does as it exits, waking _MONITOR_WAKE for -t and
 					# Ctrl C. Once it ended, the process is looked at more and more slowly: it may run on with its
@@ -4300,66 +4300,8 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 			retry_limit -= 1
 	return False, retry_limit, attempt_line_starts
 
-def _child_pids(pid):
-	'''The pids of pid's child processes; [] when neither /proc nor pgrep can list them.'''
-	try:
-		with open('/proc/{0}/task/{0}/children'.format(pid)) as children:
-			return [int(child) for child in children.read().split()]
-	except (OSError, ValueError):
-		pass
-	try:
-		listed = subprocess.run(['pgrep', '-P', str(pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1).stdout
-		return [int(child) for child in listed.split()]
-	except (OSError, ValueError, subprocess.SubprocessError):
-		return []
-
-def _sessions_below(pid):
-	'''
-	The processes below pid that lead a session of their own (sshpass makes its command one); each is
-	its process group. Never init's or mssh's own group: pgrep -P 0 lists init.
-	'''
-	if not isinstance(pid, int) or pid <= 1:
-		return []
-	leaders = []
-	seen = {pid}
-	pids = _child_pids(pid)
-	while pids:
-		child = pids.pop()
-		if child in seen or child <= 1:
-			continue
-		seen.add(child)
-		try:
-			if os.getsid(child) == child:
-				if child != os.getpgrp():
-					leaders.append(child)
-				continue
-		except OSError:
-			continue
-		pids.extend(_child_pids(child))
-	return leaders
-
-def _stop_command(proc, formatedCMD):
-	'''
-	Stop a command mssh gives up on (-t, Ctrl C) as Ctrl C at a terminal would, then as mssh always did.
-
-	sshpass runs its command as a session of its own on a terminal of its own, and passes SIGINT on as
-	a typed Ctrl C only once ssh has written there. While ssh is still connecting, any signal ends
-	sshpass at once and hangs up that terminal: ssh-copy-id, whose trap does not cover SIGHUP, then left
-	an empty ~/.ssh/ssh-copy-id.XXXXXXXXXX. So the command under sshpass gets the SIGINT first, as a
-	typed Ctrl C would give it, and a moment to end.
-	'''
-	if os.name == 'posix' and _sshpass_program(formatedCMD):
-		leaders = _sessions_below(proc.pid)
-		for leader in leaders:
-			try:
-				os.killpg(leader, signal.SIGINT)
-			except OSError:
-				pass
-		if leaders:
-			try:
-				proc.wait(timeout=1)
-			except subprocess.TimeoutExpired:
-				pass
+def _stop_command(proc):
+	'''Stop a command mssh gives up on (-t, Ctrl C) as Ctrl C would, then for good.'''
 	if proc.poll() is None:
 		proc.send_signal(signal.SIGINT)
 		time.sleep(0.1)
