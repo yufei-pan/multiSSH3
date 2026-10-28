@@ -7214,15 +7214,16 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			_exit_with_code(0, "Aborted by user, no config file written")
 	# neither the new file nor the backup may end up more open than the old file was
 	try:
-		previous_mode = stat.S_IMODE(os.stat(CONFIG_FILE).st_mode)
+		previous = os.stat(CONFIG_FILE)
+		previous_mode = stat.S_IMODE(previous.st_mode)
 	except OSError:
-		previous_mode = None
+		previous = previous_mode = None
 	try:
 		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
 			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
 			# link aside would leave the file it points to as it was, copy that file instead
 			with open(CONFIG_FILE, 'rb') as f:
-				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False)
+				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False, owner=False)
 		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only
@@ -7245,7 +7246,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		# configs can hold passwords: owner only, except the system-wide locations every user reads, and
 		# never more open than the old file was (an admin may have locked it down further)
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
-		_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode)
+		_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode, owner=previous)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 		return True
 	except Exception as e:
@@ -7846,12 +7847,14 @@ def _old_control_paths(content):
 	ours = range(start, start + len(block_lines)) if start >= 0 else ()
 	return [index + 1 for index, line in enumerate(stripped) if line == _OLD_CONTROL_MASTER_LINES[2] and index not in ours]
 
-def _replace_file(path, content, mode=None, follow=True):
+def _replace_file(path, content, mode=None, follow=True, owner=True):
 	'''
 	Write content (bytes) to the file at path, never leaving it half written: a temporary copy with mode
 	(default: the old file's, else 0644) and the old file's owner and group is renamed over it, so a full
 	disk or quota keeps the old one. A symlink is written through (into a dotfiles repository), unless
 	follow is False. A file of another user (sudo keeping HOME) is only replaced if we can keep its owner.
+	owner: True keeps the old file's, a stat result gives that owner and group (the old file was moved
+	aside; failing to give them is not an error), False leaves the file the writer's own.
 	'''
 	target = os.path.realpath(path) if follow else path
 	try:
@@ -7860,6 +7863,8 @@ def _replace_file(path, content, mode=None, follow=True):
 		st = None
 	if mode is None:
 		mode = stat.S_IMODE(st.st_mode) if st is not None else 0o644
+	if owner is True:
+		owner = st
 	temporary = '{}.{}.tmp'.format(target, uuid4().hex)
 	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), mode)
 	try:
@@ -7867,13 +7872,13 @@ def _replace_file(path, content, mode=None, follow=True):
 			if hasattr(os, 'fchmod'):
 				# O_CREAT's mode is reduced by the umask, set it exactly
 				os.fchmod(f.fileno(), mode)
-			if st is not None and hasattr(os, 'chown'):
+			if owner and hasattr(os, 'chown'):
 				try:
-					os.chown(temporary, st.st_uid, st.st_gid)
+					os.chown(temporary, owner.st_uid, owner.st_gid)
 				except OSError:
-					if st.st_uid != os.getuid():
+					if st is not None and st.st_uid != os.getuid():
 						raise
-					# ours: only the group could not be kept
+					# ours (or no file left to keep): only the owner or group could not be given
 			f.write(content)
 			f.flush()
 			os.fsync(f.fileno())
