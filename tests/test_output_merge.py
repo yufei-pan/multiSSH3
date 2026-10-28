@@ -260,3 +260,40 @@ def test_failed_hosts_list_a_host_sharing_an_alias_name_alone(fake_host, monkeyp
 
 	err = capsys.readouterr().err
 	assert "failed_hosts: web\n" in err and "succeeded_hosts: web-b\n" in err
+
+
+def _hosts_with_outputs(fake_host, outputs):
+	hosts = []
+	for name, lines in outputs.items():
+		host = fake_host(name, "cat x")
+		host.stdout, host.stderr, host.returncode = list(lines), [], 0
+		hosts.append(host)
+	return hosts
+
+
+def test_the_header_of_pre_merged_hosts_is_one_range(fake_host, monkeypatch):
+	monkeypatch.setattr(multiSSH3, "get_terminal_color_capability", lambda: "None")
+	monkeypatch.setattr(multiSSH3, "get_terminal_size", lambda: (80, 24))
+	common = ["line {}".format(i) for i in range(30)]
+	# odd and even nodes differ in one line, so the groups pre_merge_hosts names (node[1,3,...]) are merged again
+	outputs = {"node{}".format(i): common + ["odd" if i % 2 else "even"] for i in range(1, 13)}
+	hosts = multiSSH3.pre_merge_hosts(_hosts_with_outputs(fake_host, outputs))
+	assert len(hosts) == 2
+
+	out = multiSSH3.generate_output(hosts, usejson=False, quiet=False, errors_only=False)
+
+	# the block's header (top and bottom) is the whole range, not the two groups it was merged from
+	assert out.count("■ node[1-12]") == 2
+
+
+def test_one_differing_host_leaves_the_rest_as_one_range(fake_host, monkeypatch):
+	monkeypatch.setattr(multiSSH3, "get_terminal_color_capability", lambda: "None")
+	monkeypatch.setattr(multiSSH3, "get_terminal_size", lambda: (80, 24))
+	common = ["line {}".format(i) for i in range(30)]
+	outputs = {"node1": common, "node2": common, "node3": common, "node4": common + ["extra"]}
+	hosts = multiSSH3.pre_merge_hosts(_hosts_with_outputs(fake_host, outputs))
+
+	out = multiSSH3.generate_output(hosts, usejson=False, quiet=False, errors_only=False)
+
+	assert "node[1-4]" in out
+	assert "node4,node[1-3]" not in out

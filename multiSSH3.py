@@ -2575,12 +2575,18 @@ def compact_hostnames_local(names):
 	exactly the names, the names are returned unchanged.
 
 	Args:
-		names (iterable): Host names, no aliases or ranges
+		names (iterable): Host names; ranges and comma lists (what this function returned
+			before, e.g. node[1-3],gpu1) are expanded first, aliases are not looked up
 
 	Returns:
 		list: Range strings (or names) in natural sort order
 	'''
-	host_set = frozenset(name.strip() for name in names if name and name.strip())
+	host_set = frozenset(
+		member
+		for name in names if name
+		for part in name.split(',') if part.strip()
+		for member in __expand_hostname(part.strip(), validate=False)
+	)
 	if not host_set:
 		return []
 	compacted = __compact_hostnames(host_set)
@@ -2721,7 +2727,11 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	Returns:
 		None
 	'''
-	bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
+	try:
+		bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
+	except (LookupError, TypeError):
+		# not an encoding (set_global_with_args takes args.encoding as it is): the decode fails as it did before
+		bulk_encoding = False
 	def add_line():
 		line = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
 		target.append(line)
@@ -3006,7 +3016,7 @@ def _login_drop_backoff_seconds(retry):
 # address ssh connected to, or UNKNOWN port 65535 through a ProxyJump / ProxyCommand. A reset reads the
 # same before and after login: only the banner exchange line before it tells.
 _SSH_BANNER_DROP = re.compile(r'(?:kex|ssh)_exchange_identification: (read: Connection reset by peer|Connection closed by remote host)')
-_SSH_CONNECTION_DROP = re.compile(r'Connection (closed|reset) by (\S+) port (\d+)')
+_SSH_CONNECTION_DROP = re.compile(r'Connection (closed|reset) by \S+ port \d+')
 _SSH_RESET_BANNER = 'read: Connection reset by peer'
 # what scp and rsync print when the ssh they run was dropped. scp's legacy protocol (before OpenSSH 9.0,
 # and scp -O) exits with 1; rsync with ssh's 255, or with 12 when it notices the closed stream first
@@ -3022,8 +3032,8 @@ _LoginDrop.__doc__ = '''
 A run that ended with the server dropping ssh's connection before login, from _login_drop.
 
 banners holds each banner exchange line's reason ('read: Connection reset by peer' or 'Connection
-closed by remote host'); drops the (closed or reset, address, port) of each "Connection closed / reset
-by" line, in order; nothing_received is True when rsync said it received 0 bytes.
+closed by remote host'); drops 'closed' or 'reset' for each "Connection closed / reset by" line, in
+order; nothing_received is True when rsync said it received 0 bytes.
 '''
 
 def _login_drop(returncode, stdout, stderr, tool):
@@ -3058,7 +3068,7 @@ def _login_drop(returncode, stdout, stderr, tool):
 			continue
 		match = _SSH_CONNECTION_DROP.fullmatch(line)
 		if match:
-			drops.append(match.groups())
+			drops.append(match.group(1))
 			continue
 		match = tool_lines.fullmatch(line) if tool_lines else None
 		if not match:
@@ -3071,7 +3081,7 @@ def _login_drop(returncode, stdout, stderr, tool):
 
 def _shows_dropped_login(drop):
 	'''Whether a _login_drop result shows the connection ended before login: a lone reset can come later too.'''
-	return bool(drop) and (bool(drop.banners) or any(kind == 'closed' for kind, _address, _port in drop.drops))
+	return bool(drop) and (bool(drop.banners) or 'closed' in drop.drops)
 
 def _dropped_login_hint(count, max_connections):
 	'''
@@ -3099,7 +3109,7 @@ def _login_drop_is_safe_to_retry(drop, tool):
 	'''
 	if tool == 'rsync':
 		return drop.nothing_received and _shows_dropped_login(drop)
-	if any(kind == 'reset' for kind, _address, _port in drop.drops) and _SSH_RESET_BANNER not in drop.banners:
+	if 'reset' in drop.drops and _SSH_RESET_BANNER not in drop.banners:
 		return False
 	return _shows_dropped_login(drop)
 
@@ -3673,9 +3683,7 @@ def _build_command(host, passwds, ipmi_definitions_list, scp_like_rsync=False, r
 					_note(host, 'Warning: -p SSH_PASSWORD is provided! Using the password from the ipmi definition if provided.')
 				passwds = ipmi_definition.get('password',passwds)
 				if ipmi_definition.get('interface_ip_prefix') and ipmi_definition.get('interface_ip_prefix') == DEFAULT_IPMI_INTERFACE_IP_PREFIX:
-					host.output.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
-					if __DEBUG_MODE:
-						host.stderr.append('Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
+					_note(host, 'Warning: ipmi_interface_ip_prefix that is the same as the DEFAULT_IPMI_INTERFACE_IP_PREFIX is ignored in ssh_ipmitool mode.')
 			else:
 				ip_prefix = ipmi_definition.get('interface_ip_prefix')
 		host.command = replace_magic_strings(host.command,['#HOST#','#HOSTNAME#'],host.address,case_sensitive=False)
@@ -3881,10 +3889,12 @@ def _shown_command(argv, passwords=()):
 	argv as the line the TUI and --debug show, each password in it shown as ***.
 
 	A password is the word after -p or -P (sshpass, ipmitool, redfishtool, also inside the sh -c line
-	they run in) that is one of passwords. Other words stay, ssh's -p port too.
+	they run in) that is one of passwords or a configured password. Other words stay, ssh's -p port too.
 	'''
+	known = list(passwords) + [DEFAULT_PASSWORD, DEFAULT_IPMI_PASSWORD]
+	known += [definition.get('password') for definition in DEFAULT_IPMI_DEFINITIONS if isinstance(definition, dict)]
 	# longest first, so a password inside another one does not leave the rest of that one
-	secrets = sorted({str(password) for password in passwords if password is not None and str(password)}, key=len, reverse=True)
+	secrets = sorted({str(password) for password in known if password is not None and str(password)}, key=len, reverse=True)
 	words = [str(word) for word in argv]
 	for index, word in enumerate(words):
 		if index and words[index - 1] in ('-p', '-P') and word in secrets:
@@ -5069,7 +5079,7 @@ def _tui_typed_keys(key, decoder):
 	decoder.reset()
 	return (cut_short, key) if cut_short else (key,)
 
-def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False, config_reason = 'New Configuration'):
+def __generate_display(stdscr, hosts, lineToDisplay = -1,curserPosition = 0, min_char_len = DEFAULT_WINDOW_WIDTH, min_line_len = DEFAULT_WINDOW_HEIGHT,single_window=DEFAULT_SINGLE_WINDOW,help_shown = False):
 	try:
 		box_ansi_color = None
 		refresh_all = True
@@ -5437,7 +5447,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 		stdscr.refresh()
 	except Exception:
 		pass
-	params = (-1,0 , min_char_len, min_line_len, single_window,False,'new config')
+	params = (-1,0 , min_char_len, min_line_len, single_window,False)
 	while params:
 		params = __generate_display(stdscr, hosts, *params)
 		if not params:
@@ -5458,7 +5468,7 @@ def curses_print(stdscr, hosts, threads, min_char_len = DEFAULT_WINDOW_WIDTH, mi
 			stdscr.refresh()
 		except Exception:
 			pass
-		params = params[:6] + ('new config',)
+		params = params[:6]
 		time.sleep(0.01)
 
 #%% ------------ Generate Output Block ----------------
@@ -6093,7 +6103,10 @@ def runtime_dir(create=True):
 	return None
 
 def _unavailable_hosts_file_path(create=True):
-	'''Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.'''
+	'''
+	Where unavailable hosts are cached between runs (in runtime_dir), or None to run without the cache.
+	create is ignored: callers written for 6.38 still work.
+	'''
 	directory = runtime_dir()
 	return os.path.join(directory, 'unavailable_hosts.csv') if directory else None
 
@@ -7208,15 +7221,16 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			_exit_with_code(0, "Aborted by user, no config file written")
 	# neither the new file nor the backup may end up more open than the old file was
 	try:
-		previous_mode = stat.S_IMODE(os.stat(CONFIG_FILE).st_mode)
+		previous = os.stat(CONFIG_FILE)
+		previous_mode = stat.S_IMODE(previous.st_mode)
 	except OSError:
-		previous_mode = None
+		previous = previous_mode = None
 	try:
 		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
 			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
 			# link aside would leave the file it points to as it was, copy that file instead
 			with open(CONFIG_FILE, 'rb') as f:
-				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False)
+				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False, owner=False)
 		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only
@@ -7239,7 +7253,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		# configs can hold passwords: owner only, except the system-wide locations every user reads, and
 		# never more open than the old file was (an admin may have locked it down further)
 		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
-		_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode)
+		_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode, owner=previous)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 		return True
 	except Exception as e:
@@ -7840,12 +7854,14 @@ def _old_control_paths(content):
 	ours = range(start, start + len(block_lines)) if start >= 0 else ()
 	return [index + 1 for index, line in enumerate(stripped) if line == _OLD_CONTROL_MASTER_LINES[2] and index not in ours]
 
-def _replace_file(path, content, mode=None, follow=True):
+def _replace_file(path, content, mode=None, follow=True, owner=True):
 	'''
 	Write content (bytes) to the file at path, never leaving it half written: a temporary copy with mode
 	(default: the old file's, else 0644) and the old file's owner and group is renamed over it, so a full
 	disk or quota keeps the old one. A symlink is written through (into a dotfiles repository), unless
 	follow is False. A file of another user (sudo keeping HOME) is only replaced if we can keep its owner.
+	owner: True keeps the old file's, a stat result gives that owner and group (the old file was moved
+	aside; failing to give them is not an error), False leaves the file the writer's own.
 	'''
 	target = os.path.realpath(path) if follow else path
 	try:
@@ -7854,6 +7870,8 @@ def _replace_file(path, content, mode=None, follow=True):
 		st = None
 	if mode is None:
 		mode = stat.S_IMODE(st.st_mode) if st is not None else 0o644
+	if owner is True:
+		owner = st
 	temporary = '{}.{}.tmp'.format(target, uuid4().hex)
 	fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), mode)
 	try:
@@ -7861,13 +7879,13 @@ def _replace_file(path, content, mode=None, follow=True):
 			if hasattr(os, 'fchmod'):
 				# O_CREAT's mode is reduced by the umask, set it exactly
 				os.fchmod(f.fileno(), mode)
-			if st is not None and hasattr(os, 'chown'):
+			if owner and hasattr(os, 'chown'):
 				try:
-					os.chown(temporary, st.st_uid, st.st_gid)
+					os.chown(temporary, owner.st_uid, owner.st_gid)
 				except OSError:
-					if st.st_uid != os.getuid():
+					if st is not None and st.st_uid != os.getuid():
 						raise
-					# ours: only the group could not be kept
+					# ours (or no file left to keep): only the owner or group could not be given
 			f.write(content)
 			f.flush()
 			os.fsync(f.fileno())
@@ -8098,24 +8116,32 @@ def main(args = None):
 	if sigpipe is not None:
 		previous_sigpipe = signal.signal(sigpipe, signal.SIG_DFL)
 	try:
-		# before the parse: -h there prints mssh's help and exits
-		note = _options_after_the_command_note(sys.argv[1:] if args is None else args)
-	except Exception as e:
-		note = None
-		if __DEBUG_MODE:
-			eprint(f"Warning: cannot check the options after the command: {e!r}")
-	if note:
-		eprint(note)
-	args = process_args(args)
-	if args.completion:
-		_exit_with_code(_completion_command(args.completion))
-	args = _ask_for_password(args)
-	args = process_config_file(args)
-	args = process_commands(args)
-	args = process_keys(args)
-	args = process_control_master_config(args)
-	if sigpipe is not None:
-		signal.signal(sigpipe, previous_sigpipe)
+		try:
+			# before the parse: -h there prints mssh's help and exits
+			note = _options_after_the_command_note(sys.argv[1:] if args is None else args)
+		except Exception as e:
+			note = None
+			if __DEBUG_MODE:
+				eprint(f"Warning: cannot check the options after the command: {e!r}")
+		if note:
+			eprint(note)
+		args = process_args(args)
+		if args.completion:
+			_exit_with_code(_completion_command(args.completion))
+		args = _ask_for_password(args)
+		args = process_config_file(args)
+		args = process_commands(args)
+		args = process_keys(args)
+		args = process_control_master_config(args)
+	finally:
+		if sigpipe is not None:
+			# what an exit (-h, -V, a usage error) printed reaches the reader while SIGPIPE still ends mssh
+			for stream in (sys.stdout, sys.stderr):
+				try:
+					stream.flush()
+				except Exception:
+					pass
+			signal.signal(sigpipe, previous_sigpipe)
 	set_global_with_args(args)
 	
 	if args.use_script_timeout:

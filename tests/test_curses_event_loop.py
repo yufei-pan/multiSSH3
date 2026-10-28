@@ -390,7 +390,7 @@ def test_curses_print_reloads_configuration(stub_curses_harness, fake_host, monk
 	assert any(call[0] == "refresh" for call in stub_curses_harness.window.calls)
 	assert len(display_calls) == 2
 	assert display_calls[1][:2] == (stub_curses_harness.window, [host])
-	assert display_calls[1][2:] == (-1, 0, 20, 4, True, False, "new config")
+	assert display_calls[1][2:] == (-1, 0, 20, 4, True, False)
 
 
 def test_curses_print_returns_before_generation_for_tiny_screen(stub_curses_harness, monkeypatch):

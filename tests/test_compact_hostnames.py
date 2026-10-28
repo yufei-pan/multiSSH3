@@ -29,3 +29,9 @@ def test_round_trip_expand_compact(no_hostname_validation):
 def test_hosts_only_of_6_32_to_6_38_is_still_accepted(no_hostname_validation):
 	assert multiSSH3.compact_hostnames(["node1", "node2"], hosts_only=True) == ["node[1-2]"]
 	assert multiSSH3.expand_hostnames(["node1"], hosts_only=True) == multiSSH3.expand_hostnames(["node1"])
+
+
+def test_compact_hostnames_local_takes_ranges_and_comma_lists():
+	assert multiSSH3.compact_hostnames_local(["node[1-3]", "node4"]) == ["node[1-4]"]
+	assert multiSSH3.compact_hostnames_local(["node1,node3", "node2,node4"]) == ["node[1-4]"]
+	assert multiSSH3.compact_hostnames_local(["node[1-2],gpu1", "gpu2"]) == ["gpu[1-2]", "node[1-2]"]

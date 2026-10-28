@@ -273,6 +273,52 @@ def test_backing_up_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path, uma
 	assert [p.name for p in dotfiles.iterdir()] == ["multiSSH3.config.json"]
 
 
+def _another_group():
+	"""A group to stand in for another owner: root may use any, a user one of their own groups."""
+	if not hasattr(os, "chown"):
+		pytest.skip("no chown")
+	if os.geteuid() == 0:
+		return 65534
+	others = [group for group in os.getgroups() if group != os.getgid()]
+	if not others:
+		pytest.skip("the user is in no other group")
+	return others[0]
+
+
+def test_the_backed_up_config_is_rewritten_with_the_owner_and_group_it_had(monkeypatch, tmp_path):
+	# sudo keeping HOME: the new file made by root must stay the user's
+	old = tmp_path / "multiSSH3.config.json"
+	old.write_text('{"DEFAULT_PASSWORD": "old"}')
+	old.chmod(0o600)
+	group = _another_group()
+	os.chown(str(old), -1, group)
+
+	_store_with_backup(monkeypatch, old)
+
+	assert json.loads(old.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert old.stat().st_gid == group
+	assert Path(str(old) + ".bak").read_text() == '{"DEFAULT_PASSWORD": "old"}'
+
+
+def test_the_backup_of_a_symlinked_config_belongs_to_the_writer_not_to_the_old_backup(monkeypatch, tmp_path):
+	# an old backup of another owner (root's, after a sudo run) must not make the next store fail
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text('{"DEFAULT_PASSWORD": "old"}')
+	real.chmod(0o600)
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	backup = Path(str(link) + ".bak")
+	backup.write_text("{}")
+	os.chown(str(backup), -1, _another_group())
+
+	_store_with_backup(monkeypatch, link)
+
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert backup.stat().st_gid == os.getgid()
+
+
 @pytest.mark.parametrize("mode", [0o666, 0o600], ids=["too_open", "already_private"])
 def test_someone_elses_config_is_not_written(monkeypatch, tmp_path, capsys, mode):
 	# a file we cannot keep the owner of would be taken over by the rename: not replaced, whatever its mode
