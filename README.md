@@ -156,6 +156,8 @@ Defaults are read from the following chain map stored as json files, top ones ov
 >
 > A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link.
 >
+> The file is replaced in one step: a temporary file beside it, with the old file's owner and group, is renamed over it, so a full disk leaves the old one. A file of another user is written only when its owner can be kept (as root); otherwise the config is printed instead, also when you may write the file through an ACL ([limitations](docs/limitations.md#another-users-config-shared-through-an-acl-is-not-written)).
+>
 > Each value is checked against the type of the setting's default. Values whose meaning is clear are converted (`"true"` / `"false"`, `"yes"` / `"no"` for true / false settings, numbers written as strings, a list of host names for `DEFAULT_HOSTS`); anything else, such as `"DEFAULT_TIMEOUT": "fifty"` or an encoding Python does not know, is ignored with a warning naming the file and the key, and the setting keeps its value from the rest of the chain (no warning when a more specific file sets that key anyway). `null` for a string setting means its default (`DEFAULT_HOSTS: null` is `all`). A file that is not a JSON object is skipped the same way. `--config_file` applies a file exactly as the chain does, `_sshPath`, `DEFAULT_ENV_FILE` and `ERROR_MESSAGES_TO_IGNORE` included.
 
 ### Generating / Storing Config File
@@ -392,7 +394,7 @@ The output is printed when the commands finish, so it can be piped like any comm
 ```bash
 mssh all 'dmesg' | less
 ```
-If the reader exits before reading all of it (`| head`, or `q` in `less`), mssh stops quietly as other command line tools do: no further commands or `--repeat` runs start, and the exit code still counts the hosts that failed in what ran. If that happens before anything has run (the output of `-h`, `-V`, a usage error or `--generate_config_file`), the exit code is 141, as for other tools SIGPIPE ends.
+If the reader exits before reading all of it (`| head`, or `q` in `less`), mssh stops quietly as other command line tools do: no further commands or `--repeat` runs start, and the exit code still counts the hosts that failed in what ran. If that happens before anything has run (the output of `-h`, `-V`, a usage error or `--generate_config_file`), SIGPIPE ends mssh as it ends other tools: the shell reports 141, a program that starts mssh with Python's subprocess sees -13, and on Windows the exit code is 120 ([limitations](docs/limitations.md#output-before-a-run-into-a-closed-pipe-ends-mssh-by-sigpipe)).
 
 ### Curses Window Size Control
 
@@ -418,7 +420,7 @@ While leaving minimum 40 characters / 1 line for each host display by default. Y
 > Home/End: Jump cursor        
 > Esc     : Clear / hide view  
 > ```
-> `Esc` clears the input line. On an empty input line it hides the live view; the commands keep running and their output is printed when they finish.
+> `Esc` clears the input line. On an empty input line it hides the live view; the commands keep running and their output is printed when they finish. While the terminal is under 3 rows the display shows "Terminal too small" and Esc waits until it is bigger ([limitations](docs/limitations.md#esc-does-nothing-while-the-terminal-is-under-3-rows)).
 > The live view leaves out ssh's own notices, as the output at the end does ( `ERROR_MESSAGES_TO_IGNORE` ): mssh does not keep the hosts' keys, so ssh says `Warning: Permanently added ...` on every connection, and a quiet command's window showed only that.
 > You can also toggle this help in curses by pressing `?` or `F1`.
 > The one-character keys (`?`, `_`, `+`, `{`, `}`, `<`, `>`, `|`) act only on an empty input line; after you have typed something they are typed like any other character, so a `?` can still reach the hosts. `F1` toggles the help at any time.
@@ -450,9 +452,7 @@ mssh has ssh, scp, rsync's ssh and ssh-copy-id give up on a host that takes the 
 
 Change the values with `DEFAULT_SSH_CONNECT_TIMEOUT`, `DEFAULT_SSH_SERVER_ALIVE_INTERVAL` and `DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX` in the config file; 0 leaves the option to ssh (without a keepalive interval, mssh does not pass its count either).
 
-Your own values win. ssh uses the first value it gets and a command-line `-o` beats the ssh config, so mssh leaves an option out when you give it:
-- with `-ea` for ssh or scp, e.g. `-ea '-o ConnectTimeout=120'` (with `-ea '-F FILE'`, mssh reads that ssh config instead of the two below);
-- in your ssh config, `~/.ssh/config` or `/etc/ssh/ssh_config` and the files they `Include`, also for single hosts (`Host slow*` / `ConnectTimeout 120`). Only when these files mention one of the three options does mssh ask `ssh -G` about each host whether it sets it, which runs the config's `Match exec` lines once more. `ConnectTimeout 0` there means no timeout for those hosts; `ServerAliveInterval 0` cannot be told from not setting it.
+Your own `-ea` values win: ssh uses the first value it gets, and mssh puts its options after the ones in `-ea`, so `-ea '-o ConnectTimeout=120'` sets 120. An `-ea` keepalive interval still gets mssh's count (`-ea '-o ServerAliveInterval=60'`: 4 x 60 s). Options in your ssh config (`~/.ssh/config`, `/etc/ssh/ssh_config`, or a file given with `-ea '-F FILE'`) do not win: a command-line `-o` beats the ssh config, and mssh's are command-line options. Set the `DEFAULT_SSH_*` values instead, or 0 to leave an option to your ssh config ([limitations](docs/limitations.md#msshs-ssh-timeouts-override-the-same-options-in-the-ssh-config)).
 
 A shared connection (`ControlMaster`, see [SSH ControlMaster Configuration](#ssh-controlmaster-configuration)) does the keepalive of the ssh that opened it. One mssh opened gives up on a host that went away, and the next ssh connects anew (where `ConnectTimeout` applies). One that a plain `ssh` without `ServerAliveInterval` in your ssh config opened does not notice: commands through it wait until the kernel gives up on the connection, which takes about 15 minutes on Linux. Setting `ServerAliveInterval` in your ssh config covers those too.
 
@@ -472,7 +472,7 @@ A new block is appended to your rc file; changing or removing it replaces the fi
 
 - **Hosts:** host strings you typed before, env file aliases, `/etc/hosts`, ssh config `Host` entries, `known_hosts` and the ARP table. Large clusters are offered as ranges (`node[0001-2000]`) until what you typed narrows them down. Hosts mssh recently found unreachable come last (with the user this line gives them: `root@node05` and `node05` are told apart).
 - **Options and values:** option names, and values you used before (`-u`, `-t`, ...). Paths complete as files. Passwords are never completed or shown, the ones in your config file included.
-- **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`), and the magic strings (`#HOST#`, ...). A command typed as separate words gets the next words of commands you ran, with the quotes they ran with (`'ssh*'` comes as `\'ssh\*\'`, so the remote shell gets the same command), never a word holding a space: mssh runs each word as its own command when one of them holds a space, so type such a command in quotes (`mssh grp "grep 'connection refused' /var/log/syslog"`).
+- **Commands:** commands from your mssh history, the rest of a command from this machine's own completion (`mssh grp systemctl rest<TAB>`; in bash as bash-completion completes `sudo CMD`, with a few gaps in [limitations](docs/limitations.md#autocomplete)), and the magic strings (`#HOST#`, ...). A command typed as separate words gets the next words of commands you ran, with the quotes they ran with (`'ssh*'` comes as `\'ssh\*\'`, so the remote shell gets the same command), never a word holding a space: mssh runs each word as its own command when one of them holds a space, so type such a command in quotes (`mssh grp "grep 'connection refused' /var/log/syslog"`).
 
 Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[01-16] "` the commands you run on those hosts come first, and in the hosts of `mssh ▮ "systemctl restart slurmd"` the hosts you restarted slurmd on come first.
 
@@ -482,7 +482,7 @@ In bash with readline's `completion-ignore-case` on (`set completion-ignore-case
 
 In zsh, TAB needs zsh's completion system: `compinit` has to run when zsh starts, before or after the mssh block in `~/.zshrc` (oh-my-zsh, prezto and the like run it, and so does Ubuntu's `/etc/zsh/zshrc`). `mssh --completion install` says so when `~/.zshrc` does not seem to start it. Grey suggestions, warnings and Ctrl-R work without it.
 
-It learns from an index of your history and hosts, kept in mssh's private runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or `multiSSH3-<uid>` in the temp dir) and rebuilt in the background when its sources change. `mssh --completion install` builds it right away. A reboot clears it: the first TAB after one starts the build and, until the index is ready (about a second for a long history), offers options and what your shell history holds. `mssh-complete rebuild` rebuilds it now; `mssh-complete eval` replays your history and shows how much typing completion saves.
+It learns from an index of your history and hosts, kept in mssh's private runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or `multiSSH3-<uid>` in the temp dir) and rebuilt in the background when its sources change. `mssh --completion install` builds it right away. A reboot clears it, and an upgrade that changes its format (6.39) makes it unreadable: the first TAB after either starts the build and, until the index is ready (about a second for a long history), offers options and what your shell history holds. `mssh-complete rebuild` rebuilds it now. From a source checkout, `python3 tests/replay.py` replays your history and shows how much typing completion saves.
 
 ### Grey suggestions
 
@@ -502,29 +502,29 @@ While you type an mssh line, the most likely rest of it shows in grey after the 
 
 ### Ctrl-R
 
-Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations. Type or paste to filter, ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
+Ctrl-R on an mssh line opens a menu below the prompt with the candidates for the word under the cursor (hosts, commands for those hosts, option values), how often and how long ago you used them; Tab switches to whole past invocations, the ones mssh's history holds ([limitations](docs/limitations.md#the-ctrl-r-history-tab-holds-msshs-history-only)). Type or paste to filter, ↑/↓ to move, Enter to insert, Esc to leave the line as it was. On any other line Ctrl-R does what it did before (readline's search, fzf, atuin, ...).
 
 A paste only filters, nothing in it runs, whether or not the terminal marks it as pasted (bracketed paste). Unmarked pastes are told by timing: a line break with another one less than 50 ms behind it was pasted. So Enter pressed twice within 50 ms, or Enter and the next line's keys arriving together over a laggy link, filter instead of choosing (press Enter again). Other keys typed right after Enter follow the choice, as typed.
 
-In plain bash, mssh takes over Ctrl-R only when it can call the old binding on other lines. It leaves Ctrl-R alone when Ctrl-R is unbound, and on bash 4.2 when Ctrl-R runs a shell command bound with `bind -x` (fzf's key bindings do this), as bash 4.2 cannot list such bindings. Ctrl-R then does what it did before on every line, mssh lines included: there is no menu, and without the line editor (bash 4.4 or later) the warnings are not shown either. TAB completion works as usual. On bash 4.2, Ctrl-R bound to readline's search or to a macro is taken over as on newer versions.
+In plain bash, mssh takes over Ctrl-R only when it can call the old binding on other lines. It leaves Ctrl-R alone when Ctrl-R is unbound, and on bash 4.2 when Ctrl-R runs a shell command bound with `bind -x` (fzf's key bindings do this), as bash 4.2 cannot list such bindings. Ctrl-R then does what it did before on every line, mssh lines included: there is no menu, and without the line editor (bash 4.4 or later) the warnings are not shown either. TAB completion works as usual. On bash 4.2, Ctrl-R bound to readline's search or to a macro is taken over as on newer versions. On bash 4.2 and 4.3 the menu is drawn without your prompt beside it ([limitations](docs/limitations.md#no-prompt-beside-the-ctrl-r-menu-on-bash-42-and-43)).
 
 ### Warnings before Enter
 
 While you type an mssh line, words already typed that mssh would trip over are marked, and one line under the prompt says why. Nothing is ever blocked: Enter runs what you typed.
 
 - **Unknown host:** a name mssh would reject (no IP, alias or hosts-file entry, not in DNS, not mapped by your ssh config), with the host you probably meant: `gpu017: unknown host — did you mean gpu17?`
-- **Range surprises:** a range or alias with members mssh would reject: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …) — did you mean node[01-16]?`. Braces the shell expands make several words of the hosts, and mssh runs the second as the command: `node{1,2}: the shell makes 2 words of this; mssh would run node2 as the command — did you mean node1,node2?`
+- **Range surprises:** a range or alias with members mssh would reject: `node[1-16]: 9 of 16 hosts unknown (node1, node2, node3, …) — did you mean node[01-16]?`. Past 4,096 names, a name a range makes twice is counted twice ([limitations](docs/limitations.md#large-ranges-whose-names-repeat-are-counted-with-their-repeats)). Braces the shell expands make several words of the hosts, and mssh runs the second as the command: `node{1,2}: the shell makes 2 words of this; mssh would run node2 as the command — did you mean node1,node2?`
 - **Unreachable host:** one that failed in your recent mssh runs (`will be skipped` with `-su`), or that answered ping recently and stopped. Like mssh, the warning tells `root@node05` (typed so, or with `-u root`) apart from `node05`.
 - **Conflicting options:** two options mssh refuses together, an option given twice, or one that does nothing on this line (`-iu does nothing: only used with --ipmi`).
 - **Options inside an unquoted remote command:** mssh reads its options anywhere on the line, so a word of an unquoted remote command that names an mssh option is that option, and any other word starting with `-` stops mssh with an error: `-u is mssh's --username here — quote the command: 'journalctl -u slurmd'`. Options after a quoted command (`mssh web1 'uptime' -q`) are mssh's, as meant, and are not marked. Unlike other warnings, this one also marks the word you are typing when it is the line's last word and already an mssh option (`mssh all df -h`), as Enter would run the line as it stands.
 
-Hosts the shell rewrites before mssh runs (`$NODES`, `$(cat hosts.txt)`, `` `...` ``, `~`, `!$`) are not checked: mssh gets what the shell makes of them. In single quotes or after a backslash they reach mssh as typed and are checked as mssh reads them.
+A hosts word the shell may rewrite before mssh runs is not checked, the hosts beside the rewritten part included (`$NODES`, `$NODES,gpu017`, `$USER@gpu017`, `$(cat hosts.txt)`, `` `...` ``, `~`, `!$`, fish's `(...)`, braces in a word with quotes, and such words in single quotes too): mssh gets what the shell makes of them, or something the check cannot tell. The brace warning covers lists and number sequences; letter sequences (`n{a..c}`) and steps (`n{1..10..3}`) get none ([limitations](docs/limitations.md#a-hosts-word-holding-a-shell-expansion-is-not-checked)).
 
 zsh, bash with ble.sh and the plain-bash line editor mark the words and show the reason; fish 4 prints the reason under the line after a space; fish 3 and plain bash without the editor list the warnings at the top of the Ctrl-R menu.
 
 With [zsh-syntax-highlighting](https://github.com/zsh-users/zsh-syntax-highlighting) before zsh 5.9 (or before its 0.8), source it last in `.zshrc`, as it asks: loaded later (a plugin manager's deferred loading), it removes the marks and the grey text's colour at every key.
 
-Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (which prints what your ssh config says about the name) and ping. It never connects or logs in to a host itself, so it cannot trip fail2ban. One exception comes from your ssh config: `ssh -G` runs the commands of `Match exec` lines, so a `Match exec` command that contacts the host (such as `nc -z %h 22` to choose a jump host) runs for every host name you type, before Enter. Check `~/.ssh/config` and `/etc/ssh/ssh_config` (and the files they `Include`) if fail2ban matters. The prober runs at low priority, as many checks at once as mssh's own `max_connections` allows. What it learns lives in mssh's runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or the temp dir) and is gone after a reboot. It remembers when up to 10 000 hosts last answered ping, for a day (longer when `MSSH_COMPLETE_PING_TTL` or mssh's unreachable host expiry is longer); `-uhe` above that on the line finds no older answers. `mssh-complete eval --diagnostics` replays your history and lists the hosts mssh would reject.
+Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (which prints what your ssh config says about the name) and ping. It never connects or logs in to a host itself, so it cannot trip fail2ban. One exception comes from your ssh config: `ssh -G` runs the commands of `Match exec` lines, so a `Match exec` command that contacts the host (such as `nc -z %h 22` to choose a jump host) runs for every host name you type, before Enter. Check `~/.ssh/config` and `/etc/ssh/ssh_config` (and the files they `Include`) if fail2ban matters. The prober runs at low priority, as many checks at once as mssh's own `max_connections` allows. What it learns lives in mssh's runtime directory (`$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>` or the temp dir) and is gone after a reboot. It remembers when up to 10 000 hosts last answered ping, for a day (longer when `MSSH_COMPLETE_PING_TTL` or mssh's unreachable host expiry is longer); `-uhe` above that on the line finds no older answers. From a source checkout, `python3 tests/replay.py --diagnostics` replays your history and lists the hosts mssh would reject.
 
 | Environment variable | Effect |
 | --- | --- |
@@ -536,13 +536,15 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 | `MSSH_COMPLETE_PING_TTL` | Seconds a host that answered ping is expected to keep answering (default: mssh's unreachable host expiry, 600) |
 | `MSSH_COMPLETE_DEBUG` | `1` logs errors to `complete.log` in the cache directory |
 
-> Tested with bash 4.2 to 5.3, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1; zsh-syntax-highlighting 0.7.1 and 0.8.0), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
+> Tested with bash 4.2 to 5.3, zsh 5.5 to 5.9 (with `compinit` loaded; zsh-autosuggestions 0.7.1; zsh-syntax-highlighting 0.7.1 and 0.8.0), fish 3.3 to 4.0 and the 2026-09-08 ble.sh nightly. On fish 2, install succeeds but the glue registers nothing ([limitations](docs/limitations.md#install-on-fish-2-succeeds-and-does-nothing)). Since 6.28 mssh records hosts in its history as typed; older history lines hold them expanded.
 
-> After upgrading mssh, run `mssh --completion install` again to get the new shell glue. Glue from an older mssh keeps working, without the newer features.
+> After upgrading mssh, run `mssh --completion install` again to get the new shell glue. Glue from an older mssh keeps working, without the newer features; glue from before 6.37 (bash) or 6.38 (zsh, fish) does not tell the completer your locale, so the Ctrl-R menu and the warnings are drawn in ASCII until you do ([limitations](docs/limitations.md#older-glue-files-draw-the-ctrl-r-menu-and-warnings-in-ascii)).
 
 > The plain-bash editor binds the space key, so every space typed in bash runs a tiny shell function; Ctrl-R becomes a key macro (the binding it replaced is called for other lines). Uninstall restores both in new shells. Such a function also fires bash's DEBUG trap, which some tools take for the start of a command: a command timer kept with the DEBUG trap (as some prompts keep theirs) counts from the first space typed instead of from Enter, and the preexec hooks of [bash-preexec](https://github.com/rcaloras/bash-preexec) (used by atuin and iTerm2's shell integration) may run at that space, before the line is complete.
 
 > In plain bash (without ble.sh), Ctrl-R and the line editor take their keys at the first prompt, through `PROMPT_COMMAND`. Where `PROMPT_COMMAND` is read-only (some audit setups on shared clusters make it so), they are left out without a message; TAB completion still works.
+
+> The bash glue runs with `nocasematch` off and gives you your setting back when it returns; with `shopt -s nocasematch` on, a Ctrl-C during a TAB can leave it off ([limitations](docs/limitations.md#with-nocasematch-on-in-bash-a-ctrl-c-during-a-tab-can-leave-it-off)). Under `bind TAB:menu-complete`, mssh's words beside the words of a command like git (which asks for no space) go in without a space ([limitations](docs/limitations.md#under-menu-complete-msshs-words-beside-a-nospace-commands-mixed-words-get-no-space)).
 
 ## Options
 
@@ -605,7 +607,7 @@ mssh -ea="-o ProxyCommand='ssh -W %h:%p bastion'" allServers uptime
 - rsync connects with the same ssh program and options as mssh's other commands, `-k` identity file included. A host given as an IPv6 address is written in brackets for rsync and scp (`root@[fd00::5]:/dest/`).
 - As with rsync, a directory given with a trailing slash (`./data/`) copies its contents into the destination, one without (`./data`) copies the directory itself into it.
 - A source that is a symbolic link to a file is copied as that file, under the link's name, as scp does (rsync's `--copy-links`). Links inside a directory stay links, so a link is copied as a link, with a warning before the copy, when it points to a directory or to nothing, or when a directory is copied in the same run (`--copy-links` would follow the links inside it too).
-- A host where rsync could not run (rsync is not installed there or could not start, an rsync turned down mssh's options as macOS's rsync 2.6.9 does, or ssh failed to connect) is retried with scp, laying the files out as rsync would have: scp copies the entries of a `./data/` directory, and a lone directory goes inside the destination directory (scp fails if that directory does not exist, instead of creating it). Not retried: an empty `./data/` (scp has nothing to copy), a `./data/` with more entries than scp's command line holds (about 1 MB of names) and, in gather mode, a remote `dir/` source going into a local directory that exists or with other sources (scp would copy the directory itself into it).
+- A host where rsync could not run (rsync is not installed there or could not start, an rsync turned down mssh's options as macOS's rsync 2.6.9 does, or ssh failed to connect) is retried with scp, laying the files out as rsync would have: scp copies the entries of a `./data/` directory, and a lone directory goes inside the destination directory (scp fails if that directory does not exist, instead of creating it). Not retried: an empty `./data/` (scp has nothing to copy), a `./data/` with more entries than scp's command line holds (about 1 MB of names) and, in gather mode, a remote `dir/` source going into a local directory that exists or with other sources (scp would copy the directory itself into it). A gather retried with scp of a remote directory named without a slash, into a local destination that does not exist, puts its files in the destination itself, where rsync puts the directory inside it ([limitations](docs/limitations.md#a-gather-retried-with-scp-puts-a-directory-named-without-a-slash-one-level-up)).
 - rsync keeps extended attributes (`-X`). Where the destination cannot keep them (NFSv3, vfat, ...), rsync copies the files and fails with 23; mssh then runs rsync once more without `-X`, a quick pass that ends with the copy's own result, and warns that the attributes were not copied.
 - Any other rsync failure, such as 23 (some files were not transferred) or 24 (some files vanished), is the host's result, with rsync's return code.
 - rsync copies files as they are: permissions, times, owner and group (`-a`). Owner and group go by name: on a host that knows the same user name, the file belongs to that user whatever its uid there; only for a name the host does not know is the number kept, so a file of uid 1000 here belongs to whoever is uid 1000 there. Owners are only set when the receiving side is root: when mssh logs in to the hosts as root (with `-G`, when mssh runs as root here). Logged in as another user, the files belong to that user, keeping only groups that user is in. scp (`-W`, and the retry above) keeps no owners: new files belong to the user it logs in as.
@@ -775,7 +777,7 @@ mssh -f ./data/ allServers /tmp/data/
 - Note: mssh runs the hosts on at most this many threads, however many hosts there are (with `--ipmi`, one thread per host: a host waiting out an IPMI lockout runs nothing). Each connection also needs its ssh process and two threads reading its output, about 4 processes / threads in all. Under a process / thread limit (`ulimit -u`, a container's pids limit) too low for that, mssh starts fewer threads, and a host that cannot start its ssh or threads waits for the running commands to end (`Warning: Too many processes or threads. retrying...`): the hosts run fewer at a time.
   - You will observe `Warning: The system allows no more threads (ulimit -u, pids limit), running the hosts at most N at a time.` when it does.
 - Behind a bastion (`ssh -J`, or `ProxyJump` in `~/.ssh/config`), every connection goes through the bastion's sshd, and its `MaxStartups` (default `10:30:100`) turns away connections that have not logged in yet once more than 10 are opening: 30% of new ones, rising to all of them at 100. mssh opens up to `-m` connections at once, so with the default some hosts fail with `kex_exchange_identification: read: Connection reset by peer` / `Connection closed by UNKNOWN port 65535` (exit code 255). The same can happen on a host many clients connect to at once.
-  - mssh tries such a host again, up to 3 times, 0.2 to 3 s later, when ssh's lines show the connection was dropped before login: they name the address ssh connected to, or `UNKNOWN port 65535` through a `ProxyJump` / `ProxyCommand`, with nothing else printed. A command that may have started is never run again. Older OpenSSH, such as 8.0 on RHEL 8, names no address, so its ssh and scp runs are not tried again; rsync runs are, as they received nothing and only sync again.
+  - mssh tries such a host again, up to 3 times, 0.2 to 3 s later, when ssh's lines show the connection was dropped before login (`kex_exchange_identification: ...`, `Connection closed by ... port ...`; a reset counts only after the `kex_exchange_identification` line, as a reset reads the same after login) and nothing else was printed, on stdout or stderr. OpenSSH 8.0 (RHEL 8) is covered. A command that may have started is not run again, unless it printed nothing and its own ssh to another host was turned away the same way ([limitations](docs/limitations.md#a-remote-commands-own-ssh-turned-away-before-login-is-run-again)). rsync runs are tried again when they received nothing, as they only sync again.
   - When hosts still fail this way, a hint after the summary says how many and why. Use `-m 10` (or fewer) for runs through a bastion, or raise `MaxStartups` on it.
 
 ### `-j, --json` | _`DEFAULT_JSON_OUTPUT`_
@@ -802,7 +804,7 @@ mssh -f ./data/ allServers /tmp/data/
 - By default mssh set this to true to speed up operations on large host lists with some unreachable hosts.
 - Unreachable hosts will be tried again when their timeout expires.
 - A skipped host is not run and counts as a failed host: it shows return code 255 ( what ssh returns when it cannot connect ) with a line saying it was skipped, and the summary lists it after `failed_hosts:` as `Skipped N hosts unreachable in a recent run, without trying them: ...`. So mssh does not exit 0 or print `Success` when it skipped a host.
-- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in mssh's private runtime directory: `$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>`, or a `multiSSH3-<uid>` folder in the system temp folder (the first that only you can write to, or could make). mssh reads them back from that one only, not from a later place an older session left them in. If none can be used, they are only kept for the current run.
+- mssh stores the current run unreachable hosts in memory and if `skip_unreachable` is true, it will store them in `unavailable_hosts.csv` in mssh's private runtime directory: `$XDG_RUNTIME_DIR/multiSSH3`, else `/run/user/<uid>/multiSSH3`, `/dev/shm/multiSSH3-<uid>`, or a `multiSSH3-<uid>` folder in the system temp folder (the first that only you can write to, or could make). mssh reads them back from that one only, not from a later place an older session left them in. Reading sets that directory up as writing does (mode 0700, created when missing), so the two cannot disagree ([limitations](docs/limitations.md#reading-msshs-runtime-state-may-create-its-directory)). If none can be used, they are only kept for the current run.
 - To force mssh to not use unreachable hosts from previous runs, you can use `-a, -nsu, --no_skip_unreachable` to set `skip_unreachable` to false.
 
 ### `-a, -nsu, --no_skip_unreachable` | not _`DEFAULT_SKIP_UNREACHABLE`_
@@ -843,7 +845,7 @@ mssh -f ./data/ allServers /tmp/data/
 ### `-ci, --copy_id` | False
 - `copy_id` mode, use `ssh-copy-id` to copy public key to the hosts.
 - Will use the identity file if specified in `-k, --key, --identity [KEY]` as the key to install.
-- Will respect `-u, --username` and `-p, --password` options for username and password. With `-p` and `sshpass`, the hosts get the key at once; without them, `ssh-copy-id` asks for the password on the terminal, one host after the other, and Ctrl-C stops before the next host.
+- Will respect `-u, --username` and `-p, --password` options for username and password. With `-p` and `sshpass`, the hosts get the key at once; without them, `ssh-copy-id` asks for the password on the terminal, one host after the other, and Ctrl-C stops before the next host. With `-p`, a Ctrl-C while ssh still connects can leave an empty `~/.ssh/ssh-copy-id.XXXXXXXXXX` behind (`rmdir ~/.ssh/ssh-copy-id.*`; [limitations](docs/limitations.md#an-interrupted---copy_id--p-can-leave-an-empty-sshssh-copy-idxxxxxxxxxx)).
 - `ssh-copy-id` checks host keys as every ssh mssh runs does: unless `SSH_STRICT_HOST_KEY_CHECKING` is true, it gets `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`, so new nodes, not yet in `known_hosts`, need no answer to a host key question (with `-p`, sshpass cannot give one). With `SSH_STRICT_HOST_KEY_CHECKING` true, it checks them as your ssh config says.
 - From `-ea, --extraargs` it gets what every `ssh-copy-id` takes (that of OpenSSH 7.4 on CentOS 7 and later): `-o` and `-p`, and ssh's `-J` as `-o ProxyJump=`. The other words are left out: ssh's `-i` (the `-i` of `ssh-copy-id` names the key to install), `-F` (the `ssh-copy-id` of OpenSSH 8.0 and older fails on it) and rsync's options.
 - A host `ssh-copy-id` failed on is a failed host: it counts towards the exit code and is listed in `failed_hosts`, also when a command runs after the copy. Without a command, mssh exits with 127 if it finds no `ssh-copy-id`.
@@ -1233,7 +1235,7 @@ DEFAULT_FILE_SYNC = False
 DEFAULT_TIMEOUT = 50
 DEFAULT_CLI_TIMEOUT = 0
 # seconds after which ssh gives up on a host that does not answer (ConnectTimeout) or stops answering
-# (ServerAliveInterval x ServerAliveCountMax), unless -ea or the ssh config set them; 0 leaves them to ssh
+# (ServerAliveInterval x ServerAliveCountMax), after -ea's options so an -o there wins; 0 leaves one to ssh
 DEFAULT_SSH_CONNECT_TIMEOUT = 30
 DEFAULT_SSH_SERVER_ALIVE_INTERVAL = 15
 DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX = 4
@@ -1361,3 +1363,40 @@ __DEBUG_MODE = False
 > When ssh cannot connect to a host (it exits with 255 after `ssh: connect to host HOST port PORT: REASON`), the default output shows the line as `SSH not reachable!`, `SSH connection timed out!` or `Cannot find host!` followed by the port and ssh's reason, e.g. `SSH connection timed out! (port 22: Connection timed out)`. Without the host name, unreachable hosts merge into one block. `--json` and `--greppable` output keep ssh's line, and a remote program's error that ends the same way is shown as printed.
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
+
+## Upgrading to 6.39 from 6.38
+
+A simplification pass: multiSSH3.py is about 740 lines shorter, mssh_complete.py about 1,470 (the history replay moved to `tests/replay.py`). What you may notice:
+
+- ssh, scp, rsync and ssh-copy-id always get mssh's `ConnectTimeout`, `ServerAliveInterval` and `ServerAliveCountMax` (the `DEFAULT_SSH_*` settings), after the options of `-ea`, so an `-o` in `-ea` still wins. mssh no longer reads your ssh config for them: set the `DEFAULT_SSH_*` settings, or 0 to leave one to the ssh config.
+- A host dropped before login (sshd's `MaxStartups`) is tried again whatever address ssh's lines name, so OpenSSH 8.0 (RHEL 8) and its scp are now tried again too.
+- Output lines end only at `\n`. A line holding a form feed, a vertical tab or another Unicode line break stays one line; 6.38 split it there only when it reached 100, 200, ... bytes.
+- Hosts whose names do not compact into one range are listed in natural order (`db2,db10`), not sorted as text (`db10,db2`), in output headers, merged groups and `Skipping hosts:`.
+- Fix: a message mssh cannot write to stderr is dropped. 6.38 wrote it to stdout, so with `PYTHONUNBUFFERED=1` `mssh ... 2>&1 | true` exited 1 without running anything, and `-j` output could hold a stray line.
+- `--store_config_file`, its `.bak` and `--add_control_master_config` write through one atomic writer: root writing a user's config keeps its owner and cannot leave it half written.
+- Under `-11` with `--error_only`, `--script` or `-Q`, the `Skipping unavailable host` line is no longer printed. A `__multiSSH3_UNAVAILABLE_HOSTS` key in an env file (written by 4.89) is no longer read.
+- Autocomplete: the bash completion of a remote command works as bash-completion completes `sudo CMD`; warnings skip hosts words the shell rewrites; history rows written by 6.26 and older are inserted with their commands in single quotes, so the local shell expands no `!`, `$` or backtick in them; the debug log (`MSSH_COMPLETE_DEBUG=1`) no longer holds the line typed in the editor.
+- Fix (zsh): `mssh HOSTS CMD ...<TAB>` no longer adds local file names beside the remote command's words when python-argcomplete (`#compdef -P *`) is installed.
+- New known limitations, each in [docs/limitations.md](docs/limitations.md):
+  - timeouts set in your ssh config no longer apply to mssh's ssh; an `-ea` keepalive interval gets mssh's count;
+  - a silent remote command whose own ssh is turned away before login runs again (up to 3 times);
+  - a gather retried with scp, of a remote directory named without a slash into a new destination, lands one level up;
+  - an interrupted `--copy_id -p` can leave empty `~/.ssh/ssh-copy-id.*` directories (`rmdir` them);
+  - output before a run into a closed pipe ends by SIGPIPE: -13 for a Python subprocess caller (6.38: 141), 120 on Windows;
+  - another user's config, writable to you only through an ACL, is not written (the config is printed);
+  - reading mssh's runtime state may create its 0700 directory;
+  - Esc waits while the terminal is under 3 rows;
+  - glue files from before 6.37 (bash) or 6.38 (zsh, fish) draw the Ctrl-R menu and warnings in ASCII until reinstalled; fish with a UTF-8 locale that is named but not installed draws Unicode;
+  - the Ctrl-R history tab holds mssh's history only (no `-I`, `--script` or `-hf` runs);
+  - no prompt beside the Ctrl-R menu on bash 4.2 / 4.3;
+  - ranges of more than 4,096 names count a repeated name twice;
+  - a hosts word holding a shell expansion is not checked;
+  - bash: a remote command's `-X`, `-P` and `-S` apply only to the words compgen makes; under `menu-complete`, mssh's words beside a nospace command's mixed words get no space; with `nocasematch` on, a Ctrl-C during a TAB can leave it off;
+  - `mssh --completion install fish` on fish 2 succeeds and does nothing.
+- Changed for programs and scripts:
+  - `mssh-complete eval` moved to the source tree: run `python3 tests/replay.py` (same options) from a checkout. `mssh-complete eval` now says so and exits 2.
+  - The completion index is format 3. An older index is ignored and rebuilt on the first TAB; until the build is done, TAB offers options, delegation and shell history only; `mssh --completion install` builds it at once.
+  - Run `mssh --completion install` again to get the new shell glue.
+  - The index rebuild and the host prober hold a kernel lock (`flock`) on `complete-index.lock` and `probe.lock` while they run; the files stay as empty files and no lock is ever stale. A failed rebuild leaves `complete-index.failed`, and the next starts 60 s later. `mssh-complete rebuild --lock X` and `probe --lock X` are accepted and ignored.
+  - Accepted and ignored, for callers written for 6.38: `hosts_only` of `compact_hostnames` / `expand_hostnames`, `create` of `runtime_dir` / `_unavailable_hosts_file_path`, and `mssh-complete edit --expand`.
+  - `mssh_complete.expand_ranges` gives a text that mixes number and letter groups (`n[1-2]x[a-b]`) back whole.
