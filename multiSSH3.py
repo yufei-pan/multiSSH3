@@ -2879,11 +2879,7 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	Returns:
 		None
 	'''
-	try:
-		bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
-	except (LookupError, TypeError):
-		# not an encoding: the decode fails as it did before
-		bulk_encoding = False
+	bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
 	def add_line(buffer,target, host):
 		current_line_str = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
 		target.append(current_line_str)
@@ -4339,21 +4335,12 @@ def _execute_command(host, formatedCMD, sem, timeout, retry_limit, passwords=(),
 				if proc.stdin is not None and proc.stdin.closed:
 					# communicate() would flush the closed pipe and raise
 					proc.stdin = None
-				# communicate() reads the pipes too, only once no reader does: it closes them and collects
-				# the exit status, and finds output only when a reader failed
+				# communicate() reads the pipes too, only once no reader does: it closes them and collects the exit status
 				if not _emo and all_read:
-					stdout = None
-					stderr = None
 					try:
-						stdout, stderr = proc.communicate(timeout=1)
+						proc.communicate(timeout=1)
 					except subprocess.TimeoutExpired:
 						pass
-					if stdout:
-						host.output.append('Trying to read the rest of the stdout...')
-						__handle_reading_stream(io.BytesIO(stdout),host.stdout, host,host.stdout_buffer)
-					if stderr:
-						host.output.append('Trying to read the rest of the stderr...')
-						__handle_reading_stream(io.BytesIO(stderr),host.stderr, host,host.stderr_buffer)
 				# the return code is set last: a host with one looks finished, and may be tried again before that
 				returncode = proc.poll()
 				if timed_out:
