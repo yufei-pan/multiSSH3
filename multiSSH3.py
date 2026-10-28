@@ -2575,12 +2575,18 @@ def compact_hostnames_local(names):
 	exactly the names, the names are returned unchanged.
 
 	Args:
-		names (iterable): Host names, no aliases or ranges
+		names (iterable): Host names; ranges and comma lists (what this function returned
+			before, e.g. node[1-3],gpu1) are expanded first, aliases are not looked up
 
 	Returns:
 		list: Range strings (or names) in natural sort order
 	'''
-	host_set = frozenset(name.strip() for name in names if name and name.strip())
+	host_set = frozenset(
+		member
+		for name in names if name
+		for part in name.split(',') if part.strip()
+		for member in __expand_hostname(part.strip(), validate=False)
+	)
 	if not host_set:
 		return []
 	compacted = __compact_hostnames(host_set)
