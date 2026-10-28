@@ -6197,6 +6197,9 @@ _mssh_complete_space_key() {
 	(( READLINE_POINT += 1 ))
 }
 
+# a shell of 6.38 put _mssh_complete_heal; in PROMPT_COMMAND, and an exported one reaches this shell (a tmux pane): this glue has no heal
+[[ ${PROMPT_COMMAND-} == *_mssh_complete_heal\;* ]] && PROMPT_COMMAND=${PROMPT_COMMAND//_mssh_complete_heal;/}
+
 if [[ -n ${BLE_VERSION-} ]]; then
 	_mssh_complete_bytes=0
 

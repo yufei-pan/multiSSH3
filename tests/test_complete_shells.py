@@ -55,6 +55,20 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion, debug):
 		assert debug_log_size(env) == logged
 
 
+def test_bash_ignores_the_heal_a_shell_of_6_38_left_in_an_exported_prompt_command(tmp_path):
+	# 6.38 put _mssh_complete_heal; in PROMPT_COMMAND, which a tmux pane or a nested bash inherits when it is exported
+	env, home = make_home(tmp_path, HISTORY)
+	session = bash_session(home, dict(env, PROMPT_COMMAND='_mssh_complete_heal;history -a'), glue_file(home, 'bash'), False)
+	try:
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 5)
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 5)
+	finally:
+		session.close()
+	assert b'command not found' not in session.output
+
+
 def test_bash_ignoring_case_completes_in_any_case(tmp_path):
 	# completion-ignore-case on: readline takes a candidate whose case differs from the word, and puts in its spelling
 	env, home = make_home(tmp_path, HISTORY)
