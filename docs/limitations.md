@@ -268,8 +268,10 @@ for all of them.
 - Kind: deferred
 - What the operator sees: for a remote command whose compspec uses `-W`, `-G` or an action (`-f`, `-d`,
   `-u`, `-A ...`), and for the `&` of its `-X`, compgen gets the whole remote word, not readline's shorter
-  word after a `:` or `=`. With `complete -f CMD`, `mssh h CMD out=/tm<TAB>` offers nothing, where bash alone
-  completes `out=/tmp/`. Completion functions and `-C` commands are not affected.
+  word after a `:` or `=`. With `complete -u CMD`, `mssh h CMD --user=roo<TAB>` puts in a local file name
+  (`--user=rootnotes`), where bash alone completes `--user=root`; with `complete -d CMD`, `mssh h CMD x=zz<TAB>`
+  lists a file beside the directory (`zzfile` beside `zzsub/`), where bash alone completes `x=zzsub/`. (`complete -f CMD` gets the right file names from mssh's own file-name
+  fallback, unless mssh offers words of its own.) Completion functions and `-C` commands are not affected.
 - Why: compgen is given the word as the remote command sees it; cutting it as readline does needs care with
   the prefix mssh puts back.
 - Revisit when: 6.40.
