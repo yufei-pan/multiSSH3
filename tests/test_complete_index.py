@@ -9,6 +9,7 @@ import pytest
 
 import multiSSH3
 import mssh_complete as mc
+from complete_shell_harness import hold_lock
 
 NOW = 1790000000.0
 HISTORY = [
@@ -270,31 +271,26 @@ def test_rebuild_needed(home, change):
 	assert mc.check_freshness(index, now)[0] == 'rebuild'
 
 
-def test_lock_blocks_a_second_rebuild_until_stale(tmp_path):
-	lock = str(tmp_path / mc.LOCK_NAME)
-	assert mc.take_lock(lock, now=time.time())
-	assert not mc.take_lock(lock, now=time.time())
-	assert mc.take_lock(lock, now=time.time() + mc.LOCK_STALE + 1)
+def test_one_rebuild_at_a_time(tmp_path, monkeypatch):
+	started = []
+	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
+	fd = hold_lock(str(tmp_path / mc.LOCK_NAME))
+	assert mc.spawn_rebuild(str(tmp_path)) is False
+	os.close(fd)
+	assert mc.spawn_rebuild(str(tmp_path)) is True
+	assert len(started) == 1 and started[0][-1] == 'rebuild'
 
 
-def test_a_rebuild_leaves_a_lock_taken_over_from_it(home, monkeypatch):
-	# a rebuild that ran past LOCK_STALE has lost its lock to the next one: it must not remove that one
+def test_a_rebuild_started_by_an_older_engine_ignores_its_lock_argument(home):
+	# an engine of 0.11 still running passes --lock PATH
 	directory = mc.cache_dir()
-	lock = os.path.join(directory, mc.LOCK_NAME)
-	assert mc.take_lock(lock)
-	successor = []
+	assert mc.main(['rebuild', '--lock', os.path.join(directory, mc.LOCK_NAME)]) == 0
+	assert os.path.exists(os.path.join(directory, mc.INDEX_NAME))
 
-	def overtaken_build(directory):
-		stale = time.time() - mc.LOCK_STALE - 1
-		os.utime(lock, (stale, stale))
-		assert mc.take_lock(lock)
-		with open(lock) as f:
-			successor.append(f.read())
-		return os.path.join(directory, mc.INDEX_NAME)
-	monkeypatch.setattr(mc, 'build_index', overtaken_build)
-	assert mc.main(['rebuild', '--lock', lock]) == 0
-	with open(lock) as f:
-		assert f.read() == successor[0]
+
+def test_the_module_imports_where_fcntl_is_missing():
+	code = 'import sys; sys.modules["fcntl"] = None; sys.path.insert(0, sys.argv[1]); import mssh_complete'
+	subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], check=True, timeout=30)
 
 
 def failing_build(directory, now=None, mssh=None):
@@ -302,28 +298,25 @@ def failing_build(directory, now=None, mssh=None):
 	raise OSError(errno.EFBIG, 'File too large')
 
 
-def test_a_failed_rebuild_is_tried_again_once_its_lock_is_stale(home, monkeypatch):
+def test_a_failed_rebuild_is_tried_again_a_while_later(home, monkeypatch):
 	# a failure that repeats would otherwise cost a full rebuild on every query
 	directory = mc.cache_dir()
-	lock = os.path.join(directory, mc.LOCK_NAME)
 	monkeypatch.setattr(mc, 'build_index', failing_build)
-	assert mc.take_lock(lock)
-	assert mc.main(['rebuild', '--lock', lock]) == 1
+	assert mc.main(['rebuild']) == 1
 	started = []
 	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
 	assert mc.spawn_rebuild(directory) is False
-	stale = time.time() - mc.LOCK_STALE - 1
-	os.utime(lock, (stale, stale))
+	failed = os.path.join(directory, mc.FAILED_NAME)
+	old = time.time() - mc.RETRY_AFTER - 1
+	os.utime(failed, (old, old))
 	assert mc.spawn_rebuild(directory) is True
 	assert len(started) == 1
 
 
 def test_queries_do_not_wait_for_a_rebuild_that_failed(home, monkeypatch):
 	directory = mc.cache_dir()
-	lock = os.path.join(directory, mc.LOCK_NAME)
 	monkeypatch.setattr(mc, 'build_index', failing_build)
-	assert mc.take_lock(lock)
-	mc.main(['rebuild', '--lock', lock])
+	mc.main(['rebuild'])
 	started = []
 	monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kwargs: started.append(argv))
 	began = time.monotonic()
@@ -339,7 +332,7 @@ def test_the_first_query_stops_waiting_when_the_build_fails(home, monkeypatch):
 
 	def popen(argv, **kwargs):
 		# the detached rebuild, failing a moment after it starts
-		run = threading.Timer(0.1, mc.main, args=(argv[-3:],))
+		run = threading.Timer(0.1, mc.main, args=(argv[-1:],))
 		run.start()
 		runs.append(run)
 	monkeypatch.setattr(subprocess, 'Popen', popen)
@@ -353,7 +346,7 @@ def test_first_query_builds_the_index(home):
 	directory = mc.cache_dir()
 	index, tail = mc.load_for_query(directory, time.time())
 	assert index is not None and tail == []
-	assert not os.path.exists(os.path.join(directory, mc.LOCK_NAME))
+	assert not mc.rebuild_failed(directory)
 
 
 
@@ -371,7 +364,7 @@ def test_history_with_garbage_lines_still_builds(home):
 
 def test_concurrent_first_query_waits_for_the_running_build(home, monkeypatch):
 	directory = mc.cache_dir()
-	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	held = hold_lock(os.path.join(directory, mc.LOCK_NAME))
 	started = []
 	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: started.append(args))
 	monkeypatch.setattr(mc, 'FIRST_BUILD_BUDGET', 0.2)
@@ -382,7 +375,7 @@ def test_concurrent_first_query_waits_for_the_running_build(home, monkeypatch):
 def test_a_query_answers_before_its_deadline_while_the_first_build_runs(home, monkeypatch):
 	# the shell gives up at its deadline: a first build that takes longer must not cost the answer
 	directory = mc.cache_dir()
-	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	held = hold_lock(os.path.join(directory, mc.LOCK_NAME))
 	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
 	# a wide reserve, so a loaded machine cannot make the answer late
 	monkeypatch.setattr(mc, 'FIRST_BUILD_RESERVE', 0.4)
@@ -395,7 +388,7 @@ def test_a_query_answers_before_its_deadline_while_the_first_build_runs(home, mo
 
 def test_a_query_still_waits_for_a_first_build_that_ends_in_time(home, monkeypatch):
 	directory = mc.cache_dir()
-	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	held = hold_lock(os.path.join(directory, mc.LOCK_NAME))
 	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
 	# the running build: done shortly after the query starts
 	other = os.path.join(str(home), 'other')
@@ -412,7 +405,7 @@ def test_a_query_still_waits_for_a_first_build_that_ends_in_time(home, monkeypat
 
 def test_the_query_command_answers_in_time_while_the_first_build_runs(home):
 	directory = mc.cache_dir()
-	assert mc.take_lock(os.path.join(directory, mc.LOCK_NAME))
+	held = hold_lock(os.path.join(directory, mc.LOCK_NAME))
 	request = '\0'.join([mc.PROTOCOL, 'bash', '5.2', '', 'mssh --no_wa', '', '--no_wa']) + '\0'
 	started = time.monotonic()
 	result = subprocess.run([sys.executable, '-I', mc.__file__, 'query'], input=request.encode(), stdout=subprocess.PIPE, timeout=30)
