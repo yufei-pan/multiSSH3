@@ -10,6 +10,7 @@ Shells send the command line to `mssh-complete query` (protocol MSSHC1 on stdin)
 ranked candidates back. Answering reads a precomputed index that is decoded lazily; only
 building the index (`mssh-complete rebuild`) imports multiSSH3.
 '''
+import itertools
 import math
 import os
 import sys
@@ -1527,34 +1528,12 @@ def expand_ranges(text, limit=100000):
 	Expand [a-b] and [a,b] number ranges in a host name, the common part of mssh's range syntax.
 
 	Text with letter or hex ranges, or that would expand to more than limit names, is returned
-	as it is (in a one-item list).
+	as it is (in a one-item list), without writing it out (node[1-10000000] took 1.5 s).
 	'''
-	start = text.find('[')
-	end = text.find(']', start + 1)
-	if start < 0 or end < 0:
+	count = _range_size(text)
+	if count is None or count > limit:
 		return [text]
-	head, body, tail = text[:start], text[start + 1:end], text[end + 1:]
-	values = []
-	for part in body.split(','):
-		low, sep, high = part.strip().partition('-')
-		if sep and _is_digits(low) and _is_digits(high):
-			if len(values) + int(high) - int(low) >= limit:
-				# past the limit: given back whole without writing it out (node[1-10000000] took 1.5 s)
-				return [text]
-			width = min(len(low), len(high))
-			values.extend('{:0{}d}'.format(number, width) for number in range(int(low), int(high) + 1))
-		elif not sep and part.strip():
-			values.append(part.strip())
-		else:
-			return [text]
-		if len(values) > limit:
-			return [text]
-	out = []
-	for value in values:
-		out.extend(expand_ranges(head + value + tail, limit))
-		if len(out) > limit:
-			return [text]
-	return out
+	return list(_range_names(text))
 
 def range_union(texts, limit, budget):
 	'''
@@ -1630,7 +1609,7 @@ def range_union(texts, limit, budget):
 		members = expand_ranges(text, limit)
 		names.update(members)
 		# a range past the limit comes back whole after about the limit's worth of names
-		count = _range_count(text)
+		count = _range_size(text)
 		written += max(len(members), min(count, limit) if count is not None else 0)
 	return names
 
@@ -2018,7 +1997,6 @@ def _import_mssh():
 #%% ------------ Building the index ----------------
 MAX_RECORDS = 50000
 RANGE_MEMBERS_LIMIT = 4096   # a range typed before adds its members as hosts up to this many
-RANGE_COUNT_LIMIT = 16384    # a range whose names may repeat is expanded to count its hosts up to this many names
 
 def serialize_knowledge(memory):
 	'''
@@ -3160,46 +3138,27 @@ def _ipv4_members(name, limit=None):
 
 def _range_size(text):
 	'''
-	(how many names expand_ranges makes of text, repeats included, whether a name may come more
-	than once), or None when it cannot expand text (letters, hex, a [ inside [ ]).
-
-	No name comes twice when each [ ] holds one value or one a-b range, and each range but the
-	last makes values of one width or is followed by a character that is not a digit: a name then
-	splits into its values one way only. node[1-16], n[1-9][1-16] and rack[1-12]-n[1-64] cannot
-	repeat; n[1-11][1-11] makes n111 twice (1 then 11, 11 then 1), and [1-2,2-3] makes 2 twice.
+	How many names expand_ranges makes of text, without making them, a name made twice counted twice
+	(n[1-11][1-11] makes n111 from 1 and 11, and from 11 and 1); None when it cannot expand text
+	(letters, hex, a [ inside [ ]).
 	'''
 	count = 1
-	repeats = False
-	# whether the value of the [ ] before may run on into the next [ ]'s
-	runs_on = False
 	position = 0
 	while True:
 		start = text.find('[', position)
 		end = text.find(']', start + 1)
 		if start < 0 or end < 0:
-			return count, repeats
-		repeats = repeats or runs_on
-		parts = text[start + 1:end].split(',')
+			return count
 		size = 0
-		widths = set()
-		for part in parts:
+		for part in text[start + 1:end].split(','):
 			low, sep, high = part.strip().partition('-')
 			if sep and _is_digits(low) and _is_digits(high):
-				first, last = int(low), int(high)
-				if last >= first:
-					size += last - first + 1
-					# zero padded to the shorter bound's width, longer numbers as they are
-					width = min(len(low), len(high))
-					widths.update((max(width, len(str(first))), max(width, len(str(last)))))
+				size += max(int(high) - int(low) + 1, 0)
 			elif not sep and part.strip() and '[' not in part:
 				size += 1
-				widths.add(len(part.strip()))
 			else:
 				return None
 		count *= size
-		repeats = repeats or len(parts) > 1
-		following = text[end + 1:end + 2]
-		runs_on = len(widths) > 1 and (following == '[' or _is_digits(following))
 		position = end + 1
 
 def _has_open_range(text):
@@ -3216,27 +3175,10 @@ def _has_open_range(text):
 		start = text.find('[', end + 1)
 	return False
 
-def _range_count(text):
-	'''
-	How many hosts expand_ranges makes of text: each name once, as mssh keeps it. None when it
-	cannot expand text, or when its names may repeat (_range_size) and there are more than
-	RANGE_COUNT_LIMIT of them: those are counted by expanding them, any other range without.
-	'''
-	size = _range_size(text)
-	if size is None:
-		return None
-	count, repeats = size
-	if not repeats:
-		return count
-	return len(set(_range_names(text))) if count <= RANGE_COUNT_LIMIT else None
-
 def _iter_range(text):
-	'''The names expand_ranges makes of text, one at a time, each once (text must be one _range_count can count).'''
-	names = _range_names(text)
-	if not _range_size(text)[1]:
-		return names
+	'''The names expand_ranges makes of text, one at a time, each once (text must be one _range_size can count).'''
 	seen = set()
-	return (name for name in names if not (name in seen or seen.add(name)))
+	return (name for name in _range_names(text) if not (name in seen or seen.add(name)))
 
 def _range_names(text):
 	'''The names expand_ranges makes of text, one at a time, repeats included.'''
@@ -3769,7 +3711,7 @@ class Engine(object):
 		'''
 		(members, how many, the user each member is written with or '') for an alias or a range, the
 		members up to RANGE_MEMBERS_LIMIT; None for one host; () for a range that cannot be expanded or
-		counted here (letters, hex, _range_count): nothing is said about it. The members of an IPv4 range
+		counted here (letters, hex, _range_size): nothing is said about it. The members of an IPv4 range
 		are addresses: they are only pinged, never unknown. Only alias members have users (an env file's
 		dbs=postgres@db1). A range makes each name once, as mssh checks it once (n[1-11][1-11] makes n111
 		twice); an alias lists a host once per user it is written with (a@node1,b@node1 are two runs of
@@ -3788,14 +3730,15 @@ class Engine(object):
 			return [member for member, _ in pairs], len(set(members)), [user for _, user in pairs]
 		if '[' not in name or _has_open_range(name):
 			return None
-		total = _range_count(name)
+		total = _range_size(name)
 		if total is None:
 			return ()
-		members = []
-		for member in _iter_range(name):
-			if len(members) >= RANGE_MEMBERS_LIMIT:
-				break
-			members.append(member)
+		members = list(itertools.islice(_iter_range(name), RANGE_MEMBERS_LIMIT + 1))
+		if len(members) > RANGE_MEMBERS_LIMIT:
+			# past the limit: counted, a name made twice twice
+			members = members[:RANGE_MEMBERS_LIMIT]
+		else:
+			total = len(members)
 		return (members, total, [''] * len(members)) if members != [name] else None
 
 	def _mssh_may_know(self, name, reach):

@@ -818,7 +818,6 @@ def test_range_members_are_the_names_mssh_makes(text):
 	expanded = getattr(multiSSH3, '__expand_hostname')(text, validate=False)
 	members = list(mc._iter_range(text))
 	assert len(members) == len(set(members)) and set(members) == expanded
-	assert mc._range_count(text) == len(expanded)
 
 
 def test_a_host_a_range_makes_twice_counts_once(engine):
@@ -837,24 +836,13 @@ def test_a_host_an_alias_lists_twice_counts_once(engine, tmp_path):
 	assert warnings(engine, 'mssh pair uptime')[0] == [('pair', 'range', 'pair: 1 of 2 hosts unknown (ghost1)')]
 
 
-def test_a_range_whose_names_cannot_repeat_is_counted_without_expanding_it(monkeypatch):
+def test_a_range_past_the_member_limit_is_counted_without_expanding_it(monkeypatch):
 	def expand(text):
 		raise AssertionError('expanded ' + text)
 	monkeypatch.setattr(mc, '_range_names', expand)
-	# one width before the next range, or a separator that is not a digit: each name splits one way
-	assert mc._range_count('n[1-9][1-100000]') == 900000
-	assert mc._range_count('rack[1-1000]-node[1-1000]') == 1000000
-	assert mc._range_count('node[1-100000]') == 100000
-
-
-def test_a_range_whose_names_may_repeat_is_counted_up_to_a_limit(engine, monkeypatch):
-	# counting n[1-11][1-11]'s hosts expands its 121 names; past RANGE_COUNT_LIMIT nothing is said
-	monkeypatch.setattr(mc, 'RANGE_COUNT_LIMIT', 121)
-	assert mc._range_count('n[1-11][1-11]') == 120
-	monkeypatch.setattr(mc, 'RANGE_COUNT_LIMIT', 120)
-	assert mc._range_count('n[1-11][1-11]') is None
-	seed(engine, n111='invalid')
-	assert warnings(engine, 'mssh n[1-11][1-11] uptime')[0] == []
+	assert mc._range_size('n[1-9][1-100000]') == 900000
+	assert mc._range_size('rack[1-1000]-node[1-1000]') == 1000000
+	assert mc.expand_ranges('node[1-100000]', limit=10) == ['node[1-100000]']
 
 
 def test_a_bracket_inside_a_range_says_nothing_about_it(engine):
