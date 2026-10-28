@@ -295,19 +295,6 @@ def test_a_sequence_too_long_to_count_in_a_word(engine):
 	assert warnings(engine, 'mssh n{1..99999999999999999999}{a,b} uptime')[0][0][2].startswith('n{1..99999999999999999999}{a,b}: the shell makes 199999999999999999998 words of this; mssh would run n1b as')
 
 
-def test_a_failing_brace_warning_leaves_the_other_warnings(engine, monkeypatch):
-	ran = []
-
-	def fail(*args):
-		# however it is called: a call of the wrong shape raised a TypeError before it ran, which passed too
-		ran.append(args)
-		raise ValueError('odd braces')
-	monkeypatch.setattr(mc, '_brace_split', fail)
-	seed(engine, gpu017='invalid')
-	assert warnings(engine, 'mssh gpu017,n{1,2} uptime')[0] == [('gpu017', 'unknown', 'gpu017: unknown host — did you mean gpu17?')]
-	assert ran
-
-
 def test_braces_the_shell_leaves_alone_are_checked_as_hosts(engine):
 	assert warnings_if_all_unknown(engine, 'mssh node{1} uptime') == [('node{1}', 'unknown', 'node{1}: unknown host')]
 	assert warnings_if_all_unknown(engine, 'mssh "node{1,2}" uptime')[0][:2] == ('"node{1,2}"', 'unknown')

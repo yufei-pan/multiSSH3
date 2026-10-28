@@ -3788,12 +3788,7 @@ class Engine(object):
 				if users is not None:
 					# mssh skips unreachable hosts by the name it runs them under, user@ included: unknown here
 					found.extend(item for item in self._host_diagnostics(users, states, now, wanted, reach) if item.kind != 'unreachable')
-				try:
-					split = _brace_split(token, request.shell, self.unicode)
-				except Exception as e:
-					# a word of odd braces must not cost the line its other warnings
-					_debug(lambda: 'brace warning failed: {!r}'.format(e))
-					split = None
+				split = _brace_split(token, request.shell, self.unicode)
 				if split is not None:
 					found.append(split)
 		found.extend(self._option_diagnostics(options))
@@ -4214,14 +4209,12 @@ class Engine(object):
 		common = _common_prefix(list(values))
 		if len(common) <= len(typed):
 			return None
-		support = 1.0
-		if SUPPORT > 0:
-			uses = 0
-			for value in values:
-				uses += self.usage(context, value)[0]
-				support = float(uses) / (uses + SUPPORT)
-				if support >= T_WORD:
-					break
+		uses = 0
+		for value in values:
+			uses += self.usage(context, value)[0]
+			support = float(uses) / (uses + SUPPORT)
+			if support >= T_WORD:
+				break
 		if support < T_WORD:
 			return None
 		rest = common[len(typed):]
@@ -4250,13 +4243,13 @@ class Engine(object):
 		top, share = _top_share(commands)
 		if top is None:
 			return None
-		uses = sum(self._uses(feature) for feature in features[top])
-		share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
+		uses = sum(self._uses(feature)[0] for feature in features[top])
+		share *= float(uses) / (uses + SUPPORT)
 		next_words = {}
 		for words, score in commands.items():
 			next_words[words[len(typed) - 1]] = next_words.get(words[len(typed) - 1], 0.0) + score
 		word, word_share = _top_share(next_words)
-		word_share *= float(uses) / (uses + SUPPORT) if SUPPORT > 0 else 1.0
+		word_share *= float(uses) / (uses + SUPPORT)
 		rest = _shell_escape(shell, top[len(typed) - 1][len(typed[-1]):], True)
 		more = ''.join(' ' + _shell_escape(shell, extra, True) for extra in top[len(typed):])
 		if more and share >= T_LINE and all(_joinable(extra) for extra in top[len(typed) - 1:]):
@@ -4266,14 +4259,16 @@ class Engine(object):
 			return Ghost('word', word_rest, word_share)
 		return None
 
-	def _uses(self, feature):
-		'''How many times a feature was used, over all knowledge.'''
-		count = 0
-		for knowledge in self.knowledges:
+	def _uses(self, feature, knowledges=None):
+		'''(times used, last used unix time) of a feature, over all knowledge (or the given knowledges).'''
+		count = last = 0
+		for knowledge in self.knowledges if knowledges is None else knowledges:
 			key = knowledge.feature_key(feature)
-			if key is not None and hasattr(knowledge, 'feature_uses'):
-				count += knowledge.feature_uses(key)[0]
-		return count
+			if key is not None:
+				uses, when = knowledge.feature_uses(key)
+				count += uses
+				last = max(last, when)
+		return count, last
 
 	def usage(self, context, value, knowledges=None):
 		'''(times used, last used unix time) of a value of the current slot, over all knowledge (or the given knowledges).'''
@@ -4286,23 +4281,10 @@ class Engine(object):
 			features = ['o:' + option.long] if option else []
 		else:
 			features = [('f:' if context.mode in PATH_MODES else 'c:') + value]
-		best = (0, 0)
-		for feature in features:
-			count = 0
-			last = 0
-			for knowledge in self.knowledges if knowledges is None else knowledges:
-				key = knowledge.feature_key(feature)
-				if key is not None and hasattr(knowledge, 'feature_uses'):
-					uses, when = knowledge.feature_uses(key)
-					count += uses
-					last = max(last, when)
-			best = max(best, (count, last))
-		return best
+		return max([(0, 0)] + [self._uses(feature, knowledges) for feature in features])
 
 	def _support(self, context, value):
 		'''uses / (uses + SUPPORT) for a value of the current slot: evidence behind a suggestion.'''
-		if SUPPORT <= 0:
-			return 1.0
 		uses = self.usage(context, value)[0]
 		return float(uses) / (uses + SUPPORT)
 
@@ -4887,7 +4869,7 @@ def fit(text, width):
 	while index < len(text) and used < width:
 		match = None
 		if text[index] in '\x1b\x01\x02':
-			match = _ESCAPES.match(text, index) if _ESCAPES is not None else None
+			match = _ESCAPES.match(text, index)
 		if match:
 			out.append(match.group())
 			index = match.end()
@@ -5757,8 +5739,6 @@ def _completed_word_end(before):
 		return ('"' if open_quote == '"' else "'") + ' '
 	return '' if before.endswith('/') else ' '
 
-_PROMPT_ESCAPES = None
-
 def expand_prompt(ps1, environ=None, now=None):
 	'''
 	PS1 expanded the way bash does for its common escapes (\\u \\h \\H \\w \\W \\$ \\[ \\] \\e \\033 \\n
@@ -5857,6 +5837,8 @@ class LineEditor(object):
 		self._asks = []
 		# whether the reason line may hold Unicode
 		self.unicode = unicode
+		# the row of the cursor below the prompt's row, as drawn
+		self._row = 0
 
 	def refresh(self):
 		'''Keep the suggestion in step with the text: ask again unless typing followed it.'''
@@ -6066,7 +6048,7 @@ class LineEditor(object):
 		ghost = (style + self.ghost + '\x1b[0m') if (style and self.ghost) else ''
 		reason = fit(_printable(self.reason), width - 1) if self.reason else ''
 		out = []
-		if getattr(self, '_row', 0):
+		if self._row:
 			out.append('\x1b[{}A'.format(self._row))
 		out.append('\r' + prompt + self._marked_text() + ghost)
 		end_row = rows - 1
@@ -6088,7 +6070,7 @@ class LineEditor(object):
 
 	def erase(self, term):
 		'''Erase what the editor drew; the cursor ends at the start of the prompt's row.'''
-		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r\x1b[J')
+		term.write(('\x1b[{}A'.format(self._row) if self._row else '') + '\r\x1b[J')
 		self._row = 0
 
 	def interrupted(self, term, prompt):
@@ -6096,7 +6078,7 @@ class LineEditor(object):
 		Leave the screen as bash leaves it after Ctrl-C: the prompt and the text as typed (no grey
 		suggestion, no warning), ^C, and the cursor at the start of the next row.
 		'''
-		term.write(('\x1b[{}A'.format(self._row) if getattr(self, '_row', 0) else '') + '\r' + prompt + self.text + '^C\x1b[J\r\n')
+		term.write(('\x1b[{}A'.format(self._row) if self._row else '') + '\r' + prompt + self.text + '^C\x1b[J\r\n')
 		self._row = 0
 
 	def run(self, term, prompt, style=None):
@@ -7032,7 +7014,7 @@ _mssh_complete_run_edit() {
 	local _mssh_complete_locale
 	_mssh_complete_read_locale
 	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" ${_mssh_complete_edit_args[@]+"${_mssh_complete_edit_args[@]}"} -- "$READLINE_LINE " 2>/dev/null
+		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" -- "$READLINE_LINE " 2>/dev/null
 	return "${PIPESTATUS[1]}"
 }
 
@@ -7045,13 +7027,11 @@ _mssh_complete_space_key() {
 	# prefixed: the prompt's expansions run inside (_mssh_complete_prompt)
 	local _mssh_complete_shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
-	local -a _mssh_complete_edit_args=()
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
 		mssh|mssh3|multissh|multissh3|multiSSH3)
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
 				_mssh_complete_prompt
-				(( _mssh_complete_expand )) && _mssh_complete_edit_args=(--expand)
 				_mssh_complete_start _mssh_complete_run_edit
 				if (( _mssh_complete_status == 130 )); then
 					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
@@ -9425,7 +9405,7 @@ def editor_completions(engine, before):
 		return [], ''
 	response = engine.query(Request('bash', before, '', context.prefix, flags={'insert': '1'}))
 	texts = [word + candidate.text[len(context.prefix):] for candidate in response.candidates if candidate.text.startswith(context.prefix)]
-	if {'files', 'dirs'} & set(response.directives):
+	if 'files' in response.directives:
 		directory, slash, start = context.value.rpartition('/')
 		listed = os.path.expanduser(directory + slash) if slash else '.'
 		try:
@@ -9440,8 +9420,6 @@ def editor_completions(engine, before):
 			if not name.startswith(start) or _has_control(name):
 				continue
 			is_dir = os.path.isdir(os.path.join(listed, name))
-			if not is_dir and 'files' not in response.directives:
-				continue
 			rest = name[len(start):] + ('/' if is_dir else '')
 			if context.open_quote:
 				if any(char in unsafe for char in rest):
@@ -9454,9 +9432,9 @@ def editor_completions(engine, before):
 
 def _cmd_edit(args):
 	'''
-	mssh-complete edit [--expand] [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line.
+	mssh-complete edit [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line (bash 4.4+).
 
-	The prompt to redraw is in $MSSH_COMPLETE_PROMPT (PS1 itself with --expand); stdin holds the
+	The prompt to redraw is in $MSSH_COMPLETE_PROMPT, expanded; stdin holds the
 	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
 	replays keys, written as a readline key sequence; abandon: drop the line), E. Exit 3 when the
 	editor cannot start; the shell then goes on as if it had not been asked. With --ready, "ready"
@@ -9464,15 +9442,16 @@ def _cmd_edit(args):
 	'''
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
-	parser.add_argument('--expand', action='store_true')
 	parser.add_argument('--ready', action='store_true')
+	# taken and ignored: no released glue passes it (the editor needs bash 4.4, which expands PS1 itself)
+	parser.add_argument('--expand', action='store_true', help=argparse.SUPPRESS)
 	# request flags from bash's glue: the locale it measured in the shell (utf8, turkic)
 	parser.add_argument('--flags', default='')
 	parser.add_argument('text')
 	options = parser.parse_args(args)
 	flags = parse_flags(options.flags)
 	started = time.monotonic()
-	prompt = _prompt_from_flags({'redraw': '1', 'expand': '1' if options.expand else '0'}) or ''
+	prompt = _prompt_from_flags({'redraw': '1'}) or ''
 	history = []
 	if not sys.stdin.isatty():
 		data = sys.stdin.buffer.read() if hasattr(sys.stdin, 'buffer') else sys.stdin.read().encode('utf-8', 'surrogateescape')

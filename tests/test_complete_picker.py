@@ -829,48 +829,19 @@ def test_a_claim_that_failed_for_another_reason_does_not_blame_the_shell(tmp_pat
 	assert len(logged) == 1 and 'went on' not in logged[0] and error.strerror in logged[0], logged
 
 
-def test_pick_falls_back_when_the_failure_cannot_be_shown(tmp_path, monkeypatch):
-	# the failure message was made even with the debug log off: a __repr__ raising there skipped the answer 2
-	import io
-	from complete_shell_harness import make_home, with_debug_log
-	env, _ = make_home(tmp_path, HISTORY)
-	for name, value in with_debug_log(env, '0').items():
-		monkeypatch.setenv(name, value)
-	monkeypatch.delenv('MSSH_COMPLETE_DEBUG', raising=False)
-
-	class Unshowable(Exception):
-		def __repr__(self):
-			raise RuntimeError('no repr')
-
-	def fail(*args):
-		raise Unshowable()
-	monkeypatch.setattr(mc, 'picker_items', fail)
-	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK)))
-	assert mc._cmd_pick() == 2
-
-
-@pytest.mark.parametrize('command, broken, status', [('edit', 'engine_for', 3), ('edit', 'Terminal', 3), ('query', 'answer', 1)])
-def test_a_failure_that_cannot_be_shown_keeps_the_fallback_status(tmp_path, monkeypatch, command, broken, status):
-	# edit's "editor cannot start" and query's "query failed" made their message even with the log off
+def test_edit_still_takes_the_expand_flag_old_callers_gave_it(tmp_path, monkeypatch):
+	# no released glue passes --expand, but a flag accepted before stays accepted (the editor cannot start here: 3)
 	import io
 	from complete_shell_harness import make_home
 	env, _ = make_home(tmp_path, HISTORY)
 	for name, value in env.items():
 		monkeypatch.setenv(name, value)
-	monkeypatch.delenv('MSSH_COMPLETE_DEBUG', raising=False)
 
-	class Unshowable(Exception):
-		def __repr__(self):
-			raise RuntimeError('no repr')
-
-	def fail(*args, **kwargs):
-		raise Unshowable()
-	monkeypatch.setattr(mc, broken, fail)
-	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(CLAIM_PICK if command == 'query' else b'')))
-	if command == 'edit':
-		assert mc._cmd_edit(['--', 'mssh ']) == status
-	else:
-		assert mc._cmd_query() == status
+	def fail(*args):
+		raise OSError('no terminal')
+	monkeypatch.setattr(mc, 'Terminal', fail)
+	monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(b'')))
+	assert mc._cmd_edit(['--expand', '--', 'mssh ']) == 3
 
 
 class _Steps(object):
