@@ -8374,23 +8374,6 @@ def detect_shell(environ=None):
 		name = os.path.basename(environ.get('SHELL', '')).lstrip('-')
 	return name if name in SHELLS else None
 
-def _fish_major():
-	'''
-	The major version of the fish on PATH, or None.
-
-	From `fish --version`, which reads no configuration: `fish -c` runs the operator's config.fish and
-	conf.d first, which may print, be slow or do things. The line may be translated ("fish, Version
-	3.7.1"), and old releases wrote it to stderr: its first number is the version.
-	'''
-	import re
-	import subprocess
-	try:
-		output = subprocess.run(['fish', '--version'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5).stdout
-	except (OSError, subprocess.SubprocessError):
-		return None
-	found = re.search(r'\b(\d+)\.\d+', output.decode('ascii', 'replace'))
-	return int(found.group(1)) if found else None
-
 def _ours(path):
 	try:
 		with open(path, encoding='utf-8', errors='replace') as f:
@@ -8735,10 +8718,6 @@ def install(shell, home=None, environ=None, command=None, editor=False):
 	except InstallError as error:
 		return 1, list(error.args)
 	messages = []
-	if shell == 'fish':
-		major = _fish_major()
-		if major is not None and major < 3:
-			return 1, ['fish {} is too old for mssh autocomplete: it needs fish 3.0 or later'.format(major)]
 	# paths go into files written as UTF-8 as the bytes they have on disk
 	command = [_as_written(word) for word in (engine_command() if command is None else command)]
 	text = render_glue(shell, command)
