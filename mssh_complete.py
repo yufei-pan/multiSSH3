@@ -1168,35 +1168,6 @@ def _measured_utf8(request):
 	codeset = name.partition('.')[2] if '.' in name else name
 	return codeset.partition('@')[0].lower().replace('-', '') == 'utf8'
 
-_CODESETS = {}   # locale name -> _locale_codeset(name)
-
-def _locale_codeset(name):
-	"""
-	The codeset of the locale named name as the C library has it ('UTF-8', 'ISO-8859-9', ...), None when
-	it has no such locale. Asked once per name (setlocale, nl_langinfo), the process's locale put back.
-	C, POSIX and '' are C without asking.
-	"""
-	if name in ('', 'C', 'POSIX'):
-		return 'ANSI_X3.4-1968'
-	if name not in _CODESETS:
-		codeset = None
-		try:
-			import _locale
-			saved = _locale.setlocale(_locale.LC_CTYPE)
-			try:
-				_locale.setlocale(_locale.LC_CTYPE, name)
-				codeset = _locale.nl_langinfo(_locale.CODESET)
-			finally:
-				_locale.setlocale(_locale.LC_CTYPE, saved)
-		except Exception:
-			# not there, or no setlocale or nl_langinfo to ask
-			codeset = None
-		_CODESETS[name] = codeset
-	return _CODESETS[name]
-
-def _utf8_codeset(codeset):
-	return (codeset or '').lower().replace('-', '').replace('_', '') == 'utf8'
-
 def _starts(text, prefix, icase=None, start=0):
 	"""
 	Whether text starts with prefix; with icase (a CaseFold) with prefix[start:] in any case, as icase
@@ -6380,7 +6351,7 @@ _mssh_complete_space() {
 
 _mssh_complete_space_key() {
 	# prefixed: the prompt's expansions run inside (_mssh_complete_prompt)
-	local _mssh_complete_shown _mssh_complete_ps1 _mssh_complete_expand _mssh_complete_action _mssh_complete_keys
+	local _mssh_complete_shown _mssh_complete_ps1 _mssh_complete_action _mssh_complete_keys
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
