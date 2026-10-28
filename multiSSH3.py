@@ -2786,9 +2786,8 @@ def _refresh_expansion_caches():
 
 
 #%% ------------ Run Command Block ----------------
-# bytes the reader treats specially, and the unicode line breaks str.splitlines() also splits on
+# bytes the reader treats specially
 _READER_SPECIAL_BYTES = re.compile(rb'([\n\r\x08])')
-_UNICODE_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
 # encodings in which a \n byte is always a character of its own and ends any character before it: lines
 # decode as one text just as one at a time. Not e.g. utf-16, or utf-8-sig, which drops a BOM at the start
 # of each text it decodes.
@@ -2864,11 +2863,9 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 	'''
 	Read the stream and append the lines to the target list
 
-	Output is read in chunks. The lines that start and end in a chunk, with no \r (but in \r\n) or
-	backspace, are decoded and added at once when none holds a unicode line break. The rest is split
-	on \n, \r and backspace: \r returns to the line start, backspace deletes the byte before, and
-	unicode line breaks split lines that grow past each 100 bytes, which add_run checks only where
-	that can happen. This gives the same lines as reading one byte at a time.
+	Output is read in chunks: \n ends a line, \r returns to the line start, backspace deletes the byte
+	before. The lines that start and end in a chunk, with no \r (but in \r\n) or backspace, are decoded
+	and added at once. This gives the same lines as reading one byte at a time.
 
 	Args:
 		stream (io.BufferedReader): The stream to be read
@@ -2880,103 +2877,30 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 		None
 	'''
 	bulk_encoding = codecs.lookup(_encoding).name in _READER_BULK_ENCODINGS
-	def add_line(buffer,target, host):
-		current_line_str = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
-		target.append(current_line_str)
-		host.output.append(current_line_str)
-		buffer.seek(0)
-		buffer.truncate(0)
-		host.output_buffer.seek(0)
-		host.output_buffer.truncate(0)
-	def add_lines(data):
-		'''
-		Add whole lines at once while the buffer is empty: data is the bytes before a \n, with no \r or backspace.
-
-		Returns False, having added nothing, when a line holds a unicode line break: add_bytes splits it.
-		'''
-		text = data.decode(_encoding,errors='backslashreplace')
-		if _UNICODE_LINE_BREAK.search(text):
-			return False
-		lines = _share_lines(text.split('\n'))
-		target.extend(lines)
-		host.output.extend(lines)
-		return True
-	def split_line_breaks():
-		'''Split the line on unicode line breaks when it grew to a multiple of 100 bytes.'''
-		if buffer.tell() % 100 == 0 and buffer.tell() > 0:
-			decodedLine = buffer.getvalue().decode(_encoding,errors='backslashreplace')
-			lines = decodedLine.splitlines()
-			if len(lines) > 1:
-				# if there are multiple lines, we add them to the target
-				for line in lines[:-1]:
-					# for all lines except the last one, we add them to the target
-					target.append(line)
-					host.output.append(line)
-				# we keep the last line in the buffer
-				buffer.seek(0)
-				buffer.truncate(0)
-				buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-				host.output_buffer.seek(0)
-				host.output_buffer.truncate(0)
-				host.output_buffer.write(lines[-1].encode(_encoding,errors='backslashreplace'))
-	def add_cr_or_backspace(char):
-		'''\r moves back to the line start, backspace deletes the byte before.'''
-		if char == b'\r':
-			buffer.seek(0)
-			host.output_buffer.seek(0)
-			return
-		if buffer.tell() > 0:
-			buffer.seek(buffer.tell() - 1)
-			buffer.truncate()
-		if host.output_buffer.tell() > 0:
-			host.output_buffer.seek(host.output_buffer.tell() - 1)
-			host.output_buffer.truncate()
-		split_line_breaks()
-	def add_run(run, clean):
-		'''
-		Add bytes that hold no \n, \r or backspace.
-
-		clean: the buffer is known to hold no unicode line break. Returns the same for after.
-		'''
-		position = buffer.tell()
-		end = buffer.seek(0, io.SEEK_END)
-		buffer.seek(position)
-		# appending (not overwriting after a \r) with no line break around: no 100 byte split can happen
-		if position == end:
-			if clean:
-				# a line break started in the buffer ends within its last 3 bytes
-				buffer.seek(max(0, end - 3))
-				text = (buffer.read() + run).decode(_encoding,errors='backslashreplace')
-			else:
-				text = (buffer.getvalue() + run).decode(_encoding,errors='backslashreplace')
-			if not _UNICODE_LINE_BREAK.search(text):
-				buffer.write(run)
-				host.output_buffer.write(run)
-				return True
-		# a split can only happen where the write position reaches a multiple of 100: write up to there at once
-		offset = 0
-		while offset < len(run):
-			part = run[offset:offset + 100 - buffer.tell() % 100]
-			offset += len(part)
-			buffer.write(part)
-			host.output_buffer.write(part)
-			split_line_breaks()
-		return False
-	def add_bytes(data, clean):
-		'''Add bytes as they come. clean: as for add_run, and returns the same for after.'''
+	def add_line():
+		line = _share_line(buffer.getvalue().decode(_encoding,errors='backslashreplace'))
+		target.append(line)
+		host.output.append(line)
+		for line_buffer in (buffer, host.output_buffer):
+			line_buffer.seek(0)
+			line_buffer.truncate(0)
+	def add_bytes(data):
 		# split keeps the special bytes at the odd indexes
 		for index, part in enumerate(_READER_SPECIAL_BYTES.split(data)):
 			if index % 2 == 0:
 				if part:
-					clean = add_run(part, clean)
+					buffer.write(part)
+					host.output_buffer.write(part)
 			elif part == b'\n':
-				add_line(buffer,target, host)
-				clean = True
+				add_line()
 			else:
-				add_cr_or_backspace(part)
-		return clean
+				for line_buffer in (buffer, host.output_buffer):
+					if part == b'\r':
+						line_buffer.seek(0)
+					elif line_buffer.tell() > 0:
+						line_buffer.seek(line_buffer.tell() - 1)
+						line_buffer.truncate()
 	read = stream.read1 if hasattr(stream, 'read1') else stream.read
-	clean = False
 	try:
 		while True:
 			# read1 returns whatever arrived (up to the size) instead of waiting to fill it
@@ -2994,17 +2918,17 @@ def __handle_reading_stream(stream,target, host,buffer:io.BytesIO):
 					# the line in the buffer ends at the first \n, the lines after it are whole in the chunk
 					whole_lines = chunk[first_newline + 1:last_newline]
 					if b'\r' not in whole_lines and b'\x08' not in whole_lines:
-						clean = add_bytes(chunk[:first_newline + 1], clean)
-						if add_lines(whole_lines):
-							chunk = chunk[last_newline + 1:]
-						else:
-							chunk = chunk[first_newline + 1:]
-			clean = add_bytes(chunk, clean)
+						add_bytes(chunk[:first_newline + 1])
+						lines = _share_lines(whole_lines.decode(_encoding,errors='backslashreplace').split('\n'))
+						target.extend(lines)
+						host.output.extend(lines)
+						chunk = chunk[last_newline + 1:]
+			add_bytes(chunk)
 	except ValueError:
 		pass
 	if buffer.tell() > 0:
 		# if there is still some data in the buffer, we add it to the target
-		add_line(buffer,target, host)
+		add_line()
 
 def _encode_typed_line(chars):
 	'''The bytes a line typed in the TUI sends: bytes typed outside _encoding (surrogates) go out as typed.'''
