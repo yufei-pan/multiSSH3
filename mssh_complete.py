@@ -7429,17 +7429,19 @@ def _discard_stdout():
 def _quiet_when_stdout_is_gone(command):
 	'''
 	command, ending as SIGPIPE ends other tools when the reader of its output exits early
-	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS. stdout is flushed before
-	command returns (also through argparse's exit), where a failure can still be reported: at exit it
-	would be "Exception ignored" (a full disk even exited 0 on Python 3.6 and 3.13).
+	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS. stdout and stderr are
+	flushed before command returns (also through argparse's exit), where a failure can still be reported:
+	at exit it would be "Exception ignored" (a full disk even exited 0 on Python 3.6 and 3.13; 3.6 also
+	buffers stderr, so a usage error 2>&1 | head failed there).
 	'''
 	def run(*args, **kwargs):
 		try:
 			try:
 				return command(*args, **kwargs)
 			finally:
-				if sys.stdout is not None:
-					sys.stdout.flush()
+				for stream in (sys.stdout, sys.stderr):
+					if stream is not None:
+						stream.flush()
 		except BrokenPipeError:
 			_discard_stdout()
 			return SIGPIPE_STATUS
