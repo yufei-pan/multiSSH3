@@ -71,6 +71,8 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 	pytest.param(ENGINE + ['-V'], id='version'),
 	pytest.param(MSSH + ['--completion', 'fish'], id='mssh-fish'),
 	pytest.param(ENGINE + ['bogus'], id='usage-error'),
+	# argparse's own usage error: 3.11+ drops its failed write, which leaves it buffered as on 3.6
+	pytest.param(ENGINE + ['edit'], id='argparse-usage-error'),
 ])
 def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	# ... 2>&1 | head: the flush at exit must not fail on stderr either (Python would exit 120)
