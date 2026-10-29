@@ -301,26 +301,56 @@ def test_the_backed_up_config_is_rewritten_with_the_owner_and_group_it_had(monke
 
 
 @pytest.mark.parametrize("config_group", ["own", "other"])
-def test_the_backup_of_a_symlinked_config_takes_the_config_s_owner_not_the_old_backup_s(monkeypatch, tmp_path, config_group):
-	# an old backup of another owner (root's, after a sudo run) must not make the next store fail; under sudo the
-	# backup stays the user's, as the config is
+def test_the_backup_of_a_symlinked_config_belongs_to_the_writer(monkeypatch, tmp_path, config_group):
+	# as in 6.38: neither an old backup's owner nor the config's group (one we may not be in) can make the store fail
 	dotfiles = tmp_path / "dotfiles"
 	dotfiles.mkdir()
 	real = dotfiles / "multiSSH3.config.json"
 	real.write_text('{"DEFAULT_PASSWORD": "old"}')
 	real.chmod(0o600)
-	group = os.getgid() if config_group == "own" else _another_group()
-	os.chown(str(real), -1, group)
+	if config_group == "other":
+		os.chown(str(real), -1, _another_group())
 	link = tmp_path / ".multiSSH3.config.json"
 	link.symlink_to(real)
 	backup = Path(str(link) + ".bak")
 	backup.write_text("{}")
-	os.chown(str(backup), -1, _another_group() if config_group == "own" else os.getgid())
+	os.chown(str(backup), -1, _another_group())
 
 	_store_with_backup(monkeypatch, link)
 
 	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
-	assert backup.stat().st_gid == group
+	assert backup.stat().st_gid == os.getgid()
+
+
+def test_a_stale_backup_of_another_owner_does_not_stop_the_store(monkeypatch, tmp_path):
+	# a backup left root's by an earlier sudo run, beside a symlinked config in a group we are not in
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text('{"DEFAULT_PASSWORD": "old"}')
+	real.chmod(0o600)
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	backup = Path(str(link) + ".bak")
+	backup.write_text("{}")
+	real_lstat = os.lstat
+
+	def not_in_its_group(path, uid, gid, **kwargs):
+		raise PermissionError(1, "Operation not permitted")
+
+	def root_s(path, *args, **kwargs):
+		st = real_lstat(path, *args, **kwargs)
+		if str(path) == str(backup):
+			return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, 0, st.st_gid, st.st_size,
+				int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
+		return st
+
+	monkeypatch.setattr(os, "chown", not_in_its_group)
+	monkeypatch.setattr(os, "lstat", root_s)
+	_store_with_backup(monkeypatch, link)
+
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert '"DEFAULT_PASSWORD": "secret"' in real.read_text()
 
 
 @pytest.mark.parametrize("mode", [0o666, 0o600], ids=["too_open", "already_private"])
