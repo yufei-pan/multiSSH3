@@ -156,7 +156,7 @@ Defaults are read from the following chain map stored as json files, top ones ov
 >
 > A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link.
 >
-> The file is replaced in one step: a temporary file beside it, with the old file's owner and group, is renamed over it, so a full disk leaves the old one. A file of another user is written only when its owner can be kept (as root); otherwise the config is printed instead, also when you may write the file through an ACL ([limitations](docs/limitations.md#another-users-config-shared-through-an-acl-is-not-written)).
+> The file is replaced in one step: a temporary file beside it, with the old file's owner and group, is renamed over it, so a full disk leaves the old one. With `o` (overwrite), a file of another user is written only when its owner can be kept (as root); otherwise the config is printed instead, also when you may write the file through an ACL ([limitations](docs/limitations.md#another-users-config-shared-through-an-acl-is-not-written)). With the default `b`, the old file becomes the `.bak` and the new one gets its owner and group where that can be kept (as root); otherwise it is yours.
 >
 > Each value is checked against the type of the setting's default. Values whose meaning is clear are converted (`"true"` / `"false"`, `"yes"` / `"no"` for true / false settings, numbers written as strings, a list of host names for `DEFAULT_HOSTS`); anything else, such as `"DEFAULT_TIMEOUT": "fifty"` or an encoding Python does not know, is ignored with a warning naming the file and the key, and the setting keeps its value from the rest of the chain (no warning when a more specific file sets that key anyway). `null` for a string setting means its default (`DEFAULT_HOSTS: null` is `all`). A file that is not a JSON object is skipped the same way. `--config_file` applies a file exactly as the chain does, `_sshPath`, `DEFAULT_ENV_FILE` and `ERROR_MESSAGES_TO_IGNORE` included.
 
@@ -1382,7 +1382,7 @@ A simplification pass: multiSSH3.py is about 740 lines shorter, mssh_complete.py
   - a silent remote command whose own ssh is turned away before login runs again (up to 3 times);
   - a gather retried with scp, of a remote directory named without a slash into a new destination, lands one level up;
   - an interrupted `--copy_id -p` can leave empty `~/.ssh/ssh-copy-id.*` directories (`rmdir` them);
-  - output before a run into a closed pipe ends by SIGPIPE: -13 for a Python subprocess caller (6.38: 141), 120 on Windows;
+  - output before a run into a closed pipe ends by SIGPIPE: -13 for a Python subprocess caller (6.38: 141), also for a program calling `main()` itself, 120 on Windows;
   - another user's config, writable to you only through an ACL, is not written (the config is printed);
   - reading mssh's runtime state may create its 0700 directory;
   - Esc waits while the terminal is under 3 rows;

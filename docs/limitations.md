@@ -62,20 +62,24 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - What the operator sees: `mssh -h | true`, `mssh -V | true`, `--generate_config_file | true`, a usage error
   into a closed stderr and the prompts before the run end mssh by SIGPIPE. A shell reports 141, as before; a
   program that starts mssh with Python's subprocess sees -13 (6.38: 141). On Windows, which has no SIGPIPE,
-  such output exits 120 with Python's "Exception ignored ... BrokenPipeError" line. A run still ends quietly
-  with its own status. A message that cannot reach stderr is dropped; 6.38 wrote it to stdout.
-- Why: exiting 141 by hand took `_WatchedStream` and `_exit_if_output_closed` (about 60 lines) to rebuild
-  what SIGPIPE's default action does.
+  such output exits 120 with Python's "Exception ignored ... BrokenPipeError" line. A program that imports
+  multiSSH3 and calls `main()` itself (with `-V`, `-h`, ...) while its own stdout is a closed pipe is ended
+  the same way; 6.38's `main()` raised SystemExit(141) and pointed the program's stdout and stderr at
+  /dev/null. `run_command_on_hosts()` does not touch SIGPIPE. A run still ends quietly with its own status. A
+  message that cannot reach stderr is dropped; 6.38 wrote it to stdout.
+- Why: exiting 141 by hand took `_WatchedStream` and `_exit_if_output_closed` (about 60 lines) to rebuild what
+  SIGPIPE's default action does.
 - Revisit when: a program depends on the 141, or Windows users report the message.
-- Approved: 2026-10-24, the user chose "Both (Recommended)".
+- Approved: 2026-10-24, the user chose "Both (Recommended)". The case of a program calling `main()` itself
+  added after the second review: 2026-10-29, the user chose "Add it to the entry (Recommended)".
 
 ### Another user's config shared through an ACL is not written
 - Kind: known limitation
-- What the operator sees: `--store_config_file` on a config file owned by another user, which the operator
-  may write only through an ACL (or group or world write), prints `Error: Unable to write to the config
-  file: ...` and the new config on stdout. 6.38 wrote such a file in place when it was 0600 or tighter.
-  Configs of the operator's own, root writing a user's config (now atomic, owner and group kept) and
-  symlinked configs are written as before. `--add_control_master_config` follows the same rule for
+- What the operator sees: `--store_config_file`, answered `o` (overwrite), on a config file owned by another
+  user, which the operator may write only through an ACL (or group or world write), prints `Error: Unable to
+  write to the config file: ...` and the new config on stdout. 6.38 wrote such a file in place when it was
+  0600 or tighter. Configs of the operator's own, root writing a user's config (now atomic, owner and group
+  kept) and symlinked configs are written as before. `--add_control_master_config` follows the same rule for
   `~/.ssh/config`, as it already did.
 - Why: writing in place needed a third write path (about 40 lines with its own fchmod / fstat check). Every
   file is now written as `~/.ssh/config` was: a temporary file with the old owner, renamed over it.
