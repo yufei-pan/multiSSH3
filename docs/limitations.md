@@ -68,8 +68,8 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   /dev/null. While such a `main()` runs on the main thread, from its start until the run starts (arguments,
   prompts, config), SIGPIPE is the default for the whole process: another thread of that program writing to a
   closed pipe or socket then ends it too (6.38: that thread got BrokenPipeError). `run_command_on_hosts()`
-  does not touch SIGPIPE. A run still ends quietly with its own status. A message that cannot reach stderr is
-  dropped; 6.38 wrote it to stdout.
+  does not touch SIGPIPE. A run still ends quietly with its own status. During a run, a message that cannot
+  reach stderr is dropped; 6.38 wrote it to stdout.
 - Why: exiting 141 by hand took `_WatchedStream` and `_exit_if_output_closed` (about 60 lines) to rebuild what
   SIGPIPE's default action does.
 - Revisit when: a program depends on the 141, or Windows users report the message.
@@ -84,8 +84,9 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   prints `Error: Unable to write to the config file: ...` and the new config on stdout. 6.38 wrote such a file
   in place when it was 0600 or tighter. With the default answer `b`, a config that is not a symlink is moved
   to the `.bak` and the new one is the operator's. Configs of the operator's own, root writing a user's config
-  (now atomic, owner and group kept) and the operator's own symlinked configs are written as before.
-  `--add_control_master_config` follows the same rule for `~/.ssh/config`, as it already did.
+  (now atomic, owner and group kept) and the operator's own symlinked configs are written as before (an own
+  config now keeps its group with `b` too). `--add_control_master_config` follows the same rule for
+  `~/.ssh/config`, as it already did.
 - Why: writing in place needed a third write path, with its own fchmod / fstat check. Every file is now
   written as `~/.ssh/config` was: a temporary file with the old owner, renamed over it.
 - Revisit when: someone shares configs through ACLs.
