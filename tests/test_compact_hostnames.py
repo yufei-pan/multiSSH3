@@ -38,6 +38,6 @@ def test_shown_names_of_pre_merged_groups_compact_as_one_range():
 
 
 def test_compact_hostnames_local_takes_names_as_they_are():
-	# a public function: what 6.38 gave back for names that are no ranges stays so
+	# a public function: names that name no host or are no range come back as they are, as 6.38 gave them
 	assert multiSSH3.compact_hostnames_local(["node[10-1]", "node1"]) == ["node1", "node[10-1]"]
 	assert multiSSH3.compact_hostnames_local(["node[a]"]) == ["node[a]"]

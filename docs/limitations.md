@@ -75,12 +75,13 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 ### Another user's config shared through an ACL is not written
 - Kind: known limitation
-- What the operator sees: `--store_config_file`, answered `o` (overwrite), on a config file owned by another
-  user, which the operator may write only through an ACL (or group or world write), prints `Error: Unable to
-  write to the config file: ...` and the new config on stdout. 6.38 wrote such a file in place when it was
-  0600 or tighter. Configs of the operator's own, root writing a user's config (now atomic, owner and group
-  kept) and symlinked configs are written as before. `--add_control_master_config` follows the same rule for
-  `~/.ssh/config`, as it already did.
+- What the operator sees: `--store_config_file` on a config file owned by another user, which the operator may
+  write only through an ACL (or group or world write), answered `o` (overwrite) or reached through a symlink,
+  prints `Error: Unable to write to the config file: ...` and the new config on stdout. 6.38 wrote such a file
+  in place when it was 0600 or tighter. With the default answer `b`, a config that is not a symlink is moved
+  to the `.bak` and the new one is the operator's. Configs of the operator's own, root writing a user's config
+  (now atomic, owner and group kept) and the operator's own symlinked configs are written as before.
+  `--add_control_master_config` follows the same rule for `~/.ssh/config`, as it already did.
 - Why: writing in place needed a third write path (about 40 lines with its own fchmod / fstat check). Every
   file is now written as `~/.ssh/config` was: a temporary file with the old owner, renamed over it.
 - Revisit when: someone shares configs through ACLs.
