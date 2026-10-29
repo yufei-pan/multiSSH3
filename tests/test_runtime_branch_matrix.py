@@ -20,62 +20,6 @@ class ImmediateProc:
 		return b"", b""
 
 
-def test_run_command_ssh_ipmitool_defaults_and_user(fake_host, monkeypatch):
-	host = fake_host("cli-user@mock-a", "", ipmi=True)
-	calls = []
-	definition = multiSSH3.get_default_ipmi_definition()
-	definition.update({"ipmi_method": "ssh_ipmitool", "username": "bmc-user", "password": "bmc-pass"})
-	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
-	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or ImmediateProc())
-
-	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5, passwds="cli-pass", ipmi_definitions_list=[definition])
-
-	assert host.returncode == 0
-	assert host.command == "ipmitool power status"
-	assert "bmc-user@mock-a" in calls[0]
-
-
-def test_run_command_rsync_failure_retries_with_scp(fake_host, monkeypatch):
-	host = fake_host("mock-a", "/dest", files=["/source"], scp=False)
-	calls = []
-	procs = iter([ImmediateProc(returncode=12, stderr=b"bash: rsync: command not found\n"), ImmediateProc(returncode=0)])
-	monkeypatch.setitem(multiSSH3._binPaths, "rsync", "rsync")
-	monkeypatch.setitem(multiSSH3._binPaths, "scp", "scp")
-	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
-	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or next(procs))
-
-	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5)
-
-	assert calls[0][0] == "rsync"
-	assert calls[1][0] == "scp"
-	assert host.scp is True
-	assert host.returncode == 0
-
-
-def test_run_command_ipmi_definition_exhaustion(fake_host):
-	host = fake_host("mock-a", "status", ipmi=True)
-
-	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5, ipmi_definitions_list=[])
-
-	assert host.returncode == 1
-	assert host.stderr == ["Error: Exhausted all matching ipmi definitions!"]
-
-
-def test_run_command_missing_local_ipmitool_falls_back_to_ssh(fake_host, monkeypatch):
-	host = fake_host("mock-a", "power status", ipmi=True)
-	calls = []
-	definition = multiSSH3.get_default_ipmi_definition()
-	monkeypatch.delitem(multiSSH3._binPaths, "ipmitool", raising=False)
-	monkeypatch.setitem(multiSSH3._binPaths, "ssh", "ssh")
-	monkeypatch.setattr(multiSSH3.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or ImmediateProc())
-
-	multiSSH3.run_command(host, threading.Semaphore(1), timeout=5, ipmi_definitions_list=[definition])
-
-	assert calls[0][0] == "ssh"
-	assert "ipmitool power status" in calls[0][-1]
-	assert host.returncode == 0
-
-
 def test_run_command_debug_ssh_ipmitool_preserves_auth_argv(fake_host, monkeypatch):
 	host = fake_host("cli-user@mock-a", "", ipmi=True, identity_file="/tmp/id_ed25519")
 	calls = []

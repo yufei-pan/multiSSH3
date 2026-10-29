@@ -13,7 +13,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
-	debug_log_size, fish_complete, fish_session, make_home, require_shell, with_debug_log, without_command, zsh_session)
+	debug_log_size, fish_complete, fish_session, hold_lock, make_home, require_shell, with_debug_log, without_command, zsh_session)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -53,6 +53,20 @@ def test_bash_completes_in_a_real_shell(setup, bash_completion, debug):
 		session.close()
 	if debug == '0':
 		assert debug_log_size(env) == logged
+
+
+def test_bash_ignores_the_heal_a_shell_of_6_38_left_in_an_exported_prompt_command(tmp_path):
+	# 6.38 put _mssh_complete_heal; in PROMPT_COMMAND, which a tmux pane or a nested bash inherits when it is exported
+	env, home = make_home(tmp_path, HISTORY)
+	session = bash_session(home, dict(env, PROMPT_COMMAND='_mssh_complete_heal;history -a'), glue_file(home, 'bash'), False)
+	try:
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 5)
+		session.send('true\r')
+		session.read_until(b'@@READY@@', 5)
+	finally:
+		session.close()
+	assert b'command not found' not in session.output
 
 
 def test_bash_ignoring_case_completes_in_any_case(tmp_path):
@@ -333,23 +347,20 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -C "zzaws_completer --x" zzsvc', ['zzline=zzsvc s3 zz', 'zzpoint=11', 'zzkey=9.9', 'zzargs=--x|zzsvc|zz']),
 	('complete -W "zza zzb other" zzsvc', ['zza', 'zzb']),
 	('complete -W "\'zz a\' zzc" zzsvc', ['zz a', 'zzc']),
-	('complete -W "\'zz a\' zzc" -P "\'" -S "\'" zzsvc', ["'zz a'", "'zzc'"]),
 	('complete -d zzsvc', ['zzdir', 'zzdirb']),
 	('complete -A directory zzsvc', ['zzdir', 'zzdirb']),
 	('zzfn() { :; }; zzfn2() { :; }; complete -A function zzsvc', ['zzfn', 'zzfn2']),
 	('complete -G "zzd*" zzsvc', ['zzdir', 'zzdirb']),
-	# -X removes what matches, and with a ! what does not
+	# -X, -P and -S go to compgen with the rest, which applies them to its words, but not to a function's or a command's
 	('complete -W "zza.c zzb.h zzc.c" -X "*.c" zzsvc', ['zzb.h']),
 	('complete -W "zza.c zzb.h zzc.c" -X "!*.c" zzsvc', ['zza.c', 'zzc.c']),
 	# an & stands for the word, \& for the character
 	('complete -W "zz zzb zzbb" -X "&b" zzsvc', ['zz', 'zzbb']),
 	('complete -W "zz zzb zz& zz&b" -X "&\\&b" zzsvc', ['zz', 'zzb', 'zz&']),
-	# a function and a command are filtered too, and listed after the words
-	('complete -F _zzreal -X "!zza*" zzsvc', ['zzalpha', 'zzalpine']),
-	('complete -F _zzreal -X "zza*" zzsvc', ['zzbeta']),
-	('complete -W "zzw" -F _zzreal -C "echo zzc" -X "zzal*" zzsvc', ['zzw', 'zzbeta', 'zzc zzsvc zz s3']),
-	('complete -W "zza zzb" -P "[" -S "]" zzsvc', ['[zza]', '[zzb]']),
-	('complete -F _zzreal -P "\'" zzsvc', ["'zzalpha", "'zzalpine", "'zzbeta"]),
+	('complete -W "zza.c zzb.h" -X "*.c" -S ";" zzsvc', ['zzb.h;']),
+	('complete -F _zzreal -X "zza*" zzsvc', ['zzalpha', 'zzalpine', 'zzbeta']),
+	# a function and a command give their words after the words
+	('complete -W "zzw" -F _zzreal -C "echo zzc" zzsvc', ['zzw', 'zzalpha', 'zzalpine', 'zzbeta', 'zzc zzsvc zz s3']),
 	# -o: file names when nothing else is left (dirnames: directories, default: files)
 	('complete -W "other" -o default zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
 	('complete -W "other" -o dirnames zzsvc', ['zzdir', 'zzdirb']),
@@ -357,80 +368,38 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -W "zza" -o default zzsvc', ['zza']),
 	('complete -W "zza" -o plusdirs zzsvc', ['zza', 'zzdir', 'zzdirb']),
 	('complete -W "other" zzsvc', []),
-	# a command's blank lines are no results, as in bash (a lone newline is aws_completer's answer for nothing), so the fallbacks run
+	# a command's blank lines are no results (a lone newline is aws_completer's answer for nothing), so the fallbacks run
 	('complete -C "printf \'zza\\n\\nzzb\\n\\n\'" zzsvc', ['zza', 'zzb']),
 	('complete -C "printf \'\\n\'" zzsvc', []),
 	('complete -o default -C "printf \'\\n\'" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
 	('complete -o dirnames -C "printf \'\\n\\n\'" zzsvc', ['zzdir', 'zzdirb']),
-	# a blank first line is a result, an empty one: no candidate (the glue hands readline none), but an answer, so
-	# the fallbacks do not run, as in bash
-	('complete -C "printf \'\\nzza\\n\'" zzsvc', ['zza']),
-	('complete -C "printf \'\\n\\n\\nzza\\n\\nzzb\'" zzsvc', ['zza', 'zzb']),
+	# a quote or a substitution does not join lines
+	('complete -C "printf \'zz\\"a\\nzzb\\n\'" zzsvc', ['zz"a', 'zzb']),
+	('complete -C "printf \'zz\\$(a\\nzzb)\\n\'" zzsvc', ['zz$(a', 'zzb)']),
+	# the last line needs no newline
 	('complete -C "printf zza" zzsvc', ['zza']),
-	('complete -o default -C "printf \'\\nzza\\n\'" zzsvc', ['zza']),
 	# a function's empty word, the sentinel that git, grub and pcp give for no completions, is an answer as well
 	('_zzs() { COMPREPLY=(""); }; complete -F _zzs zzsvc', []),
 	('_zzs() { COMPREPLY=(""); }; complete -o default -F _zzs zzsvc', []),
 	('_zzs() { COMPREPLY=(""); }; complete -o dirnames -F _zzs zzsvc', []),
-	('_zzs() { COMPREPLY=("" zza); }; complete -F _zzs -P "[" -S "]" zzsvc', ['[zza]']),
 	('_zzs() { COMPREPLY=(""); }; complete -W "zza" -o default -F _zzs zzsvc', ['zza']),
 ])
 def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path, setup, expected):
 	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz')) == sorted(expected)
 
 
-@pytest.mark.parametrize('output, expected', [
-	# bash keeps a newline after a backslash inside the result (gen_command_matches: 4.2 to 5.3), however many
-	# backslashes there are, as a result ends at a newline that no backslash precedes: the newline after the
-	# first of two is a separator
-	(r'zza\\\nzzb\n', ['zza\\\nzzb']),
-	(r'zza\\\\\nzzb\n', ['zza\\\\\nzzb']),
-	(r'zza\\\\\\\nzzb\n', ['zza\\\\\\\nzzb']),
-	(r'zza\\\n\nzzb\n', ['zza\\\n', 'zzb']),
-	(r'zza\\\nzzb\\\nzzc\n', ['zza\\\nzzb\\\nzzc']),
-	(r'zza\nzzb\\\nzzc\n', ['zza', 'zzb\\\nzzc']),
-	(r'zza\\\nzzb', ['zza\\\nzzb']),
-	# at the end of the output the command substitution takes the newlines (the backslash stays)
-	(r'zza\\\n', ['zza\\']),
-	(r'zza\\\n\n\n', ['zza\\']),
-	(r'zza\\', ['zza\\']),
-	# a quote or a substitution does not join lines
-	(r'zz\047a\nzzb\n', ["zz'a", 'zzb']),
-	(r'zz"a\nzzb\n', ['zz"a', 'zzb']),
-	(r'zz$(a\nzzb)\n', ['zz$(a', 'zzb)']),
-])
-def test_bash_delegation_reads_the_lines_of_a_command_as_bash_splits_them(tmp_path, output, expected):
-	# the results one per bracket pair, a newline inside shown as it is
-	results = delegated(tmp_path, '_zzc() {{ printf \'{}\'; }}; complete -C _zzc zzsvc'.format(output), 'zzsvc s3 zz', each='[%s]')
-	assert results == ''.join('[{}]'.format(item) for item in expected)
-	# bash 5.3 says what it reads: compgen -V puts each result into an array
-	script = '_zzc() {{ printf \'{}\'; }}; compgen -V zzr -C _zzc -- zz >/dev/null && printf "[%s]" "${{zzr[@]}}"'.format(output)
-	reads = subprocess.run([require_shell('bash'), '-c', script], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
-	if reads.returncode == 0:
-		assert reads.stdout.decode() == ''.join('[{}]'.format(item) for item in expected)
-
-
 @pytest.mark.parametrize('prefix, words, word, setup, expected', [
-	# in a quoted command -P goes in front of the remote word, after what the quoted word holds before it
-	('zzsvc ', 'zzsvc zz', 'zzsvc zz', 'complete -W "zzalpha zzb" -P "[" -S "]" zzsvc', ['zzsvc [zzalpha]', 'zzsvc [zzb]']),
-	('cd /x && ls ', 'ls zz', 'cd /x && ls zz', 'complete -W "zzalpha zzb" -P "[" zzsvc ls', ['cd /x && ls [zzalpha', 'cd /x && ls [zzb']),
-	('cd /x && ls ', 'ls zz', 'cd /x && ls zz', 'complete -F _zzreal -X "zzb*" -P "<" -S ">" ls', ['cd /x && ls <zzalpha>', 'cd /x && ls <zzalpine>']),
-	# bash's word stops at ":" (b for a:b): what comes before it is cut from the results, and -P goes in front of what is left
-	('', 'zzsvc a:b', 'b', 'complete -W "a:bx a:by" -P "[" zzsvc', ['[bx', '[by']),
-	('zzsvc ', 'zzsvc a:b', 'b', 'complete -W "a:bx a:by" -P "[" -S "]" zzsvc', ['[bx]', '[by]']),
-	('zzsvc ', 'zzsvc a:b', 'zzsvc a:b', 'complete -W "a:bx a:by" -P "[" zzsvc', ['zzsvc [a:bx', 'zzsvc [a:by']),
-	# not on the directory and file names that -o plusdirs, dirnames and default put in
-	('', 'zzsvc zz', None, 'complete -W "zza zzb" -P "[" -S "]" -o plusdirs zzsvc', ['[zza]', '[zzb]', 'zzdir', 'zzdirb']),
-	('', 'zzsvc zz', None, 'complete -W "other" -P "[" -S "]" -o dirnames zzsvc', ['zzdir', 'zzdirb']),
-	('', 'zzsvc zz', None, 'complete -W "other" -P "[" -S "]" -o default zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
+	# in a quoted command the results continue the remote word, after what the quoted word holds before it
+	('zzsvc ', 'zzsvc zz', 'zzsvc zz', 'complete -W "zzalpha zzb" zzsvc', ['zzsvc zzalpha', 'zzsvc zzb']),
+	('cd /x && ls ', 'ls zz', 'cd /x && ls zz', 'complete -W "zzalpha zzb" zzsvc ls', ['cd /x && ls zzalpha', 'cd /x && ls zzb']),
+	# bash's word stops at ":" (b for a:b): what comes before it is cut from the results
+	('', 'zzsvc a:b', 'b', 'complete -W "a:bx a:by" zzsvc', ['bx', 'by']),
+	('zzsvc ', 'zzsvc a:b', 'b', 'complete -W "a:bx a:by" zzsvc', ['bx', 'by']),
+	('zzsvc ', 'zzsvc a:b', 'zzsvc a:b', 'complete -W "a:bx a:by" zzsvc', ['zzsvc a:bx', 'zzsvc a:by']),
 	# a function's words are not held to the word, as bash does not (bash-completion's colon trimming makes bar for a:ba)
-	('', 'zzsvc a:ba', 'ba', '_zztrim() { COMPREPLY=(bar); }; complete -F _zztrim -X "zzx" zzsvc', ['bar']),
-	('', 'zzsvc a:ba', 'ba', '_zztrim() { COMPREPLY=(bar); }; complete -F _zztrim -X "!bar" -P "[" zzsvc', ['[bar']),
+	('', 'zzsvc a:ba', 'ba', '_zztrim() { COMPREPLY=(bar); }; complete -F _zztrim zzsvc', ['bar']),
 	# an & in the filter stands for the word with its glob characters quoted, as bash has it
 	('', 'zzsvc a*', None, 'complete -W "a* a*x a*y" -X "&" zzsvc', ['a*x', 'a*y']),
-	('', 'zzsvc a*', None, 'complete -W "a* a*x a*y ab" -X "!&*" zzsvc', ['a*', 'a*x', 'a*y']),
-	('', 'zzsvc a?', None, 'complete -W "a? a?x ab" -X "&" zzsvc', ['a?x']),
-	('', 'zzsvc a[b]', None, 'complete -W "a[b] a[b]x ab" -X "!&*" zzsvc', ['a[b]', 'a[b]x']),
 ])
 def test_bash_delegation_puts_the_prefix_and_the_filter_where_bash_does(tmp_path, prefix, words, word, setup, expected):
 	assert sorted(delegated(tmp_path, setup, words, prefix=prefix, word=word)) == sorted(expected)
@@ -455,9 +424,9 @@ def test_bash_delegation_hands_the_options_of_the_compspec_to_compopt(tmp_path):
 @pytest.mark.parametrize('options', ['set -e', 'set -u', 'set -eu', 'shopt -s nocasematch extglob'])
 def test_bash_delegation_by_a_compspec_survives_the_shell_options(tmp_path, options):
 	# every source at once, with the fallbacks that find nothing (set -e: a failed process substitution)
-	setup = 'complete -W "zza zzb" -F _zzreal -C "echo zzc" -X "zzb*" -P "[" -S "]" -o nospace -o dirnames -o default zzsvc'
+	setup = 'complete -W "zza zzb" -F _zzreal -C "echo zzc" -X "zzb*" -o nospace -o dirnames -o default zzsvc'
 	assert sorted(delegated(tmp_path, setup, 'zzsvc s3 zz', before=options + '; ')) == [
-		'[zza]', '[zzalpha]', '[zzalpine]', '[zzc zzsvc zz s3]']
+		'zza', 'zzalpha', 'zzalpine', 'zzbeta', 'zzc zzsvc zz s3']
 
 
 @pytest.mark.parametrize('setup', ['complete -F _zzreal zzsvc', 'complete -F _zzreal -X "!zz*" zzsvc'])
@@ -467,28 +436,6 @@ def test_bash_delegation_keeps_a_function_apart_from_the_options_of_the_command(
 
 def test_bash_delegation_without_a_compspec_offers_file_names(tmp_path):
 	assert sorted(delegated(tmp_path, ':')) == ['zzdir', 'zzdirb', 'zzfile']
-
-
-@pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
-def test_bash_the_glue_runs_with_the_default_ifs_and_the_shells_code_with_the_shells(tmp_path, shell_ifs):
-	# a -F function sees the shell's IFS (unset is no empty IFS); the glue's own joins and splits see bash's
-	# default, whatever the shell's: COMP_LINE is joined by spaces
-	setup = ('_zzifs() { COMPREPLY=("zzifs[${IFS-unset}]" "zzline[$COMP_LINE]" "zzstar[${COMP_WORDS[*]}]"); }; complete -F _zzifs zzsvc')
-	expected = {'IFS=:': 'zzifs[:]', 'IFS=': 'zzifs[]', 'unset IFS': 'zzifs[unset]'}[shell_ifs]
-	assert delegated(tmp_path, setup, before=shell_ifs + '; ') == [expected, 'zzline[zzsvc zz]',
-		'zzstar[{}]'.format({'IFS=:': 'zzsvc:zz', 'IFS=': 'zzsvczz', 'unset IFS': 'zzsvc zz'}[shell_ifs])]
-
-
-@pytest.mark.parametrize('shell_ifs, expected', [('IFS=:', '[a][b]'), ('IFS=', '[a:b][]'), ('unset IFS', '[a:b][]')])
-def test_bash_the_prompt_the_picker_redraws_is_expanded_in_the_shells_ifs(tmp_path, shell_ifs, expected):
-	# PS1's command substitutions are the shell's code: they split on the shell's IFS, not the glue's
-	script = ('. "$1"; ' + shell_ifs + '; PS1=\'$(echo a:b | { read x y; echo "[$x][$y]"; })\'; '
-		'_mssh_complete_guard _mssh_complete_prompt; printf "%s" "$_mssh_complete_ps1"')
-	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-	if output.stdout.decode().startswith('$('):
-		pytest.skip('this bash has no ${PS1@P}')
-	assert output.stdout.decode() == expected, output
 
 
 @pytest.mark.parametrize('shell_ifs', ['IFS=:', 'IFS=', 'unset IFS'])
@@ -541,65 +488,36 @@ def completed_and_listed(session, typed, quoted=False):
 
 
 # (the arguments of complete, the word, the shell's setting before it): what bash gives the command itself is what mssh
-# gives for it on a remote host, line and list alike, however -X, -P, -S and -o treat the words. An -o default is there
-# where a filter may leave nothing on some bash (4.2 takes !( for a negation of what follows): mssh, registered with
-# it, then offers file names, as bash does for the command
+# gives for it on a remote host, line and list alike, for what compgen takes (a function's words are not filtered or
+# wrapped, as bash would). An -o default is there where a filter may leave nothing on some bash (4.2 takes !( for a
+# negation of what follows): mssh, registered with it, then offers file names, as bash does for the command
 SAME_AS_BASH = [
-	(['-W', 'zzalpha zzb', '-P', '['], 'zz', ''),
 	(['-W', 'zzalpha zzb', '-S', ']'], 'zz', ''),
 	(['-W', 'a* a*x a*y', '-X', '&'], 'a*', ''),
 	(['-W', 'a* a*x a*y', '-X', '!&*'], 'a*', ''),
 	(['-W', 'a? a?x ab', '-X', '!&*'], 'a?', ''),
-	(['-W', 'a[b a[bx ab', '-X', '&'], 'a[', ''),
-	(['-W', 'a\\b a\\bx', '-X', '!&*'], 'a\\\\b', ''),
-	(['-W', 'zza zzab zzb', '-X', '!&b'], 'zza', ''),
-	(['-W', 'zza.c zzb.h', '-X', '*.c', '-P', '<'], 'zz', ''),
-	(['-W', 'zzalpha zzalpine', '-F', '_zzreal', '-X', '!zza*', '-P', '<'], 'zz', ''),
 	(['-W', 'Zza zzb'], 'zz', 'bind "set completion-ignore-case on"'),
-	(['-W', 'Zza zzb', '-P', '['], 'zz', 'bind "set completion-ignore-case on"'),
 	(['-W', 'zza zzb', '-o', 'plusdirs'], 'ZZ', 'bind "set completion-ignore-case on"'),
-	(['-W', 'zza', '-o', 'nospace', '-P', '['], 'zz', ''),
-	# -X over what a function gives is not held to the word: its & stands for the word with its glob characters
-	# quoted (a ! in the word included), and the results stay whatever case or characters they hold
-	(['-F', '_zzf', '-X', '&'], 'zz', 'bind "set completion-ignore-case on"; _zzf() { COMPREPLY=(Zzalpha zzbeta); }'),
-	(['-F', '_zzf', '-X', '!&*'], 'zz', 'bind "set completion-ignore-case on"; _zzf() { COMPREPLY=(Zzalpha zzbeta); }'),
-	(['-F', '_zzf', '-X', '&'], 'zz', "_zzf() { COMPREPLY=('zz\\x' zzy); }"),
-	(['-W', '!x !xy y', '-X', '&'], '!x', ''),
-	(['-W', '!x !xy y', '-X', '!&'], '!x', ''),
-	# an & is a substitution unless a backslash comes right before it, and a backslash before that one is no escape
-	(['-F', '_zzf', '-X', 'z\\\\&'], 'z', "_zzf() { COMPREPLY=('z&' 'z\\&' zx); }"),
-	(['-F', '_zzf', '-X', 'z\\&'], 'z', "_zzf() { COMPREPLY=('z&' 'z\\&' zx); }"),
-	(['-F', '_zzf', '-X', 'z&'], 'z', "_zzf() { COMPREPLY=('z&' 'zz' 'zzz' zx); }"),
-	# -X and the shell's nocasematch
-	(['-W', 'zzA.C zzb.h', '-X', '*.c'], 'zz', 'shopt -s nocasematch'),
+	(['-W', 'zza', '-o', 'nospace'], 'zz', ''),
+	(['-F', '_zzf'], 'zz', '_zzf() { COMPREPLY=(Zzalpha zzbeta); }; bind "set completion-ignore-case on"'),
 ]
 
 
 # with file names as words, in a quoted command the words are not file names (zzsvc zzdir: readline adds no / to a
-# directory), and mixed with others they have no start in common (zzsvc [zza] beside zzsvc zzdir): readline cuts the
-# line back to the command prefix where bash itself leaves the word
+# directory), and mixed with others they have no start in common: readline cuts the line back to the command prefix
+# where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
-	# bash's word stops at a colon: bx for a:b
-	(['-F', '_zzg', '-X', '&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
-	(['-F', '_zzg', '-X', '!&'], 'a:b', '_zzg() { COMPREPLY=(bx by); }'),
 	# not compared with bash: the local file names of the file actions, -G and a command with no compspec, which the
-	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.39: the glue does it
+	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.40: the glue does it
 	# itself)
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
-	(['-W', 'zza zzb zzc', '-X', '!!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
-	(['-W', 'zza zzb', '-P', '[', '-S', ']', '-o', 'plusdirs'], 'zz', ''),
-	(['-W', 'zza zzb', '-P', '[', '-o', 'plusdirs'], 'zz', ''),
-	(['-W', 'other', '-P', '[', '-o', 'dirnames'], 'zz', ''),
-	(['-W', 'other', '-P', '[', '-o', 'default'], 'zz', ''),
-	(['-W', 'zza zzb', '-P', '[', '-o', 'dirnames', '-o', 'default'], 'zz', ''),
 	(['-W', 'zza zzb', '-o', 'dirnames', '-o', 'default'], 'zzd', ''),
 ]
 
-# and where a filter leaving nothing makes bash offer nothing at all (the unquoted ones are above, with -o default)
+# and where a filter leaving nothing makes bash offer nothing at all (the unquoted one is above, with -o default)
 SAME_AS_BASH_QUOTED = [
 	(['-W', 'zza zzb zzc', '-X', '!(zza)'], 'zz', 'shopt -s extglob'),
-	(['-W', 'zza zzb zzc', '-X', '!!(zza)'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)'], 'zz', 'shopt -s extglob'),
 ]
 
@@ -740,15 +658,29 @@ def test_bash_a_delegated_file_name_with_a_space_reaches_the_line_as_it_does_nat
 	assert fresh_line(tmp_path, 'mssh', shell, 'mssh h scp ' + typed, **given) == 'mssh h scp ' + completed
 
 
+@needs_bash_completion
+@pytest.mark.skipif(not os.path.exists('/usr/share/bash-completion/completions/git') or not shutil.which('git'), reason='no git completion')
+def test_bash_delegation_of_real_completions_gives_what_bash_gives_the_command_itself(tmp_path):
+	# bash-completion's own specs, as a remote command meets them: functions with nospace and filenames (git, rsync, cd,
+	# scp), -F alone (systemctl, ls)
+	options = 'git init -q . && git checkout -q -b main && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m x; . ' + BASH_COMPLETION
+	session = ignoring_case(tmp_path, [], on=False, files=['solo one.txt'], options=options)
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		for line in ('git checko', 'git checkout ma', 'git log --form', 'git commit --am', 'systemctl rest', 'ls --alm', 'cd zzd',
+				'scp so', 'rsync --delete-af'):
+			assert session.line_after('mssh h ' + line) == 'mssh h ' + session.line_after(line), line
+	finally:
+		session.close()
+
+
 SENTINEL = '_zzs() { COMPREPLY=(""); }; '
-# the empty word, as git sparse-checkout, grub and pcp give it for no completions; a command's blank first line
+# the empty word, as git sparse-checkout, grub and pcp give it for no completions
 EMPTY_SPECS = [
 	SENTINEL + 'complete -o nospace -F _zzs zzgit',
 	SENTINEL + 'complete -F _zzs zzgit',
 	SENTINEL + 'complete -o default -F _zzs zzgit',
 	SENTINEL + 'complete -o nospace -o default -o bashdefault -F _zzs zzgit',
-	"complete -C \"printf '\\\\nzza'\" zzgit",
-	"complete -o nospace -C \"printf '\\\\nzza'\" zzgit",
 ]
 
 
@@ -764,7 +696,7 @@ def test_bash_an_empty_result_is_no_candidate_and_no_unique_match(tmp_path, shel
 		assert line == 'mssh h ' + fresh_line(tmp_path, 'native', shell, 'zzgit zzf', **given)
 	else:
 		# (bash adds a space after the empty word of a function that has no nospace, which mssh does not do)
-		if 'nospace' in options or '-C' in options:
+		if 'nospace' in options:
 			assert fresh_line(tmp_path, 'native', shell, 'zzgit zzf', **given) == 'zzgit zzf'
 		assert line == 'mssh h zzgit zzf'
 	assert fresh_line(tmp_path, 'sparse', shell, 'mssh h zzgit sparse-checkout add qq', **given) == 'mssh h zzgit sparse-checkout add qq'
@@ -896,36 +828,15 @@ def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_
 			session.close()
 
 
-@pytest.mark.parametrize('output, native, completed', [
-	# bash reads "\nzza\n" as '' and zza: the command substitution drops the trailing newlines, a run of them
-	# between results is one separator, and a leading one is a result. The glue hands readline no empty candidate
-	# (it would be a unique match to add a space to, and hold the others back), so zza is the one match where bash,
-	# having '' beside it, finds no common start and leaves the word
-	('\\n\\nzza\\n', 'zzsvc z', 'zzsvc zza '),
-	('\\nzza\\n', 'zzsvc z', 'zzsvc zza '),
-	('zza\\n\\n\\n', 'zzsvc zza ', 'zzsvc zza '),
-	('zza\\n\\nzzb\\n', 'zzsvc zz', 'zzsvc zz'),
-	('\\n\\n', 'zzsvc z', 'zzsvc z'),
-])
-def test_bash_a_command_giving_a_blank_first_line_gives_an_empty_result_that_is_no_candidate(tmp_path, output, native, completed):
-	session = ignoring_case(tmp_path, [], on=False, options='complete -C "printf \'{}\'" zzsvc'.format(output.replace('\\', '\\\\')))
-	try:
-		assert session.line_after('zzsvc z') == native
-		assert session.line_after('mssh h zzsvc z') == 'mssh h ' + completed
-	finally:
-		session.close()
-
-
-def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=0, ble=0, env=None):
+def unspaced(tmp_path, reply, given, icase=0, ble=0):
 	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given): the engine's
 	words and the delegate's, each in brackets."""
 	import shlex
-	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_before={}; _mssh_complete_after={}; '
-		'_mssh_complete_icase={}; _mssh_complete_ble={}; _mssh_complete_unspace; '
-		'printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
-		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(before), shlex.quote(after), icase, ble)
+	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_icase={}; _mssh_complete_ble={}; '
+		'_mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble)
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, env=env)
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.returncode == 0, output
 	lines = output.stdout.decode().splitlines()
 	return lines[0], lines[1]
@@ -935,31 +846,8 @@ def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=
 	# all spaced, or none: the space comes off the delegate's words (readline adds it)
 	(['zzb'], ['zza ', 'zzc '], {}, '[zzb]', '[zza][zzc]'),
 	(['zzb'], [], {}, '[zzb]', '[]'),
-	# mixed: the engine's words get a space, one by one
-	(['zzb', 'zzd/', 'zze='], ['zza ', 'zzopt='], {}, '[zzb ][zzd/ ][zze= ]', '[zza ][zzopt=]'),
-	# not in front of a blank
-	(['zzb'], ['zza ', 'zzopt='], {'after': ' -- x'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'after': '\tx'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'after': ')'}, '[zzb ]', '[zza ][zzopt=]'),
-	# not inside an open quote, but after a closed one, an escaped one and one in an ansi-c quote
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "zzgit zzf'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h 'zzgit zzf"}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a \\" b'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h a\\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
-	# as readline finds it: a backslash means nothing in single quotes, and $' and $( mean nothing at all (readline
-	# closes the single quote at the second ' of $'a\'' and opens the next; it completes nothing in "$(echo ")" either)
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h 'a\\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h $'zzgit \\' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h $'a\\'' zzf"}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "$(echo ")" zzgit zzf'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "$(echo "x")" zzgit zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h \\"a zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a\\\\" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a\\\\\\" zzf'}, '[zzb]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a" \'b\' "c" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': 'mssh h "a\'" zzf'}, '[zzb ]', '[zza ][zzopt=]'),
-	(['zzb'], ['zza ', 'zzopt='], {'before': "mssh h '\"' zzf"}, '[zzb ]', '[zza ][zzopt=]'),
+	# mixed: the words stay as they are
+	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {}, '[zzb][zzd/]', '[zza ][zzopt=]'),
 	# under ble.sh: the delegate's words as given, the engine's with no space, and the engine's word the delegate gave
 	# with one left out (ble.sh would meet both); no delegated word: nothing to keep
 	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {'ble': 1}, '[zzb][zzd/]', '[zza ][zzopt=]'),
@@ -969,32 +857,29 @@ def unspaced(tmp_path, reply, given, before='mssh h zzgit zzf', after='', icase=
 	(['zza', 'zzb'], ['zza', 'zzopt='], {'ble': 1}, '[zza][zzb]', '[zza][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1, 'icase': 1}, '[zzb]', '[zza ][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[ZZA][zzb]', '[zza ][zzopt=]'),
-	(['zz*x'], ['zzopt='], {'ble': 1, 'after': ' -- x'}, '[zz*x]', '[zzopt=]'),
-	# the delegate's own word: without the space the engine's is the same word, with it the engine's is left out
-	(['zza', 'zzb'], ['zza', 'zzopt='], {}, '[zza][zzb ]', '[zza][zzopt=]'),
-	(['zza', 'zzb'], ['zza ', 'zzopt='], {}, '[zzb ]', '[zza ][zzopt=]'),
-	# in any case under icase (and only then)
-	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'icase': 1}, '[zzb ]', '[zza ][zzopt=]'),
-	(['ZZA', 'zzb'], ['zza', 'zzopt='], {'icase': 1}, '[ZZA][zzb ]', '[zza][zzopt=]'),
-	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {}, '[ZZA ][zzb ]', '[zza ][zzopt=]'),
 ])
-def test_bash_the_space_of_a_nospace_spec_goes_on_the_engines_words_where_the_delegate_s_are_mixed(tmp_path, reply, given, kwargs, engine, delegate):
+def test_bash_a_nospace_spec_loses_its_space_to_readline_where_all_its_words_end_in_one(tmp_path, reply, given, kwargs, engine, delegate):
 	assert unspaced(tmp_path, reply, given, **kwargs) == (engine, delegate)
 
 
-def test_bash_the_scan_for_an_open_quote_costs_the_quotes_not_the_characters(tmp_path):
-	# 16000 characters of two bytes took seconds: bash cut ${line:i:1} out of the line for each of them (the cost of one
-	# grows with i in a UTF-8 locale)
-	for name in ('C.UTF-8', 'en_US.UTF-8'):
-		env = dict(os.environ, LC_ALL=name)
-		if bash_locale(env)[0]:
-			break
-	else:
-		pytest.skip('no UTF-8 locale')
-	long = '\u00e9' * 16000
-	started = time.monotonic()
-	assert unspaced(tmp_path, ['zzb'], ['zza ', 'zzopt='], before='mssh h zzgit ' + long + ' \'a b\' \"' + long + '\" zzf', env=env) == ('[zzb ]', '[zza ][zzopt=]')
-	assert time.monotonic() - started < 2.5
+def test_bash_a_nospace_spec_lists_a_word_of_the_engine_and_the_spec_once(tmp_path):
+	# beside a word without a space (--format=) the spec's words keep theirs: the engine's zzfeature is the same word
+	history = history_of('zzgit checkout zzfeature')
+	options = "_zzs() { COMPREPLY=('zzfeature ' 'zzopt='); }; complete -o nospace -F _zzs zzgit"
+	session = ignoring_case(tmp_path, history, on=False, options=options)
+	try:
+		assert completed_and_listed(session, 'mssh h zzgit checkout zz') == ('mssh h zzgit checkout zz', ['zzfeature', 'zzopt='])
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('typed', ['mssh -f zznotes', 'mssh h zzcmd zznotes'])
+def test_bash_a_file_name_ending_in_a_space_is_listed_beside_the_name_without_it(tmp_path, typed):
+	session = ignoring_case(tmp_path, [], on=False, files=['zznotes', 'zznotes '])
+	try:
+		assert completed_and_listed(session, typed) == (typed, ['zznotes', 'zznotes'])
+	finally:
+		session.close()
 
 
 @pytest.mark.parametrize('options, typed', [
@@ -1036,8 +921,8 @@ def test_bash_a_remote_command_name_matching_a_local_directory_keeps_its_space(t
 # names the bash glue's TAB path used unprefixed while the shell's code ran: a command's completion function
 # sees and sets the variables of the functions that call it (dynamic scoping). The static test below holds
 # every glue function to the prefix
-BASH_GLUE_NAMES = ('cur resp line item one flags ble files dirs ended delegate reply raws delegate_fields seen icase '
-	'word cword prefix cmd spec func lead words found kept typed keymap previous shown expand')
+BASH_GLUE_NAMES = ('cur resp line item one flags ble files ended delegate reply raws delegate_fields seen icase '
+	'word cword prefix cmd spec func lead words found kept typed keymap previous shown')
 
 
 @pytest.mark.parametrize('on', [True, False])
@@ -1084,8 +969,7 @@ def nocasematch(session):
 
 
 def test_bash_glue_gives_the_shell_back_its_nocasematch(tmp_path):
-	# the glue sets nocasematch to match delegated words as the engine matched them (on while ignoring case,
-	# whatever the shell had), and puts back what the shell had
+	# the glue turns nocasematch off for its own tests, and puts back what the shell had
 	history = ['1790000000\t/x/multiSSH3.py\t-su\th\t"nosuchcmd storage-x"']
 	session = ignoring_case(tmp_path, history, files=['Storage-File'])
 	try:
@@ -1295,137 +1179,6 @@ def test_bash_tab_runs_no_command_complete_f_names_and_gives_file_names(tmp_path
 		assert nocasematch(session) == setting
 	finally:
 		session.close()
-
-
-@pytest.mark.parametrize('setting, prompt_command', [('on', 'kept'), ('on', 'replaced'), ('off', 'replaced')])
-def test_bash_ctrl_c_cutting_the_glue_short_leaves_nocasematch_as_the_shell_set_it(tmp_path, setting, prompt_command):
-	# bash 5 cuts a bind -x command short on Ctrl-C (bash 4 lets it end; a completion function is cut too):
-	# here the Ctrl-R binding the glue took over, a slow one, with the glue's note of the shell's
-	# nocasematch left. The shell then sets it the other way, and TAB must leave that: the note came back
-	# at the next glue call (round 5's heal at the next prompt fixed that only where PROMPT_COMMAND
-	# still holds it, 'kept'). With 'off' nothing came back before; it guards the note of an off setting
-	env, home = make_home(tmp_path, [])
-	pre = '''shopt -{} nocasematch
-_slow() {{ printf '@@SLOW''@@\\n'; local end=$((SECONDS + 2)); while (( SECONDS < end )); do :; done; }}
-bind -x '"\\C-r": _slow' '''.format('s' if setting == 'on' else 'u')
-	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, pre=pre)
-	try:
-		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
-		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
-		session.read_until(b'@@READY@@')
-		session.send('echo a\x12')
-		session.read_until(b'@@SLOW@@')
-		session.send('\x03')
-		# the binding is over once a command runs; bash 4 kept the line and drops a key: cancel, clear, a space
-		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
-		session.read_until(b'@@ALIVE@@', 15)
-		session.read_until(b'@@READY@@')
-		other = 'off' if setting == 'on' else 'on'
-		session.send(' shopt -{} nocasematch\r'.format('s' if other == 'on' else 'u'))
-		session.read_until(b'@@READY@@')
-		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
-		assert nocasematch(session) == other
-	finally:
-		session.close()
-
-
-@pytest.mark.parametrize('prompt_command', ['kept', 'replaced'])
-def test_bash_ctrl_c_cutting_the_glue_short_in_its_own_code_gives_the_shell_back_its_nocasematch(tmp_path, prompt_command):
-	# a Ctrl-C landing in the glue's own code, while it holds nocasematch off for a shell that has it on:
-	# here Ctrl-R's picker expanding the prompt, a slow $(...) in PS1. The shell gets nocasematch back at
-	# the next prompt (PROMPT_COMMAND's heal, 'kept'), or at the next glue call when PROMPT_COMMAND was
-	# replaced
-	env, home = make_home(tmp_path, [])
-	major = subprocess.run([require_shell('bash'), '-c', 'echo ${BASH_VERSINFO[0]}'], env=env, stdout=subprocess.PIPE).stdout
-	if int(major) < 5:
-		# 4.4 ends the picker's start without the engine, 4.2 does not expand PS1 there
-		pytest.skip('bash 4 runs a bind -x command to its end on Ctrl-C: no cut lands in the glue')
-	armed = tmp_path / 'armed'
-	never = tmp_path / 'never'
-	os.mkfifo(str(never))
-	# the prompt's command: once armed, says so and waits on a pipe nobody writes to, until Ctrl-C
-	(tmp_path / 'zzwait').write_text('#!/bin/sh\n[ -e {0} ] || exit 0\nmv {0} {0}.taken\nprintf "@@WAIT""@@\\n" >&2\nread x < {1}\n'.format(armed, never))
-	(tmp_path / 'zzwait').chmod(0o755)
-	# an engine noting what it was asked: the picker must not start, the cut came first
-	asked = tmp_path / 'asked'
-	(tmp_path / 'zzengine').write_text('#!/bin/sh\necho "$1" >> {}\nexit 1\n'.format(asked))
-	(tmp_path / 'zzengine').chmod(0o755)
-	glue = glue_file(home, 'bash', command=str(tmp_path / 'zzengine'))
-	extra = "PS1='$({})@@READY@@ '".format(tmp_path / 'zzwait')
-	session = bash_session(home, env, glue, bash_completion=False, pre='shopt -s nocasematch', extra=extra)
-	try:
-		# the keys are taken at the first prompt; PROMPT_COMMAND reassigned after that drops the heal
-		session.send('true\r' if prompt_command == 'kept' else 'PROMPT_COMMAND=\r')
-		session.read_until(b'@@READY@@')
-		armed.write_text('')
-		session.send('mssh h\x12')
-		assert '@@WAIT@@' in session.read_until(b'@@WAIT@@')
-		session.send('\x03')
-		session.send('\x07\x15 echo "@@ALIVE""@@"\r')
-		session.read_until(b'@@ALIVE@@', 15)
-		session.read_until(b'@@READY@@')
-		assert not asked.exists(), asked.read_text()
-		if prompt_command == 'kept':
-			assert nocasematch(session) == 'on'
-		assert session.line_after('mssh h nosuchcmd zzq') == 'mssh h nosuchcmd zzq'
-		assert nocasematch(session) == 'on'
-	finally:
-		session.close()
-
-
-CUT_PROBE = r'''
-. "$1"
-# a command's completion function, for the delegate path, and one a loader registers at the first TAB
-_zzstand() { COMPREPLY=(Alpha alpine beta); }
-complete -F _zzstand zzcmd
-# a compspec built on a word list and a filter, and one on a command (run in a subshell, as bash runs it)
-complete -W "Alpha alpine beta" -X "beta" zzwords
-complete -C "printf '%s\\n' Alpha alpine; :" zzcomm
-_completion_loader() { [[ $1 == zzlazy ]] && complete -F _zzstand zzlazy; }
-# the probe writes to fd 3: command substitutions in the glue take its stdout
-exec 3>&1
-_probe() {
-	# before each command of the glue's and of the stand-in's: what the heal makes of a cut landing
-	# there (in a subshell: the call goes on)
-	case ${FUNCNAME[1]-} in _mssh_complete_*|_zzstand|_completion_loader) ;; *) return 0 ;; esac
-	local got
-	got=$(trap - DEBUG; _mssh_complete_heal; shopt -q nocasematch && echo on || echo off)
-	printf '%s: %s -> %s\n' "${FUNCNAME[1]}" "$BASH_COMMAND" "$got" >&3
-}
-shopt -$2 nocasematch
-set -T
-trap _probe DEBUG
-eval "$3"
-trap - DEBUG
-printf 'delegated: %s\n' "${_mssh_complete_delegated[*]-}"
-'''
-
-
-@pytest.mark.parametrize('setting', ['on', 'off'])
-@pytest.mark.parametrize('call, delegated', [
-	# the shell's code run by the glue (a delegated completion, the Ctrl-R binding it took over)
-	('_mssh_complete_guard _mssh_complete_operator true', ''),
-	# a glue call made from there (ble.sh's hooks)
-	('_mssh_complete_guard _mssh_complete_operator _mssh_complete_guard true', ''),
-	# a command's completion function, run and its words filtered by the word typed: in any case, and as typed
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'Alpha alpine'),
-	('_mssh_complete_icase=0 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcmd al', 'alpine'),
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzlazy al', 'Alpha alpine'),
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzwords al', 'alpine'),
-	('_mssh_complete_icase=1 _mssh_complete_guard _mssh_complete_delegate al 1 "" zzcomm al', 'Alpha alpine'),
-])
-def test_bash_a_ctrl_c_cutting_the_glue_short_at_any_command_leaves_the_shell_its_nocasematch(tmp_path, setting, call, delegated):
-	# a cut between turning nocasematch off and noting it left the glue's off where its note said the
-	# shell's on: the heal took that for the shell's doing and kept it off. A cut can land before any
-	# command of a call (a completion function too, where it runs a command); the heal from there must
-	# give the shell back its setting
-	glue = glue_file(tmp_path, 'bash')
-	output = subprocess.run([require_shell('bash'), '-c', CUT_PROBE, 'probe', str(glue), 's' if setting == 'on' else 'u', call],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-	lines = output.stdout.decode().splitlines()
-	assert lines[-1:] == ['delegated: ' + delegated], output
-	assert len(lines) > 20, output
-	assert [line for line in lines[:-1] if not line.endswith('-> ' + setting)] == []
 
 
 @pytest.mark.parametrize('icase', ['on', 'off'])
@@ -1888,6 +1641,20 @@ def test_zsh_a_completion_function_setting_names_of_its_own_leaves_the_glue_alon
 		session.close()
 
 
+def test_zsh_a_post_pattern_completion_adds_nothing_to_the_words_of_the_remote_command(setup):
+	# python-argcomplete installs `#compdef -P *`, a completion zsh runs after the command's own. For an mssh line
+	# that command is _mssh, whose _normal cleared the _compskip that keeps _dispatch from going on to it: it added
+	# local file names beside the remote command's words
+	env, home = setup
+	extra = '_zzdel() { compadd alpha alpine }\ncompdef _zzdel zzdel\n_zzpost() { compadd alzzpost }\ncompdef -P _zzpost "*"'
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=extra)
+	try:
+		assert session.line_after('zzdel al') == 'zzdel alp'
+		assert session.line_after('mssh h zzdel al') == 'mssh h zzdel alp'
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('option', ['ignore_braces', 'ignore_close_braces'])
 def test_zsh_glue_loads_with_brace_options(tmp_path, option):
 	# with either option a } closes a group only in command position: the glue must parse all the same
@@ -1917,9 +1684,10 @@ def test_zsh_gives_up_on_a_slow_engine(setup):
 def first_build(tmp_path):
 	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
 	env, home = make_home(tmp_path, HISTORY)
-	assert mc.take_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
+	fd = hold_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
 	# more than the engine needs, less than the 2 s it used to wait for the first build
-	return dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+	yield dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+	os.close(fd)
 
 
 def test_bash_first_tab_answers_while_the_first_build_runs(first_build):

@@ -278,5 +278,8 @@ def test_tui_and_debug_lines_never_show_a_password(monkeypatch, name):
 def test_a_configured_password_is_hidden_after_any_dash_p(monkeypatch):
 	# passwords the run did not pass in, but the config holds: ssh's own -p (a port) stays
 	monkeypatch.setattr(multiSSH3, "DEFAULT_PASSWORD", SSH_SECRET)
-	line = multiSSH3._shown_command(["/bin/sshpass", "-p", SSH_SECRET, "/bin/ssh", "-p", "2222", "--", "node1", "uptime"])
-	assert line == "/bin/sshpass -p *** /bin/ssh -p 2222 -- node1 uptime"
+	monkeypatch.setattr(multiSSH3, "DEFAULT_IPMI_DEFINITIONS", [ipmi(password=BMC_SECRET)])
+	line = multiSSH3._shown_command(["/bin/ssh", "-p", "2222", "--", "node1", "redfishtool -u admin -p " + shlex.quote(SSH_SECRET)])
+	assert line == "/bin/ssh -p 2222 -- node1 redfishtool -u admin -p ***"
+	line = multiSSH3._shown_command(["/bin/redfishtool", "-r", "node1", "-p", BMC_SECRET, "Systems"])
+	assert line == "/bin/redfishtool -r node1 -p *** Systems"

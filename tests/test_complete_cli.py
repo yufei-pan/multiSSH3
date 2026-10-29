@@ -1,4 +1,5 @@
 '''The command lines of mssh-complete and mssh --completion: what they print, and how they end.'''
+import io
 import os
 import shutil
 import subprocess
@@ -8,13 +9,18 @@ import pytest
 
 import multiSSH3
 import mssh_complete as mc
-from complete_shell_harness import ENGINE, REPO, build_index, make_home, require_shell
+from complete_shell_harness import ENGINE, REPO, make_home, require_shell
 
 # -I as the engine is run, but mssh's entry point heeds PYTHONDONTWRITEBYTECODE, which -I drops: the glue it
 # prints carries -B then (module_command)
 MSSH = [sys.executable, '-I'] + (['-B'] if sys.dont_write_bytecode else []) + [str(REPO / 'multiSSH3.py')]
 # what a shell reports for a command SIGPIPE ended (128 + 13), as for seq or cat piped into head
 SIGPIPE_STATUS = 141
+
+
+def _sigpipe_statuses(argv):
+	# mssh lets SIGPIPE end it, so a Python parent sees -13; the engine exits 141 itself
+	return (SIGPIPE_STATUS, -13) if argv[:len(MSSH)] == MSSH else (SIGPIPE_STATUS,)
 
 
 def _closed_pipe():
@@ -37,7 +43,6 @@ def _run_into_closed_pipe(tmp_path, argv, stderr_too=False):
 PRINTING = [
 	pytest.param(ENGINE + ['glue', 'bash'], id='glue-bash'),
 	pytest.param(ENGINE + ['glue', 'zsh'], id='glue-zsh'),
-	# the fish glue fits in stdout's buffer: it fails in the flush at exit, not in the write
 	pytest.param(ENGINE + ['glue', 'fish'], id='glue-fish'),
 	pytest.param(MSSH + ['--completion', 'bash'], id='mssh-bash'),
 	pytest.param(MSSH + ['--completion', 'zsh'], id='mssh-zsh'),
@@ -46,9 +51,7 @@ PRINTING = [
 	pytest.param(MSSH + ['--completion', 'install', 'zsh'], id='mssh-install'),
 	pytest.param(ENGINE + ['uninstall', 'bash'], id='uninstall'),
 	pytest.param(ENGINE + ['-V'], id='version'),
-	pytest.param(ENGINE + ['eval', '--help'], id='eval-help'),
 	pytest.param(ENGINE + ['edit', '--help'], id='edit-help'),
-	pytest.param(ENGINE + ['eval', '--synthetic', '--limit', '5'], id='eval-report'),
 	pytest.param(ENGINE + ['rebuild'], id='rebuild'),
 ]
 
@@ -59,17 +62,67 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 	result = _run_into_closed_pipe(tmp_path, argv)
 
 	assert result.stderr.decode('utf-8', 'replace') == ''
-	assert result.returncode == SIGPIPE_STATUS
+	assert result.returncode in _sigpipe_statuses(argv)
 
 
 @pytest.mark.parametrize('argv', [
 	pytest.param(ENGINE + ['glue', 'bash'], id='glue-bash'),
 	pytest.param(ENGINE + ['-V'], id='version'),
 	pytest.param(MSSH + ['--completion', 'fish'], id='mssh-fish'),
+	pytest.param(ENGINE + ['bogus'], id='usage-error'),
+	# argparse's own usage error: newer Pythons' argparse (3.12, late 3.11) drops its failed write, which
+	# leaves it buffered as on 3.6
+	pytest.param(ENGINE + ['edit'], id='argparse-usage-error'),
 ])
 def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	# ... 2>&1 | head: the flush at exit must not fail on stderr either (Python would exit 120)
-	assert _run_into_closed_pipe(tmp_path, argv, stderr_too=True).returncode == SIGPIPE_STATUS
+	assert _run_into_closed_pipe(tmp_path, argv, stderr_too=True).returncode in _sigpipe_statuses(argv)
+
+
+@pytest.mark.parametrize('target, line_buffering, outcome', [
+	# Python 3.6's stderr is buffered: the usage error waits there, the program's to flush
+	pytest.param('closed-pipe', False, 2, id='buffered-unread'),
+	pytest.param('/dev/full', False, 2, id='buffered-full'),
+	# 3.9+ writes it at once, and the write fails in main
+	pytest.param('closed-pipe', True, SIGPIPE_STATUS, id='unread'),
+	pytest.param('/dev/full', True, OSError, id='full'),
+])
+def test_a_program_calling_main_keeps_its_stdout_when_its_stderr_fails(monkeypatch, target, line_buffering, outcome):
+	# a usage error into a program's own stderr that nobody reads or a full disk holds: stdout is not swapped
+	# for devnull, so the program can still write to it
+	if target == '/dev/full' and not os.path.exists(target):
+		pytest.skip('no /dev/full here')
+	read_fd, write_fd = os.pipe()
+	stdout = io.TextIOWrapper(io.FileIO(write_fd, 'w'), encoding='utf-8')
+	stderr_fd = _closed_pipe() if target == 'closed-pipe' else os.open(target, os.O_WRONLY)
+	stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(stderr_fd, 'w')), encoding='utf-8', line_buffering=line_buffering)
+	monkeypatch.setattr(sys, 'stdout', stdout)
+	monkeypatch.setattr(sys, 'stderr', stderr)
+	try:
+		if outcome is OSError:
+			with pytest.raises(OSError):
+				mc.main(['bogus'])
+		else:
+			assert mc.main(['bogus']) == outcome
+		print('still here', flush=True)
+	finally:
+		monkeypatch.undo()
+		stdout.close()
+		try:
+			stderr.close()
+		except OSError:
+			pass
+	with os.fdopen(read_fd, 'rb') as reader:
+		assert reader.read() == b'still here\n'
+
+
+def test_a_program_that_closed_its_stderr_can_call_main(capsys, monkeypatch):
+	stderr = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+	stderr.close()
+	monkeypatch.setattr(sys, 'stderr', stderr)
+
+	assert mc.main(['-V']) == 0
+	assert mc.version in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('argv', [
@@ -78,16 +131,18 @@ def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	pytest.param(ENGINE + ['-V'], id='version'),
 ])
 def test_a_glue_that_could_not_be_written_fails(tmp_path, argv):
-	# mssh --completion fish > file on a full disk: the glue fits stdout's buffer, and its failed
-	# write in the flush at exit was lost (Python 3.6 and 3.13 exited 0, the file empty)
+	# mssh --completion fish > file on a full disk: one report and status 1. Left to the flush at exit, -V's
+	# failure came as "Exception ignored" (120), and a glue still held as text was lost (exit 0, the file empty)
 	if not os.path.exists('/dev/full'):
 		pytest.skip('no /dev/full here')
 	env, _ = make_home(tmp_path)
 	with open('/dev/full', 'w') as full:
 		result = subprocess.run(argv, env=env, cwd=str(tmp_path), stdout=full, stderr=subprocess.PIPE, timeout=60)
 
-	assert result.returncode not in (0, SIGPIPE_STATUS)
-	assert 'No space left on device' in result.stderr.decode('utf-8', 'replace')
+	stderr = result.stderr.decode('utf-8', 'replace')
+	assert result.returncode == 1
+	assert 'No space left on device' in stderr
+	assert 'Exception ignored' not in stderr
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh', 'fish'])
@@ -111,78 +166,6 @@ def test_bash_evaluates_the_printed_glue(tmp_path):
 
 	assert result.returncode == 0, result.stderr
 	assert b'-F _mssh_complete mssh' in result.stdout
-
-
-def _fake_fish(tmp_path, monkeypatch, version_line, stream='stdout'):
-	'''
-	A fish first on PATH: --version prints version_line on stream (old releases wrote it to stderr).
-	With -c, it first loads "the operator's config", which greets and leaves a marker, as a config.fish
-	may. Returns the marker's path.
-	'''
-	bin_dir = tmp_path / 'bin'
-	bin_dir.mkdir()
-	marker = tmp_path / 'config-ran'
-	version = version_line.rsplit(' ', 1)[-1]
-	fish = bin_dir / 'fish'
-	fish.write_text('#!/bin/sh\n'
-		'if [ "$1" = --version ]; then printf "%s\\n" "{line}" {redirect}; exit 0; fi\n'
-		'echo "Welcome to fish, the friendly interactive shell"; : > "{marker}"\n'
-		'[ "$1" = -c ] && echo "{version}"\n'.format(line=version_line, redirect='>&2' if stream == 'stderr' else '',
-			marker=marker, version=version))
-	fish.chmod(0o755)
-	monkeypatch.setenv('PATH', str(bin_dir) + os.pathsep + os.environ.get('PATH', ''))
-	return marker
-
-
-def test_the_fish_version_is_read_without_the_operators_fish_config(tmp_path, monkeypatch):
-	# fish -c loads config.fish and conf.d, which may print (here: a greeting before the version), be slow
-	# or do things; fish --version reads no configuration
-	marker = _fake_fish(tmp_path, monkeypatch, 'fish, version 3.3.1')
-
-	assert mc._fish_major() == 3
-	assert not marker.exists()
-
-
-@pytest.mark.parametrize('line, stream, major', [
-	('fish, version 3.3.1', 'stdout', 3),
-	('fish, version 4.0.2', 'stdout', 4),
-	('fish, version 3.6.0-1234-gabcdef0', 'stdout', 3),
-	# fish translates the line
-	('fish, Version 3.7.1', 'stdout', 3),
-	# old releases wrote it to stderr
-	('fish, version 2.7.1', 'stderr', 2),
-	('fish: unknown option --version', 'stderr', None),
-])
-def test_the_fish_major_version_is_read_from_what_fish_prints(tmp_path, monkeypatch, line, stream, major):
-	_fake_fish(tmp_path, monkeypatch, line, stream)
-
-	assert mc._fish_major() == major
-
-
-def test_install_refuses_fish_2(tmp_path, monkeypatch):
-	_fake_fish(tmp_path, monkeypatch, 'fish, version 2.7.1', 'stderr')
-	env, home = make_home(tmp_path)
-
-	code, messages = mc.install('fish', home=str(home), environ=env)
-
-	assert (code, messages) == (1, ['fish 2 is too old for mssh autocomplete: it needs fish 3.0 or later'])
-	assert not (home / '.config').exists()
-
-
-def test_a_real_fish_version_is_read_without_its_config(tmp_path, monkeypatch):
-	fish = require_shell('fish')
-	env, home = make_home(tmp_path)
-	reference = subprocess.run([fish, '-c', 'echo $FISH_VERSION'], env=env, stdin=subprocess.DEVNULL,
-		stdout=subprocess.PIPE, timeout=30).stdout.decode()
-	config = home / '.config' / 'fish'
-	(config / 'conf.d').mkdir(parents=True)
-	(config / 'config.fish').write_text('echo config says hi\ntouch {}\n'.format(home / 'config-ran'))
-	(config / 'conf.d' / 'greet.fish').write_text('touch {}\n'.format(home / 'conf.d-ran'))
-	monkeypatch.setenv('HOME', str(home))
-	monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
-
-	assert mc._fish_major() == int(reference.split('.')[0])
-	assert not (home / 'config-ran').exists() and not (home / 'conf.d-ran').exists()
 
 
 @pytest.mark.parametrize('action', ['install', 'uninstall'])
@@ -256,37 +239,13 @@ def test_a_host_name_the_locale_cannot_encode_is_no_variable(tmp_path):
 	assert result.stdout.decode().splitlines() == ["(['h\\xe9llo'], ['h\\xe9llo'])", "[('unknown', 'h\\xe9llo: unknown host')]"]
 
 
-_EVAL_SCRIPT = '''
-import sys
-sys.path.insert(0, {repo!r})
-import multiSSH3, mssh_complete as mc
-# no DNS: every name is one the prober would reject; nothing starts in the background
-multiSSH3.host_validity = lambda name, timeout=2.0: 'invalid'
-mc.spawn_probe = mc.spawn_rebuild = lambda directory: False
-sys.exit(mc.main(['eval', '--diagnostics', {history!r}]))
-'''
-
-
-@pytest.mark.parametrize('host, printed, c_locale', [
-	# a name the C locale cannot print (Python 3.6): a backslash escape
-	(b'h\xc3\xa9llo', b'h\\xe9llo', True),
-	# bytes that are not UTF-8, which stdout's strict UTF-8 (en_US.UTF-8) could not print: the bytes themselves
-	(b'h\xffllo', b'h\xffllo', False),
-])
-def test_the_diagnostics_report_names_a_host_stdout_cannot_print(tmp_path, host, printed, c_locale):
-	env, home = make_home(tmp_path)
-	(home / '.mssh_history').write_bytes(b'1790000000\t/x/multiSSH3.py\t-su\t' + host + b'\t"uptime"\n')
-	# built now: the report would wait for it
-	build_index(env)
-	script = tmp_path / 'eval.py'
-	script.write_text(_EVAL_SCRIPT.format(repo=str(REPO), history=str(home / '.mssh_history')))
-
-	result = subprocess.run((C_LOCALE_PYTHON if c_locale else [sys.executable, '-I']) + [str(script)],
-		env=_c_locale_env(env) if c_locale else dict(env, LC_ALL='en_US.UTF-8'), stdout=subprocess.PIPE,
+def test_eval_names_the_script_it_moved_to(tmp_path):
+	env, _ = make_home(tmp_path)
+	result = subprocess.run(ENGINE + ['eval', '--synthetic'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
 		stderr=subprocess.PIPE, timeout=60)
 
-	assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
-	assert b'    ' + printed + b'  1 line' in result.stdout
+	assert (result.returncode, result.stdout) == (2, b'')
+	assert result.stderr.decode().splitlines() == ['mssh-complete eval moved to the source tree: python3 tests/replay.py']
 
 
 def test_the_glue_runs_mssh_complete_when_it_is_on_path(tmp_path, monkeypatch):

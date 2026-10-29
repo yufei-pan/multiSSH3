@@ -395,9 +395,6 @@ class StubWindow:
 	def nodelay(self, value):
 		self.calls.append(("nodelay", (value,), {}))
 
-	def timeout(self, delay):
-		self.calls.append(("timeout", (delay,), {}))
-
 	def idlok(self, value):
 		self.calls.append(("idlok", (value,), {}))
 
@@ -530,17 +527,6 @@ def stub_curses_harness(monkeypatch):
 	monkeypatch.setattr(multiSSH3, "__curses_global_color_pairs", {})
 	monkeypatch.setattr(multiSSH3, "__curses_current_color_pair_index", 1)
 	return harness
-
-
-@pytest.fixture(autouse=True)
-def no_ssh_config_files():
-	"""ssh's config files on the machine running the tests do not change the ssh options mssh adds."""
-	with pytest.MonkeyPatch.context() as patch:
-		patch.setattr(multiSSH3, "_ssh_config_dirs", lambda: ("/dev/null/no-user-ssh", "/dev/null/no-etc-ssh"), raising=False)
-		clear = getattr(getattr(multiSSH3, "_ssh_config_keywords", None), "cache_clear", lambda: None)
-		clear()
-		yield
-		clear()
 
 
 @pytest.hookimpl(hookwrapper=True)

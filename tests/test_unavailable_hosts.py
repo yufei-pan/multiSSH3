@@ -321,7 +321,7 @@ def test_own_cache_dir_readable_by_others_is_tightened(cache_dirs, monkeypatch):
 
 
 @posix_only
-def test_run_without_updating_the_cache_creates_no_cache_directory(cache_dirs, monkeypatch):
+def test_run_without_updating_the_cache_sets_up_the_directory_but_writes_no_file(cache_dirs, monkeypatch):
 	runtime_dir, temp_dir = cache_dirs
 	monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
 	monkeypatch.setattr(multiSSH3, "getIP", lambda hostname, local=False: hostname)
@@ -329,7 +329,9 @@ def test_run_without_updating_the_cache_creates_no_cache_directory(cache_dirs, m
 	multiSSH3.run_command_on_hosts(hosts="127.0.0.1", commands=["true"], no_start=True, no_watch=True, quiet=True,
 		no_history=True, called=True, will_update_unreachable_hosts=False)
 
-	assert list(runtime_dir.iterdir()) == []
+	# reading the cache sets its directory up as writing does: private, and empty
+	assert [path.name for path in runtime_dir.iterdir()] == ["multiSSH3"]
+	assert list((runtime_dir / "multiSSH3").iterdir()) == []
 	assert list(temp_dir.iterdir()) == []
 
 

@@ -1,30 +1,36 @@
+import io
+import os
+import subprocess
+import sys
+
 import pytest
 
 import multiSSH3
 import mssh_complete as mc
+import replay
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 
 
 def test_synthetic_history_is_deterministic():
-	assert mc.synthetic_history(seed=3, entries=50) == mc.synthetic_history(seed=3, entries=50)
-	assert all(mc.parse_history_line(line, SPEC) is not None for line in mc.synthetic_history(entries=200))
+	assert replay.synthetic_history(seed=3, entries=50) == replay.synthetic_history(seed=3, entries=50)
+	assert all(mc.parse_history_line(line, SPEC) is not None for line in replay.synthetic_history(entries=200))
 
 
 def test_tab_never_alters_typed_text():
-	totals = mc.evaluate(mc.synthetic_history(entries=600), SPEC, limit=150)
+	totals = replay.evaluate(replay.synthetic_history(entries=600), SPEC, limit=150)
 	assert totals
 	assert sum(total['altered'] for total in totals.values()) == 0
 
 
 def test_bash_tab_never_inserts_the_wrong_thing_on_synthetic_history():
-	totals = mc.evaluate(mc.synthetic_history(entries=600), SPEC, limit=150, policies=('bash',))
+	totals = replay.evaluate(replay.synthetic_history(entries=600), SPEC, limit=150, policies=('bash',))
 	assert all(total['divergent'] == 0 for total in totals.values())
 
 
 def test_completion_saves_typing_on_synthetic_history():
-	# a floor that catches ranking regressions; the real numbers are tuned with `mssh-complete eval`
-	totals = mc.evaluate(mc.synthetic_history(entries=600), SPEC, limit=150, policies=('bash',))
+	# a floor that catches ranking regressions; the real numbers are tuned with tests/replay.py
+	totals = replay.evaluate(replay.synthetic_history(entries=600), SPEC, limit=150, policies=('bash',))
 	for slot in ('command', 'hosts', 'hosts-back'):
 		total = totals[('bash', slot)]
 		assert 1 - float(total['keys']) / total['chars'] > 0.5, slot
@@ -33,7 +39,7 @@ def test_completion_saves_typing_on_synthetic_history():
 
 def test_simulate_slot_counts_keys():
 	engine = mc.Engine(SPEC, [])
-	result = mc.simulate_slot(engine, 'mssh ', '', 'abc')
+	result = replay.simulate_slot(engine, 'mssh ', '', 'abc')
 	assert (result['keys'], result['chars'], result['rank']) == (3, 3, 0)
 
 
@@ -43,10 +49,10 @@ def test_an_alias_of_the_option_typed_is_no_miss():
 	lines = ['{}\t/x/multiSSH3.py\t--skip_unreachable\tzz-a.invalid\t"uptime"'.format(1700000000 + number) for number in range(5)]
 	lines.append('1700000100\t/x/multiSSH3.py\t-su\tzz-a.invalid\t"uptime"')
 	for policy in ('bash', 'ranked'):
-		total = mc.evaluate(lines, SPEC, limit=1, policies=(policy,))[(policy, 'option')]
+		total = replay.evaluate(lines, SPEC, limit=1, policies=(policy,))[(policy, 'option')]
 		assert (total['cases'], total['top1'], total['mrr'], total['divergent']) == (1, 1, 1.0, 0), policy
 	# one TAB gives --skip_unreachable where typing -su takes two keys
-	ranked = mc.evaluate(lines, SPEC, limit=1, policies=('ranked',))[('ranked', 'option')]
+	ranked = replay.evaluate(lines, SPEC, limit=1, policies=('ranked',))[('ranked', 'option')]
 	assert (ranked['keys'], ranked['chars']) == (1, 2)
 
 
@@ -54,7 +60,7 @@ def test_an_option_of_another_action_with_the_same_dest_is_a_miss():
 	# -nsu sets the dest -su sets, to the opposite: offering it is no hit
 	lines = ['{}\t/x/multiSSH3.py\t-nsu\tzz-a.invalid\t"uptime"'.format(1700000000 + number) for number in range(5)]
 	lines.append('1700000100\t/x/multiSSH3.py\t-su\tzz-a.invalid\t"uptime"')
-	total = mc.evaluate(lines, SPEC, limit=1, policies=('ranked',))[('ranked', 'option')]
+	total = replay.evaluate(lines, SPEC, limit=1, policies=('ranked',))[('ranked', 'option')]
 	assert total['top1'] == 0 and total['divergent'] == 1
 
 
@@ -62,27 +68,27 @@ def test_a_value_attached_to_its_option_is_replayed_apart_from_it():
 	# -uroot is -u root to argparse: the option slot is -u, its value root
 	entry = mc.parse_history_line('1700000000\t/x/multiSSH3.py\t-uroot -t30 --max_connections=8\tzz-a.invalid\t"uptime"', SPEC)
 	assert entry.option_texts == ['-u', '-t', '--max_connections']
-	cases = mc.slot_cases(entry)
+	cases = replay.slot_cases(entry)
 	assert ('option', 'mssh -t=30 --max_connections=8 -', ' zz-a.invalid "uptime"', 'u', False, '') in cases
 	assert ('value', 'mssh -t=30 --max_connections=8 -u ', ' zz-a.invalid "uptime"', 'root', False, ' zz-a.invalid "uptime"') in cases
 	assert cases[0][1] == 'mssh -u=root -t=30 --max_connections=8 '
 
 
 def test_since_skips_older_entries():
-	lines = mc.synthetic_history(entries=100)
+	lines = replay.synthetic_history(entries=100)
 	cutoff = mc.parse_history_line(lines[90], SPEC).ts
-	totals = mc.evaluate(lines, SPEC, since=cutoff, policies=('bash',))
+	totals = replay.evaluate(lines, SPEC, since=cutoff, policies=('bash',))
 	assert totals[('bash', 'hosts')]['cases'] == 10
 
 
 def test_report_lists_every_slot():
-	report = mc.format_report(mc.evaluate(mc.synthetic_history(entries=200), SPEC, limit=20))
+	report = replay.format_report(replay.evaluate(replay.synthetic_history(entries=200), SPEC, limit=20))
 	assert report.splitlines()[0].split()[:3] == ['policy', 'slot', 'cases']
 	assert 'hosts-back' in report and 'ranked' in report
 
 
 def test_ghost_suggestions_are_rarely_wrong_and_save_more_than_tab():
-	totals = mc.evaluate(mc.synthetic_history(entries=600), SPEC, limit=150, policies=('bash', 'ghost'))
+	totals = replay.evaluate(replay.synthetic_history(entries=600), SPEC, limit=150, policies=('bash', 'ghost'))
 	ghost = {slot: total for (policy, slot), total in totals.items() if policy == 'ghost'}
 	shown = sum(total['shown'] for total in ghost.values())
 	assert shown and float(sum(total['divergent'] for total in ghost.values())) / shown <= 0.10
@@ -95,7 +101,7 @@ def test_ghost_suggestions_are_rarely_wrong_and_save_more_than_tab():
 
 
 def test_report_has_a_ghost_table():
-	report = mc.format_report(mc.evaluate(mc.synthetic_history(entries=300), SPEC, limit=50))
+	report = replay.format_report(replay.evaluate(replay.synthetic_history(entries=300), SPEC, limit=50))
 	assert 'shown' in report and '\nghost ' in report
 
 
@@ -115,7 +121,7 @@ def validity(name):
 
 
 def test_clean_synthetic_history_gets_no_warning(tmp_path):
-	report = mc.diagnostics_replay(mc.synthetic_history(entries=300), SPEC, validity, synthetic_table(tmp_path))
+	report = replay.diagnostics_replay(replay.synthetic_history(entries=300), SPEC, validity, synthetic_table(tmp_path))
 	assert report['lines'] == 300 and report['warned'] == {kind: 0 for kind in mc.DIAGNOSTIC_KINDS}
 
 
@@ -134,8 +140,8 @@ def with_mistake(line):
 
 
 def test_mistakes_in_synthetic_history_are_caught(tmp_path):
-	lines = [with_mistake(line) for line in mc.synthetic_history(entries=300)]
-	report = mc.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path))
+	lines = [with_mistake(line) for line in replay.synthetic_history(entries=300)]
+	report = replay.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path))
 	# every line holds one mistake, and every one is caught
 	assert report['warned']['unknown'] + report['warned']['range'] == 300
 	# a single host is meant to be the one it is a typo of
@@ -144,24 +150,47 @@ def test_mistakes_in_synthetic_history_are_caught(tmp_path):
 
 
 def test_the_diagnostics_report(tmp_path):
-	lines = [with_mistake(line) for line in mc.synthetic_history(entries=100)]
-	text = mc.format_diagnostics_report(mc.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path)))
+	lines = [with_mistake(line) for line in replay.synthetic_history(entries=100)]
+	text = replay.format_diagnostics_report(replay.diagnostics_replay(lines, SPEC, validity, synthetic_table(tmp_path)))
 	assert text.startswith('warnings over 100 history lines (DNS, no ping)\n')
 	assert '  hosts mssh would reject:\n' in text and 'did you mean' in text
 
 
 @pytest.mark.parametrize('limit', [0, -3])
-def test_eval_limit_of_zero_or_less_replays_nothing(tmp_path, monkeypatch, capsys, limit):
+def test_replay_limit_of_zero_or_less_replays_nothing(tmp_path, monkeypatch, capsys, limit):
 	# with --diagnostics every host replayed costs a DNS lookup and ssh -G: --limit 0 must not mean all
 	path = tmp_path / 'history'
-	path.write_text(''.join(line + '\n' for line in mc.synthetic_history(entries=20)))
+	path.write_text(''.join(line + '\n' for line in replay.synthetic_history(entries=20)))
 	asked = []
 	monkeypatch.setattr(multiSSH3, 'host_validity', lambda name: asked.append(name) or 'valid')
 	monkeypatch.setattr(mc, '_import_mssh', lambda: multiSSH3)
 	monkeypatch.setattr(mc, 'engine_for', lambda request: mc.Engine(SPEC, []))
-	assert mc._cmd_eval(['--diagnostics', '--limit', str(limit), str(path)]) == 0
+	assert replay.main(['--diagnostics', '--limit', str(limit), str(path)]) == 0
 	assert capsys.readouterr().out.startswith('warnings over 0 history lines') and asked == []
-	assert mc._cmd_eval(['--diagnostics', '--limit', '5', str(path)]) == 0
+	assert replay.main(['--diagnostics', '--limit', '5', str(path)]) == 0
 	assert capsys.readouterr().out.startswith('warnings over 5 history lines') and asked
 	# as the replay of typing reads it
-	assert mc.evaluate(mc.synthetic_history(entries=20), SPEC, limit=limit, policies=('bash',)) == {}
+	assert replay.evaluate(replay.synthetic_history(entries=20), SPEC, limit=limit, policies=('bash',)) == {}
+
+
+@pytest.mark.parametrize('host, printed', [(b'h\xc3\xa9llo', 'h\\xe9llo'), (b'h\xffllo', 'h\\udcffllo')])
+def test_the_diagnostics_report_names_a_host_stdout_cannot_print(tmp_path, monkeypatch, host, printed):
+	# an ASCII stdout (the C locale on Python 3.6), and a name from bytes that are not UTF-8
+	path = tmp_path / 'history'
+	path.write_bytes(b'1790000000\t/x/multiSSH3.py\t-su\t' + host + b'\t"uptime"\n')
+	monkeypatch.setattr(multiSSH3, 'host_validity', lambda name: 'invalid')
+	monkeypatch.setattr(mc, '_import_mssh', lambda: multiSSH3)
+	monkeypatch.setattr(mc, 'engine_for', lambda request: mc.Engine(SPEC, []))
+	raw = io.BytesIO()
+	monkeypatch.setattr(sys, 'stdout', io.TextIOWrapper(raw, encoding='ascii', errors='strict'))
+	assert replay.main(['--diagnostics', str(path)]) == 0
+	sys.stdout.flush()
+	assert ('    ' + printed + '  1 line').encode() in raw.getvalue()
+
+
+def test_the_script_runs_from_a_checkout(tmp_path):
+	# python3 tests/replay.py, as the docs say, with no PYTHONPATH
+	result = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'replay.py'), '--synthetic', '--limit', '5'],
+		cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
+	assert result.returncode == 0, result.stderr
+	assert result.stdout.splitlines()[0].split()[:3] == ['policy', 'slot', 'cases']

@@ -226,7 +226,7 @@ def test_failed_overwrite_keeps_the_old_config(monkeypatch, tmp_path):
 	def disk_full(*args, **kwargs):
 		raise OSError(errno.ENOSPC, "No space left on device")
 
-	monkeypatch.setattr(multiSSH3.json, "dump", disk_full)
+	monkeypatch.setattr(multiSSH3.os, "fsync", disk_full)
 	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
 	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "new"])
 	multiSSH3.write_default_config(args, str(config), force=True)
@@ -273,27 +273,106 @@ def test_backing_up_a_symlinked_config_keeps_the_link(monkeypatch, tmp_path, uma
 	assert [p.name for p in dotfiles.iterdir()] == ["multiSSH3.config.json"]
 
 
-@pytest.mark.parametrize("mode,written", [(0o666, False), (0o600, True)], ids=["too_open", "already_private"])
-def test_someone_elses_writable_config_is_written_in_place_only_when_private(monkeypatch, tmp_path, capsys, mode, written):
+def _another_group():
+	"""A group to stand in for another owner: root may use any, a user one of their own groups."""
+	if not hasattr(os, "chown"):
+		pytest.skip("no chown")
+	if os.geteuid() == 0:
+		return 65534
+	others = [group for group in os.getgroups() if group != os.getgid()]
+	if not others:
+		pytest.skip("the user is in no other group")
+	return others[0]
+
+
+def test_the_backed_up_config_is_rewritten_with_the_owner_and_group_it_had(monkeypatch, tmp_path):
+	# sudo keeping HOME: the new file made by root must stay the user's
+	old = tmp_path / "multiSSH3.config.json"
+	old.write_text('{"DEFAULT_PASSWORD": "old"}')
+	old.chmod(0o600)
+	group = _another_group()
+	os.chown(str(old), -1, group)
+
+	_store_with_backup(monkeypatch, old)
+
+	assert json.loads(old.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert old.stat().st_gid == group
+	assert Path(str(old) + ".bak").read_text() == '{"DEFAULT_PASSWORD": "old"}'
+
+
+@pytest.mark.parametrize("config_group", ["own", "other"])
+def test_the_backup_of_a_symlinked_config_belongs_to_the_writer(monkeypatch, tmp_path, config_group):
+	# as in 6.38: neither an old backup's owner nor the config's group (one we may not be in) can make the store fail
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text('{"DEFAULT_PASSWORD": "old"}')
+	real.chmod(0o600)
+	if config_group == "other":
+		os.chown(str(real), -1, _another_group())
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	backup = Path(str(link) + ".bak")
+	backup.write_text("{}")
+	os.chown(str(backup), -1, _another_group())
+
+	_store_with_backup(monkeypatch, link)
+
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert backup.stat().st_gid == os.getgid()
+
+
+def test_a_stale_backup_of_another_owner_does_not_stop_the_store(monkeypatch, tmp_path):
+	# a backup left root's by an earlier sudo run, beside a symlinked config in a group we are not in
+	dotfiles = tmp_path / "dotfiles"
+	dotfiles.mkdir()
+	real = dotfiles / "multiSSH3.config.json"
+	real.write_text('{"DEFAULT_PASSWORD": "old"}')
+	real.chmod(0o600)
+	link = tmp_path / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	backup = Path(str(link) + ".bak")
+	backup.write_text("{}")
+	real_lstat = os.lstat
+
+	def not_in_its_group(path, uid, gid, **kwargs):
+		raise PermissionError(1, "Operation not permitted")
+
+	def root_s(path, *args, **kwargs):
+		st = real_lstat(path, *args, **kwargs)
+		if str(path) == str(backup):
+			return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, 0, st.st_gid, st.st_size,
+				int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
+		return st
+
+	monkeypatch.setattr(os, "chown", not_in_its_group)
+	monkeypatch.setattr(os, "lstat", root_s)
+	_store_with_backup(monkeypatch, link)
+
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+	assert '"DEFAULT_PASSWORD": "secret"' in real.read_text()
+
+
+@pytest.mark.parametrize("mode", [0o666, 0o600], ids=["too_open", "already_private"])
+def test_someone_elses_config_is_not_written(monkeypatch, tmp_path, capsys, mode):
+	# a file we cannot keep the owner of would be taken over by the rename: not replaced, whatever its mode
 	shared = tmp_path / "team.json"
 	shared.write_text('{"DEFAULT_TIMEOUT": 5}')
 	shared.chmod(mode)
 	monkeypatch.setattr(multiSSH3.os, "getuid", lambda: 12345)  # the file belongs to someone else
 
-	def not_our_file(fd, new_mode):
+	def not_our_file(path, uid, gid):
 		raise PermissionError(1, "Operation not permitted")
 
-	monkeypatch.setattr(multiSSH3.os, "fchmod", not_our_file)
+	monkeypatch.setattr(multiSSH3.os, "chown", not_our_file)
 	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
 	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
 	multiSSH3.write_default_config(args, str(shared), force=True)
 
-	if written:
-		assert json.loads(shared.read_text())["DEFAULT_PASSWORD"] == "secret"
-	else:
-		assert shared.read_text() == '{"DEFAULT_TIMEOUT": 5}'
-		assert '"DEFAULT_PASSWORD": "secret"' in capsys.readouterr().out
+	assert shared.read_text() == '{"DEFAULT_TIMEOUT": 5}'
+	assert '"DEFAULT_PASSWORD": "secret"' in capsys.readouterr().out
 	assert stat.S_IMODE(shared.stat().st_mode) == mode
+	assert [p.name for p in tmp_path.iterdir()] == ["team.json"]  # no temporary file left
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to chown a symlink")

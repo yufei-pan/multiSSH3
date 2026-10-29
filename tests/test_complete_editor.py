@@ -1,4 +1,4 @@
-'''The plain-bash mssh line editor as a state machine, its drawing, and the bash 4.2/4.3 prompt expander.'''
+'''The plain-bash mssh line editor as a state machine and its drawing.'''
 import pytest
 
 import multiSSH3
@@ -23,6 +23,7 @@ def suggester(calls=None):
 
 def editor(text='mssh ', **kwargs):
 	kwargs.setdefault('suggest', suggester())
+	kwargs.setdefault('unicode', True)
 	return mc.LineEditor(text, **kwargs)
 
 
@@ -327,17 +328,6 @@ def test_layout_counts_the_line_the_terminal_has_not_wrapped_yet():
 	assert edit.layout('$ ', 9) == (1, 0, 9, 9)
 
 
-def test_expand_prompt_does_what_bash_does_for_common_escapes():
-	environ = {'USER': 'ops', 'HOME': '/home/ops', 'PWD': '/home/ops/src', 'BASH_VERSION': '4.2.46(2)-release'}
-	text = mc.expand_prompt('\\[\\e[1m\\]\\u:\\w \\W \\v\\033[0m\\$ $(date)', environ)
-	assert text == '\x01\x1b[1m\x02ops:~/src src 4.2\x1b[0m{} $(date)'.format('#' if mc.os.geteuid() == 0 else '$')
-
-
-def test_expand_prompt_takes_only_octal_digits():
-	# as bash: \\128 and \\9ab stay as written, \\101 is A
-	assert mc.expand_prompt('\\128 \\9ab \\101$ ', {'HOME': '/h', 'PWD': '/h'}) == '\\128 \\9ab A$ '
-
-
 @pytest.mark.parametrize('raw, keyseq', [
 	(b'\x1b[A', '\\e[A'), (b'"\\', '\\"\\\\'), (b'\r', '\\C-m'), (b'\x7f', '\\C-?'),
 	('é'.encode('utf-8'), '\\303\\251'), (b'', ''),
@@ -352,7 +342,6 @@ UNKNOWN = [mc.Diagnostic(5, 11, 'unknown', 'gpu017: unknown host')]
 @pytest.fixture
 def warning_terminal(monkeypatch):
 	monkeypatch.delenv('NO_COLOR', raising=False)
-	monkeypatch.setattr(mc, '_unicode_terminal', lambda: True)
 
 
 @pytest.mark.parametrize('no_color, style', [(False, '4;31'), (True, '4')])
