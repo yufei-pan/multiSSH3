@@ -7228,7 +7228,7 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
 			# link aside would leave the file it points to as it was, copy that file instead
 			with open(CONFIG_FILE, 'rb') as f:
-				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False, owner=False)
+				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False, owner=previous)
 		elif backup and os.path.exists(CONFIG_FILE):
 			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
 			# the backup holds the old passwords: owner only

@@ -300,23 +300,27 @@ def test_the_backed_up_config_is_rewritten_with_the_owner_and_group_it_had(monke
 	assert Path(str(old) + ".bak").read_text() == '{"DEFAULT_PASSWORD": "old"}'
 
 
-def test_the_backup_of_a_symlinked_config_belongs_to_the_writer_not_to_the_old_backup(monkeypatch, tmp_path):
-	# an old backup of another owner (root's, after a sudo run) must not make the next store fail
+@pytest.mark.parametrize("config_group", ["own", "other"])
+def test_the_backup_of_a_symlinked_config_takes_the_config_s_owner_not_the_old_backup_s(monkeypatch, tmp_path, config_group):
+	# an old backup of another owner (root's, after a sudo run) must not make the next store fail; under sudo the
+	# backup stays the user's, as the config is
 	dotfiles = tmp_path / "dotfiles"
 	dotfiles.mkdir()
 	real = dotfiles / "multiSSH3.config.json"
 	real.write_text('{"DEFAULT_PASSWORD": "old"}')
 	real.chmod(0o600)
+	group = os.getgid() if config_group == "own" else _another_group()
+	os.chown(str(real), -1, group)
 	link = tmp_path / ".multiSSH3.config.json"
 	link.symlink_to(real)
 	backup = Path(str(link) + ".bak")
 	backup.write_text("{}")
-	os.chown(str(backup), -1, _another_group())
+	os.chown(str(backup), -1, _another_group() if config_group == "own" else os.getgid())
 
 	_store_with_backup(monkeypatch, link)
 
 	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
-	assert backup.stat().st_gid == os.getgid()
+	assert backup.stat().st_gid == group
 
 
 @pytest.mark.parametrize("mode", [0o666, 0o600], ids=["too_open", "already_private"])
