@@ -154,7 +154,7 @@ Defaults are read from the following chain map stored as json files, top ones ov
 >
 > `--store_config_file` writes the file readable by you only (`0600`), as it can hold passwords. The `/etc` locations above are written `0644` so every user can read them. An existing file's permissions are only ever tightened, and a file whose permissions cannot be restricted is left untouched (the config is printed instead).
 >
-> A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link.
+> A config file that is a symlink (e.g. into a dotfiles repository) is written through the link; its backup (`.bak`, the default answer when the file exists) is a copy next to the link. Under `sudo`, root follows only its own links: the link is moved to the `.bak` and replaced by a regular file ([limitations](docs/limitations.md#under-sudo---store_config_file-replaces-a-symlinked-config-instead-of-writing-through-it)).
 >
 > The file is replaced in one step: a temporary file beside it, with the old file's owner and group, is renamed over it, so a full disk leaves the old one. With `o` (overwrite), and for a config reached through a symlink, a file of another user is written only when its owner can be kept (as root); otherwise the config is printed instead, also when you may write the file through an ACL ([limitations](docs/limitations.md#another-users-config-shared-through-an-acl-is-not-written)). With the default `b`, a config that is not a symlink is moved to the `.bak` and the new one gets its owner and group where that can be kept (as root); otherwise it is yours.
 >
