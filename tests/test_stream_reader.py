@@ -189,15 +189,17 @@ def test_reader_notes_no_lines_to_redraw(tui):
 	assert host.lineNumToPrintSet == set()
 
 
-def test_a_command_with_no_output_runs_quietly_under_an_unknown_encoding(monkeypatch):
+def test_a_command_with_no_output_runs_quietly_under_an_unknown_encoding(monkeypatch, capsys):
 	# set_global_with_args takes args.encoding as it is (a caller's mistake): the readers must not die with a traceback
 	monkeypatch.setattr(multiSSH3, "_encoding", "no-such-codec")
 	failures = []
-	monkeypatch.setattr(threading, "excepthook", lambda hook_args: failures.append(hook_args.exc_value))
+	# Python 3.8+ hands a thread's exception to threading.excepthook; 3.6 and 3.7 print it to stderr
+	monkeypatch.setattr(threading, "excepthook", lambda hook_args: failures.append(hook_args.exc_value), raising=False)
 	host = multiSSH3.Host("h", "true", shell=True)
 
 	multiSSH3.run_command(host, threading.Semaphore(1), 20)
 
 	assert failures == []
+	assert "Traceback" not in capsys.readouterr().err
 	assert host.returncode == 0
 	assert host.stdout == []
