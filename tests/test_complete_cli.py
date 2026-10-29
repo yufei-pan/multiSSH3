@@ -43,7 +43,6 @@ def _run_into_closed_pipe(tmp_path, argv, stderr_too=False):
 PRINTING = [
 	pytest.param(ENGINE + ['glue', 'bash'], id='glue-bash'),
 	pytest.param(ENGINE + ['glue', 'zsh'], id='glue-zsh'),
-	# the fish glue fits in stdout's buffer: it fails in the flush at exit, not in the write
 	pytest.param(ENGINE + ['glue', 'fish'], id='glue-fish'),
 	pytest.param(MSSH + ['--completion', 'bash'], id='mssh-bash'),
 	pytest.param(MSSH + ['--completion', 'zsh'], id='mssh-zsh'),
@@ -132,8 +131,8 @@ def test_a_program_that_closed_its_stderr_can_call_main(capsys, monkeypatch):
 	pytest.param(ENGINE + ['-V'], id='version'),
 ])
 def test_a_glue_that_could_not_be_written_fails(tmp_path, argv):
-	# mssh --completion fish > file on a full disk: the glue fits stdout's buffer, and its failed
-	# write in the flush at exit was lost (Python 3.6 and 3.13 exited 0, the file empty)
+	# mssh --completion fish > file on a full disk: one report and status 1. An output that fits stdout's
+	# buffer (-V) fails only in the flush at exit, where the failure was lost (Python 3.6 and 3.13 exited 0)
 	if not os.path.exists('/dev/full'):
 		pytest.skip('no /dev/full here')
 	env, _ = make_home(tmp_path)

@@ -7415,7 +7415,7 @@ def _discard_stdout():
 	'''
 	After a write failed, point at devnull stdout when it still holds what it cannot write, and stderr when
 	it is the same file (2>&1): what is left in the buffer goes nowhere, and the flush at exit does not fail
-	again. A stdout that can still be written is left as it is, for a program that called main().
+	again. A stdout with nothing left to write is left as it is, for a program that called main().
 	'''
 	try:
 		fds = [sys.stderr.fileno()] if _stderr_shares_stdout() else []
