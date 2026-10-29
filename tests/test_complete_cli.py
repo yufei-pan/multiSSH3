@@ -131,8 +131,8 @@ def test_a_program_that_closed_its_stderr_can_call_main(capsys, monkeypatch):
 	pytest.param(ENGINE + ['-V'], id='version'),
 ])
 def test_a_glue_that_could_not_be_written_fails(tmp_path, argv):
-	# mssh --completion fish > file on a full disk: one report and status 1. An output that fits stdout's
-	# buffer (-V) fails only in the flush at exit, where the failure was lost (Python 3.6 and 3.13 exited 0)
+	# mssh --completion fish > file on a full disk: one report and status 1. Left to the flush at exit, -V's
+	# failure came as "Exception ignored" (120), and a glue still held as text was lost (exit 0, the file empty)
 	if not os.path.exists('/dev/full'):
 		pytest.skip('no /dev/full here')
 	env, _ = make_home(tmp_path)
