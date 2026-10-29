@@ -31,7 +31,13 @@ def test_hosts_only_of_6_32_to_6_38_is_still_accepted(no_hostname_validation):
 	assert multiSSH3.expand_hostnames(["node1"], hosts_only=True) == multiSSH3.expand_hostnames(["node1"])
 
 
-def test_compact_hostnames_local_takes_ranges_and_comma_lists():
-	assert multiSSH3.compact_hostnames_local(["node[1-3]", "node4"]) == ["node[1-4]"]
-	assert multiSSH3.compact_hostnames_local(["node1,node3", "node2,node4"]) == ["node[1-4]"]
-	assert multiSSH3.compact_hostnames_local(["node[1-2],gpu1", "gpu2"]) == ["gpu[1-2]", "node[1-2]"]
+def test_shown_names_of_pre_merged_groups_compact_as_one_range():
+	assert multiSSH3._compact_shown(["node[1-3]", "node4"]) == ["node[1-4]"]
+	assert multiSSH3._compact_shown(["node1,node3", "node2,node4"]) == ["node[1-4]"]
+	assert multiSSH3._compact_shown(["node[1-2],gpu1", "gpu2"]) == ["gpu[1-2]", "node[1-2]"]
+
+
+def test_compact_hostnames_local_takes_names_as_they_are():
+	# a public function: what 6.38 gave back for names that are no ranges stays so
+	assert multiSSH3.compact_hostnames_local(["node[10-1]", "node1"]) == ["node1", "node[10-1]"]
+	assert multiSSH3.compact_hostnames_local(["node[a]"]) == ["node[a]"]

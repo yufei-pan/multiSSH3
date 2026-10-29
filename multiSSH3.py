@@ -2575,18 +2575,12 @@ def compact_hostnames_local(names):
 	exactly the names, the names are returned unchanged.
 
 	Args:
-		names (iterable): Host names; ranges and comma lists (what this function returned
-			before, e.g. node[1-3],gpu1) are expanded first, aliases are not looked up
+		names (iterable): Host names, no aliases or ranges
 
 	Returns:
 		list: Range strings (or names) in natural sort order
 	'''
-	host_set = frozenset(
-		member
-		for name in names if name
-		for part in name.split(',') if part.strip()
-		for member in __expand_hostname(part.strip(), validate=False)
-	)
+	host_set = frozenset(name.strip() for name in names if name and name.strip())
 	if not host_set:
 		return []
 	compacted = __compact_hostnames(host_set)
@@ -2596,6 +2590,10 @@ def compact_hostnames_local(names):
 	if back != host_set:
 		return sorted(host_set, key=_natural_sort_key)
 	return sorted(compacted, key=_natural_sort_key)
+
+def _compact_shown(names):
+	'''compact_hostnames_local of the hosts names stand for: pre_merge_hosts names a group as it compacts (node[1-3],gpu1).'''
+	return compact_hostnames_local(member for name in names for part in name.split(',') for member in __expand_hostname(part, validate=False))
 
 # environment variables host expansion looked up since the last refresh, with the value seen (None: unset)
 _consulted_env = {}
@@ -5542,7 +5540,7 @@ def mergeOutput(merging_hostnames,outputs_by_hostname,output,diff_display_thresh
 				working_index_keys -= buddy
 		if not defer:
 			if buddy != previousBuddies:
-				hostnameStr = ','.join(compact_hostnames_local(buddy))
+				hostnameStr = ','.join(_compact_shown(buddy))
 				hostnameLines = hostnameWrapper.wrap(hostnameStr)
 				if len(buddy) < len(merging_hostnames):
 					color = int_to_unique_ansi_color(hash(hostnameStr))
