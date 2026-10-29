@@ -65,10 +65,11 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   such output exits 120 with Python's "Exception ignored ... BrokenPipeError" line. A program that imports
   multiSSH3 and calls `main()` itself (with `-V`, `-h`, ...) while its own stdout is a closed pipe is ended
   the same way; 6.38's `main()` raised SystemExit(141) and pointed the program's stdout and stderr at
-  /dev/null. While such a `main()` reads its arguments and config, SIGPIPE is the default for the whole
-  process: another thread of that program writing to a closed pipe or socket then ends it too (6.38: that
-  thread got BrokenPipeError). `run_command_on_hosts()` does not touch SIGPIPE. A run still ends quietly with
-  its own status. A message that cannot reach stderr is dropped; 6.38 wrote it to stdout.
+  /dev/null. While such a `main()` runs on the main thread, from its start until the run starts (arguments,
+  prompts, config), SIGPIPE is the default for the whole process: another thread of that program writing to a
+  closed pipe or socket then ends it too (6.38: that thread got BrokenPipeError). `run_command_on_hosts()`
+  does not touch SIGPIPE. A run still ends quietly with its own status. A message that cannot reach stderr is
+  dropped; 6.38 wrote it to stdout.
 - Why: exiting 141 by hand took `_WatchedStream` and `_exit_if_output_closed` (about 60 lines) to rebuild what
   SIGPIPE's default action does.
 - Revisit when: a program depends on the 141, or Windows users report the message.
@@ -85,8 +86,8 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   to the `.bak` and the new one is the operator's. Configs of the operator's own, root writing a user's config
   (now atomic, owner and group kept) and the operator's own symlinked configs are written as before.
   `--add_control_master_config` follows the same rule for `~/.ssh/config`, as it already did.
-- Why: writing in place needed a third write path (about 40 lines with its own fchmod / fstat check). Every
-  file is now written as `~/.ssh/config` was: a temporary file with the old owner, renamed over it.
+- Why: writing in place needed a third write path, with its own fchmod / fstat check. Every file is now
+  written as `~/.ssh/config` was: a temporary file with the old owner, renamed over it.
 - Revisit when: someone shares configs through ACLs.
 - Approved: 2026-10-24, the user chose "One writer (Recommended)".
 
@@ -290,9 +291,10 @@ The first five items below were open for 6.39. On 2026-10-28 the user chose "Rec
 ### Under sudo, --store_config_file replaces a symlinked config instead of writing through it
 - Kind: deferred
 - What the operator sees: `sudo -E mssh --store_config_file` (or any sudo that keeps HOME) on a config that is
-  the user's own symlink into a dotfiles repository: as root mssh follows only its own (or root's) links, so
-  the link itself becomes the `.bak` and a regular file, the user's, takes its place. The dotfiles copy is not
-  updated and the link is gone. 6.38 did the same, with the new file root's.
+  the user's own symlink into a dotfiles repository, answered `b` (the default): as root mssh follows only its
+  own (or root's) links, so the link itself becomes the `.bak` and a regular file, the user's, takes its
+  place. The dotfiles copy is not updated and the link is gone. 6.38 did the same, with the new file root's.
+  With `o` the config is printed and the link is kept.
 - Why: following another user's link as root needs a rule for which links are safe (for example one owned by
   the owner of the directory it sits in); not part of the simplification pass. Found by the third review.
 - Revisit when: 6.40.
