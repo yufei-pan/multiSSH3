@@ -246,7 +246,7 @@ def test_output_that_fits_the_pipe_buffer_still_ends_quietly(tmp_path):
 
 
 @pytest.mark.parametrize("option", ["-h", "-V", "--generate_config_file"])
-def test_output_only_options_to_a_closed_stdout_exit_quietly_with_141(tmp_path, option):
+def test_output_only_options_to_a_closed_stdout_end_by_sigpipe(tmp_path, option):
 	# mssh -h | head -1: argparse (or the config dump) prints and exits before any run; no run status to keep,
 	# so the status of a program SIGPIPE ends (Python exited 120, or 1 with a traceback on 3.6)
 	write_fd = _closed_pipe()
@@ -261,7 +261,7 @@ def test_output_only_options_to_a_closed_stdout_exit_quietly_with_141(tmp_path, 
 	assert ran == []
 
 
-def test_help_to_a_closed_stdout_and_stderr_pipe_exits_with_141(tmp_path):
+def test_help_to_a_closed_stdout_and_stderr_pipe_ends_by_sigpipe(tmp_path):
 	write_fd = _closed_pipe()
 	try:
 		result, ran = _run_cli_script(tmp_path, [], commands=["-h"], stdout=write_fd, stderr=write_fd)
@@ -272,7 +272,7 @@ def test_help_to_a_closed_stdout_and_stderr_pipe_exits_with_141(tmp_path):
 	assert ran == []
 
 
-def test_a_usage_error_to_a_closed_stderr_exits_quietly_with_141(tmp_path):
+def test_a_usage_error_to_a_closed_stderr_ends_by_sigpipe(tmp_path):
 	write_fd = _closed_pipe()
 	try:
 		result, ran = _run_cli_script(tmp_path, [], commands=["--repeat", "0"], stdout=subprocess.PIPE, stderr=write_fd)
