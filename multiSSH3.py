@@ -7857,7 +7857,8 @@ def _replace_file(path, content, mode=None, follow=True, owner=True):
 	Write content (bytes) to the file at path, never leaving it half written: a temporary copy with mode
 	(default: the old file's, else 0644) and the old file's owner and group is renamed over it, so a full
 	disk or quota keeps the old one. A symlink is written through (into a dotfiles repository), unless
-	follow is False. A file of another user (sudo keeping HOME) is only replaced if we can keep its owner, unless owner is False.
+	follow is False. A file of another user (sudo keeping HOME) is only replaced if we can keep its owner,
+	unless owner is False.
 	owner: True keeps the old file's, a stat result gives that owner and group (the old file was moved
 	aside; failing to give them is not an error), False leaves the file the writer's own.
 	'''
