@@ -7407,19 +7407,22 @@ SIGPIPE_STATUS = 141
 def _stderr_shares_stdout():
 	'''Whether stderr is the file stdout is (2>&1).'''
 	try:
-		return not sys.stderr.closed and os.path.sameopenfile(sys.stdout.fileno(), sys.stderr.fileno())
+		return os.path.sameopenfile(sys.stdout.fileno(), sys.stderr.fileno())
 	except (OSError, ValueError, AttributeError):
 		return False
 
 def _discard_stdout():
 	'''
-	Point stdout, and stderr when it is the same file (2>&1), at devnull after a write to it failed:
-	what is left in the buffer goes nowhere, and the flush at exit does not fail again.
+	After a write failed, point at devnull stdout when it still holds what it cannot write, and stderr when
+	it is the same file (2>&1): what is left in the buffer goes nowhere, and the flush at exit does not fail
+	again. A stdout that can still be written is left as it is, for a program that called main().
 	'''
 	try:
-		fds = [sys.stdout.fileno()]
-		if _stderr_shares_stdout():
-			fds.append(sys.stderr.fileno())
+		fds = [sys.stderr.fileno()] if _stderr_shares_stdout() else []
+		try:
+			sys.stdout.flush()
+		except (OSError, ValueError):
+			fds.append(sys.stdout.fileno())
 		devnull = os.open(os.devnull, os.O_WRONLY)
 		try:
 			for fd in fds:

@@ -71,7 +71,8 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 	pytest.param(ENGINE + ['-V'], id='version'),
 	pytest.param(MSSH + ['--completion', 'fish'], id='mssh-fish'),
 	pytest.param(ENGINE + ['bogus'], id='usage-error'),
-	# argparse's own usage error: 3.11+ drops its failed write, which leaves it buffered as on 3.6
+	# argparse's own usage error: newer Pythons' argparse (3.12, late 3.11) drops its failed write, which
+	# leaves it buffered as on 3.6
 	pytest.param(ENGINE + ['edit'], id='argparse-usage-error'),
 ])
 def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
@@ -79,23 +80,38 @@ def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	assert _run_into_closed_pipe(tmp_path, argv, stderr_too=True).returncode in _sigpipe_statuses(argv)
 
 
-def test_a_program_calling_main_keeps_its_stdout_when_its_stderr_is_not_read(monkeypatch):
-	# a program's own stderr, buffered (as Python 3.6's is) and nobody reading it: the usage error stays
-	# the program's to flush, and its stdout is not swapped for devnull
+@pytest.mark.parametrize('target, line_buffering, outcome', [
+	# Python 3.6's stderr is buffered: the usage error waits there, the program's to flush
+	pytest.param('closed-pipe', False, 2, id='buffered-unread'),
+	pytest.param('/dev/full', False, 2, id='buffered-full'),
+	# 3.9+ writes it at once, and the write fails in main
+	pytest.param('closed-pipe', True, SIGPIPE_STATUS, id='unread'),
+	pytest.param('/dev/full', True, OSError, id='full'),
+])
+def test_a_program_calling_main_keeps_its_stdout_when_its_stderr_fails(monkeypatch, target, line_buffering, outcome):
+	# a usage error into a program's own stderr that nobody reads or a full disk holds: stdout is not swapped
+	# for devnull, so the program can still write to it
+	if target == '/dev/full' and not os.path.exists(target):
+		pytest.skip('no /dev/full here')
 	read_fd, write_fd = os.pipe()
 	stdout = io.TextIOWrapper(io.FileIO(write_fd, 'w'), encoding='utf-8')
-	stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(_closed_pipe(), 'w')), encoding='utf-8')
+	stderr_fd = _closed_pipe() if target == 'closed-pipe' else os.open(target, os.O_WRONLY)
+	stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(stderr_fd, 'w')), encoding='utf-8', line_buffering=line_buffering)
 	monkeypatch.setattr(sys, 'stdout', stdout)
 	monkeypatch.setattr(sys, 'stderr', stderr)
 	try:
-		assert mc.main(['bogus']) == 2
+		if outcome is OSError:
+			with pytest.raises(OSError):
+				mc.main(['bogus'])
+		else:
+			assert mc.main(['bogus']) == outcome
 		print('still here', flush=True)
 	finally:
 		monkeypatch.undo()
 		stdout.close()
 		try:
 			stderr.close()
-		except BrokenPipeError:
+		except OSError:
 			pass
 	with os.fdopen(read_fd, 'rb') as reader:
 		assert reader.read() == b'still here\n'
