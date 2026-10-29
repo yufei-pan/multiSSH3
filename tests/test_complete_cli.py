@@ -1,4 +1,5 @@
 '''The command lines of mssh-complete and mssh --completion: what they print, and how they end.'''
+import io
 import os
 import shutil
 import subprocess
@@ -74,6 +75,37 @@ def test_a_reader_that_exits_early_ends_the_command_quietly(tmp_path, argv):
 def test_a_reader_of_stdout_and_stderr_that_exits_early(tmp_path, argv):
 	# ... 2>&1 | head: the flush at exit must not fail on stderr either (Python would exit 120)
 	assert _run_into_closed_pipe(tmp_path, argv, stderr_too=True).returncode in _sigpipe_statuses(argv)
+
+
+def test_a_program_calling_main_keeps_its_stdout_when_its_stderr_is_not_read(monkeypatch):
+	# a program's own stderr, buffered (as Python 3.6's is) and nobody reading it: the usage error stays
+	# the program's to flush, and its stdout is not swapped for devnull
+	read_fd, write_fd = os.pipe()
+	stdout = io.TextIOWrapper(io.FileIO(write_fd, 'w'), encoding='utf-8')
+	stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(_closed_pipe(), 'w')), encoding='utf-8')
+	monkeypatch.setattr(sys, 'stdout', stdout)
+	monkeypatch.setattr(sys, 'stderr', stderr)
+	try:
+		assert mc.main(['bogus']) == 2
+		print('still here', flush=True)
+	finally:
+		monkeypatch.undo()
+		stdout.close()
+		try:
+			stderr.close()
+		except BrokenPipeError:
+			pass
+	with os.fdopen(read_fd, 'rb') as reader:
+		assert reader.read() == b'still here\n'
+
+
+def test_a_program_that_closed_its_stderr_can_call_main(capsys, monkeypatch):
+	stderr = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+	stderr.close()
+	monkeypatch.setattr(sys, 'stderr', stderr)
+
+	assert mc.main(['-V']) == 0
+	assert mc.version in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('argv', [

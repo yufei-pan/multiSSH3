@@ -7404,6 +7404,13 @@ def render_glue(shell, command=None):
 # the status shells report for a command SIGPIPE ended (128 + 13), as for seq in `seq 100000 | head -1`
 SIGPIPE_STATUS = 141
 
+def _stderr_shares_stdout():
+	'''Whether stderr is the file stdout is (2>&1).'''
+	try:
+		return not sys.stderr.closed and os.path.sameopenfile(sys.stdout.fileno(), sys.stderr.fileno())
+	except (OSError, ValueError, AttributeError):
+		return False
+
 def _discard_stdout():
 	'''
 	Point stdout, and stderr when it is the same file (2>&1), at devnull after a write to it failed:
@@ -7411,11 +7418,8 @@ def _discard_stdout():
 	'''
 	try:
 		fds = [sys.stdout.fileno()]
-		try:
-			if os.path.sameopenfile(fds[0], sys.stderr.fileno()):
-				fds.append(sys.stderr.fileno())
-		except (OSError, ValueError, AttributeError):
-			pass
+		if _stderr_shares_stdout():
+			fds.append(sys.stderr.fileno())
 		devnull = os.open(os.devnull, os.O_WRONLY)
 		try:
 			for fd in fds:
@@ -7429,19 +7433,20 @@ def _discard_stdout():
 def _quiet_when_stdout_is_gone(command):
 	'''
 	command, ending as SIGPIPE ends other tools when the reader of its output exits early
-	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS. stdout and stderr are
-	flushed before command returns (also through argparse's exit), where a failure can still be reported:
-	at exit it would be "Exception ignored" (a full disk even exited 0 on Python 3.6 and 3.13; 3.6 also
-	buffers stderr, so a usage error 2>&1 | head failed there).
+	(mssh --completion bash | head -3): no traceback, status SIGPIPE_STATUS. stdout is flushed before
+	command returns (also through argparse's exit), where a failure can still be reported: at exit it
+	would be "Exception ignored" (a full disk even exited 0 on Python 3.6 and 3.13). So is stderr when it
+	goes to the same reader (2>&1): Python 3.6 buffers it, and a usage error 2>&1 | head failed there.
 	'''
 	def run(*args, **kwargs):
 		try:
 			try:
 				return command(*args, **kwargs)
 			finally:
-				for stream in (sys.stdout, sys.stderr):
-					if stream is not None:
-						stream.flush()
+				if sys.stdout is not None:
+					sys.stdout.flush()
+				if _stderr_shares_stdout():
+					sys.stderr.flush()
 		except BrokenPipeError:
 			_discard_stdout()
 			return SIGPIPE_STATUS
