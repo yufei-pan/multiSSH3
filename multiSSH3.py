@@ -5601,7 +5601,7 @@ def _merged_output_pieces(pieces_by_hostname, merge_groups, remaining_hostnames,
 		yield divider
 		yield ('', output)
 	for hostname in sorted(remaining_hostnames, key=_natural_sort_key):
-		hostnameLines = hostnameWrapper.wrap(','.join(compact_hostnames_local([hostname])))
+		hostnameLines = hostnameWrapper.wrap(hostname)
 		hostnameLines[0] = f"{green_str}{underline_bold_str}■{hostnameLines[0]}"
 		hostnameLines[-1] += color_reset
 		yield divider
