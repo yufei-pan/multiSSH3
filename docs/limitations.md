@@ -222,10 +222,11 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 ### A program calling mssh_complete's main() gets BrokenPipeError on its own prints once its stdout reader has gone
 - Kind: known limitation
-- What the operator sees: a program that imports mssh_complete and calls `main()` itself (for example
-  `main(['glue', 'bash'])`) after the reader of its own stdout has gone, and then keeps printing, gets
-  Python's usual `BrokenPipeError` on its own later prints (exit 120, "Exception ignored ..."). 6.38 pointed
-  the program's fd 1 at /dev/null, so those prints vanished silently. Operators are not affected:
+- What the operator sees: a program that imports mssh_complete and calls `main()` itself for an output larger
+  than stdout's buffer (a glue: `main(['glue', 'bash'])`) after the reader of its own stdout has gone, and then
+  keeps printing, gets Python's usual `BrokenPipeError` on its own later prints (exit 120, "Exception ignored
+  ..."). 6.38 pointed the program's fd 1 at /dev/null, so those prints vanished silently; after a short output
+  (`main(['-V'])`), still in the buffer when the write fails, 6.39 does that too. Operators are not affected:
   `mssh --completion` ends by SIGPIPE first, and the `mssh-complete` command exits 141.
 - Why: no real caller does this, and bringing 6.38's silence back takes a poll-based check of the reader
   (about 7 lines, POSIX only).
