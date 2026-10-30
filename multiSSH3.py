@@ -44,7 +44,7 @@ from pprint import pformat
 version = '6.39'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-10-28'
+COMMIT_DATE = '2026-10-29'
 
 # no current-directory entry: a cloned repo or unpacked archive could set a setting or a program path
 # (e.g. _sshPath), use --config_file to load one

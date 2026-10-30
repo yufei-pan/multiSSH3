@@ -220,6 +220,18 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - Revisit when: fish 2 comes back; then the glue's own guard can print the reason.
 - Approved: 2026-10-28, the user chose "Drop the refusal (Recommended)".
 
+### A program calling mssh_complete's main() gets BrokenPipeError on its own prints once its stdout reader has gone
+- Kind: known limitation
+- What the operator sees: a program that imports mssh_complete and calls `main()` itself (for example
+  `main(['glue', 'bash'])`) after the reader of its own stdout has gone, and then keeps printing, gets
+  Python's usual `BrokenPipeError` on its own later prints (exit 120, "Exception ignored ..."). 6.38 pointed
+  the program's fd 1 at /dev/null, so those prints vanished silently. Operators are not affected:
+  `mssh --completion` ends by SIGPIPE first, and the `mssh-complete` command exits 141.
+- Why: no real caller does this, and bringing 6.38's silence back takes a poll-based check of the reader
+  (about 7 lines, POSIX only).
+- Revisit when: a program that embeds `mssh_complete.main()` hits it.
+- Approved: 2026-10-29, the user chose "Known limitation (Recommended)".
+
 ## Deferred to 6.40
 
 The first five items below were open for 6.39. On 2026-10-28 the user chose "Record as Deferred, 6.40
