@@ -286,7 +286,8 @@ def test_bash_picker_draws_again_when_the_terminal_is_resized(home):
 		session.read_until(b'type to filter', 10)
 		rows = rendered(session).lines()
 		box = rows[1:13]
-		assert rows[0] == '@@READY@@ mssh gpu[01-16]' and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
+		prompt = '@@READY@@ ' if bash_version(env) >= 44 else ''  # bash 4.2/4.3: no prompt beside the menu (docs/limitations.md)
+		assert rows[0] == prompt + 'mssh gpu[01-16]' and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
 		assert len(set(len(row) for row in box)) == 1 and len(box[0]) < 50 and rows[13:] == [''] * 11, rows
 		# Esc: the line as it was, nothing left of the menu; bash knows the new width
 		session.send('\x1b')
