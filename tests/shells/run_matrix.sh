@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run the autocomplete tests in the Docker shell matrix: modern, current (the newest Python), legacy and centos7 images,
 # and bash 5.1 and 5.3 alone (readline key bindings change between bash versions: see their Dockerfiles).
-# The images run at once (the tests mostly wait on shells, not the CPU); each one's output is shown when all are done.
+# The images run at once (the tests mostly wait on shells, not the CPU), each capped at 4 GB; each one's output is
+# shown when all are done.
 # Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [centos7] [bash5.1] [bash5.3]   (default: all six)
 # MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py). The whole suite, e.g. on
 # Python 3.6: MSSH_MATRIX_TESTS=tests tests/shells/run_matrix.sh legacy centos7
@@ -23,8 +24,10 @@ for name in "${images[@]}"; do
 	esac
 	(
 		docker build -q -t "mssh-shell-test-$name" -f "$here/Dockerfile.$name" "$here" >/dev/null
-		# the repository is read-only inside: no bytecode, no pytest cache; HOME is a fresh directory
-		docker run --rm -v "$repo":/repo:ro -w /repo -e MSSH_REQUIRE_SHELLS="${required[-1]}" -e PYTHONDONTWRITEBYTECODE=1 \
+		# the repository is read-only inside: no bytecode, no pytest cache; HOME is a fresh directory. Each run is capped
+		# (memory, no swap, pids) and runs as nobody, so a runaway test stays inside its own container.
+		docker run --rm --memory=4g --memory-swap=4g --pids-limit=2048 --user 65534:65534 \
+			-v "$repo":/repo:ro -w /repo -e MSSH_REQUIRE_SHELLS="${required[-1]}" -e PYTHONDONTWRITEBYTECODE=1 \
 			-e MSSH_MATRIX_TESTS="${MSSH_MATRIX_TESTS:-tests/test_complete_*.py}" \
 			"mssh-shell-test-$name" sh -c 'export HOME=$(mktemp -d); python3 -V; python3 -m pytest -q -p no:cacheprovider $MSSH_MATRIX_TESTS'
 	) > "$logs/$name.log" 2>&1 &
