@@ -551,9 +551,20 @@ SAME_AS_BASH_UNQUOTED = [
 	(['-u'], '--user=roo', ''),
 	(['-W', 'alpha beta'], '--x=al', ''),
 	(['-W', 'alpha beta'], 'h:al', ''),
-	# not compared with bash: the local file names of the file actions, -G and a command with no compspec, which the
-	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.40: the glue does it
-	# itself)
+	# the local file names of the file actions and a command with no compspec (the glue quotes and marks them as bash does: a
+	# space, a & and a directory in the files below). Not -G: bash up to 5.1 gives it every name the glob matches, whatever
+	# the word (zzm completes to zz); test_bash_delegation_quotes_and_marks_the_file_names_it_makes_itself has it
+	(['-f'], 'zzm', ''),
+	(['-f'], 'zzam', ''),
+	(['-f'], 'zzd', ''),
+	(['-f'], 'zz', ''),
+	(['-d'], 'zzd', ''),
+	(['-A', 'file'], 'zzm', ''),
+	(['-A', 'directory'], 'zzd', ''),
+	(['-o', 'dirnames', '-W', 'other'], 'zzd', ''),
+	([], 'zzm', ''),
+	([], 'zzam', ''),
+	([], 'zzd', ''),
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb', '-o', 'dirnames', '-o', 'default'], 'zzd', ''),
@@ -572,13 +583,31 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 	import shlex
 	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; {}'.format(before or ':',
 		'complete {} zzsvc'.format(' '.join(map(shlex.quote, spec))) if spec else ':')
-	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab'], options=options)
+	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab', 'zzmy file', 'zzamp&b'], options=options)
 	try:
 		for name in ('zzdir', 'zzdirb'):
 			(tmp_path / 'work' / name).mkdir()
 		native = completed_and_listed(session, 'zzsvc ' + word)
 		remote = completed_and_listed(session, 'mssh h ' + ('"zzsvc ' if quoted else 'zzsvc ') + word, quoted)
 		assert remote == ('mssh h ' + native[0], native[1])
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('spec, word, completed', [
+	# what bash itself does with them (the test above holds the glue to it): quoted, a directory marked with its /
+	('complete -f zzsvc', 'zzm', 'zzmy\\ file '),
+	('complete -f zzsvc', 'zzam', 'zzamp\\&b '),
+	('complete -f zzsvc', 'zzd', 'zzdir/'),
+	('complete -d zzsvc', 'zzd', 'zzdir/'),
+	("complete -G 'zzm*' zzsvc", 'zz', 'zzmy\\ file '),
+	(':', 'zzm', 'zzmy\\ file '),
+])
+def test_bash_delegation_quotes_and_marks_the_file_names_it_makes_itself(tmp_path, spec, word, completed):
+	session = ignoring_case(tmp_path, [], on=False, files=['zzmy file', 'zzamp&b'], options=spec)
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		assert session.line_after('mssh h zzsvc ' + word) == 'mssh h zzsvc ' + completed
 	finally:
 		session.close()
 
@@ -817,8 +846,9 @@ def history_of(*commands):
 	('_zzn() { COMPREPLY=("zzfeature "); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
 	# several: the common start, no space
 	('_zzn() { COMPREPLY=(); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzb', 'mssh h zzgit checkout zzbr'),
-	# readline quotes the words under filenames: a space would be quoted as well, and there is none
-	('_zzn() { COMPREPLY=(); }; complete -o nospace -o filenames -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature'),
+	# filenames: readline's file name mode is off while mssh's own words are in the reply (it would take them for local
+	# file names), so the nospace rule applies to them as under nospace alone (6.39: no space, "readline would quote it")
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -o filenames -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
 ])
 def test_bash_a_nospace_spec_gives_mssh_s_own_words_their_space(tmp_path, options, typed, completed):
 	history = history_of('zzgit checkout zzfeature', 'zzgit checkout zzbranch', 'zzgit checkout zzbrook')
@@ -947,11 +977,149 @@ def test_bash_a_file_name_ending_in_a_space_is_listed_beside_the_name_without_it
 	("complete -G '*' zzsvc", 'mssh h zzsvc '),
 ])
 def test_bash_a_remote_home_path_from_history_is_not_left_for_the_local_shell_to_expand(tmp_path, options, typed):
-	# readline never quotes a leading ~: the glue keeps the engine's \~ and does not turn readline's file name mode on
+	# readline never quotes a leading ~: the glue keeps the engine's \~ and keeps readline's file name mode off while mssh's
+	# own words are in the reply
 	history = history_of('othercmd ~/notes', 'zzsvc ~/notes')
 	session = ignoring_case(tmp_path, history, on=False, options=options)
 	try:
 		assert session.line_after(typed) == typed + '\\~/notes '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('options, typed', [
+	('complete -f zzsvc', 'mssh h zzsvc '),
+	('complete -d zzsvc', 'mssh h zzsvc '),
+	("complete -G '*' zzsvc", 'mssh h zzsvc '),
+	('', 'mssh h othercmd '),
+])
+def test_bash_a_remote_home_path_beside_local_file_names_keeps_its_backslash_when_picked(tmp_path, options, typed):
+	# with local names matching, the delegate's file names are in the reply and readline's file name mode used to be on
+	# for the whole of it: the engine's \~/notes went in as ~/notes (menu-complete inserts a word of the list)
+	history = history_of('othercmd ~/notes', 'zzsvc ~/notes')
+	session = ignoring_case(tmp_path, history, on=False, files=['zzlocal'], options="bind 'TAB: menu-complete'; " + options)
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		assert session.line_after(typed) == typed + '\\~/notes '
+	finally:
+		session.close()
+
+
+@needs_bash_completion
+def test_bash_a_remote_home_path_beside_bash_completions_file_names_keeps_its_backslash_when_picked(tmp_path):
+	# cat's _filedir turns the file name mode on when it finds local names
+	session = ignoring_case(tmp_path, history_of('cat ~/notes'), on=False, files=['zzlocal'],
+		options=". {}; bind 'TAB: menu-complete'".format(BASH_COMPLETION))
+	try:
+		assert session.line_after('mssh h cat ') == 'mssh h cat \\~/notes '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('spec', ['complete -f zzsvc', 'complete -d zzsvc', "complete -G 'sr*' zzsvc", 'complete -o default -W other zzsvc', ''])
+def test_bash_a_remote_word_matching_a_local_directory_keeps_its_space_whatever_finds_the_local_names(tmp_path, spec):
+	# the delegate's directory srcx and the history's srcx are one word, the engine's: no /, and the space
+	session = ignoring_case(tmp_path, history_of('zzsvc srcx'), on=False, options=spec)
+	try:
+		(tmp_path / 'work' / 'srcx').mkdir()
+		assert session.line_after('mssh h zzsvc sr') == 'mssh h zzsvc srcx '
+	finally:
+		session.close()
+
+
+@needs_bash_completion
+@pytest.mark.parametrize('typed, command', [('mssh h cat sr', 'cat srcx'), ('mssh h ls sr', 'ls srcx')])
+def test_bash_a_remote_word_matching_a_local_directory_keeps_its_space_beside_bash_completions_file_names(tmp_path, typed, command):
+	session = ignoring_case(tmp_path, history_of(command), on=False, options='. ' + BASH_COMPLETION)
+	try:
+		(tmp_path / 'work' / 'srcx').mkdir()
+		assert session.line_after(typed) == typed + 'cx '
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('spec, listed', [
+	# the delegate's names with their directories, quoted as bash quotes them, a directory marked; mssh's own word as it is
+	('complete -f zzsvc', ['zzamp\\&b', 'zzdir/', 'zzremote']),
+	('complete -d zzsvc', ['zzdir/', 'zzremote']),
+	("complete -G 'zz*' zzsvc", ['zzamp\\&b', 'zzdir/', 'zzremote']),
+	# noquote: no backslashes, the directory still marked
+	('complete -f -o noquote zzsvc', ['zzamp&b', 'zzdir/', 'zzremote']),
+])
+def test_bash_the_delegates_file_names_are_quoted_and_marked_beside_mssh_s_own_words(tmp_path, spec, listed):
+	if 'noquote' in spec:
+		require_bash_printing('noquote')
+	session = ignoring_case(tmp_path, history_of('zzsvc zzremote'), on=False, files=['zzamp&b'], options=spec)
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		line, words = completed_and_listed(session, 'mssh h zzsvc zz')
+		assert (line, words) == ('mssh h zzsvc zz', listed)
+	finally:
+		session.close()
+
+
+def test_bash_the_delegates_file_names_with_a_space_are_quoted_beside_mssh_s_own_words(tmp_path):
+	session = ignoring_case(tmp_path, history_of('zzsvc zzremote'), on=False, files=['zzmy file'], options='complete -f zzsvc')
+	try:
+		assert session.line_after('mssh h zzsvc zzm') == 'mssh h zzsvc zzmy\\ file '
+		assert session.line_after('mssh h zzsvc zzr') == 'mssh h zzsvc zzremote '
+	finally:
+		session.close()
+
+
+def test_bash_the_delegates_file_names_are_quoted_and_marked_beside_mssh_s_own_words_under_fullquote(tmp_path):
+	# bash 5.3's -o fullquote quotes every match, as file name mode does
+	require_bash_printing('fullquote')
+	session = ignoring_case(tmp_path, history_of('zzsvc zzremote'), on=False, files=['zzamp&b'], options='complete -f -o fullquote zzsvc')
+	try:
+		(tmp_path / 'work' / 'zzdir').mkdir()
+		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp\\&b', 'zzdir/', 'zzremote'])
+	finally:
+		session.close()
+
+
+def filenamed(tmp_path, reply, given, options, prefix=''):
+	"""What _mssh_complete_filenames makes of the delegate's words (given) beside the engine's (reply) under the compopt
+	options, in a directory holding the directory zzdir, with HOME there: the delegate's words, each in brackets."""
+	import shlex
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / 'zzdir').mkdir()
+	script = ('. "$1"; HOME=$PWD; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); '
+		'_mssh_complete_filenames {} {}; printf "[%s]" "${{_mssh_complete_delegated[@]}}"'
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(' ' + options + ' '), shlex.quote(prefix))
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
+	assert output.returncode == 0, output
+	return output.stdout.decode()
+
+
+@pytest.mark.parametrize('reply, given, options, prefix, expected', [
+	# quoted as printf %q quotes, a leading ~ too (bash 4.2's %q leaves it), a directory marked
+	(['zzr'], ['a b', 'a&c', '~/x', 'zzdir', 'zzdir/', '~/zzdir'], '-o filenames', '', r'[a\ b][a\&c][\~/x][zzdir/][zzdir/][\~/zzdir/]'),
+	# noquote alone: as they are, a directory marked; with fullquote quoted again, and not marked without filenames
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote', '', '[a b][~/x][zzdir/]'),
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote -o fullquote', '', r'[a\ b][\~/x][zzdir/]'),
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o fullquote', '', r'[a\ b][\~/x][zzdir]'),
+	# a word mssh offers itself is the same word, and not marked
+	(['zzdir', 'a\\&c'], ['zzdir', 'a&c', 'zzdirx'], '-o filenames', '', r'[zzdir][a\&c][zzdirx]'),
+	# in a quoted command they are the remote command's text
+	(['zzr'], ['a b', 'zzdir'], '-o filenames', 'zzsvc ', '[a b][zzdir]'),
+])
+def test_bash_the_delegates_file_names_are_quoted_and_marked_by_the_glue(tmp_path, reply, given, options, prefix, expected):
+	assert filenamed(tmp_path, reply, given, options, prefix) == expected
+
+
+@pytest.mark.parametrize('spec', ['complete -f zzsvc', "complete -o default -W other zzsvc", ''])
+def test_bash_the_delegates_file_names_are_left_to_readline_without_mssh_s_own_words(tmp_path, spec):
+	# the names alone: readline quotes, marks and lists them (the basenames), as it does for the command itself
+	session = ignoring_case(tmp_path, [], on=False, files=['zzamp&b'], options=spec)
+	try:
+		(tmp_path / 'work' / 'zzdir' / 'zzin').mkdir(parents=True)
+		(tmp_path / 'work' / 'zzdir' / 'zzio').mkdir()
+		assert completed_and_listed(session, 'mssh h zzsvc zzdir/zzi') == ('mssh h zzsvc zzdir/zzi', ['zzin/', 'zzio/'])
+		assert session.line_after('mssh h zzsvc zzdir/zzin') == 'mssh h zzsvc zzdir/zzin/'
+		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp&b', 'zzdir/'])
 	finally:
 		session.close()
 
