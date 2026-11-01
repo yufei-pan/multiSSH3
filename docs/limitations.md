@@ -85,12 +85,28 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   in place when it was 0600 or tighter. With the default answer `b`, a config that is not a symlink is moved
   to the `.bak` and the new one is the operator's. Configs of the operator's own, root writing a user's config
   (now atomic, owner and group kept) and the operator's own symlinked configs are written as before (an own
-  config now keeps its group with `b` too). `--add_control_master_config` follows the same rule for
-  `~/.ssh/config`, as it already did.
+  config now keeps its group with `b` too). Since 6.40, under sudo, the config of the user who ran sudo (their
+  file, their symlink, or a new one in a directory of theirs: whose it is goes by the link itself, not what it
+  points to) is that user's own: mssh, as root, looks at it, backs it up and writes it with that user's uid,
+  gid and groups, so their own symlink is written through wherever they may write. `--add_control_master_config`
+  follows the same rule for `~/.ssh/config` (since 6.40; before, as root it followed a link of any owner).
 - Why: writing in place needed a third write path, with its own fchmod / fstat check. Every file is now
   written as `~/.ssh/config` was: a temporary file with the old owner, renamed over it.
 - Revisit when: someone shares configs through ACLs.
 - Approved: 2026-10-24, the user chose "One writer (Recommended)".
+
+### Under sudo -E, mssh ignores the user's own config
+- Kind: known limitation
+- What the operator sees: under `sudo -E` (or any sudo that keeps HOME), mssh runs as root and does not load
+  the user's `~/.multiSSH3.config.json`: a file of another uid, skipped with the usual "owned by uid ..., not by
+  you or root" warning. So `sudo -E mssh --store_config_file` writes the settings of the system configs plus the
+  command line, and the user's earlier settings stay only in the `.bak` (the default answer `b`; `o` keeps no
+  copy). The file is written as the user since 6.40. Where a system config was loaded, that system config is
+  the one written without a path, as for anyone with no config of their own.
+- Why: as root, mssh loads only configs of root's own: a config can set program paths (`_sshPath`, ...), so a
+  user's file would choose what root runs.
+- Revisit when: someone needs their own settings under `sudo -E`.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
 
 ### Reading mssh's runtime state may create its directory
 - Kind: known limitation
@@ -186,16 +202,59 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - Revisit when: an operator hits a remote command whose compspec needs it.
 - Approved: 2026-10-28, the user chose "Complete as sudo does (Recommended)".
 
-### Under menu-complete, mssh's words beside a nospace command's mixed words get no space
+### Under menu-complete or ble.sh's menu, mssh's words beside a nospace command's mixed words get no space
 - Kind: known limitation
 - What the operator sees: with bash's TAB bound to `menu-complete`, when a remote command's compspec asks for
   nospace (git, scp, rsync, cd) and offers words with and without a trailing space (`--oneline ` beside
   `--format=`), cycling inserts mssh's own history words without a space. With TAB bound to `complete` (the
-  default) nothing changes. A word both mssh and the command offer is listed once.
+  default) nothing changes. A word both mssh and the command offer is listed once. With ble.sh (since 6.40),
+  picking one of mssh's own words from ble.sh's menu beside such mixed words (git's `--format=` beside
+  `--oneline `) inserts it with no space; the command's `--oneline` gets its space. ble.sh's menu is its
+  default, so ble.sh users meet this more often than readline's menu-complete users.
 - Why: spacing them one by one took an open-quote scanner (its time grew with quotes times line length:
-  11.5 s on a 32,000-character line) and about 50 lines, for a case only menu-complete reaches.
-- Revisit when: an operator using menu-complete asks for it.
-- Approved: 2026-10-28, the user chose "Drop it (Recommended)".
+  11.5 s on a 32,000-character line) and about 50 lines, for a case only menu-complete reaches. Under ble.sh,
+  handing mssh's words over with their space would make ble.sh insert them without the open quote of a quoted
+  remote command.
+- Revisit when: an operator using menu-complete or ble.sh asks for it.
+- Approved: 2026-10-28, the user chose "Drop it (Recommended)". Extended to ble.sh's menu: 2026-11-01, the user
+  chose "Extend the limitation (Recommended)".
+
+### bash: a remote command with no completion file completes local file names where python-argcomplete's global completer is set
+- Kind: known limitation
+- What the operator sees: in bash, where python-argcomplete's global completer is set (`complete -D`, as
+  `activate-global-python-argcomplete` sets it), `mssh h CMD <TAB>` for a remote command with no completion file
+  of its own completes local file names, as with bash-completion alone. bash would run the `-D` completer for
+  `CMD` itself. The glue never runs a local program named like the remote command.
+- Why: the `-D` completer runs the local program of that name (argcomplete starts it with `_ARGCOMPLETE=1`),
+  which need not be the remote one, nor anything to run here; the glue loads a command's completion with
+  bash-completion's loaders and does not call `-D`.
+- Revisit when: an operator wants a remote command (`ansible-playbook`) completed from its local copy.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
+
+### ble.sh: a remote word of mssh's that names a local directory gets a / and no space
+- Kind: known limitation
+- What the operator sees: with ble.sh, one of mssh's own remote words (from its history) that names a
+  directory existing on this machine goes in with `/` and no space: with `othercmd srcx` in mssh's history and a
+  local directory `srcx`, `mssh h othercmd sr<TAB>` gives `srcx/`. Plain bash gives `srcx ` since 6.38. On a
+  remote that has the directory too, the word still names it.
+- Why: ble.sh marks every word a completion function returns that names a directory here; its switch for that
+  (`ble/no-mark-directories`) applies to the whole reply, and would cost the remote command's local directory
+  names their `/` and missing space.
+- Revisit when: an operator hits it with a word that is not a directory on the remote.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
+
+### ble.sh: a remote ~/ path from mssh's history goes in with a bare ~
+- Kind: known limitation
+- What the operator sees: with ble.sh, a remote path `~/...` that mssh offers from its history
+  (`mssh h cat <TAB>` with `cat ~/zznotes.txt` in its history) goes on the line as `~/zznotes.txt`, which this
+  shell expands to the local home before mssh runs; plain bash inserts `\~/zznotes.txt`, which the remote
+  shell expands. The path is right whenever the remote home is the same path as the local one (a shared home,
+  the same user). A `~` the operator typed stays as typed in every shell, as with `ssh h cat ~/x`.
+- Why: ble.sh leaves the leading `~` of a completion function's word unescaped, and the glue cannot make it
+  escape one word: `noquote` and `ble/syntax-raw` apply to the whole reply. A ble.sh completion source of
+  mssh's own would, as a bigger change.
+- Revisit when: an operator whose remote home differs from the local one hits it.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
 
 ### With nocasematch on in bash, a Ctrl-C during a TAB can leave it off
 - Kind: known limitation
@@ -233,83 +292,28 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - Revisit when: a program that embeds `mssh_complete.main()` hits it.
 - Approved: 2026-10-29, the user chose "Known limitation (Recommended)".
 
-## Deferred to 6.40
+## Deferred to the change after 6.40
 
-The first five items below were open for 6.39. On 2026-10-28 the user chose "Record as Deferred, 6.40
-(Recommended)" for all of them. The last one was found by the third review of this pass.
+Found while confirming 6.40's items. On 2026-11-01 the user chose "After 6.40 (Recommended)" for both.
 
-### ble.sh: spaces and duplicates beside a nospace command's words
+### Local file names with whitespace or shell characters are wrong in a remote command
 - Kind: deferred
-- What the operator sees: with ble.sh, a TAB in the middle of a line on a remote command whose compspec asks
-  for nospace (git) leaves two spaces after the word; beside such a command's words, mssh's own words get no
-  space; and a word the command gives escaped (`a\ b`) and mssh unescaped (`a b`) is not seen as the same
-  word, so both can be listed.
-- Why: mssh's words reach ble.sh unescaped and the command's escaped, and ble.sh treats the two kinds
-  differently. An untested idea: unescape the command's words under ble.sh and use the readline rule.
-- Revisit when: 6.40.
-- Approved: 2026-10-28, the user chose "Record as Deferred, 6.40 (Recommended)".
+- What the operator sees: in bash, ble.sh, zsh and fish, a local file name completed for a remote command goes
+  in quoted for this shell, which is not what mssh's remote command needs: `mssh h cat my\ file` makes mssh run
+  `my file` as a command of its own (mssh runs each argument holding whitespace separately), and
+  `mssh h cat a\&b` reaches the remote shell as `cat a&b`, which runs `b`.
+- Why: the fix is the same in all four shells and goes in together: names holding whitespace left out in an
+  unquoted remote word (as the engine already leaves out such words of its own), the rest quoted for the remote
+  shell and then for this one (`a\\\&b`). It comes as its own change after 6.40, in bash, ble.sh, zsh and fish.
+- Revisit when: the change right after 6.40.
+- Approved: 2026-11-01, the user chose "After 6.40 (Recommended)".
 
-### bash: a result equal to the text before bash's word reaches readline as an empty word
+### Inside a quoted argument the engine completes a quoted command
 - Kind: deferred
-- What the operator sees: when bash's word starts after a `:` or `=` and is empty (`mssh h CMD --opt=<TAB>`),
-  a result of CMD's completion that is exactly the text before it (`--opt=`) becomes an empty candidate and
-  goes to readline: alone, TAB adds a space after the `=`; beside other words, TAB inserts nothing of what
-  they share.
-- Why: found in the 6.38 review; the fix (skip an empty word after the cut) was left for a later round.
-- Revisit when: 6.40.
-- Approved: 2026-10-28, the user chose "Record as Deferred, 6.40 (Recommended)".
-
-### ble.sh completes nothing in a quoted remote command
-- Kind: deferred
-- What the operator sees: with ble.sh, TAB inside a quoted remote command (`mssh h "systemctl rest<TAB>`)
-  offers nothing, as in 6.37. Unquoted remote commands and plain bash complete.
-- Why: needs a look at how ble.sh hands over a word that holds an open quote.
-- Revisit when: 6.40.
-- Approved: 2026-10-28, the user chose "Record as Deferred, 6.40 (Recommended)".
-
-### bash: file names from a remote command's completion are not quoted
-- Kind: deferred
-- What the operator sees: in bash, file names the glue completes on this machine for a remote command (from
-  `compgen -f`, `-d`, `-G` or `-c` in its compspec, and for a command with no compspec) go in unquoted and
-  unmarked: `my dir` is not escaped and a directory gets a space, not a `/`. Also, for every command whose
-  completion runs bash-completion's `_filedir` (cat, ls, cp, mv, rm, tail, grep, `_longopt`, ...), a history
-  path `~/x` goes on the line bare, for the local shell to expand to the local home: with bash-completion
-  loaded and history `cat ~/zznotes.txt`, `mssh h cat ~/zzn<TAB>` gives `cat ~/zznotes.txt `. Those functions
-  turn readline's `-o filenames` on themselves, and under it readline takes mssh's words unescaped and never
-  quotes a leading `~`. 6.37 and 6.38 behave the same; the test of the remote home path runs without
-  bash-completion.
-- Why: turning readline's `-o filenames` on for the delegate's results broke mssh's own history candidates
-  and was taken back out in 6.38. The planned design: the glue quotes delegated file names itself, marks
-  directories and never leaves readline's file name mode on while mssh's words are in the reply. It must also
-  undo a completion function's own `compopt -o filenames` (turn on `noquote`, quote the function's words,
-  mark directories), not only the glue's compgen calls. Seen too: where python-argcomplete is installed,
-  `complete -D` is its global completer; the glue calls bash-completion's loaders directly, so a command with
-  no completion file gets the glue's `compgen -f` where bash would run the `-D` completer.
-- Revisit when: 6.40.
-- Approved: deferred to 6.39 by the user in the 6.38 round; on 2026-10-28 the user chose "Record as Deferred,
-  6.40 (Recommended)".
-
-### bash: -W, -G and the actions match the whole remote word
-- Kind: deferred
-- What the operator sees: for a remote command whose compspec uses `-W`, `-G` or an action (`-f`, `-d`,
-  `-u`, `-A ...`), and for the `&` of its `-X`, compgen gets the whole remote word, not readline's shorter
-  word after a `:` or `=`. With `complete -u CMD`, `mssh h CMD --user=roo<TAB>` puts in a local file name
-  (`--user=rootnotes`), where bash alone completes `--user=root`; with `complete -d CMD`, `mssh h CMD x=zz<TAB>`
-  lists a file beside the directory (`zzfile` beside `zzsub/`), where bash alone completes `x=zzsub/`. (`complete -f CMD` gets the right file names from mssh's own file-name
-  fallback, unless mssh offers words of its own.) Completion functions and `-C` commands are not affected.
-- Why: compgen is given the word as the remote command sees it; cutting it as readline does needs care with
-  the prefix mssh puts back.
-- Revisit when: 6.40.
-- Approved: 2026-10-28, the user chose "Record as Deferred, 6.40 (Recommended)".
-
-### Under sudo, --store_config_file replaces a symlinked config instead of writing through it
-- Kind: deferred
-- What the operator sees: `sudo -E mssh --store_config_file` (or any sudo that keeps HOME) on a config that is
-  the user's own symlink into a dotfiles repository, answered `b` (the default): as root mssh follows only its
-  own (or root's) links, so the link itself becomes the `.bak` and a regular file, the user's, takes its
-  place. The dotfiles copy is not updated and the link is gone. 6.38 did the same, with the new file root's.
-  With `o` the config is printed and the link is kept.
-- Why: following another user's link as root needs a rule for which links are safe (for example one owned by
-  the owner of the directory it sits in); not part of the simplification pass. Found by the third review.
-- Revisit when: 6.40.
-- Approved: 2026-10-29, the user chose "Defer to 6.40 (Recommended)".
+- What the operator sees: in every shell, TAB inside a quoted argument of a remote command
+  (`mssh h cat 'my f<TAB>`) reads the quoted text as a whole quoted command: it completes `f` as an argument of
+  a command `my`, so nothing useful is offered there.
+- Why: the engine takes any quoted word where the remote command goes for a whole quoted command; the fix (look
+  for the remote command's unquoted words before it first) was left for the change after 6.40.
+- Revisit when: the change right after 6.40.
+- Approved: 2026-11-01, the user chose "After 6.40 (Recommended)".
