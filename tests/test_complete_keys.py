@@ -1286,13 +1286,14 @@ def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
 	# before zsh 5.8 each query's process substitution took the terminal from the shell (Ctrl-C went to the
 	# query, the shell's reads failed until it took the terminal back) unless the glue gives it back
 	env, home = home
-	session = zsh_with(env, home, zas, extra=slow_engine_glue() + '\n' + extra)
+	session = zsh_with(env, home, zas, extra=slow_engine_glue(3) + '\n' + extra)
 	try:
 		session.send(keys)
 		time.sleep(0.5)
-		# a query being forked holds the terminal for a moment: the shell must have it back within 250 ms. A terminal
-		# really lost stays lost for the whole query (the glue's engine sleeps 1 s), so it still fails
-		deadline = time.monotonic() + 0.25
+		# a query being forked holds the terminal until the shell runs the command that gives it back, which a loaded
+		# machine can delay. A terminal really lost stays lost for the whole query (3 s here): the shell must have it back
+		# within a second more
+		deadline = time.monotonic() + 1.0
 		while os.tcgetpgrp(session.fd) != session.pid and time.monotonic() < deadline:
 			time.sleep(0.02)
 		assert os.tcgetpgrp(session.fd) == session.pid
