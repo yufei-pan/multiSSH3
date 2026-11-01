@@ -273,7 +273,7 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   holds a quote, a backslash or an expansion (`"a"=b`, `'a'=b`, `a\ b=c`, `$V:x`), the glue reads that word as
   6.39 did, from ble.sh's evaluated values. It completes as in 6.39, except that a `~` after the split comes back
   as this machine's home with the word quoted again: `mssh h cmd 'a'=~/zzx<TAB>` gives `'a=/home/me/zzxfile'`,
-  and `$V:~/zzx` gives `'a:/home/me/zzxfile'`; 6.39 offered nothing there. A backslash before the `=` or `:`
+  and `$V:~/zzx` (with `V=a`) gives `'a:/home/me/zzxfile'`; 6.39 offered nothing there. A backslash before the `=` or `:`
   itself (`a\=b`) is no such split: ble.sh does not split there, and the word completes as typed
   (`a\=zzxfile`).
 - Why: ble.sh hands the glue the part before the split (`progcomp_prefix`) evaluated; when the typed text is not
@@ -287,7 +287,8 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - What the operator sees: on bash 4.3 and 4.4, the local file names the bash glue completes for a remote command
   whose compspec sets `-o noquote` are quoted anyway.
 - Why: the glue reads a compspec's options from `complete -p`, which leaves `noquote` out on bash 4.4 (checked:
-  `complete -o noquote -F f x; complete -p x` prints `complete -F f x`; bash 5.1 prints the option). `noquote` is
+  `complete -o noquote -F f x; complete -p x` prints `complete -F f x`; bash 5.1 prints the option), and bash
+  4.4's `compopt` does not list it either. `noquote` is
   rare, and bash 4.3/4.4 are old.
 - Revisit when: an operator on bash 4.3 or 4.4 completes for a command whose compspec sets `noquote`.
 - Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
