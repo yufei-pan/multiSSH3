@@ -932,6 +932,48 @@ def unspaced(tmp_path, reply, given, icase=0, ble=0, prefix=''):
 @pytest.mark.parametrize('reply, given, kwargs, engine, delegate', [
 	# all spaced, or none: the space comes off the delegate's words (readline adds it)
 	(['zzb'], ['zza ', 'zzc '], {}, '[zzb]', '[zza][zzc]'),
+def ble_path_reply(tmp_path, typed, candidates, directives='files', ble=True, word=None):
+	"""COMPREPLY of the glue's TAB for the path word typed (as ble.sh keeps it: COMPS) when the engine answers with
+	candidates (text only) and directives, in a directory holding the files xfile and 'my file' that is also HOME; ble.sh
+	hands the function the word evaluated (~ expanded here, a backslash gone), readline the word as typed. Each
+	word in brackets."""
+	import shlex
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in ('xfile', 'my file'):
+		(work / name).write_text('')
+	response = 'MSSHC1\\nD {}\\n{}E\\n'.format(directives, ''.join('C {}\\t\\tx\\n'.format(text) for text in candidates))
+	evaluated = typed.replace('~', str(work)) if word is None else word
+	line = 'mssh -f ' + typed
+	script = ('. "$1"; HOME=$PWD; _mssh_complete_engine() {{ cat >/dev/null; printf "{}\\0"; }}; '
+		'{} COMP_LINE={} COMP_POINT={}; '
+		'_mssh_complete_guard _mssh_complete_tab mssh {} -f; printf "[%s]" "${{COMPREPLY[@]}}"'
+		).format(response, 'BLE_VERSION=1 comp_line={0} comp_point={1} COMPS={2} progcomp_prefix=;'.format(
+			shlex.quote(line), len(line), shlex.quote(typed)) if ble else '', shlex.quote(line), len(line), shlex.quote(evaluated))
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
+	assert output.returncode == 0, output
+	return output.stdout.decode().replace(str(work), '$WORK')
+
+
+@pytest.mark.parametrize('typed, candidates, directives, expected, evaluated', [
+	# ble.sh hands the function the word evaluated (/w/x), mssh's candidates are for the word as typed (~/x): the local
+	# files come for the word as typed too, or ~/xfile and $WORK/xfile are both listed
+	('~/x', ['~/xfile'], 'files', '[~/xfile]', None),
+	# a word with a backslash or an open quote: the files of the name it stands for
+	('my\\ f', [], 'files', '[my file]', 'my f'),
+	('"my f', [], 'files', '[my file]', 'my f'),
+	# ignoring case: the candidate in the case typed goes in alone (the word compared is the one typed, not the evaluated)
+	('~/xf', ['~/XFILE', '~/xfile'], 'files icase', '[~/xfile]', None),
+])
+def test_blesh_path_value_files_are_for_the_word_as_typed(tmp_path, typed, candidates, directives, expected, evaluated):
+	assert ble_path_reply(tmp_path, typed, candidates, directives, word=evaluated) == expected
+
+
+def test_readline_path_value_files_are_for_the_word_readline_hands_over(tmp_path):
+	assert ble_path_reply(tmp_path, '~/x', ['~/xfile'], ble=False, word='~/x') == '[~/xfile]'
+
+
 	(['zzb'], [], {}, '[zzb]', '[]'),
 	# mixed: the words stay as they are
 	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {}, '[zzb][zzd/]', '[zza ][zzopt=]'),

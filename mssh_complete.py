@@ -5888,7 +5888,7 @@ _mssh_complete_tab() {
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0 _mssh_complete_trim=
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
-	local _mssh_complete_subword=$2 _mssh_complete_typed_line=0
+	local _mssh_complete_subword=$2 _mssh_complete_typed_line=0 _mssh_complete_plain=$2 _mssh_complete_value
 	local -a _mssh_complete_reply=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
@@ -5910,6 +5910,14 @@ _mssh_complete_tab() {
 		_mssh_complete_before=${comp_line:0:comp_point}
 		_mssh_complete_after=${comp_line:comp_point}
 		_mssh_complete_subword=${COMPS:${#progcomp_prefix}}
+		# the name that word stands for, as the engine's candidates (and the file names below) are for it: its opening
+		# quote off, or its backslashes. ble.sh's $2 is that name with a ~ or $VAR expanded here
+		if [[ $_mssh_complete_subword == [\"\']* ]]; then
+			_mssh_complete_plain=${_mssh_complete_subword:1}
+		else
+			_mssh_complete_unescape "$_mssh_complete_subword"
+			_mssh_complete_plain=$_mssh_complete_value
+		fi
 	fi
 	_mssh_complete_read_locale
 	_mssh_complete_flags="nosort=0 ble=$_mssh_complete_ble term=${TERM-} $_mssh_complete_locale"
@@ -5988,7 +5996,7 @@ _mssh_complete_tab() {
 		compopt -o filenames 2>/dev/null || :
 		while IFS= read -r _mssh_complete_item; do
 			_mssh_complete_reply+=("$_mssh_complete_item")
-		done < <(compgen -f -- "$_mssh_complete_cur" 2>/dev/null || :)
+		done < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
 	fi
 	COMPREPLY=()
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
@@ -6009,7 +6017,7 @@ _mssh_complete_tab() {
 				_mssh_complete_one=
 				break
 			fi
-			if [ "${_mssh_complete_item:0:${#_mssh_complete_cur}}" = "$_mssh_complete_cur" ] && [ "${_mssh_complete_one:0:${#_mssh_complete_cur}}" != "$_mssh_complete_cur" ]; then
+			if [ "${_mssh_complete_item:0:${#_mssh_complete_plain}}" = "$_mssh_complete_plain" ] && [ "${_mssh_complete_one:0:${#_mssh_complete_plain}}" != "$_mssh_complete_plain" ]; then
 				_mssh_complete_one=$_mssh_complete_item
 			fi
 		done
