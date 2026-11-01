@@ -935,21 +935,24 @@ def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_
 def ble_path_reply(tmp_path, typed, candidates, directives='files', ble=True, word=None):
 	"""COMPREPLY of the glue's TAB for the path word typed (as ble.sh keeps it: COMPS) when the engine answers with
 	candidates (text only) and directives, in a directory holding the files xfile and 'my file' that is also HOME; ble.sh
-	hands the function the word evaluated (~ expanded here, a backslash gone), readline the word as typed. Each
-	word in brackets."""
+	hands the function the word evaluated ($2: ~ and $VAR expanded here, quotes and backslashes gone, the whole in single
+	quotes when it holds a special character) and keeps its value in COMPV, unquoted; readline hands the word as typed.
+	word, the evaluated one, may name the directory as $WORK. Each reply word in brackets."""
 	import shlex
 	work = tmp_path / 'work'
 	work.mkdir()
 	for name in ('xfile', 'my file'):
 		(work / name).write_text('')
 	response = 'MSSHC1\\nD {}\\n{}E\\n'.format(directives, ''.join('C {}\\t\\tx\\n'.format(text) for text in candidates))
-	evaluated = typed.replace('~', str(work)) if word is None else word
+	evaluated = (typed.replace('~', '$WORK') if word is None else word).replace('$WORK', str(work))
+	handed = evaluated if re.match(r'^[\w/.,+@%:=-]*$', evaluated) else "'" + evaluated + "'"
 	line = 'mssh -f ' + typed
 	script = ('. "$1"; HOME=$PWD; _mssh_complete_engine() {{ cat >/dev/null; printf "{}\\0"; }}; '
 		'{} COMP_LINE={} COMP_POINT={}; '
 		'_mssh_complete_guard _mssh_complete_tab mssh {} -f; printf "[%s]" "${{COMPREPLY[@]}}"'
 		).format(response, 'BLE_VERSION=1 comp_line={0} comp_point={1} COMPS={2} progcomp_prefix=;'.format(
-			shlex.quote(line), len(line), shlex.quote(typed)) if ble else '', shlex.quote(line), len(line), shlex.quote(evaluated))
+			shlex.quote(line), len(line), shlex.quote(typed)) + ' COMPV=' + shlex.quote(evaluated) + ';' if ble else '',
+		shlex.quote(line), len(line), shlex.quote(handed))
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
 	assert output.returncode == 0, output
@@ -963,6 +966,11 @@ def ble_path_reply(tmp_path, typed, candidates, directives='files', ble=True, wo
 	# a word with a backslash or an open quote: the files of the name it stands for
 	('my\\ f', [], 'files', '[my file]', 'my f'),
 	('"my f', [], 'files', '[my file]', 'my f'),
+	# a $VAR: ble.sh's value of the word, never the typed $HOME/x, which ble.sh would insert as a literal \\$HOME
+	('$HOME/x', [], 'files', '[$WORK/xfile]', '$WORK/x'),
+	('${HOME}/x', [], 'files', '[$WORK/xfile]', '$WORK/x'),
+	('"$HOME/x', [], 'files', '[$WORK/xfile]', '$WORK/x'),
+	('~/my\\ f', [], 'files', '[~/my file]', '$WORK/my f'),
 	# ignoring case: the candidate in the case typed goes in alone (the word compared is the one typed, not the evaluated)
 	('~/xf', ['~/XFILE', '~/xfile'], 'files icase', '[~/xfile]', None),
 ])

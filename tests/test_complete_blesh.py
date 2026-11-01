@@ -171,6 +171,31 @@ def test_blesh_tab_closes_the_quote_of_a_git_style_command(tmp_path):
 	assert blesh_line(tmp_path, 'mssh h "zzgit checkout zzf', options=options) == 'mssh h "zzgit checkout zzfeature" '
 
 
+@pytest.mark.parametrize('typed, expected', [
+	# the file names of a path option's value, in a real ble.sh: what ble.sh hands the glue is its value of the word ($2
+	# quoted again), and a completion function's word goes in as a value, so a typed $HOME must not reach the glue as a
+	# value of its own (it went in as a literal \\$HOME/zzxfile)
+	('mssh -f ~/zzx', 'mssh -f ~/zzxfile '),
+	('mssh -f $HOME/zzx', 'mssh -f $HOME/zzxfile '),
+	('mssh -f ${HOME}/zzx', 'mssh -f ${HOME}/zzxfile '),
+	('mssh -f "$HOME/zzx', 'mssh -f "$HOME/zzxfile" '),
+	('mssh -f zzmy\\ f', 'mssh -f zzmy\\ file '),
+	('mssh -f "zzmy f', 'mssh -f "zzmy file" '),
+	('mssh -f ~/zzmy\\ f', 'mssh -f ~/zzmy\\ file '),
+	('mssh --config_file $HOME/zzx', 'mssh --config_file $HOME/zzxfile '),
+])
+def test_blesh_tab_completes_the_file_names_of_a_path_value_as_ble_sh_inserts_them(tmp_path, typed, expected):
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	for name in ('zzxfile', 'zzmy file'):
+		(home / name).write_text('')
+	session = blesh_session(home, env, glue_file(home))
+	try:
+		assert session.line_after(typed) == expected
+	finally:
+		session.close()
+
+
 def test_blesh_tab_still_completes_a_local_file_name_with_a_space_in_a_remote_command(tmp_path):
 	# ble.sh's own file names (6.39 did this too, through them)
 	assert blesh_line(tmp_path, 'mssh h cat zzmy\\ f', files=['zzmy file']) == 'mssh h cat zzmy\\ file '

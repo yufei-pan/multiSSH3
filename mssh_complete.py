@@ -5910,13 +5910,15 @@ _mssh_complete_tab() {
 		_mssh_complete_before=${comp_line:0:comp_point}
 		_mssh_complete_after=${comp_line:comp_point}
 		_mssh_complete_subword=${COMPS:${#progcomp_prefix}}
-		# the name that word stands for, as the engine's candidates (and the file names below) are for it: its opening
-		# quote off, or its backslashes. ble.sh's $2 is that name with a ~ or $VAR expanded here
-		if [[ $_mssh_complete_subword == [\"\']* ]]; then
-			_mssh_complete_plain=${_mssh_complete_subword:1}
-		else
+		# the name to complete files for, in the form ble.sh takes back as a value. A word starting with ~ stays as typed,
+		# its backslashes off: ble.sh inserts a value's leading ~ bare, and the engine's candidates are for the ~. Any other
+		# word is ble.sh's own value of it, COMPV (quotes off, a $HOME expanded here); the typed $HOME/x would come back
+		# as a value, which ble.sh quotes as \$HOME/x. Else $2
+		if [[ $_mssh_complete_subword == '~'* ]]; then
 			_mssh_complete_unescape "$_mssh_complete_subword"
 			_mssh_complete_plain=$_mssh_complete_value
+		elif [[ -n ${COMPV+set} && $COMPV == "${progcomp_prefix-}"* ]]; then
+			_mssh_complete_plain=${COMPV:${#progcomp_prefix}}
 		fi
 	fi
 	_mssh_complete_read_locale
