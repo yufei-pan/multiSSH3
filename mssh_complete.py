@@ -5755,6 +5755,12 @@ _mssh_complete_delegate() {
 		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
+			# a result that is exactly the text before bash's word (--opt= for --opt=) is empty once cut: the same
+			# answer without a candidate, or readline would take it for a unique match and add a space
+			if [[ -z $_mssh_complete_item ]]; then
+				_mssh_complete_dropped=1
+				continue
+			fi
 		elif [[ -n $_mssh_complete_lead ]] && (( _mssh_complete_fold )) && [[ ${_mssh_complete_item,,} == "${_mssh_complete_lead,,}"* ]]; then
 			# its text before bash's word is the lead in another case: put in for bash's word, the lead would
 			# come twice (Fi:fa.txt for fi:f), and readline's file names would do the same (Fi\:fa.txt)

@@ -320,7 +320,8 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	"""What the bash glue's delegate gives for the remote command line `words` after `setup` (a shell's own commands),
 	in a directory holding the file zzfile, the directories zzdir and zzdirb, and the command zzaws_completer, which
 	prints what it reads of its environment and arguments. The last word is the one completed. With prefix, the text
-	in front of the remote words in a quoted command, and word, the word bash replaces (the last by default). With each (a
+	in front of the remote words in a quoted command, and word, the word bash replaces (the last remote word by default;
+	'' is an empty word, as after a = bash breaks at). With each (a
 	printf format), the results come back as one string with each one in that format, not one per line."""
 	work = tmp_path / 'work'
 	work.mkdir()
@@ -333,9 +334,9 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 		'"zzkey=$COMP_KEY.$COMP_TYPE" "zzargs=$1|$2|$3"\n')
 	(found / 'zzaws_completer').chmod(0o755)
 	script = ('. "$1"; PATH=$2:$PATH; zzword=$4; zzprefix=$5; zzeach=$6; set -- $3; _zzreal() { COMPREPLY=(zzalpha zzalpine zzbeta); }; ' + before + setup +
-		'; _mssh_complete_guard _mssh_complete_delegate "${zzword:-${@: -1}}" $(( $# - 1 )) "$zzprefix" "$@"; '
+		'; [[ $zzword == @last ]] && zzword=${@: -1}; _mssh_complete_guard _mssh_complete_delegate "$zzword" $(( $# - 1 )) "$zzprefix" "$@"; '
 		'(( ${#_mssh_complete_delegated[@]} )) && printf "${zzeach:-%s\\n}" "${_mssh_complete_delegated[@]}"; true')
-	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found), words, word or '', prefix, each or ''],
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash')), str(found), words, '@last' if word is None else word, prefix, each or ''],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
 	assert output.returncode == 0, output
 	return output.stdout.decode() if each else output.stdout.decode().splitlines()
@@ -400,6 +401,11 @@ def test_bash_delegation_completes_as_the_compspec_of_the_command_says(tmp_path,
 	('', 'zzsvc a:ba', 'ba', '_zztrim() { COMPREPLY=(bar); }; complete -F _zztrim zzsvc', ['bar']),
 	# an & in the filter stands for the word with its glob characters quoted, as bash has it
 	('', 'zzsvc a*', None, 'complete -W "a* a*x a*y" -X "&" zzsvc', ['a*x', 'a*y']),
+	# a result that is exactly the text before bash's word is no candidate (it was an empty word, which readline adds a space to)
+	('', 'zzsvc --opt=', '', 'complete -W "--opt= --opt=a --opt=b" zzsvc', ['a', 'b']),
+	('', 'zzsvc --opt=', '', 'complete -W "--opt=" zzsvc', []),
+	('', 'zzsvc --opt=', '', '_zzo() { COMPREPLY=(--opt=); }; complete -F _zzo zzsvc', []),
+	('zzsvc ', 'zzsvc --opt=', '', '_zzo() { COMPREPLY=(--opt= --opt=x); }; complete -F _zzo zzsvc', ['x']),
 ])
 def test_bash_delegation_puts_the_prefix_and_the_filter_where_bash_does(tmp_path, prefix, words, word, setup, expected):
 	assert sorted(delegated(tmp_path, setup, words, prefix=prefix, word=word)) == sorted(expected)
@@ -720,6 +726,18 @@ def test_bash_an_empty_result_leaves_mssh_s_own_words_to_complete(tmp_path, shel
 ])
 def test_bash_an_empty_result_beside_other_words_changes_nothing(tmp_path, shell, options, typed, completed):
 	assert fresh_line(tmp_path, 'mssh', shell, typed, options=options, history=history_of('zzgit checkout zzfeature')) == completed
+
+
+@pytest.mark.parametrize('shell, options, typed, completed', [
+	# a delegated word that is exactly the text before bash's word (--opt= after the =) is no candidate: it was an
+	# empty word, and readline added a space to it as to a unique match (--opt= ), or inserted nothing beside others
+	('readline', '-W "--opt="', 'mssh h zzsvc --opt=', 'mssh h zzsvc --opt='),
+	('readline', '-W "--opt= --opt=ab --opt=ac"', 'mssh h zzsvc --opt=', 'mssh h zzsvc --opt=a'),
+	('readline', '-o nospace -W "--opt= --opt=ab --opt=ac"', 'mssh h zzsvc --opt=', 'mssh h zzsvc --opt=a'),
+	('ble', '-W "--opt= --opt=ab --opt=ac"', 'mssh h zzsvc --opt=', 'mssh h zzsvc --opt=a'),
+])
+def test_bash_a_result_equal_to_the_text_before_bash_s_word_is_no_candidate(tmp_path, shell, options, typed, completed):
+	assert fresh_line(tmp_path, 'mssh', shell, typed, options='complete {} zzsvc'.format(options)) == completed
 
 
 @needs_bash_completion
