@@ -157,6 +157,34 @@ def test_quoted_command_delegates_with_prefix():
 	assert query('mssh h "cat x | gre', word='cat x | gre').delegate == (0, 'cat x | ', ['gre'])
 
 
+@pytest.mark.parametrize('before, word, readline_word, expected', [
+	# ble.sh sends the word as typed (the glue reads it from COMPS), as zsh and fish do: the opening quote, a backslash,
+	# a ~. Without ble=1 the word is what readline hands over, and the engine would find the quote in it
+	('mssh h "fakecmd al', '"fakecmd al', 'fakecmd al', ['fakecmd alpha']),
+	("mssh h 'fakecmd al", "'fakecmd al", 'fakecmd al', ['fakecmd alpha']),
+	('mssh h cat ~/zzn', '~/zzn', '~/zzn', ['~/zznotes.txt']),
+	('mssh h fakecmd zz\\ a al', 'al', 'al', []),
+	('mssh h cat zzmy\\ f', 'zzmy\\ f', 'zzmy\\ f', []),
+])
+def test_bash_under_ble_reads_the_word_as_typed(before, word, readline_word, expected):
+	knowledges = [memory([line(NOW, '-su', 'h', '"fakecmd alpha"'), line(NOW, '-su', 'h', '"cat ~/zznotes.txt"')])]
+	under_ble = query(before, word=word, knowledges=knowledges, flags={'ble': '1'})
+	readline = query(before, word=readline_word, knowledges=knowledges)
+	assert texts(under_ble) == texts(readline) == expected
+	assert under_ble.delegate == readline.delegate
+
+
+def test_bash_under_ble_reads_the_requoted_word_a_6_39_glue_sends():
+	# 6.39's glue sent ble.sh's own quoting of the evaluated word, with the line rebuilt from it: a closed quote
+	knowledges = [memory([line(NOW, '-su', 'h', '"fakecmd alpha"')])]
+	typed = query('mssh h "fakecmd al', word='"fakecmd al', knowledges=knowledges, flags={'ble': '1'})
+	requoted = query("mssh h 'fakecmd al'", word="'fakecmd al'", knowledges=knowledges, flags={'ble': '1'})
+	assert typed.delegate == (1, 'fakecmd ', ['fakecmd', 'al'])
+	assert texts(typed) == ['fakecmd alpha']
+	assert requoted.delegate == typed.delegate
+	assert texts(requoted) == texts(typed)
+
+
 def test_bash_escapes_unquoted_specials():
 	knowledge = memory([line(NOW, '-su', 'h', '"date;"')])
 	assert texts(query('mssh h da', knowledges=[knowledge])) == [r'date\;']

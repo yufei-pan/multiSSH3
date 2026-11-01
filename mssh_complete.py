@@ -3166,10 +3166,10 @@ def shell_history_knowledge(lines, spec):
 	return memory
 
 def _shell_word(request):
-	'''The request's word as the engine compares it: zsh and fish send it quoted as typed.'''
+	'''The request's word as the engine compares it: zsh and fish send it quoted as typed, and so does bash's glue under ble.sh (ble=1).'''
 	if request.word is None:
 		return None
-	if request.shell in ('zsh', 'fish'):
+	if request.shell in ('zsh', 'fish') or request.flags.get('ble') == '1':
 		tokens = lex(request.word)
 		return tokens[0].text if len(tokens) == 1 else ('' if not tokens else request.word)
 	return request.word
@@ -5890,6 +5890,7 @@ _mssh_complete_tab() {
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0 _mssh_complete_trim=
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
+	local _mssh_complete_subword=$2 _mssh_complete_typed_line=0
 	local -a _mssh_complete_reply=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
@@ -5900,6 +5901,18 @@ _mssh_complete_tab() {
 	fi
 	# ble.sh quotes what it inserts, readline does not: ble=1 only while ble.sh is attached (0.4 says so)
 	[[ -n ${BLE_VERSION-} && ( -n ${BLE_ATTACHED-} || -z ${BLE_ATTACHED+set} ) ]] && _mssh_complete_ble=1
+	# ble.sh hands a completion function the words evaluated and quoted again ($2 is 'fakecmd al' for "fakecmd al, a ~ or
+	# $VAR is expanded here, a backslash is gone) and builds COMP_LINE from them: not the line as typed, which the engine
+	# reads. It keeps the line as typed in its own variables, which its fzf integration reads the same way: comp_line and
+	# comp_point (the current command), COMPS (the word up to the cursor) and progcomp_prefix (the part before the = or :
+	# it split the word at; ble.sh replaces what comes after it). Without them (another ble.sh) the request is built from
+	# bash's COMP_LINE and $2, as before
+	if (( _mssh_complete_ble )) && [[ -n ${comp_line+set} && -n ${comp_point+set} && -n ${COMPS+set} && $COMPS == "${progcomp_prefix-}"* ]]; then
+		_mssh_complete_typed_line=1
+		_mssh_complete_before=${comp_line:0:comp_point}
+		_mssh_complete_after=${comp_line:comp_point}
+		_mssh_complete_subword=${COMPS:${#progcomp_prefix}}
+	fi
 	_mssh_complete_read_locale
 	_mssh_complete_flags="nosort=0 ble=$_mssh_complete_ble term=${TERM-} $_mssh_complete_locale"
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
@@ -5912,7 +5925,7 @@ _mssh_complete_tab() {
 		{
 			local _mssh_complete_ignoring=0
 			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_before" "$_mssh_complete_after" "$_mssh_complete_cur"
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_before" "$_mssh_complete_after" "$_mssh_complete_subword"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
 	) || return 0
@@ -5946,7 +5959,15 @@ _mssh_complete_tab() {
 	done <<< "$_mssh_complete_resp"
 	(( _mssh_complete_ended )) || return 0
 	if (( _mssh_complete_delegating )) && (( ${#_mssh_complete_xfields[@]} >= 3 )); then
-		_mssh_complete_delegate "$_mssh_complete_cur" "${_mssh_complete_xfields[@]}"
+		# the word the delegate completes, as bash would hand it: the remote word after progcomp_prefix, dequoted (the
+		# prefix of a quoted command is part of the word, readline breaks nothing inside it)
+		if (( _mssh_complete_typed_line )); then
+			_mssh_complete_subword=${_mssh_complete_xfields[1]}${_mssh_complete_xfields[_mssh_complete_xfields[0]+2]-}
+			_mssh_complete_subword=${_mssh_complete_subword#"$progcomp_prefix"}
+		else
+			_mssh_complete_subword=$_mssh_complete_cur
+		fi
+		_mssh_complete_delegate "$_mssh_complete_subword" "${_mssh_complete_xfields[@]}"
 		# the options end with a space for the patterns below (ble.sh's compopt prints no command name)
 		_mssh_complete_item=$(compopt 2>/dev/null) || :
 		_mssh_complete_item+=' '

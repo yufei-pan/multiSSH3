@@ -38,6 +38,10 @@ def words(line):
 	('mssh -u r', ['mssh', '-u', 'root']),
 	('mssh --no_wa', ['mssh', '--no_watch']),
 	('mssh h fakecmd al', ['mssh', 'h', 'fakecmd', 'alpha']),
+	# a quoted remote command: ble.sh hands the glue the quote evaluated and closed ('fakecmd al'), the glue reads the line it keeps
+	('mssh h "fakecmd al', ['mssh', 'h', 'fakecmd alpha']),
+	("mssh h 'fakecmd al", ['mssh', 'h', 'fakecmd alpha']),
+	('mssh h "date; fakecmd al', ['mssh', 'h', 'date; fakecmd alpha']),
 ])
 def test_blesh_tab_completes(setup, typed, expected):
 	env, home = setup
@@ -119,3 +123,48 @@ def test_blesh_inserts_command_words_as_history_ran_them(tmp_path):
 		assert words(session.line_after('mssh web1 othercmd ')) == ['mssh', 'web1', 'othercmd', '$HOME/notes']
 	finally:
 		session.close()
+
+
+def blesh_line(tmp_path, typed, history=(), options='', files=(), keys='\t'):
+	"""The line after typed and keys in a new ble.sh session with the glue, in a directory holding files (and no other);
+	options run after the glue loads."""
+	env, home = make_home(tmp_path, history)
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in files:
+		(work / name).write_text('')
+	session = blesh_session(home, env, glue_file(home), extra="cd '{}'; {}".format(work, options))
+	try:
+		return session.line_after(typed, keys=keys)
+	finally:
+		session.close()
+
+
+def history_of(*commands):
+	return ['{}\t/x/multiSSH3.py\t-su\th\t"{}"'.format(1790000000 + number, command) for number, command in enumerate(commands)]
+
+
+@pytest.mark.parametrize('typed, history, expected', [
+	# mssh's own words in a quoted command, from history alone (the command has no completion)
+	('mssh h "zzcmd al', ['zzcmd alpha'], ['mssh', 'h', 'zzcmd alpha']),
+	("mssh h 'zzcmd al", ['zzcmd alpha'], ['mssh', 'h', 'zzcmd alpha']),
+	# a ~ typed stays as typed (ble.sh expands it here before the glue sees it), the history's path completes
+	('mssh h cat ~/zzn', ['cat ~/zznotes.txt'], ['mssh', 'h', 'cat', '~/zznotes.txt']),
+	# a backslash or a quote in a word before the current one no longer makes the current one a command name (6.39 read
+	# ble.sh's requoted 'zz a' as a quoted word and completed the command alias)
+	('mssh h fakecmd zz\\ a al', [], ['mssh', 'h', 'fakecmd', 'zz a', 'alpha']),
+])
+def test_blesh_tab_reads_the_line_as_typed(tmp_path, typed, history, expected):
+	assert words(blesh_line(tmp_path, typed, history=history_of(*history))) == expected
+
+
+def test_blesh_tab_completes_a_quoted_command_that_holds_a_equals_sign(tmp_path):
+	# ble.sh splits no word inside the quote, the glue sends it whole
+	line = blesh_line(tmp_path, 'mssh h "zzsvc x=al', options='complete -W x=alpha zzsvc')
+	assert words(line) == ['mssh', 'h', 'zzsvc x=alpha']
+
+
+def test_blesh_tab_still_completes_a_local_file_name_with_a_space_in_a_remote_command(tmp_path):
+	# ble.sh's own file names (6.39 did this too, through them)
+	assert blesh_line(tmp_path, 'mssh h cat zzmy\\ f', files=['zzmy file']) == 'mssh h cat zzmy\\ file '
