@@ -895,32 +895,33 @@ def test_bash_a_nospace_spec_leaves_the_space_to_readline_where_all_its_words_en
 		session.close()
 
 
-def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_under_ble(tmp_path):
-	# ble.sh inserts a nospace candidate that ends in a space as it is, and drops the space of one identical to a
-	# word without it; with the space stripped and nospace off, it adds the one as it does for any spec
-	import test_complete_blesh as ble
-	for index, (options, typed, completed) in enumerate([
-		(GIT_STYLE, 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
-		('_zzn() { COMPREPLY=(); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
-		("_zzs() { COMPREPLY=('zzfeature' 'zzfeature '); }; complete -o nospace -F _zzs zzgit", 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature'),
-	]):
-		(tmp_path / str(index)).mkdir()
-		env, home = make_home(tmp_path / str(index), history_of('zzgit checkout zzfeature'))
-		build_index(env)
-		session = blesh_session(home, env, ble.glue_file(home), extra=options)
-		try:
-			assert session.line_after(typed) == completed
-		finally:
-			session.close()
+@pytest.mark.parametrize('options, typed, keys, completed', [
+	# git style: the glue strips the space and turns nospace off, ble.sh adds the one space as it does for any spec
+	(GIT_STYLE, 'mssh h zzgit checkout zzf', '\t', 'mssh h zzgit checkout zzfeature '),
+	# in the middle of a line it skips the space already there (the command itself, natively, gets two)
+	(GIT_STYLE, 'mssh h zzgit checkout zzf -- x', BACK + '\t', 'mssh h zzgit checkout zzfeature -- x'),
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -F _zzn zzgit', 'mssh h zzgit checkout zzf', '\t', 'mssh h zzgit checkout zzfeature '),
+	# beside a word without the space the words stay as given, and the engine's is the spec's: listed once
+	("_zzs() { COMPREPLY=('zzfeature' 'zzfeature '); }; complete -o nospace -F _zzs zzgit", 'mssh h zzgit checkout zzf', '\t', 'mssh h zzgit checkout zzfeature'),
+	# readline would quote the words under filenames, so mssh's word went in with no space; ble.sh, quoting them itself,
+	# gets the same space as readline
+	('_zzn() { COMPREPLY=(); }; complete -o nospace -o filenames -F _zzn zzgit', 'mssh h zzgit checkout zzf', '\t', 'mssh h zzgit checkout zzfeature '),
+])
+def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_under_ble(tmp_path, options, typed, keys, completed):
+	# ble.sh inserts a nospace candidate that ends in a space as it is, and skips the space already right of the cursor
+	# only for the one it adds itself
+	history = history_of('zzgit checkout zzfeature')
+	assert fresh_line(tmp_path, 'ble', 'ble', typed, keys=keys, options=options, history=history) == completed
 
 
-def unspaced(tmp_path, reply, given, icase=0, ble=0):
-	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given): the engine's
-	words and the delegate's, each in brackets."""
+def unspaced(tmp_path, reply, given, icase=0, ble=0, prefix=''):
+	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given), the remote command
+	quoted when it has a prefix: the engine's words and the delegate's, each in brackets."""
 	import shlex
 	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_icase={}; _mssh_complete_ble={}; '
-		'_mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
-		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble)
+		'_mssh_complete_xfields=(0 {}); _mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; '
+		'printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble, shlex.quote(prefix))
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.returncode == 0, output
@@ -934,17 +935,24 @@ def unspaced(tmp_path, reply, given, icase=0, ble=0):
 	(['zzb'], [], {}, '[zzb]', '[]'),
 	# mixed: the words stay as they are
 	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {}, '[zzb][zzd/]', '[zza ][zzopt=]'),
-	# under ble.sh: the delegate's words as given, the engine's with no space, and the engine's word the delegate gave
-	# with one left out (ble.sh would meet both); no delegated word: nothing to keep
+	# the same under ble.sh: all spaced, or none, and the space comes off (ble.sh adds it); mixed, as given. The dedup
+	# reads an engine's word the same as a spaced one of the delegate's, in the case given (6.39 folded it under ble.sh)
 	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {'ble': 1}, '[zzb][zzd/]', '[zza ][zzopt=]'),
-	(['zzb', 'zzd/'], ['zza ', 'zzc '], {'ble': 1}, '[zzb][zzd/]', '[zza ][zzc ]'),
+	(['zzb', 'zzd/'], ['zza ', 'zzc '], {'ble': 1}, '[zzb][zzd/]', '[zza][zzc]'),
 	(['zzb'], [], {'ble': 1}, '[zzb]', '[]'),
-	(['zza', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[zzb]', '[zza ][zzopt=]'),
+	(['zza', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[zza][zzb]', '[zza ][zzopt=]'),
 	(['zza', 'zzb'], ['zza', 'zzopt='], {'ble': 1}, '[zza][zzb]', '[zza][zzopt=]'),
-	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1, 'icase': 1}, '[zzb]', '[zza ][zzopt=]'),
+	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1, 'icase': 1}, '[ZZA][zzb]', '[zza ][zzopt=]'),
 	(['ZZA', 'zzb'], ['zza ', 'zzopt='], {'ble': 1}, '[ZZA][zzb]', '[zza ][zzopt=]'),
+	# under ble.sh a word that is shell text (scp's) goes as the name it stands for, which ble.sh quotes; not in a quoted
+	# remote command, where it is the command's own text; not under readline, which does not quote what it inserts
+	(['zzb'], ['zz\\ one.txt ', 'zzc '], {'ble': 1}, '[zzb]', '[zz one.txt][zzc]'),
+	(['zzb'], ['a\\\\b ', 'zzc '], {'ble': 1}, '[zzb]', '[a\\b][zzc]'),
+	(['zzb'], ['zz\\ one.txt ', 'zzc '], {'ble': 1, 'prefix': 'zzscp '}, '[zzb]', '[zz\\ one.txt][zzc]'),
+	(['zzb'], ['zz\\ one.txt ', 'zzc '], {}, '[zzb]', '[zz\\ one.txt][zzc]'),
+	(['zzb'], ['zz\\ one.txt ', 'zzopt='], {'ble': 1}, '[zzb]', '[zz\\ one.txt ][zzopt=]'),
 ])
-def test_bash_a_nospace_spec_loses_its_space_to_readline_where_all_its_words_end_in_one(tmp_path, reply, given, kwargs, engine, delegate):
+def test_bash_a_nospace_spec_loses_its_space_to_the_shell_where_all_its_words_end_in_one(tmp_path, reply, given, kwargs, engine, delegate):
 	assert unspaced(tmp_path, reply, given, **kwargs) == (engine, delegate)
 
 

@@ -165,6 +165,12 @@ def test_blesh_tab_completes_a_quoted_command_that_holds_a_equals_sign(tmp_path)
 	assert words(line) == ['mssh', 'h', 'zzsvc x=alpha']
 
 
+def test_blesh_tab_closes_the_quote_of_a_git_style_command(tmp_path):
+	# the spec's word ends with the space it wants and nospace is on: readline closes the quote and adds the space after it
+	options = "_zzs() { COMPREPLY=('zzfeature '); }; complete -o nospace -F _zzs zzgit"
+	assert blesh_line(tmp_path, 'mssh h "zzgit checkout zzf', options=options) == 'mssh h "zzgit checkout zzfeature" '
+
+
 def test_blesh_tab_still_completes_a_local_file_name_with_a_space_in_a_remote_command(tmp_path):
 	# ble.sh's own file names (6.39 did this too, through them)
 	assert blesh_line(tmp_path, 'mssh h cat zzmy\\ f', files=['zzmy file']) == 'mssh h cat zzmy\\ file '
