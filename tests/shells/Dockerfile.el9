@@ -1,0 +1,19 @@
+# Shell matrix image: RHEL 9 era shells (zsh 5.8, as in Ubuntu 22.04 and Debian 11; bash 5.1; Python 3.9)
+FROM rockylinux:9
+RUN dnf -q -y install epel-release \
+ && dnf -q -y install bash bash-completion zsh fish python3 python3-pytest procps-ng glibc-langpack-en which xz gawk \
+ && dnf clean all
+ENV LANG=en_US.UTF-8
+# ble.sh (Bash Line Editor), pinned: the autocomplete tests also run inside it
+ADD --checksum=sha256:7a2445f138e7f099dd5dee749391a8b045646d1b8a605975885be5b34b6b5f7e \
+    https://github.com/akinomyoga/ble.sh/releases/download/nightly/ble-nightly-20260908%2Bd81fd54.tar.xz /tmp/blesh.tar.xz
+RUN mkdir -p /opt/blesh && tar -xJf /tmp/blesh.tar.xz -C /opt/blesh --strip-components=1 && rm /tmp/blesh.tar.xz
+ENV MSSH_TEST_BLESH=/opt/blesh/ble.sh
+# zsh-autosuggestions, pinned: the grey-text tests also run with it
+ADD --checksum=sha256:0df7affff21cd87ed298e6a3970ed08a1dd66a6efa676454ee5b091ad503badf \
+    https://github.com/zsh-users/zsh-autosuggestions/archive/refs/tags/v0.7.1.tar.gz /tmp/zas.tar.gz
+RUN mkdir -p /opt/zsh-autosuggestions && tar -xzf /tmp/zas.tar.gz -C /opt/zsh-autosuggestions --strip-components=1 && rm /tmp/zas.tar.gz
+# zsh-syntax-highlighting, pinned (0.8.0, as EPEL 9 ships it): the warning tests also run with it
+ADD --checksum=sha256:5981c19ebaab027e356fe1ee5284f7a021b89d4405cc53dc84b476c3aee9cc32 \
+    https://github.com/zsh-users/zsh-syntax-highlighting/archive/refs/tags/0.8.0.tar.gz /tmp/zsyh.tar.gz
+RUN mkdir -p /opt/zsh-syntax-highlighting && tar -xzf /tmp/zsyh.tar.gz -C /opt/zsh-syntax-highlighting --strip-components=1 && rm /tmp/zsyh.tar.gz
