@@ -267,13 +267,18 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - Revisit when: an operator whose remote home differs from the local one hits it.
 - Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
 
-### ble.sh: a word split at an = or : after a quote, backslash or expansion completes as in 6.39
+### ble.sh: a word split at an = or : after a quote, backslash or expansion is read as in 6.39
 - Kind: known limitation
 - What the operator sees: with ble.sh, when the part of a word before the `=` or `:` at which ble.sh splits it
-  holds a quote, a backslash or an expansion (`"a"=b`, `$V:x`, `a\=b`), the glue takes 6.39's path for that
-  word: a quoted remote command and a `~` path there complete as in 6.39, without 6.40's fixes for them.
+  holds a quote, a backslash or an expansion (`"a"=b`, `'a'=b`, `a\ b=c`, `$V:x`), the glue reads that word as
+  6.39 did, from ble.sh's evaluated values. It completes as in 6.39, except that a `~` after the split comes back
+  as this machine's home with the word quoted again: `mssh h cmd 'a'=~/zzx<TAB>` gives `'a=/home/me/zzxfile'`,
+  and `$V:~/zzx` gives `'a:/home/me/zzxfile'`; 6.39 offered nothing there. A backslash before the `=` or `:`
+  itself (`a\=b`) is no such split: ble.sh does not split there, and the word completes as typed
+  (`a\=zzxfile`).
 - Why: ble.sh hands the glue the part before the split (`progcomp_prefix`) evaluated; when the typed text is not
-  the same as its value, the glue cannot tell where the word starts on the line as typed.
+  the same as its value, the glue cannot tell where the word starts on the line as typed. After the split, the
+  glue completes ble.sh's evaluated `$2`, in which the `~` is already expanded.
 - Revisit when: an operator hits it.
 - Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
 
@@ -351,10 +356,11 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
 
 ### zsh before 5.8: a Ctrl-C during a completion query can reach the query
 - Kind: deferred
-- What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's), now and then, for the length of one
-  completion query (a TAB, the grey text, the warnings), the query's process holds the terminal, so a Ctrl-C goes
-  to the query instead of the shell and the line is not cleared. The shell stays alive and the keys typed still
-  reach it. 6.39 does the same: the zsh glue did not change in 6.40.
+- What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's), now and then, for the length of a
+  completion query (a TAB, the grey text, the warnings; longer when typing starts more), the query's process
+  holds the terminal. A Ctrl-C then reaches the query rather than the shell; zsh usually drops the line anyway,
+  but now and then the line stays. The shell stays alive and the keys typed still reach it. 6.39 does the same:
+  the zsh glue did not change in 6.40.
 - Why: on zsh before 5.8 the glue's hand-back of the terminal sometimes leaves it with the query's process
   group; why needs its own investigation. Until then the test of it
   (`tests/test_complete_keys.py::test_zsh_keeps_the_terminal_while_mssh_asks`) can fail on the legacy image.
