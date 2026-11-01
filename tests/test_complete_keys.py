@@ -1290,6 +1290,11 @@ def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
 	try:
 		session.send(keys)
 		time.sleep(0.5)
+		# a query being forked holds the terminal for a moment: the shell must have it back within 250 ms. A terminal
+		# really lost stays lost for the whole query (the glue's engine sleeps 1 s), so it still fails
+		deadline = time.monotonic() + 0.25
+		while os.tcgetpgrp(session.fd) != session.pid and time.monotonic() < deadline:
+			time.sleep(0.02)
 		assert os.tcgetpgrp(session.fd) == session.pid
 	finally:
 		session.close()
