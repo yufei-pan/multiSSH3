@@ -330,3 +330,96 @@ def test_with_no_usable_place_ssh_does_not_share(places):
 	places['shm'].rmdir()
 	assert ssh_controlpath(places['config']) is None
 	assert not places['shm'].exists()
+
+
+# The same rules as --store_config_file: a link of anyone else (but root) is not followed, and under sudo
+# the ~/.ssh of the user who ran sudo is written with their rights.
+
+@posix_only
+def test_a_symlinked_config_of_someone_else_is_not_written_through(home, monkeypatch, tmp_path, capsys):
+	victim = tmp_path / 'victim'
+	victim.write_bytes(b'precious')
+	(home / '.ssh').mkdir(mode=0o700)
+	link = home / '.ssh' / 'config'
+	link.symlink_to(victim)
+	monkeypatch.setattr(multiSSH3, '_own_symlink', lambda path: False)  # as root, a link someone else made
+	assert add_control_master_config(monkeypatch) == 0
+	assert victim.read_bytes() == b'precious' and link.is_symlink()
+	err = capsys.readouterr().err
+	assert 'symlink owned by someone else' in err and 'Traceback' not in err
+
+
+needs_root = pytest.mark.skipif(not hasattr(os, 'geteuid') or os.geteuid() != 0, reason='needs root to act as the user who ran sudo')
+SUDO_USER_ID = 65534
+
+
+@pytest.fixture
+def sudo_home(monkeypatch):
+	'''root under `sudo -E`: HOME and a dotfiles directory of nobody, the user who ran sudo, that they can reach.'''
+	import tempfile
+
+	base = tempfile.mkdtemp(prefix='mssh-sudo-', dir='/tmp')  # tmp_path is under root's 0700 directory
+	os.chmod(base, 0o755)
+	home = os.path.join(base, 'home')
+	dotfiles = os.path.join(home, 'dotfiles')
+	os.makedirs(dotfiles)
+	for directory in (home, dotfiles):
+		os.chown(directory, SUDO_USER_ID, SUDO_USER_ID)
+	monkeypatch.setenv('HOME', home)
+	monkeypatch.setenv('SUDO_UID', str(SUDO_USER_ID))
+	monkeypatch.setenv('SUDO_GID', str(SUDO_USER_ID))
+	ids = (os.geteuid(), os.getegid(), sorted(os.getgroups()))
+	yield home
+	assert (os.geteuid(), os.getegid(), sorted(os.getgroups())) == ids  # root's again
+	shutil.rmtree(base)
+
+
+def owner(path):
+	st = os.lstat(path)
+	return st.st_uid, st.st_gid
+
+
+@needs_root
+def test_under_sudo_a_new_ssh_config_is_the_users(sudo_home, monkeypatch):
+	assert add_control_master_config(monkeypatch) == 0
+	ssh_dir = os.path.join(sudo_home, '.ssh')
+	assert owner(ssh_dir) == (SUDO_USER_ID, SUDO_USER_ID) and stat.S_IMODE(os.stat(ssh_dir).st_mode) == 0o700
+	config = os.path.join(ssh_dir, 'config')
+	assert owner(config) == (SUDO_USER_ID, SUDO_USER_ID)
+	with open(config, 'rb') as f:
+		assert f.read() == block()
+
+
+@needs_root
+def test_under_sudo_the_users_symlinked_ssh_config_is_written_through(sudo_home, monkeypatch):
+	real = os.path.join(sudo_home, 'dotfiles', 'ssh_config')
+	with open(real, 'wb') as f:
+		f.write(OLD_BLOCK)
+	os.chown(real, SUDO_USER_ID, SUDO_USER_ID)
+	ssh_dir = os.path.join(sudo_home, '.ssh')
+	os.mkdir(ssh_dir, 0o700)
+	os.chown(ssh_dir, SUDO_USER_ID, SUDO_USER_ID)
+	link = os.path.join(ssh_dir, 'config')
+	os.symlink(real, link)
+	os.lchown(link, SUDO_USER_ID, SUDO_USER_ID)
+	assert add_control_master_config(monkeypatch) == 0
+	assert os.path.islink(link) and owner(real) == (SUDO_USER_ID, SUDO_USER_ID)
+	with open(real, 'rb') as f:
+		assert f.read() == block()
+	assert os.listdir(os.path.join(sudo_home, 'dotfiles')) == ['ssh_config']
+
+
+@needs_root
+@pytest.mark.parametrize('sudo', [False, True], ids=['root', 'under_sudo'])
+def test_root_does_not_follow_a_strangers_ssh_config_link(home, monkeypatch, tmp_path, sudo):
+	victim = tmp_path / 'victim'
+	victim.write_bytes(b'precious')
+	(home / '.ssh').mkdir(mode=0o700)
+	link = home / '.ssh' / 'config'
+	link.symlink_to(victim)
+	os.lchown(str(link), 23456, 23456)
+	if sudo:
+		monkeypatch.setenv('SUDO_UID', str(SUDO_USER_ID))
+		monkeypatch.setenv('SUDO_GID', str(SUDO_USER_ID))
+	assert add_control_master_config(monkeypatch) == 0
+	assert victim.read_bytes() == b'precious' and link.is_symlink()

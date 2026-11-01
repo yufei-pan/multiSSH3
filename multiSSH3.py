@@ -7981,19 +7981,25 @@ def _replace_file(path, content, mode=None, follow=True, owner=True):
 def process_control_master_config(args):
 	if args.add_control_master_config:
 		try:
-			if not os.path.exists(os.path.expanduser('~/.ssh')):
-				os.makedirs(os.path.expanduser('~/.ssh'),mode=0o700)
 			ssh_config_file = os.path.expanduser('~/.ssh/config')
-			try:
-				with open(ssh_config_file,'rb') as f:
-					content = f.read()
-			except FileNotFoundError:
-				content = b''
-			new_content, change = _with_control_master_block(content)
+			# the same rules as write_default_config: under sudo the user's own ~/.ssh is written with their
+			# rights, a link of anyone else (but root) is not followed
+			with _as_user(_sudo_user_of(ssh_config_file)):
+				if os.path.islink(ssh_config_file) and not _own_symlink(ssh_config_file):
+					raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(ssh_config_file))
+				if not os.path.exists(os.path.dirname(ssh_config_file)):
+					os.makedirs(os.path.dirname(ssh_config_file), mode=0o700)
+				try:
+					with open(ssh_config_file,'rb') as f:
+						content = f.read()
+				except FileNotFoundError:
+					content = b''
+				new_content, change = _with_control_master_block(content)
+				if change != 'unchanged':
+					_replace_file(ssh_config_file, new_content)
 			if change == 'unchanged':
 				eprint("ControlMaster configuration already in ~/.ssh/config, nothing changed.")
 			else:
-				_replace_file(ssh_config_file, new_content)
 				if change == 'replaced':
 					eprint("Replaced the ControlMaster configuration mssh added to ~/.ssh/config before (ssh failed without /run/user/<uid>) with:")
 				else:
@@ -8001,6 +8007,9 @@ def process_control_master_config(args):
 				eprint(_control_master_block())
 			for number in _old_control_paths(new_content):
 				eprint("Warning: ~/.ssh/config line {} still has mssh's old {!r}, in a block changed since mssh added it, so left alone: with it every ssh fails where /run/user/<uid> is missing (su, sudo, cron, containers). Remove that block; mssh's new one is in place.".format(number, _OLD_CONTROL_MASTER_LINES[2].decode()))
+		except PermissionError as e:
+			# a link of someone else, or a file we may not write: nothing to debug
+			eprint(f"Error adding ControlMaster configuration: {e}")
 		except Exception as e:
 			eprint(f"Error adding ControlMaster configuration: {e}")
 			import traceback
