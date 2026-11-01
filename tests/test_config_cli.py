@@ -335,7 +335,7 @@ def test_a_stale_backup_of_another_owner_does_not_stop_the_store(monkeypatch, tm
 	backup.write_text("{}")
 	real_lstat = os.lstat
 
-	def not_in_its_group(path, uid, gid, **kwargs):
+	def not_in_its_group(fd, uid, gid):
 		raise PermissionError(1, "Operation not permitted")
 
 	def root_s(path, *args, **kwargs):
@@ -345,7 +345,7 @@ def test_a_stale_backup_of_another_owner_does_not_stop_the_store(monkeypatch, tm
 				int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
 		return st
 
-	monkeypatch.setattr(os, "chown", not_in_its_group)
+	monkeypatch.setattr(os, "fchown", not_in_its_group)
 	monkeypatch.setattr(os, "lstat", root_s)
 	_store_with_backup(monkeypatch, link)
 
@@ -361,10 +361,10 @@ def test_someone_elses_config_is_not_written(monkeypatch, tmp_path, capsys, mode
 	shared.chmod(mode)
 	monkeypatch.setattr(multiSSH3.os, "getuid", lambda: 12345)  # the file belongs to someone else
 
-	def not_our_file(path, uid, gid):
+	def not_our_file(fd, uid, gid):
 		raise PermissionError(1, "Operation not permitted")
 
-	monkeypatch.setattr(multiSSH3.os, "chown", not_our_file)
+	monkeypatch.setattr(multiSSH3.os, "fchown", not_our_file)
 	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
 	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
 	multiSSH3.write_default_config(args, str(shared), force=True)
@@ -389,3 +389,30 @@ def test_store_does_not_write_through_someone_elses_symlink(monkeypatch, tmp_pat
 
 	assert victim.read_text() == "precious"
 	assert sorted(p.name for p in tmp_path.iterdir()) == ["victim", "x.json"]  # no temporary file next to the victim
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to give a file to another user")
+def test_a_link_swapped_in_for_the_temporary_is_not_chowned(monkeypatch, tmp_path):
+	# root writing a config in a directory of another user (sudo keeping HOME): that user can put a link
+	# at the temporary's name between its creation and the chown, the owner goes to the open file only
+	victim = tmp_path / "victim"
+	victim.write_text("precious")
+	config = tmp_path / "multiSSH3.config.json"
+	config.write_text("{}")
+	os.chown(str(config), 65534, 65534)
+	real_open = os.open
+
+	def swap_in_a_link(path, *args, **kwargs):
+		fd = real_open(path, *args, **kwargs)
+		if str(path).endswith(".tmp"):
+			os.unlink(path)
+			os.symlink(str(victim), path)
+		return fd
+
+	monkeypatch.setattr(multiSSH3.os, "open", swap_in_a_link)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	multiSSH3.write_default_config(args, str(config), force=True)
+
+	assert (victim.stat().st_uid, victim.stat().st_gid) == (0, 0)
+	assert victim.read_text() == "precious"

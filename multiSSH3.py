@@ -7878,9 +7878,11 @@ def _replace_file(path, content, mode=None, follow=True, owner=True):
 			if hasattr(os, 'fchmod'):
 				# O_CREAT's mode is reduced by the umask, set it exactly
 				os.fchmod(f.fileno(), mode)
-			if owner and hasattr(os, 'chown'):
+			if owner and hasattr(os, 'fchown'):
 				try:
-					os.chown(temporary, owner.st_uid, owner.st_gid)
+					# on the open file, not by name: in a directory of another user, that user could put a
+					# link of their choice in its place first and have it chowned to them
+					os.fchown(f.fileno(), owner.st_uid, owner.st_gid)
 				except OSError:
 					if st is not None and st.st_uid != os.getuid():
 						raise
