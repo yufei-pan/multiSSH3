@@ -23,6 +23,10 @@ atexit.register(shutil.rmtree, _SESSION_DIR, True)
 SESSION_HOME = os.path.join(_SESSION_DIR, "home")
 os.mkdir(SESSION_HOME)
 os.environ["HOME"] = SESSION_HOME
+# a root session started through sudo (sudo -s, the test VM's runner): mssh would write the files of the user
+# who ran sudo with their rights; the tests that want that set these themselves
+for _name in ("SUDO_UID", "SUDO_GID", "SUDO_USER", "SUDO_COMMAND"):
+	os.environ.pop(_name, None)
 
 # ssh -G (how mssh validates names) without the developer's ssh config, whose aliases would decide
 # which test names are valid and whose Match exec lines would run commands. Every other ssh, the live

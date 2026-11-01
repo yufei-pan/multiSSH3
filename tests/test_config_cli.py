@@ -335,7 +335,7 @@ def test_a_stale_backup_of_another_owner_does_not_stop_the_store(monkeypatch, tm
 	backup.write_text("{}")
 	real_lstat = os.lstat
 
-	def not_in_its_group(path, uid, gid, **kwargs):
+	def not_in_its_group(fd, uid, gid):
 		raise PermissionError(1, "Operation not permitted")
 
 	def root_s(path, *args, **kwargs):
@@ -345,7 +345,7 @@ def test_a_stale_backup_of_another_owner_does_not_stop_the_store(monkeypatch, tm
 				int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
 		return st
 
-	monkeypatch.setattr(os, "chown", not_in_its_group)
+	monkeypatch.setattr(os, "fchown", not_in_its_group)
 	monkeypatch.setattr(os, "lstat", root_s)
 	_store_with_backup(monkeypatch, link)
 
@@ -359,12 +359,12 @@ def test_someone_elses_config_is_not_written(monkeypatch, tmp_path, capsys, mode
 	shared = tmp_path / "team.json"
 	shared.write_text('{"DEFAULT_TIMEOUT": 5}')
 	shared.chmod(mode)
-	monkeypatch.setattr(multiSSH3.os, "getuid", lambda: 12345)  # the file belongs to someone else
+	monkeypatch.setattr(multiSSH3.os, "geteuid", lambda: 12345)  # the file belongs to someone else
 
-	def not_our_file(path, uid, gid):
+	def not_our_file(fd, uid, gid):
 		raise PermissionError(1, "Operation not permitted")
 
-	monkeypatch.setattr(multiSSH3.os, "chown", not_our_file)
+	monkeypatch.setattr(multiSSH3.os, "fchown", not_our_file)
 	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
 	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
 	multiSSH3.write_default_config(args, str(shared), force=True)
@@ -389,3 +389,235 @@ def test_store_does_not_write_through_someone_elses_symlink(monkeypatch, tmp_pat
 
 	assert victim.read_text() == "precious"
 	assert sorted(p.name for p in tmp_path.iterdir()) == ["victim", "x.json"]  # no temporary file next to the victim
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to give a file to another user")
+def test_a_link_swapped_in_for_the_temporary_is_not_chowned(monkeypatch, tmp_path):
+	# root writing a config in a directory of another user (sudo keeping HOME): that user can put a link
+	# at the temporary's name between its creation and the chown, the owner goes to the open file only
+	victim = tmp_path / "victim"
+	victim.write_text("precious")
+	config = tmp_path / "multiSSH3.config.json"
+	config.write_text("{}")
+	os.chown(str(config), 65534, 65534)
+	real_open = os.open
+
+	def swap_in_a_link(path, *args, **kwargs):
+		fd = real_open(path, *args, **kwargs)
+		if str(path).endswith(".tmp"):
+			os.unlink(path)
+			os.symlink(str(victim), path)
+		return fd
+
+	monkeypatch.setattr(multiSSH3.os, "open", swap_in_a_link)
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	multiSSH3.write_default_config(args, str(config), force=True)
+
+	assert (victim.stat().st_uid, victim.stat().st_gid) == (0, 0)
+	assert victim.read_text() == "precious"
+
+
+# Under sudo: the config of the user who ran sudo is written with their rights. The unprivileged tests
+# check whose rights are taken and how they are put back; the root ones (run in the test VM) do it for real.
+
+def test_without_root_or_sudo_mssh_writes_as_itself(monkeypatch, tmp_path):
+	monkeypatch.setenv("SUDO_UID", str(os.getuid()))
+	if os.geteuid() != 0:
+		assert multiSSH3._sudo_user_of(str(tmp_path)) is None
+	monkeypatch.setattr(multiSSH3.os, "geteuid", lambda: 0)
+	monkeypatch.delenv("SUDO_UID")
+	assert multiSSH3._sudo_user_of(str(tmp_path)) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "seteuid") or os.geteuid() == 0, reason="POSIX, as a user other than root (root's own: the root tests)")
+@pytest.mark.parametrize("name", ["config.json", "missing/config.json"], ids=["the_file", "a_missing_one_s_directory"])
+def test_under_sudo_the_users_own_path_is_written_as_them(monkeypatch, tmp_path, name):
+	monkeypatch.setattr(multiSSH3.os, "geteuid", lambda: 0)
+	monkeypatch.setenv("SUDO_UID", str(os.getuid()))
+	monkeypatch.setenv("SUDO_GID", str(os.getgid()))
+	(tmp_path / "config.json").write_text("{}")
+
+	uid, gid, groups = multiSSH3._sudo_user_of(str(tmp_path / name))
+
+	assert (uid, gid) == (os.getuid(), os.getgid()) and gid in groups
+	monkeypatch.setenv("SUDO_UID", str(os.getuid() + 1))  # a path of someone else than the user who ran sudo
+	assert multiSSH3._sudo_user_of(str(tmp_path / name)) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "seteuid"), reason="POSIX only")
+@pytest.mark.parametrize("fails", [False, True], ids=["the_block_ends", "the_block_raises"])
+def test_root_s_ids_are_put_back_in_order(monkeypatch, fails):
+	calls = []
+	for name in ("setgroups", "setegid", "seteuid"):
+		monkeypatch.setattr(multiSSH3.os, name, lambda value, name=name: calls.append((name, value)))
+	monkeypatch.setattr(multiSSH3.os, "getgroups", lambda: [0, 1])
+	monkeypatch.setattr(multiSSH3.os, "getegid", lambda: 0)
+
+	try:
+		with multiSSH3._as_user((1000, 1001, [1001, 27])):
+			calls.append("block")
+			if fails:
+				raise RuntimeError
+	except RuntimeError:
+		assert fails
+
+	assert calls == [("setgroups", [1001, 27]), ("setegid", 1001), ("seteuid", 1000), "block",
+		("seteuid", 0), ("setegid", 0), ("setgroups", [0, 1])]
+
+
+needs_root = pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to act as the user who ran sudo")
+SUDO_USER_ID = 65534
+STRANGER = 23456
+
+
+@pytest.fixture
+def sudo_home(monkeypatch):
+	"""root under `sudo -E`: the user who ran sudo is nobody, with a home and a dotfiles directory they can reach."""
+	import shutil
+	import tempfile
+
+	base = Path(tempfile.mkdtemp(prefix="mssh-sudo-", dir="/tmp"))  # tmp_path is under root's 0700 directory
+	base.chmod(0o755)
+	home = base / "home"
+	dotfiles = home / "dotfiles"
+	dotfiles.mkdir(parents=True)
+	for directory in (home, dotfiles):
+		os.chown(str(directory), SUDO_USER_ID, SUDO_USER_ID)
+	monkeypatch.setenv("SUDO_UID", str(SUDO_USER_ID))
+	monkeypatch.setenv("SUDO_GID", str(SUDO_USER_ID))
+	ids = (os.geteuid(), os.getegid(), sorted(os.getgroups()))
+	yield home
+	assert (os.geteuid(), os.getegid(), sorted(os.getgroups())) == ids  # root's again
+	shutil.rmtree(str(base))
+
+
+def _users_file(path, text):
+	path.write_text(text)
+	path.chmod(0o600)
+	os.chown(str(path), SUDO_USER_ID, SUDO_USER_ID)
+	return path
+
+
+def _owner(path):
+	st = os.lstat(str(path))
+	return st.st_uid, st.st_gid
+
+
+def _store_answering(monkeypatch, path, answer):
+	monkeypatch.setattr(multiSSH3, "__configs_from_file", {})
+	monkeypatch.setattr(multiSSH3, "input_with_timeout_and_countdown", lambda *args, **kwargs: answer)
+	args = multiSSH3.process_args(["127.0.0.1", "true", "-p", "secret"])
+	return multiSSH3.write_default_config(args, str(path), force=False)
+
+
+@needs_root
+@pytest.mark.parametrize("answer", ["b", "o"])
+def test_under_sudo_the_users_dotfiles_link_is_written_through(monkeypatch, sudo_home, answer):
+	real = _users_file(sudo_home / "dotfiles" / "multiSSH3.config.json", '{"DEFAULT_PASSWORD": "old"}')
+	link = sudo_home / ".multiSSH3.config.json"
+	link.symlink_to(real)
+	os.lchown(str(link), SUDO_USER_ID, SUDO_USER_ID)
+
+	assert _store_answering(monkeypatch, link, answer)
+
+	assert link.is_symlink() and json.loads(real.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert _owner(real) == (SUDO_USER_ID, SUDO_USER_ID)
+	backup = Path(str(link) + ".bak")
+	if answer == "b":
+		assert not backup.is_symlink() and backup.read_text() == '{"DEFAULT_PASSWORD": "old"}'
+		assert _owner(backup) == (SUDO_USER_ID, SUDO_USER_ID) and stat.S_IMODE(backup.stat().st_mode) == 0o600
+	else:
+		assert not os.path.lexists(str(backup))
+	assert sorted(os.listdir(str(sudo_home / "dotfiles"))) == ["multiSSH3.config.json"]
+
+
+@needs_root
+def test_under_sudo_the_users_config_and_its_backup_stay_theirs(monkeypatch, sudo_home):
+	config = _users_file(sudo_home / ".multiSSH3.config.json", '{"DEFAULT_PASSWORD": "old"}')
+
+	assert _store_answering(monkeypatch, config, "b")
+
+	assert json.loads(config.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert _owner(config) == (SUDO_USER_ID, SUDO_USER_ID) and stat.S_IMODE(config.stat().st_mode) == 0o600
+	backup = Path(str(config) + ".bak")
+	assert backup.read_text() == '{"DEFAULT_PASSWORD": "old"}' and _owner(backup) == (SUDO_USER_ID, SUDO_USER_ID)
+
+
+@needs_root
+def test_under_sudo_a_new_config_is_the_users(monkeypatch, sudo_home):
+	config = sudo_home / ".multiSSH3.config.json"
+
+	assert _store_answering(monkeypatch, config, None)
+
+	assert json.loads(config.read_text())["DEFAULT_PASSWORD"] == "secret"
+	assert _owner(config) == (SUDO_USER_ID, SUDO_USER_ID) and stat.S_IMODE(config.stat().st_mode) == 0o600
+
+
+@needs_root
+def test_under_sudo_the_users_link_is_followed_only_where_they_may_write(monkeypatch, sudo_home, capsys):
+	# written with the user's rights, not root's: the kernel refuses a file the user may not write
+	roots = sudo_home.parent / "roots.json"
+	roots.write_text("{}")
+	roots.chmod(0o644)
+	link = sudo_home / ".multiSSH3.config.json"
+	link.symlink_to(roots)
+	os.lchown(str(link), SUDO_USER_ID, SUDO_USER_ID)
+
+	assert not _store_answering(monkeypatch, link, "o")
+
+	assert roots.read_text() == "{}" and _owner(roots) == (0, 0)
+	assert '"DEFAULT_PASSWORD": "secret"' in capsys.readouterr().out
+	assert sorted(os.listdir(str(sudo_home.parent))) == ["home", "roots.json"]
+
+
+@needs_root
+@pytest.mark.parametrize("answer", ["b", "o"])
+def test_under_sudo_a_strangers_link_is_not_written_through(monkeypatch, sudo_home, answer):
+	shared = sudo_home.parent / "shared"  # e.g. /tmp
+	shared.mkdir(mode=0o777)
+	shared.chmod(0o1777)
+	victim = _users_file(sudo_home / "dotfiles" / "victim", "precious")
+	planted = shared / "x.json"
+	planted.symlink_to(victim)
+	os.lchown(str(planted), STRANGER, STRANGER)
+
+	_store_answering(monkeypatch, planted, answer)
+
+	assert victim.read_text() == "precious" and _owner(victim) == (SUDO_USER_ID, SUDO_USER_ID)
+	assert sorted(os.listdir(str(sudo_home / "dotfiles"))) == ["victim"]
+
+
+@needs_root
+def test_under_sudo_a_third_users_config_is_written_by_root_keeping_its_owner(monkeypatch, sudo_home):
+	# as 6.39: root writing a config of someone else than the user who ran sudo keeps its owner and group
+	config = sudo_home.parent / "theirs.json"
+	config.write_text('{"DEFAULT_PASSWORD": "old"}')
+	config.chmod(0o600)
+	os.chown(str(config), STRANGER, STRANGER)
+
+	assert _store_answering(monkeypatch, config, "o")
+
+	assert json.loads(config.read_text())["DEFAULT_PASSWORD"] == "secret" and _owner(config) == (STRANGER, STRANGER)
+
+
+@needs_root
+@pytest.mark.parametrize("sudo", [False, True], ids=["root", "under_sudo"])
+def test_a_config_put_in_place_of_a_strangers_link_is_roots(monkeypatch, tmp_path, sudo):
+	# b moves a link planted e.g. in /tmp aside and writes root's config (it can hold passwords) in its place:
+	# not the file of whoever owns what the link points to
+	theirs = tmp_path / "theirs.json"
+	theirs.write_text("{}")
+	os.chown(str(theirs), STRANGER, STRANGER)
+	planted = tmp_path / "x.json"
+	planted.symlink_to(theirs)
+	os.lchown(str(planted), STRANGER, STRANGER)
+	if sudo:
+		monkeypatch.setenv("SUDO_UID", str(SUDO_USER_ID))
+		monkeypatch.setenv("SUDO_GID", str(SUDO_USER_ID))
+
+	assert _store_answering(monkeypatch, planted, "b")
+
+	assert theirs.read_text() == "{}"
+	assert not planted.is_symlink() and _owner(planted) == (0, 0) and stat.S_IMODE(planted.stat().st_mode) == 0o600
+	assert os.path.islink(str(planted) + ".bak")
