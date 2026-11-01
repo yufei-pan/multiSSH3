@@ -411,6 +411,40 @@ def test_bash_delegation_puts_the_prefix_and_the_filter_where_bash_does(tmp_path
 	assert sorted(delegated(tmp_path, setup, words, prefix=prefix, word=word)) == sorted(expected)
 
 
+@pytest.mark.parametrize('words, word, before, setup, expected', [
+	# compgen is given the whole remote word, and bash's own word, after a : or =, only when that matches nothing, with the
+	# text before it put back (and cut again, as readline replaces only its word)
+	('zzsvc --user=roo', 'roo', '', 'complete -u zzsvc', ['root']),
+	('zzsvc x=zz', 'zz', '', 'complete -d zzsvc', ['zzdir', 'zzdirb']),
+	('zzsvc x=zz', 'zz', '', 'complete -A directory zzsvc', ['zzdir', 'zzdirb']),
+	('zzsvc x=zz', 'zz', '', 'complete -G "zz*" zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
+	('zzsvc x=zz', 'zz', '', 'complete -f zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
+	('zzsvc --x=al', 'al', '', 'complete -W "alpha beta" zzsvc', ['alpha']),
+	('zzsvc h:al', 'al', '', 'complete -W "alpha beta" zzsvc', ['alpha']),
+	# -S goes with it
+	('zzsvc --x=al', 'al', '', 'complete -W "alpha beta" -S ";" zzsvc', ['alpha;']),
+	# the & of -X stands for the word compgen was given, bash's here (bx is out, not a:bx)
+	('zzsvc a:b', 'b', '', 'complete -W "bx by" -X "&x" zzsvc', ['by']),
+	# the whole word first: a list holding the = (--color=auto), a file name holding a : or =
+	('zzsvc --color=a', 'a', '', 'complete -W "--color=auto aardvark" zzsvc', ['auto']),
+	('zzsvc a:bf', 'bf', 'touch a:bfile; ', 'complete -f zzsvc', ['bfile']),
+	('zzsvc x=ab', 'ab', 'touch x=abc; ', 'complete -f zzsvc', ['abc']),
+	# the fallbacks and a command with no completion
+	('zzsvc x=zz', 'zz', '', 'complete -o default -W other zzsvc', ['zzdir', 'zzdirb', 'zzfile']),
+	('zzsvc x=zz', 'zz', '', 'complete -o dirnames -W other zzsvc', ['zzdir', 'zzdirb']),
+	('zzsvc x=zz', 'zz', '', 'complete -o plusdirs -W other zzsvc', ['zzdir', 'zzdirb']),
+	('zzsvc x=zz', 'zz', '', ':', ['zzdir', 'zzdirb', 'zzfile']),
+	# nothing matches either way
+	('zzsvc x=qq', 'qq', '', 'complete -d zzsvc', []),
+	# in a quoted command readline breaks nothing: the word is the whole text
+	('zzsvc x=zz', 'zzsvc x=zz', '', 'complete -d zzsvc', []),
+])
+def test_bash_delegation_matches_bash_s_own_word_when_the_whole_remote_word_matches_nothing(tmp_path, words, word, before, setup, expected):
+	prefix = 'zzsvc ' if word.startswith('zzsvc') else ''
+	assert sorted(delegated(tmp_path, setup, words, before=before, word=word, prefix=prefix)) == sorted(
+		item if not prefix else prefix + item for item in expected)
+
+
 @pytest.mark.parametrize('before, key', [('', '9.9'), ('COMP_KEY=63 COMP_TYPE=33; ', '63.33')])
 def test_bash_delegation_gives_a_command_the_key_and_type_of_the_completion(tmp_path, before, key):
 	# bash sets them for mssh's own completion (ble.sh too), a tab and a plain completion otherwise
@@ -513,6 +547,10 @@ SAME_AS_BASH = [
 # directory), and mixed with others they have no start in common: readline cuts the line back to the command prefix
 # where bash itself leaves the word
 SAME_AS_BASH_UNQUOTED = [
+	# compgen matches the word after a : or = that readline breaks at (in a quoted command it breaks nothing)
+	(['-u'], '--user=roo', ''),
+	(['-W', 'alpha beta'], '--x=al', ''),
+	(['-W', 'alpha beta'], 'h:al', ''),
 	# not compared with bash: the local file names of the file actions, -G and a command with no compspec, which the
 	# glue leaves unquoted and unmarked (no / for a directory) where bash quotes and marks them (6.40: the glue does it
 	# itself)

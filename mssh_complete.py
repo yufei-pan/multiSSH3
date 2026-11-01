@@ -5633,6 +5633,25 @@ _mssh_complete_run_command() {
 	eval "$1"' "$2" "$3" "$4"'
 }
 
+_mssh_complete_compgen() {
+	# compgen "$@" for the remote word, its words added to _mssh_complete_results of _mssh_complete_delegate. A command
+	# matches the whole word it is given (--user=roo); bash gives compgen only its own word, which starts after a : or
+	# = (roo). Both are right where they match: a file name holding a : or = completes as one word, and a -W list
+	# after a = completes too. So the whole word first, and bash's word (_mssh_complete_tail) only when that matched
+	# nothing and readline broke the word, with the text before it (_mssh_complete_head) put back in front of each
+	# word. An & in a -X pattern stands for the word compgen was given, as bash has it
+	local _mssh_complete_item _mssh_complete_before=${#_mssh_complete_results[@]}
+	while IFS= read -r _mssh_complete_item; do
+		_mssh_complete_results+=("$_mssh_complete_item")
+	done < <(_mssh_complete_operator compgen "$@" -- "$_mssh_complete_current" 2>/dev/null || :)
+	if (( ${#_mssh_complete_results[@]} == _mssh_complete_before )) && [[ -n $_mssh_complete_head ]]; then
+		while IFS= read -r _mssh_complete_item; do
+			_mssh_complete_results+=("$_mssh_complete_head$_mssh_complete_item")
+		done < <(_mssh_complete_operator compgen "$@" -- "$_mssh_complete_tail" 2>/dev/null || :)
+	fi
+	return 0
+}
+
 _mssh_complete_delegate() {
 	# $1: the word bash replaces, $2: index of the current word, $3: text put in front of every
 	# result, then the remote command words. The results land in _mssh_complete_delegated. Its variables
@@ -5643,12 +5662,18 @@ _mssh_complete_delegate() {
 	local _mssh_complete_named _mssh_complete_quoted _mssh_complete_rest _mssh_complete_listed=0
 	local _mssh_complete_options _mssh_complete_func= _mssh_complete_command= _mssh_complete_prev
 	local -a _mssh_complete_generate=()
+	local _mssh_complete_tail _mssh_complete_head
 	# every process substitution below ends with "|| :": bash 4.4 exits a set -e shell after one that failed
 	shift 3
 	local -a _mssh_complete_words=("$@") _mssh_complete_results=()
 	local _mssh_complete_current=${_mssh_complete_words[_mssh_complete_cword]-}
 	_mssh_complete_cmd=${_mssh_complete_words[0]-}
 	_mssh_complete_delegated=()
+	# bash's own word within the remote word, and what comes before it: readline breaks the word at a : or =, but not
+	# inside a quoted command, where $1 is the whole quoted text and the remote word is only the end of it
+	_mssh_complete_tail=$_mssh_complete_current
+	[[ $_mssh_complete_current == *"$_mssh_complete_word" ]] && _mssh_complete_tail=$_mssh_complete_word
+	_mssh_complete_head=${_mssh_complete_current%"$_mssh_complete_tail"}
 	if [[ $_mssh_complete_cword -eq 0 ]]; then
 		while IFS= read -r _mssh_complete_item; do
 			_mssh_complete_results+=("$_mssh_complete_item")
@@ -5695,9 +5720,7 @@ _mssh_complete_delegate() {
 				[[ $_mssh_complete_options == *" $_mssh_complete_item "* ]] && { compopt -o "$_mssh_complete_item" 2>/dev/null || :; }
 			done
 			if (( ${#_mssh_complete_generate[@]} )); then
-				while IFS= read -r _mssh_complete_item; do
-					_mssh_complete_results+=("$_mssh_complete_item")
-				done < <(_mssh_complete_operator compgen "${_mssh_complete_generate[@]}" -- "$_mssh_complete_current" 2>/dev/null || :)
+				_mssh_complete_compgen "${_mssh_complete_generate[@]}"
 			fi
 			# bash runs only a function so named (else: function not found), never a command
 			if [[ -n $_mssh_complete_func ]] && declare -F -- "$_mssh_complete_func" >/dev/null 2>&1; then
@@ -5715,23 +5738,17 @@ _mssh_complete_delegate() {
 			# the fallbacks and plusdirs: directory names, then file names, as file names
 			_mssh_complete_listed=${#_mssh_complete_results[@]}
 			if [[ $_mssh_complete_options == *' plusdirs '* ]] || { (( _mssh_complete_listed == 0 )) && [[ $_mssh_complete_options == *' dirnames '* ]]; }; then
-				while IFS= read -r _mssh_complete_item; do
-					_mssh_complete_results+=("$_mssh_complete_item")
-				done < <(compgen -d -- "$_mssh_complete_current" 2>/dev/null || :)
+				_mssh_complete_compgen -d
 			fi
 			if (( ${#_mssh_complete_results[@]} == 0 )) && [[ $_mssh_complete_options == *' default '* ]]; then
-				while IFS= read -r _mssh_complete_item; do
-					_mssh_complete_results+=("$_mssh_complete_item")
-				done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)
+				_mssh_complete_compgen -f
 			fi
 			if (( ${#_mssh_complete_results[@]} > _mssh_complete_listed )); then
 				compopt -o filenames 2>/dev/null || :
 			fi
 		else
 			# a command with no compspec, or one that cannot be read: its arguments are file names
-			while IFS= read -r _mssh_complete_item; do
-				_mssh_complete_results+=("$_mssh_complete_item")
-			done < <(compgen -f -- "$_mssh_complete_current" 2>/dev/null || :)
+			_mssh_complete_compgen -f
 		fi
 	fi
 	# the results continue prefix + current word, but bash replaces only its own word, which ends
