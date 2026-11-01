@@ -7297,12 +7297,14 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	previous = previous_mode = None
 	try:
 		with _as_user(user):
-			# neither the new file nor the backup may end up more open than the old file was
-			try:
-				previous = os.stat(CONFIG_FILE)
-				previous_mode = stat.S_IMODE(previous.st_mode)
-			except OSError:
-				pass
+			# neither the new file nor the backup may end up more open than the old file was. A link of
+			# someone else is not followed (below): what it points to, and its owner, are not the old config
+			if not os.path.islink(CONFIG_FILE) or _own_symlink(CONFIG_FILE):
+				try:
+					previous = os.stat(CONFIG_FILE)
+					previous_mode = stat.S_IMODE(previous.st_mode)
+				except OSError:
+					pass
 			if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
 				# the new config is written through the link below (e.g. into a dotfiles repo): moving the
 				# link aside would leave the file it points to as it was, copy that file instead

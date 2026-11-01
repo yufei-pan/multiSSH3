@@ -599,3 +599,25 @@ def test_under_sudo_a_third_users_config_is_written_by_root_keeping_its_owner(mo
 	assert _store_answering(monkeypatch, config, "o")
 
 	assert json.loads(config.read_text())["DEFAULT_PASSWORD"] == "secret" and _owner(config) == (STRANGER, STRANGER)
+
+
+@needs_root
+@pytest.mark.parametrize("sudo", [False, True], ids=["root", "under_sudo"])
+def test_a_config_put_in_place_of_a_strangers_link_is_roots(monkeypatch, tmp_path, sudo):
+	# b moves a link planted e.g. in /tmp aside and writes root's config (it can hold passwords) in its place:
+	# not the file of whoever owns what the link points to
+	theirs = tmp_path / "theirs.json"
+	theirs.write_text("{}")
+	os.chown(str(theirs), STRANGER, STRANGER)
+	planted = tmp_path / "x.json"
+	planted.symlink_to(theirs)
+	os.lchown(str(planted), STRANGER, STRANGER)
+	if sudo:
+		monkeypatch.setenv("SUDO_UID", str(SUDO_USER_ID))
+		monkeypatch.setenv("SUDO_GID", str(SUDO_USER_ID))
+
+	assert _store_answering(monkeypatch, planted, "b")
+
+	assert theirs.read_text() == "{}"
+	assert not planted.is_symlink() and _owner(planted) == (0, 0) and stat.S_IMODE(planted.stat().st_mode) == 0o600
+	assert os.path.islink(str(planted) + ".bak")
