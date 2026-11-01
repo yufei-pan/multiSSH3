@@ -849,12 +849,30 @@ def history_of(*commands):
 	# filenames: readline's file name mode is off while mssh's own words are in the reply (it would take them for local
 	# file names), so the nospace rule applies to them as under nospace alone (6.39: no space, "readline would quote it")
 	('_zzn() { COMPREPLY=(); }; complete -o nospace -o filenames -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	# and its own words end with the space they want, as git's do: that space is not part of a name, so it is not quoted
+	# (zzfeature\\ ) and then stripped, leaving a lone backslash (zzfeature\\)
+	('_zzn() { COMPREPLY=("zzfeature "); }; complete -o nospace -o filenames -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
+	('_zzn() { COMPREPLY=("zzfeature "); }; complete -o nospace -o filenames -o noquote -F _zzn zzgit', 'mssh h zzgit checkout zzf', 'mssh h zzgit checkout zzfeature '),
 ])
 def test_bash_a_nospace_spec_gives_mssh_s_own_words_their_space(tmp_path, options, typed, completed):
 	history = history_of('zzgit checkout zzfeature', 'zzgit checkout zzbranch', 'zzgit checkout zzbrook')
 	session = ignoring_case(tmp_path, history, on=False, options=options)
 	try:
 		assert session.line_after(typed) == completed
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('flags', ['-o nospace -o filenames', '-o nospace -o filenames -o noquote'])
+def test_bash_a_nospace_filenames_spec_with_words_ending_in_a_space_beside_mssh_s_own_word(tmp_path, flags):
+	# the delegate's name is zzfeature, and its space is the one nospace asked it to bring: quoted and stripped it was a
+	# lone backslash (zzfeature\\), a candidate of its own beside mssh's zzfeature (alone, readline quotes the space, as
+	# bash does for the command itself)
+	options = '_zzn() {{ COMPREPLY=("zzfeature "); }}; complete {} -F _zzn zzgit'.format(flags)
+	session = ignoring_case(tmp_path, history_of('zzgit checkout zzfeature'), on=False, options=options)
+	try:
+		assert completed_and_listed(session, 'mssh h zzgit checkout zzf') == ('mssh h zzgit checkout zzfeature', [])
+		assert session.line_after('mssh h zzgit checkout zzf') == 'mssh h zzgit checkout zzfeature '
 	finally:
 		session.close()
 
@@ -914,24 +932,6 @@ def test_bash_a_nospace_spec_with_words_ending_in_a_space_gives_no_second_space_
 	assert fresh_line(tmp_path, 'ble', 'ble', typed, keys=keys, options=options, history=history) == completed
 
 
-def unspaced(tmp_path, reply, given, icase=0, ble=0, prefix=''):
-	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given), the remote command
-	quoted when it has a prefix: the engine's words and the delegate's, each in brackets."""
-	import shlex
-	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_icase={}; _mssh_complete_ble={}; '
-		'_mssh_complete_xfields=(0 {}); _mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; '
-		'printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
-		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble, shlex.quote(prefix))
-	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
-		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-	assert output.returncode == 0, output
-	lines = output.stdout.decode().splitlines()
-	return lines[0], lines[1]
-
-
-@pytest.mark.parametrize('reply, given, kwargs, engine, delegate', [
-	# all spaced, or none: the space comes off the delegate's words (readline adds it)
-	(['zzb'], ['zza ', 'zzc '], {}, '[zzb]', '[zza][zzc]'),
 def ble_path_reply(tmp_path, typed, candidates, directives='files', ble=True, word=None):
 	"""COMPREPLY of the glue's TAB for the path word typed (as ble.sh keeps it: COMPS) when the engine answers with
 	candidates (text only) and directives, in a directory holding the files xfile and 'my file' that is also HOME; ble.sh
@@ -974,6 +974,24 @@ def test_readline_path_value_files_are_for_the_word_readline_hands_over(tmp_path
 	assert ble_path_reply(tmp_path, '~/x', ['~/xfile'], ble=False, word='~/x') == '[~/xfile]'
 
 
+def unspaced(tmp_path, reply, given, icase=0, ble=0, prefix=''):
+	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given), the remote command
+	quoted when it has a prefix: the engine's words and the delegate's, each in brackets."""
+	import shlex
+	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_icase={}; _mssh_complete_ble={}; '
+		'_mssh_complete_xfields=(0 {}); _mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; '
+		'printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble, shlex.quote(prefix))
+	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	assert output.returncode == 0, output
+	lines = output.stdout.decode().splitlines()
+	return lines[0], lines[1]
+
+
+@pytest.mark.parametrize('reply, given, kwargs, engine, delegate', [
+	# all spaced, or none: the space comes off the delegate's words (readline adds it)
+	(['zzb'], ['zza ', 'zzc '], {}, '[zzb]', '[zza][zzc]'),
 	(['zzb'], [], {}, '[zzb]', '[]'),
 	# mixed: the words stay as they are
 	(['zzb', 'zzd/'], ['zza ', 'zzopt='], {}, '[zzb][zzd/]', '[zza ][zzopt=]'),

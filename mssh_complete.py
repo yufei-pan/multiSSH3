@@ -5980,6 +5980,9 @@ _mssh_complete_tab() {
 		# readline's file name mode (filenames, or fullquote from bash 5.3) quotes, marks and lists every word of the
 		# reply as a local file name: right for the delegate's names alone, wrong for mssh's own remote words beside them
 		if (( ! _mssh_complete_ble && ${#_mssh_complete_reply[@]} )) && [[ $_mssh_complete_item == *' -o fullquote '* || $_mssh_complete_item == *' -o filenames '* ]]; then
+			# a space the spec brought for nospace is not part of a name: off before the glue quotes the names (quoted it
+			# would be zzfeature\ , and the unspace below would leave the backslash)
+			[[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_files )) && _mssh_complete_unspace
 			_mssh_complete_filenames "$_mssh_complete_item" "${_mssh_complete_xfields[1]}"
 			_mssh_complete_item=$(compopt 2>/dev/null) || :
 			_mssh_complete_item+=' '
