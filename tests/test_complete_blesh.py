@@ -183,11 +183,15 @@ def test_blesh_tab_closes_the_quote_of_a_git_style_command(tmp_path):
 	('mssh -f "zzmy f', 'mssh -f "zzmy file" '),
 	('mssh -f ~/zzmy\\ f', 'mssh -f ~/zzmy\\ file '),
 	('mssh --config_file $HOME/zzx', 'mssh --config_file $HOME/zzxfile '),
+	# a word ble.sh cannot evaluate has the empty value: no file name is offered for it, nothing replaces the word on a
+	# second TAB (compgen -f on nothing offered every file, zzother among them)
+	('mssh -f zz!x\t', 'mssh -f zz!x'),
+	('mssh -f zz`x\t', 'mssh -f zz`x'),
 ])
 def test_blesh_tab_completes_the_file_names_of_a_path_value_as_ble_sh_inserts_them(tmp_path, typed, expected):
 	env, home = make_home(tmp_path, [])
 	build_index(env)
-	for name in ('zzxfile', 'zzmy file'):
+	for name in ('zzxfile', 'zzmy file', 'zzother'):
 		(home / name).write_text('')
 	session = blesh_session(home, env, glue_file(home))
 	try:

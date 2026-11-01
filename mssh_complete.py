@@ -5917,7 +5917,9 @@ _mssh_complete_tab() {
 		if [[ $_mssh_complete_subword == '~'* ]]; then
 			_mssh_complete_unescape "$_mssh_complete_subword"
 			_mssh_complete_plain=$_mssh_complete_value
-		elif [[ -n ${COMPV+set} && $COMPV == "${progcomp_prefix-}"* ]]; then
+		elif [[ -n ${COMPV+set} && $COMPV == "${progcomp_prefix-}"* && ( -n ${COMPV:${#progcomp_prefix}} || -z $_mssh_complete_subword ) ]]; then
+			# (not an empty value of a typed word: ble.sh evaluates zz!x and zz`x to nothing, and compgen -f on nothing
+			# offers every file, one of which a second TAB puts in place of the word)
 			_mssh_complete_plain=${COMPV:${#progcomp_prefix}}
 		fi
 	fi
