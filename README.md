@@ -550,6 +550,8 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 
 > With ble.sh, one of mssh's remote words (from its history) that names a directory on this machine goes in with `/` and no space ([limitations](docs/limitations.md#blesh-a-remote-word-of-msshs-that-names-a-local-directory-gets-a--and-no-space)), and a remote `~/...` path from mssh's history goes in with a bare `~`, which this shell expands to your local home ([limitations](docs/limitations.md#blesh-a-remote--path-from-msshs-history-goes-in-with-a-bare-)); plain bash keeps the space and inserts `\~`.
 
+> With ble.sh, a word that ble.sh splits at an `=` or `:` after a quote, a backslash or an expansion (`"a"=b`, `$V:x`) completes as in 6.39 ([limitations](docs/limitations.md#blesh-a-word-split-at-an--or--after-a-quote-backslash-or-expansion-completes-as-in-639)). On bash 4.3 and 4.4, a remote command's `-o noquote` is not seen, so the local file names completed for it are quoted ([limitations](docs/limitations.md#bash-43-and-44-a-remote-commands--o-noquote-is-not-seen)). With zsh before 5.8, a Ctrl-C during a completion query now and then reaches the query instead of the shell, as in 6.39; a fix is planned for the change after 6.40 ([limitations](docs/limitations.md#zsh-before-58-a-ctrl-c-during-a-completion-query-can-reach-the-query)).
+
 ## Options
 
 Here details the options for multiSSH3 6.31 @ 2026-10-13
@@ -1358,6 +1360,8 @@ __DEBUG_MODE = False
 
 > `run_command_on_hosts` reads `_DEFAULT_CALLED`, `_DEFAULT_RETURN_UNFINISHED`, `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` and `_DEFAULT_NO_START` each time it is called, so setting them after `import multiSSH3`, or in a file given with `--config_file`, works. The `mssh` command always starts its hosts and waits for them: of these four, only `_DEFAULT_UPDATE_UNREACHABLE_HOSTS` changes what it does.
 
+> Under sudo, `main()` with `--store_config_file` or `--add_control_master_config` switches the whole process's effective user to the user who ran sudo while it writes their config, so a program's other threads run as that user for that moment ([limitations](docs/limitations.md#under-sudo-a-program-calling-main-runs-its-threads-as-the-user-while-a-config-is-written)).
+
 > `_etc_hosts` is a custom dict to use instead of reading /etc/hosts file for hostname resolution.
 
 > `ERROR_MESSAGES_TO_IGNORE` lists regexes for ssh's own notices, which mssh leaves out of each host's stderr (also in `--json` and `--greppable` output). Each regex is searched anywhere in every stderr line, so anchor yours with `^` and `$` to match whole lines (in the JSON config file, write a regex backslash as `\\`). The defaults are anchored to the lines OpenSSH prints, so a remote program's error that uses the same words, such as curl's `Recv failure: Connection reset by peer`, is kept. Connection resets are not hidden: `kex_exchange_identification: read: Connection reset by peer` is how sshd's `MaxStartups` turns away connections opened at once. Config files that `--store_config_file` or `--generate_config_file` wrote before 6.20 hold a copy of the old, unanchored defaults; mssh ignores such an unchanged copy and uses the current defaults.
@@ -1388,7 +1392,10 @@ Fixes for the six items deferred from 6.39 (bash and ble.sh completion, `--store
   - ble.sh: a remote word of mssh's that names a local directory gets `/` and no space;
   - ble.sh: a remote `~/...` from mssh's history goes in with a bare `~`, which this shell expands;
   - under `sudo -E`, mssh ignores your own config, so `--store_config_file` there keeps your earlier settings only in the `.bak`;
-  - deferred to the change after 6.40: local file names with whitespace or shell characters in a remote command (all shells), and TAB inside a quoted argument (`mssh h cat 'my f<TAB>`).
+  - ble.sh: a word split at an `=` or `:` after a quote, a backslash or an expansion completes as in 6.39;
+  - bash 4.3 and 4.4: a remote command's `-o noquote` is not seen;
+  - under sudo, a program calling `main()` with `--store_config_file` or `--add_control_master_config` runs its other threads as the user while the config is written;
+  - deferred to the change after 6.40: local file names with whitespace or shell characters in a remote command (all shells), TAB inside a quoted argument (`mssh h cat 'my f<TAB>`), and, with zsh before 5.8, a Ctrl-C during a completion query that now and then reaches the query (as in 6.39).
 - Changed for programs and scripts:
   - The bash glue under ble.sh sends the word as typed, and the engine reads the word of a `bash` request with `ble=1` as typed (lexed, as zsh's and fish's); a 6.39 glue's word is read right too.
   - The bash glue no longer reads a `C` record's fourth field (the unescaped text); the engine still sends it for older glues.

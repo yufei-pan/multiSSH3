@@ -108,6 +108,17 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - Revisit when: someone needs their own settings under `sudo -E`.
 - Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
 
+### Under sudo, a program calling main() runs its threads as the user while a config is written
+- Kind: known limitation
+- What the operator sees: under sudo, mssh writes the invoking user's config (`--store_config_file`,
+  `--add_control_master_config`) with their rights by switching the process's effective user (seteuid) for the
+  write. The `mssh` command has no other thread then. A program that imports multiSSH3 and calls `main()` with
+  one of these options under sudo has its own threads run as that user while the file is written (milliseconds).
+- Why: seteuid applies to the whole process. Writing in a forked child would avoid it, at the cost of a process
+  and its error handling, for a case no known program has.
+- Revisit when: a program calls `main()` with these options under sudo while its other threads work.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
+
 ### Reading mssh's runtime state may create its directory
 - Kind: known limitation
 - What the operator sees: a library call that does not update the unreachable-hosts cache
@@ -256,6 +267,26 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 - Revisit when: an operator whose remote home differs from the local one hits it.
 - Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
 
+### ble.sh: a word split at an = or : after a quote, backslash or expansion completes as in 6.39
+- Kind: known limitation
+- What the operator sees: with ble.sh, when the part of a word before the `=` or `:` at which ble.sh splits it
+  holds a quote, a backslash or an expansion (`"a"=b`, `$V:x`, `a\=b`), the glue takes 6.39's path for that
+  word: a quoted remote command and a `~` path there complete as in 6.39, without 6.40's fixes for them.
+- Why: ble.sh hands the glue the part before the split (`progcomp_prefix`) evaluated; when the typed text is not
+  the same as its value, the glue cannot tell where the word starts on the line as typed.
+- Revisit when: an operator hits it.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
+
+### bash 4.3 and 4.4: a remote command's -o noquote is not seen
+- Kind: known limitation
+- What the operator sees: on bash 4.3 and 4.4, the local file names the bash glue completes for a remote command
+  whose compspec sets `-o noquote` are quoted anyway.
+- Why: the glue reads a compspec's options from `complete -p`, which leaves `noquote` out on bash 4.4 (checked:
+  `complete -o noquote -F f x; complete -p x` prints `complete -F f x`; bash 5.1 prints the option). `noquote` is
+  rare, and bash 4.3/4.4 are old.
+- Revisit when: an operator on bash 4.3 or 4.4 completes for a command whose compspec sets `noquote`.
+- Approved: 2026-11-01, the user chose "Known limitation (Recommended)".
+
 ### With nocasematch on in bash, a Ctrl-C during a TAB can leave it off
 - Kind: known limitation
 - What the operator sees: with `shopt -s nocasematch` on in the interactive bash, a Ctrl-C while TAB, Ctrl-R
@@ -294,7 +325,7 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 ## Deferred to the change after 6.40
 
-Found while confirming 6.40's items. On 2026-11-01 the user chose "After 6.40 (Recommended)" for both.
+Found while confirming and reviewing 6.40's items (the user's words are in each entry).
 
 ### Local file names with whitespace or shell characters are wrong in a remote command
 - Kind: deferred
@@ -317,3 +348,15 @@ Found while confirming 6.40's items. On 2026-11-01 the user chose "After 6.40 (R
   for the remote command's unquoted words before it first) was left for the change after 6.40.
 - Revisit when: the change right after 6.40.
 - Approved: 2026-11-01, the user chose "After 6.40 (Recommended)".
+
+### zsh before 5.8: a Ctrl-C during a completion query can reach the query
+- Kind: deferred
+- What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's), now and then, for the length of one
+  completion query (a TAB, the grey text, the warnings), the query's process holds the terminal, so a Ctrl-C goes
+  to the query instead of the shell and the line is not cleared. The shell stays alive and the keys typed still
+  reach it. 6.39 does the same: the zsh glue did not change in 6.40.
+- Why: on zsh before 5.8 the glue's hand-back of the terminal sometimes leaves it with the query's process
+  group; why needs its own investigation. Until then the test of it
+  (`tests/test_complete_keys.py::test_zsh_keeps_the_terminal_while_mssh_asks`) can fail on the legacy image.
+- Revisit when: the change right after 6.40.
+- Approved: 2026-11-01, the user chose "Defer to after 6.40 (Recommended)".
