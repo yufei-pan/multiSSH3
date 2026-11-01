@@ -34,6 +34,7 @@ import textwrap
 import threading
 import time
 import typing
+from contextlib import contextmanager
 import unicodedata
 from uuid import uuid4
 from collections import Counter, defaultdict, deque, ChainMap, namedtuple
@@ -7194,7 +7195,79 @@ def _own_symlink(path):
 	'''Whether path is a symlink of our own (or root's), one write_default_config writes through.'''
 	if not os.path.islink(path):
 		return False
-	return not hasattr(os, 'getuid') or os.lstat(path).st_uid in (os.getuid(), 0)
+	return not hasattr(os, 'geteuid') or os.lstat(path).st_uid in (os.geteuid(), 0)
+
+def _sudo_user_of(path):
+	'''
+	The user who ran sudo, as (uid, gid, groups), when path belongs to them; else None.
+
+	Root writes such a config with that user's rights (see _as_user): their dotfiles link is followed
+	only where they may write, and the files are theirs, also on an NFS home that squashes root. Whose
+	path is: the link itself or the file (lstat), for a missing one the nearest directory above it. A
+	path of anyone else (a link a stranger planted in /tmp, where root's config, which can hold
+	passwords, must never go), and every path when mssh runs as itself or as root without sudo, gives None.
+	'''
+	if not hasattr(os, 'seteuid') or os.geteuid() != 0:
+		return None
+	try:
+		uid = int(os.environ['SUDO_UID'])
+	except (KeyError, ValueError):
+		return None
+	path = os.path.abspath(path)
+	while True:
+		try:
+			owner = os.lstat(path).st_uid
+			break
+		except OSError:
+			# missing, or not for root to look at (a home that squashes root): what is above it decides
+			parent = os.path.dirname(path)
+			if parent == path:
+				return None
+			path = parent
+	if uid == 0 or owner != uid:
+		return None
+	try:
+		entry = pwd.getpwuid(uid)
+	except KeyError:
+		# no passwd entry: the group sudo gives, no others
+		entry = None
+	try:
+		gid = int(os.environ['SUDO_GID'])
+	except (KeyError, ValueError):
+		if entry is None:
+			return None
+		gid = entry.pw_gid
+	groups = os.getgrouplist(entry.pw_name, gid) if entry is not None and hasattr(os, 'getgrouplist') else [gid]
+	return uid, gid, groups
+
+@contextmanager
+def _as_user(user):
+	'''
+	Run the block with the effective uid, gid and groups of user ((uid, gid, groups), from _sudo_user_of),
+	root's again after it, however it ends; None runs it as it is.
+
+	The ids are the whole process's, every thread's: mssh writes its configs before it starts any thread.
+	'''
+	if user is None:
+		yield
+		return
+	uid, gid, groups = user
+	root_groups = os.getgroups()
+	root_gid = os.getegid()
+	os.setgroups(groups)
+	try:
+		os.setegid(gid)
+		try:
+			os.seteuid(uid)
+			try:
+				yield
+			finally:
+				# root's uid first: only root may set its gid and groups back
+				os.seteuid(0)
+		finally:
+			os.setegid(root_gid)
+	finally:
+		os.setgroups(root_groups)
 
 def write_default_config(args,CONFIG_FILE = None, force = False):
 	global __configs_from_file
@@ -7204,8 +7277,12 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 	if not CONFIG_FILE:
 		print(json.dumps(__configs_from_file, indent=4))
 		return
+	# under sudo, the user's own config is looked at and written with their rights, decided once
+	user = _sudo_user_of(CONFIG_FILE)
+	with _as_user(user):
+		exists = os.path.exists(CONFIG_FILE)
 	backup = not force
-	if not force and os.path.exists(CONFIG_FILE):
+	if not force and exists:
 		eprint(f"Warning: {CONFIG_FILE!r} already exists, what to do? (o/b/n)")
 		eprint("o:  Overwrite the file")
 		eprint(f"b:  Back up the current config file to {CONFIG_FILE + '.bak'!r} and write the new config file (default)")
@@ -7217,26 +7294,28 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 			backup = False
 		else:
 			_exit_with_code(0, "Aborted by user, no config file written")
-	# neither the new file nor the backup may end up more open than the old file was
+	previous = previous_mode = None
 	try:
-		previous = os.stat(CONFIG_FILE)
-		previous_mode = stat.S_IMODE(previous.st_mode)
-	except OSError:
-		previous = previous_mode = None
-	try:
-		if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
-			# the new config is written through the link below (e.g. into a dotfiles repo): moving the
-			# link aside would leave the file it points to as it was, copy that file instead
-			with open(CONFIG_FILE, 'rb') as f:
-				_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False, owner=False)
-		elif backup and os.path.exists(CONFIG_FILE):
-			os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
-			# the backup holds the old passwords: owner only
-			if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
-				try:
-					os.chmod(CONFIG_FILE+'.bak', previous_mode & 0o600)
-				except OSError:
-					pass
+		with _as_user(user):
+			# neither the new file nor the backup may end up more open than the old file was
+			try:
+				previous = os.stat(CONFIG_FILE)
+				previous_mode = stat.S_IMODE(previous.st_mode)
+			except OSError:
+				pass
+			if backup and os.path.exists(CONFIG_FILE) and _own_symlink(CONFIG_FILE):
+				# the new config is written through the link below (e.g. into a dotfiles repo): moving the
+				# link aside would leave the file it points to as it was, copy that file instead
+				with open(CONFIG_FILE, 'rb') as f:
+					_replace_file(CONFIG_FILE + '.bak', f.read(), 0o600 if previous_mode is None else previous_mode & 0o600, follow=False, owner=False)
+			elif backup and os.path.exists(CONFIG_FILE):
+				os.rename(CONFIG_FILE,CONFIG_FILE+'.bak')
+				# the backup holds the old passwords: owner only
+				if previous_mode is not None and not os.path.islink(CONFIG_FILE+'.bak'):
+					try:
+						os.chmod(CONFIG_FILE+'.bak', previous_mode & 0o600)
+					except OSError:
+						pass
 	except Exception as e:
 		eprint(f"Error: Unable to backup the config file: {e!r}")
 		eprint(f"Do you want to continue writing the new config file to {CONFIG_FILE!r}? (y/n)")
@@ -7244,14 +7323,15 @@ def write_default_config(args,CONFIG_FILE = None, force = False):
 		if not inStr or not inStr.lower().strip().startswith('y'):
 			_exit_with_code(0, "Aborted by user, no config file written")
 	try:
-		# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
-		# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
-		if os.path.islink(CONFIG_FILE) and not _own_symlink(CONFIG_FILE):
-			raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
-		# configs can hold passwords: owner only, except the system-wide locations every user reads, and
-		# never more open than the old file was (an admin may have locked it down further)
-		mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
-		_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode, owner=previous)
+		with _as_user(user):
+			# write through a symlinked config (e.g. into a dotfiles repo) instead of replacing the link, but
+			# only a link of our own (or root's): one planted by someone else (e.g. in /tmp) could point anywhere
+			if os.path.islink(CONFIG_FILE) and not _own_symlink(CONFIG_FILE):
+				raise PermissionError('{!r} is a symlink owned by someone else, not writing through it'.format(CONFIG_FILE))
+			# configs can hold passwords: owner only, except the system-wide locations every user reads, and
+			# never more open than the old file was (an admin may have locked it down further)
+			mode = 0o644 if _is_system_config_path(CONFIG_FILE) else 0o600
+			_replace_file(CONFIG_FILE, json.dumps(__configs_from_file, indent=4).encode(), mode if previous_mode is None else previous_mode & mode, owner=previous)
 		eprint(f"Config file written to {CONFIG_FILE!r}")
 		return True
 	except Exception as e:
@@ -7728,8 +7808,8 @@ def process_config_file(args):
 		if not args.commands and not args.file:
 			# a failed write already printed the new config, the file holds the old one (or nothing)
 			if configFileToWriteTo and written:
-				with open(configFileToWriteTo,'r') as f:
-					eprint(f"Config file {configFileToWriteTo} content: \n{f.read()}")
+				# what was written: root may not read it back (an NFS home that squashes root)
+				eprint(f"Config file {configFileToWriteTo} content: \n{json.dumps(__configs_from_file, indent=4)}")
 			_exit_with_code(0)
 	return args
 
@@ -7884,7 +7964,7 @@ def _replace_file(path, content, mode=None, follow=True, owner=True):
 					# link of their choice in its place first and have it chowned to them
 					os.fchown(f.fileno(), owner.st_uid, owner.st_gid)
 				except OSError:
-					if st is not None and st.st_uid != os.getuid():
+					if st is not None and st.st_uid != os.geteuid():
 						raise
 					# ours (or no file left to keep): only the owner or group could not be given
 			f.write(content)
