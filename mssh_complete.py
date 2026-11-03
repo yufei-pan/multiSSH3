@@ -5852,7 +5852,7 @@ _mssh_complete_remote_quote() {
 _mssh_complete_head() {
 	# where the words the glue writes for the delegate's names start (the spec's "The word the glue writes"), for the current
 	# remote word $1 as the remote command's text. The part kept as typed runs to the end of the last directory or name of the
-	# word that holds an expansion (a $ or a backtick not quoted, or a leading ~ or ~user typed bare); it must be the remote
+	# word that holds an expansion (a $ or a backtick not quoted, or a leading ~ or ~user); it must be the remote
 	# shell's text for what it names (a character the remote shell reads, unquoted for it outside the expansions: no
 	# names). Into _mssh_complete_head_name, the text of the names that goes on the line as _mssh_complete_head_text: a
 	# quoted command's prefix, then the kept part. Under readline the head is the text typed ($_mssh_complete_cur; in a
@@ -5861,7 +5861,8 @@ _mssh_complete_head() {
 	# cannot be cut so
 	local _mssh_complete_kept= _mssh_complete_seen= _mssh_complete_part=$1 _mssh_complete_one _mssh_complete_rest
 	local _mssh_complete_typed=$_mssh_complete_cur _mssh_complete_value _mssh_complete_slashes _mssh_complete_bare=1
-	# (outside a quoted command a leading ~ of mssh's word was typed bare, or quoted for this shell: \~)
+	# (outside a quoted command a leading ~ of mssh's word was typed bare, or quoted for this shell: \~, which in a word
+	# without a / is a local name's, as compgen reads it there)
 	if [[ -z ${_mssh_complete_xfields[1]-} ]]; then
 		_mssh_complete_value=$_mssh_complete_cur
 		(( _mssh_complete_ble )) && [[ -n ${COMPS+set} ]] && _mssh_complete_value=${COMPS#"${progcomp_prefix-}"}
@@ -5871,7 +5872,7 @@ _mssh_complete_head() {
 	while [[ $_mssh_complete_part == */* ]]; do
 		_mssh_complete_one=${_mssh_complete_part%%/*}
 		_mssh_complete_seen+=$_mssh_complete_one
-		if [[ ${_mssh_complete_one//\\?/} == *[\$\`]* ]] || { (( _mssh_complete_bare )) && [[ $_mssh_complete_seen == "$_mssh_complete_one" && $_mssh_complete_one == '~'* ]]; }; then
+		if [[ ${_mssh_complete_one//\\?/} == *[\$\`]* || ( $_mssh_complete_seen == "$_mssh_complete_one" && $_mssh_complete_one == '~'* ) ]]; then
 			_mssh_complete_kept=$_mssh_complete_seen
 		fi
 		_mssh_complete_part=${_mssh_complete_part#*/}
