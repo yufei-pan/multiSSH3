@@ -952,10 +952,10 @@ def test_a_typed_directory_the_remote_shell_reads_otherwise_is_written_as_its_wo
 	# a directory typed with this shell's quoting alone (zzq\&x/: mssh passes zzq&x/ on), or in a quoted command (a&b/),
 	# went in as typed, and the remote shell ran cat zzq (or cat a) in the background
 	line, remote = review_line(tmp_path, shell, typed, files=[name])
-	if shell == 'zsh' or shell == 'ble' and bash_version() < (4, 3) and '"' not in typed:
+	if shell == 'zsh' or shell == 'ble' and bash_version() < (4, 3):
 		# zsh keeps a typed directory as typed and offers nothing in such a one (typed with this shell's quoting alone:
 		# approved 2026-11-02, "Accept"; in a quoted command zsh's glue is as before); ble.sh before bash 4.3 offers nothing
-		# inside a directory whose name the remote shell reads otherwise
+		# inside a directory whose name the remote shell reads otherwise, in a quoted command too
 		assert line == typed
 	else:
 		assert remote == ['cat', name], line
