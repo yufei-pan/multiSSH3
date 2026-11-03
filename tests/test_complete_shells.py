@@ -818,11 +818,12 @@ def test_a_local_file_name_holding_whitespace_is_not_offered_for_a_remote_comman
 	assert remote_names_line(tmp_path, 'others', shell, 'mssh h cat zzpl') == 'mssh h cat zzplain '
 
 
-def local_words(shell, line):
-	"""The words shell (bash or zsh) makes of line, its open quote closed."""
+def local_words(shell, line, home=None):
+	"""The words shell (bash or zsh) makes of line, its open quote closed (with HOME home when given)."""
+	env = dict(os.environ, HOME=str(home)) if home else None
 	for close in ('', '"', "'"):
 		output = subprocess.run([require_shell(shell), '-c', 'eval "set -- $1" 2>/dev/null || exit 3; printf "%s\\0" "$@"', 'sh', line + close],
-			stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+			stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, env=env)
 		if output.returncode == 0:
 			return output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 	return None
@@ -846,6 +847,100 @@ def test_a_local_file_name_in_a_quoted_command_reaches_the_remote_shell_as_it_is
 		line = remote_names_line(tmp_path, typed, shell, 'mssh h {}cat {}'.format(quote, typed))
 		local = local_words('zsh' if shell == 'zsh' else 'bash', line)
 		assert local[:2] == ['mssh', 'h'] and remote_shell_args(' '.join(local[2:])) == remote, line
+
+
+def review_line(tmp_path, shell, typed, files=(), extra=''):
+	"""The line after TAB at the end of typed, and the words the remote shell gets for it (the line read by this shell,
+	its open quote closed, then mssh's command read by sh, with HOME as here), in a new session of shell (readline: bash
+	without bash-completion, ble, zsh) in a directory holding files, and HOME holding zzhplain; extra runs after the glue."""
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in files:
+		(work / name).write_text('')
+	(home / 'zzhplain').write_text('')
+	if shell == 'zsh':
+		session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'\n{}".format(work, extra))
+	elif shell == 'ble':
+		import test_complete_blesh as ble
+		session = blesh_session(home, env, ble.glue_file(home), extra="cd '{}'; {}".format(work, extra))
+	else:
+		session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra="cd '{}'; {}".format(work, extra))
+	try:
+		line = session.line_after(typed)
+	finally:
+		session.close()
+	local = local_words('zsh' if shell == 'zsh' else 'bash', line, home) if line else None
+	output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(local[2:])],
+		stdout=subprocess.PIPE, timeout=30, env=dict(os.environ, HOME=str(home))) if local else None
+	return line, output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1] if output else None
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('name, typed', [('zzs$v', 'zzs'), ('Outer$Inner.class', 'Out'), ('zzc`x', 'zzc')])
+def test_a_local_file_name_holding_a_dollar_or_a_backtick_reaches_the_remote_shell_as_it_is_named(tmp_path, shell, name, typed):
+	# bash 5.2's readline left the $ of the remote word Outer\$Inner.class bare (Outer\\$Inner.class): this shell expanded
+	# $Inner, and every host ran rm Outer.class. The glue quotes a name that changes for the remote shell itself
+	line, remote = review_line(tmp_path, shell, 'mssh h rm ' + typed, files=[name, 'zzplain'])
+	assert remote == ['rm', name], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_home_path_typed_with_dollar_home_is_left_for_the_remote_shell(tmp_path, shell):
+	# the typed $HOME/ stays as typed, for the remote shell to read (6.41 before this fix quoted it for the remote shell:
+	# \\\$HOME, or '\$HOME' under ble.sh, and the remote shell read a literal $HOME). (The home here is both shells')
+	line, remote = review_line(tmp_path, shell, 'mssh h cat $HOME/zzhp')
+	assert remote is not None and remote[0] == 'cat' and remote[1].endswith('/home/zzhplain') and '$' not in remote[1], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('quote', ['"', "'"])
+def test_a_second_local_file_name_in_a_quoted_command_reaches_the_remote_shell_as_it_is_named(tmp_path, shell, quote):
+	# after a first name the glue quoted (zzamp\\&b inside "..."), readline's word holds that text as typed, which the
+	# delegate's words (the remote shell's text) did not start with: nothing came for the second name
+	first = {'"': 'zzamp\\\\&b', "'": 'zzamp\\&b'}[quote]
+	line, remote = review_line(tmp_path, shell, 'mssh h {}cat {} zzpl'.format(quote, first), files=['zzamp&b', 'zzplain'])
+	assert remote == ['cat', 'zzamp&b', 'zzplain'], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('name, typed', [('zzd\\x', 'zzd'), ("zze'x", 'zze'), ('zzf"x', 'zzf')])
+def test_a_local_file_name_in_an_ansi_c_quoted_command_reaches_the_remote_shell_as_it_is_named(tmp_path, shell, name, typed):
+	# in $'...' a backslash and a ' are read: zzd\x went in as zzd\x (the remote shell got zzdx), zze'x and zzf"x broke
+	line, remote = review_line(tmp_path, shell, "mssh h $'cat " + typed, files=[name])
+	assert remote == ['cat', name], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_local_file_name_holding_braces_is_not_expanded_here(tmp_path, shell):
+	# ble.sh quotes no brace: zzb\{a,b\}, the remote shell's word, went in as zzb\\{a,b\\} and this shell made two words
+	# of it. Under ble.sh such a name is not offered; readline and zsh quote it
+	line, remote = review_line(tmp_path, shell, 'mssh h rm zzb', files=['zzb{a,b}'])
+	if shell == 'ble':
+		assert line == 'mssh h rm zzb'
+	else:
+		assert remote == ['rm', 'zzb{a,b}'], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_bash_a_nospace_filenames_spec_s_word_ending_in_a_space_completes(tmp_path, shell):
+	# readline's file name mode was on, and the glue took the space the spec's word ends with for part of a name
+	extra = "_zzns() { compopt -o filenames; COMPREPLY=('zzfeature '); }; complete -o nospace -F _zzns zzns"
+	line, remote = review_line(tmp_path, shell, 'mssh h zzns zzfe', extra=extra)
+	assert line == 'mssh h zzns zzfeature '
+
+
+@pytest.mark.parametrize('typed, extra, remote', [
+	# the keys of an array (-k), and a description array named in the same word (-dNAME), were handed on unquoted
+	('mssh h zzk zzk', "typeset -A zzh=('zzk&y' 1)\n_zzk() { compadd -k zzh }\ncompdef _zzk zzk", ['zzk', 'zzk&y']),
+	('mssh h zzd zzd', "_zzd() { local -a shown=('zzd&y: the amp'); compadd -dshown -- 'zzd&y' }\ncompdef _zzd zzd", ['zzd', 'zzd&y']),
+	# matches stored (-O) reach the line through another compadd, which quotes them
+	('mssh h zzo zzx', "_zzo() { local -a found; compadd -O found -- 'zzx&o'; compadd -a found }\ncompdef _zzo zzo", ['zzo', 'zzx&o']),
+])
+def test_zsh_every_compadd_form_reaches_the_remote_shell_as_named(tmp_path, typed, extra, remote):
+	line, got = review_line(tmp_path, 'zsh', typed, extra=extra)
+	assert got == remote, line
 
 
 def test_zsh_a_completion_s_word_in_a_quoted_command_reaches_the_remote_shell_as_it_is(setup):
@@ -1385,8 +1480,9 @@ def test_bash_the_delegates_file_names_are_left_to_readline_without_mssh_s_own_w
 		(tmp_path / 'work' / 'zzdir' / 'zzio').mkdir()
 		assert completed_and_listed(session, 'mssh h zzsvc zzdir/zzi') == ('mssh h zzsvc zzdir/zzi', ['zzin/', 'zzio/'])
 		assert session.line_after('mssh h zzsvc zzdir/zzin') == 'mssh h zzsvc zzdir/zzin/'
-		# (the name as readline gets it: the remote shell's word, which readline quotes in turn)
-		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp\\&b', 'zzdir/'])
+		# a name that changes for the remote shell: the glue quotes them all, readline's file name mode off (the list shows
+		# the words as they go in)
+		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp\\\\\\&b', 'zzdir/'])
 	finally:
 		session.close()
 

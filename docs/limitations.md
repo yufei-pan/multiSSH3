@@ -338,7 +338,7 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
 - What the operator sees: in every shell, TAB inside a quoted argument of a remote command
   (`mssh h cat 'my f<TAB>`) reads the quoted text as a whole quoted command: it completes `f` as an argument of
   a command `my`, so nothing useful is offered there. Typing the whole command in quotes
-  (`mssh h 'cat my f<TAB>`) completes.
+  (`mssh h 'cat my<TAB>`) completes.
 - Why: mssh runs each argument holding whitespace as a command of its own, so `mssh h cat 'my file'` cannot run
   as meant whatever completion inserts, and a quoted argument without whitespace (`'a&b'`) reaches the remote
   shell unquoted anyway. Completing there would need quoting for the remote shell inside this shell's quotes: a
