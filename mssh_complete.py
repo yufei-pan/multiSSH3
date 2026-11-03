@@ -5864,6 +5864,23 @@ _mssh_complete_remote() {
 		(( _mssh_complete_ble )) && [[ ${2-} != 1 ]] && return 0
 		_mssh_complete_chars=$_mssh_complete_remote_spaced
 		_mssh_complete_blank=*$'\n'*
+		if (( ! _mssh_complete_ble )); then
+			# readline quotes for the open quote as its version does (5.3 left the backslash of zzs\$v bare in double
+			# quotes): where a name changes, its file name mode goes off and the glue quotes them all itself
+			for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
+				[[ $_mssh_complete_item == "$_mssh_complete_lead"* ]] || continue
+				_mssh_complete_name=${_mssh_complete_item:${#_mssh_complete_lead}}
+				_mssh_complete_remote_quote "$_mssh_complete_name" "$_mssh_complete_chars"
+				if [[ $_mssh_complete_value != "$_mssh_complete_name" ]]; then
+					_mssh_complete_changed=1
+					compopt +o filenames 2>/dev/null || :
+					compopt +o fullquote 2>/dev/null || :
+					_mssh_complete_quoted_names "$_mssh_complete_lead" "$_mssh_complete_quote"
+					return 0
+				fi
+			done
+			return 0
+		fi
 	fi
 	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
 		_mssh_complete_name=$_mssh_complete_item
@@ -6035,7 +6052,7 @@ _mssh_complete_tab() {
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0 _mssh_complete_trim=
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local _mssh_complete_subword=$2 _mssh_complete_typed_line=0 _mssh_complete_plain=$2 _mssh_complete_value
-	local _mssh_complete_marking= _mssh_complete_marked=0 _mssh_complete_changed=0
+	local _mssh_complete_marking= _mssh_complete_marked=0 _mssh_complete_changed=0 _mssh_complete_quote=
 	local -a _mssh_complete_reply=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
@@ -6125,6 +6142,9 @@ _mssh_complete_tab() {
 			_mssh_complete_subword=$_mssh_complete_cur
 		fi
 		_mssh_complete_delegate "$_mssh_complete_subword" "${_mssh_complete_xfields[@]}"
+		# the quote a quoted command is in: readline hands over its word without it ($2), the character before it
+		_mssh_complete_quote=${_mssh_complete_before%"$_mssh_complete_cur"}
+		_mssh_complete_quote=${_mssh_complete_quote: -1}
 		# the options end with a space for the patterns below (ble.sh's compopt prints no command name)
 		_mssh_complete_item=$(compopt 2>/dev/null) || :
 		_mssh_complete_item+=' '
@@ -6135,7 +6155,7 @@ _mssh_complete_tab() {
 			# a space the spec brought for nospace is not part of a name: off before the glue quotes the names (quoted it
 			# would be zzfeature\ , and the unspace would leave the backslash)
 			[[ $_mssh_complete_item == *' -o nospace '* ]] && (( ! _mssh_complete_files )) && _mssh_complete_unspace
-			_mssh_complete_filenames "$_mssh_complete_item" "${_mssh_complete_xfields[1]}" "${_mssh_complete_cur:0:1}"
+			_mssh_complete_filenames "$_mssh_complete_item" "${_mssh_complete_xfields[1]}" "$_mssh_complete_quote"
 		elif (( ! _mssh_complete_ble )) && [[ $_mssh_complete_item == *' -o fullquote '* || ( $_mssh_complete_item == *' -o filenames '* && $_mssh_complete_item != *' -o noquote '* ) ]]; then
 			# readline quotes the delegate's names itself (not with noquote, unless fullquote): a space would be quoted
 			# too. They go to it as the remote shell reads them, which readline quotes in turn
