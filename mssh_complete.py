@@ -5885,6 +5885,8 @@ _mssh_complete_head() {
 	_mssh_complete_value=${_mssh_complete_kept//\\?/}
 	[[ $_mssh_complete_value == *[]\"\'\|\&\;\<\>\!\*\?\#[]* ]] && return 1
 	_mssh_complete_rest=${1:${#_mssh_complete_kept}}
+	_mssh_complete_head_path=
+	[[ -n $_mssh_complete_kept ]] && _mssh_complete_local_path "$_mssh_complete_kept" && _mssh_complete_head_path=$_mssh_complete_value
 	_mssh_complete_unescape "$_mssh_complete_kept"
 	_mssh_complete_head_name=${_mssh_complete_xfields[1]-}$_mssh_complete_value
 	if (( _mssh_complete_ble )); then
@@ -5965,24 +5967,41 @@ _mssh_complete_write() {
 	_mssh_complete_value=$_mssh_complete_head_text$_mssh_complete_value
 }
 
+_mssh_complete_local_path() {
+	# $1, a part of the remote word kept as typed (mssh's text), as the path here, into _mssh_complete_value: its leading ~
+	# or ~user and its $VAR and ${VAR} expanded, its backslashes off. Fails for another expansion (a backtick, $(...),
+	# ${VAR:-x}), which the glue does not read
+	local _mssh_complete_rest=$1 _mssh_complete_name _mssh_complete_lead
+	local _mssh_complete_pattern='^([^$\\]*)(\\(.)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(.*)$'
+	_mssh_complete_value=
+	if [[ $_mssh_complete_rest == '~'* ]]; then
+		_mssh_complete_lead=${_mssh_complete_rest%%/*}
+		[[ $_mssh_complete_lead == '~'*[!A-Za-z0-9._-]* ]] && return 1
+		eval "_mssh_complete_value=$_mssh_complete_lead"
+		_mssh_complete_rest=${_mssh_complete_rest:${#_mssh_complete_lead}}
+	fi
+	while [[ $_mssh_complete_rest =~ $_mssh_complete_pattern ]]; do
+		_mssh_complete_value+=${BASH_REMATCH[1]}
+		if [[ -n ${BASH_REMATCH[3]} ]]; then
+			_mssh_complete_value+=${BASH_REMATCH[3]}
+		else
+			_mssh_complete_name=${BASH_REMATCH[4]}${BASH_REMATCH[5]}
+			_mssh_complete_value+=${!_mssh_complete_name-}
+		fi
+		_mssh_complete_rest=${BASH_REMATCH[6]}
+	done
+	[[ $_mssh_complete_rest == *[\$\`]* ]] && return 1
+	_mssh_complete_value+=$_mssh_complete_rest
+}
+
 _mssh_complete_is_dir() {
-	# whether $1, a name the delegate gave for bash's word (_mssh_complete_subword), is a directory here. Under a part kept
-	# as typed (_mssh_complete_head_name: a ~/, $VAR/), one of the names compgen -d gives for that word, which expands it as
-	# compgen -f did to find the name (asked once a TAB, into _mssh_complete_dirs); else the name as it is (compgen -d would
-	# take a local file ~bin for user bin's home)
-	local _mssh_complete_item _mssh_complete_value=$_mssh_complete_subword
-	if [[ -z $_mssh_complete_head_name ]]; then
+	# whether $1, a name the delegate gave, is a directory here: its part kept as typed (_mssh_complete_head_name) read as
+	# this shell reads it (_mssh_complete_head_path), then the rest; a name without one as it is
+	if [[ -n $_mssh_complete_head_name ]]; then
+		[[ -n $_mssh_complete_head_path && -d $_mssh_complete_head_path${1:${#_mssh_complete_head_name}} ]]
+	else
 		[[ -d $1 ]]
-		return
 	fi
-	if (( ! _mssh_complete_dirs_read )); then
-		_mssh_complete_dirs_read=1
-		(( _mssh_complete_ble )) && _mssh_complete_unescape "$_mssh_complete_subword"
-		while IFS= read -r _mssh_complete_item; do
-			_mssh_complete_dirs["x$_mssh_complete_item"]=1
-		done < <(compgen -d -- "$_mssh_complete_value" 2>/dev/null || :)
-	fi
-	[[ -n ${_mssh_complete_dirs["x$1"]-} ]]
 }
 
 _mssh_complete_remote() {
@@ -6153,9 +6172,9 @@ _mssh_complete_tab() {
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local _mssh_complete_subword=$2 _mssh_complete_typed_line=0 _mssh_complete_plain=$2 _mssh_complete_value
 	local _mssh_complete_marking= _mssh_complete_marked=0 _mssh_complete_quote= _mssh_complete_head_name= _mssh_complete_head_text=
-	local _mssh_complete_unsplit=0 _mssh_complete_dirs_read=0
+	local _mssh_complete_unsplit=0 _mssh_complete_head_path=
 	local -a _mssh_complete_reply=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=()
-	local -A _mssh_complete_seen=() _mssh_complete_dirs=()
+	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
 		_mssh_complete_slice
 	else

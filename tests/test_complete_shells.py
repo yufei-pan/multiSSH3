@@ -1083,6 +1083,10 @@ def test_a_quoted_command_s_word_holding_the_remote_shell_s_quoting_completes(tm
 	if shell == 'zsh' and steps:
 		pytest.skip('zsh writes the common start differently')
 	line, got = review_line(tmp_path, shell, typed, files=files, steps=list(steps))
+	if shell == 'ble' and bash_version() < (4, 3) and '/' in typed:
+		# (ble.sh before bash 4.3 offers nothing inside a directory whose name the remote shell needs quoted)
+		assert line == typed
+		return
 	assert got == remote, line
 	if shell == 'zsh':
 		# (zsh leaves the quote open)
