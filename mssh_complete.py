@@ -5737,6 +5737,9 @@ _mssh_complete_delegate() {
 			fi
 			# bash runs only a function so named (else: function not found), never a command
 			if [[ -n $_mssh_complete_func ]] && declare -F -- "$_mssh_complete_func" >/dev/null 2>&1; then
+				# (under ble.sh, its bash-completion integration takes the words bash-completion's _comp_command_offset
+				# completes, for sudo, nohup or time, out of COMPREPLY for ble.sh's own word: it steps aside unattached)
+				(( ${_mssh_complete_ble:-0} )) && local BLE_ATTACHED=
 				_mssh_complete_operator "$_mssh_complete_func" "$_mssh_complete_cmd" "$_mssh_complete_current" \
 					"$_mssh_complete_prev" >/dev/null 2>&1 || :
 				_mssh_complete_results+=(${COMPREPLY[@]+"${COMPREPLY[@]}"})
@@ -5839,6 +5842,14 @@ _mssh_complete_remote_chars='[]["'"'"'\\$`|&;<>()!*?{}#]'
 # and in a quoted command, which mssh hands on whole, a space and a tab too
 _mssh_complete_remote_spaced='[]["'"'"'\\$`|&;<>()!*?{}# 	]'
 
+_mssh_complete_blank() {
+	# whether $1 holds whitespace as mssh splits its command words (Python's str.split), byte by byte: [[:space:]] leaves
+	# out the separators \x1c to \x1f and, in glibc, the no-break spaces U+00A0, U+2007 and U+202F
+	local LC_ALL=C
+	[[ $1 == *[$'\t\n\v\f\r\x1c\x1d\x1e\x1f ']* || $1 == *$'\xc2'[$'\x85\xa0']* || $1 == *$'\xe1\x9a\x80'* ]] ||
+		[[ $1 == *$'\xe2\x80'[$'\x80'-$'\x8a\xa8\xa9\xaf']* || $1 == *$'\xe2\x81\x9f'* || $1 == *$'\xe3\x80\x80'* ]]
+}
+
 _mssh_complete_remote_quote() {
 	# $1 as a word of the remote command that the remote shell reads back as $1, into _mssh_complete_value: a backslash
 	# before each character of the pattern $2 (_mssh_complete_remote_chars when not given) and before a leading ~
@@ -5894,7 +5905,8 @@ _mssh_complete_head() {
 		_mssh_complete_value=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
 	done
 	_mssh_complete_value=${_mssh_complete_value//[\$\`]/}
-	[[ $_mssh_complete_value == *$_mssh_complete_remote_chars* || $_mssh_complete_value == *[[:space:]]* ]] && return 1
+	[[ $_mssh_complete_value == *$_mssh_complete_remote_chars* ]] && return 1
+	_mssh_complete_blank "$_mssh_complete_value" && return 1
 	_mssh_complete_rest=${1:${#_mssh_complete_kept}}
 	_mssh_complete_head_path= _mssh_complete_head_read=0
 	if [[ -n $_mssh_complete_kept ]] && _mssh_complete_local_path "$_mssh_complete_kept"; then
@@ -5952,7 +5964,8 @@ _mssh_complete_write() {
 	# the rest as the remote shell's word for it (_mssh_complete_remote_quote; in a quoted command, which mssh hands on whole,
 	# a space and a tab quoted too), which readline then gets quoted for this shell: with printf %q, or for the open quote.
 	# ble.sh quotes it itself, but not the words of a noquote spec ($2 text): those get printf %q too. Left out: a name
-	# holding whitespace (mssh would run each command word as a command of its own; in a quoted command only a newline), in
+	# holding whitespace as mssh reads it (_mssh_complete_blank, a no-break space too: mssh would run each command word as a
+	# command of its own; in a quoted command only a newline), in
 	# readline's double quotes one holding a ! (bash would expand it there), under ble.sh one holding a brace outside a quoted
 	# command (ble.sh quotes none: this shell would expand it), and before bash 4.3 one whose directories change (ble.sh
 	# there keeps the typed text inside the quote it puts the rest in)
@@ -5963,7 +5976,7 @@ _mssh_complete_write() {
 		(( ! _mssh_complete_ble )) && [[ $_mssh_complete_quote == '"' && $_mssh_complete_name == *'!'* ]] && return 1
 		_mssh_complete_chars=$_mssh_complete_remote_spaced
 	else
-		[[ $_mssh_complete_name == *[[:space:]]* ]] && return 1
+		_mssh_complete_blank "$_mssh_complete_name" && return 1
 		(( _mssh_complete_ble )) && [[ $_mssh_complete_name == *'{'* ]] && return 1
 	fi
 	if (( _mssh_complete_ble && BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )) && [[ $_mssh_complete_name == */* ]]; then
@@ -6044,7 +6057,7 @@ _mssh_complete_remote() {
 	if [[ $1 == value ]] && (( ! _mssh_complete_ble )); then
 		if [[ -z $_mssh_complete_head_name ]]; then
 			for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
-				if [[ $_mssh_complete_item == *$'\n'* ]] || { (( ! _mssh_complete_qcommand )) && [[ $_mssh_complete_item == *[[:space:]]* ]]; }; then
+				if [[ $_mssh_complete_item == *$'\n'* ]] || { (( ! _mssh_complete_qcommand )) && _mssh_complete_blank "$_mssh_complete_item"; }; then
 					_mssh_complete_dropped=1
 					continue
 				fi
@@ -7085,6 +7098,20 @@ _mssh() {
 	return 0
 }
 
+_mssh_complete_blank() {
+	# whether $1 holds whitespace as mssh splits its command words (Python's str.split): [[:space:]] leaves out the
+	# separators \x1c to \x1f and, in glibc, the no-break spaces U+00A0, U+2007 and U+202F. The others as their UTF-8
+	# bytes, each on its own (zsh's brackets miss a byte it stores escaped, as \xa0)
+	local _mssh_complete_one
+	[[ $1 == *[$'\t\n\v\f\r\x1c\x1d\x1e\x1f ']* ]] && return 0
+	for _mssh_complete_one in $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
+		$'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89' \
+		$'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80'; do
+		[[ $1 == *$_mssh_complete_one* ]] && return 0
+	done
+	return 1
+}
+
 _mssh_complete_compadd() {
 	# compadd while the completion of a remote command typed as words runs (_mssh_complete_remoting of _mssh): its words
 	# go in as mssh's remote command needs them, as in the bash glue (_mssh_complete_remote). A word holding whitespace is
@@ -7195,7 +7222,7 @@ _mssh_complete_compadd() {
 		_mssh_complete_word=$_mssh_complete_in[_mssh_complete_index]
 		_mssh_complete_name=$_mssh_complete_word
 		(( _mssh_complete_quoted )) && _mssh_complete_name=${(Q)_mssh_complete_word}
-		if [[ $_mssh_complete_name == *[[:space:]]* ]] && (( ! _mssh_complete_filter )); then
+		if _mssh_complete_blank "$_mssh_complete_name" && (( ! _mssh_complete_filter )); then
 			continue
 		fi
 		_mssh_complete_value=${_mssh_complete_name//(#m)[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#]/\\$MATCH}
@@ -7865,7 +7892,9 @@ switch "$FISH_VERSION"
 						# whitespace is left out (mssh would run each command word as a command of its own); in a quoted
 						# command (D quoted, its prefix in $fields[2]), which mssh hands on whole, a space and a tab are quoted
 						# too, and only a newline leaves a name out
-						set -l blank '\s'
+						# (whitespace as mssh splits its command words, Python's str.split: the separators \x1c to \x1f and the
+						# no-break spaces too)
+						set -l blank '[\s\x{1c}-\x{1f}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]'
 						set -l chars '([][\\\\\'"$`|&;<>()!*?{}#])'
 						if test $quoted = 1
 							set blank '\n'

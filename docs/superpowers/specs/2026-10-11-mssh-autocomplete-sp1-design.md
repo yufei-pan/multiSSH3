@@ -518,10 +518,12 @@ patched cases one by one; this replaced the patches (2026-11-03).
    empty). The delegate gets the current word of a quoted command as the remote shell reads it (its value), under readline
    and ble.sh: readline's compgen dequotes a word by the open quote's rules, and ble.sh's before bash 4.3 kept the
    backslash of `zz\&a`.
-4. **Left out:** a name holding whitespace (mssh would run each command word as a command of its own; in a quoted command
-   only a newline), in readline's double quotes one holding `!`; under ble.sh one holding `{` outside a quoted command (ble.sh
-   quotes no brace), and before bash 4.3 one whose directories after the kept part change (ble.sh there keeps the typed text
-   inside the quote it puts the rest in).
+4. **Left out:** a name holding whitespace as mssh splits its command words, Python's `str.split` (`_mssh_complete_blank`
+   in bash and zsh: `[[:space:]]` leaves out the separators `\x1c` to `\x1f` and glibc's no-break spaces; mssh would run each
+   command word as a command of its own; in a quoted command only a newline), in readline's double quotes one holding `!`;
+   under ble.sh one holding `{` outside a quoted command (ble.sh quotes no brace), and before bash 4.3 one whose directories
+   after the kept part change (ble.sh there keeps the typed text inside the quote it puts the rest in). Each is an approved
+   entry in `docs/limitations.md` (2026-11-03), whitespace aside, which is the rule.
 5. **A directory** gets a `/` and, alone, no space; not in a quoted command, where readline marks none (its first word's
    names readline marks itself while its file name mode stays on). It is tested at its path here: the kept part read as this
    shell reads it (a `~`, `~user`, `$VAR` and `${VAR}` expanded, an unset one as nothing; no mark under another expansion),
@@ -536,7 +538,7 @@ patched cases one by one; this replaced the patches (2026-11-03).
    directory named `~`) gets `./` before it for compgen, which would read the home. The shell's own default is off for every delegated word (readline's `-o default`, ble.sh's `ble/default`, which
    asks again for an empty word and else offers its own file names, quoted for this shell alone), and readline's
    `bashdefault` for a word holding a glob (`*`, `?`, `[`), whose matches it inserts quoted for this shell alone: a glob
-   gets nothing.
+   gets nothing (a known limitation, approved 2026-11-03, "Accept (Recommended)").
 
 The delegate matches the names against the word as the remote shell reads it, without its backslashes (a typed `zzq\\\&x/i`
 is mssh's `zzq\&x/i`, which names `zzq&x/i`; so does `"cat zzq\\&x/i`).
@@ -547,12 +549,16 @@ and the glue writes them all (its quoting of a changed name differs by version: 
 `$` of a typed `$HOME/`). ble.sh quotes what it inserts and keeps the typed text where a word starts with its value of the
 typed word (`COMPV`): the glue gives it `COMPV` up to the part it writes, then the remote shell's word of that part, so
 ble.sh keeps the typed text up to there (the kept part, a quoted command before the word); where `COMPV` does not end with
-that part (an expansion inside it, `"cat Outer$Inn`), no file name is offered. For a spec with `noquote` ble.sh inserts the
+that part (an expansion inside it, `"cat Outer$Inn`), no file name is offered (a known limitation, approved 2026-11-03,
+"Known limitation (Recommended)"). Under ble.sh the delegate runs a command's completion function with `BLE_ATTACHED` empty:
+ble.sh's bash-completion integration otherwise takes the words bash-completion 2.12's `_comp_command_offset` completes (for
+`sudo`, `nohup`, `time`) out of `COMPREPLY` for ble.sh's own word. For a spec with `noquote` ble.sh inserts the
 words as they are, so the glue writes them as readline's file names are written (`printf %q`). zsh keeps the parts typed
 before the word as typed (`compadd -p`) and quotes what completion adds (`_mssh_complete_compadd`), a leading `~` of a name
 too; inside a typed directory the remote shell would read otherwise nothing is offered: one typed with this shell's quoting
 alone (`a\&/`, approved 2026-11-03, "Accept (Recommended)"), and one typed bare in a quoted command (`"cat a&b/`; zsh's glue
-is as before). fish quotes a name's leading `~` for the remote shell too.
+is as before; the same entry, "Extend the Accept (Recommended)"). fish quotes a name's leading `~` for the remote shell too,
+and leaves out a name holding whitespace as mssh splits it (`string match -r`, the no-break spaces named).
 
 ### The rest of 6.41
 
@@ -570,4 +576,5 @@ The deferred fix for local file names in a remote command (approved 2026-11-01, 
 | zsh: `compadd -k`, `-dNAME` | The keys of `-k` are taken as words, and a value given in the same word as its option (`-dNAME`) is read; both get the remote quoting. `-O` and `-A` still go on as they came: what they store reaches the line through another `compadd`, which is quoted | They went on unquoted |
 | The rule's third review | A local name's leading `~` gets the remote shell's backslash in every glue (rule 2); the kept part runs to the last directory holding an expansion, and is the word itself for a `~user` or `$VAR` being typed (rule 1); a name under a kept part is tested at the kept part read as this shell reads it (`_mssh_complete_local_path`: `~`, `$VAR`, `${VAR}`), else as it is; the engine hands a quoted command's words as the remote shell's text (`parse_context`), and readline's delegate gets the current one as the remote shell reads it; the glue's default gives `~user/` and `$VAR/`; `bashdefault` off for a word holding a glob; ble.sh's noquote words written with `printf %q` | A local directory named `~` went in as `\~/` (`rmdir ~/` there, `rm -r ~` in a quoted command); `sub/$ZZN/` went in as `\\\$ZZN`; `"cat zz\\&a` (as TAB wrote it) got no delegation; `zz?b` got `zz\;b`; ble.sh gave `zzamp\&b` for a noquote spec, nothing for `~bi`, and `$HOME ` |
 | The rule's fourth review | The engine says a delegation is a quoted command's (`D quoted`), the glues' one test for it (bash's `_mssh_complete_qcommand`, zsh's, fish's), where they tested for text before the word; the delegate gets a quoted command's current word as its value under ble.sh too; the glue's default runs in a quoted command too; the kept part is checked against `_mssh_complete_remote_chars` and whitespace; a directory under an unset variable is tested (`_mssh_complete_head_read`); a variable name others start lists them; `./` before a word naming a local `~` for compgen | A quoted command's first word went in as a word typed as words (`"./zzscript\\\&x"`: the remote shell ran `./zzscript\` in the background); bash-completion's names in a quoted command, and ble.sh's before bash 4.3, came to nothing; `x\(1\)/$X/zzplain` stopped the remote shell; `$ZZNONE/tmp ` got no `/`, `$ZZW` went to `$ZZW/` beside `$ZZWX`; `\\\~/zz` completed the home's names |
+| The user's answers (2026-11-03) | ble.sh: the delegate runs a command's completion function with `BLE_ATTACHED` empty ("Fix in 6.41 if small (Recommended)"). A name holding a no-break space, or any whitespace Python's `str.split` splits on, is left out as other whitespace names are (`_mssh_complete_blank`; "Leave them out (Recommended)"). The pending behaviours are entries in `docs/limitations.md` ("Found in 6.41's review"), two of them deferred: a directory completed in a quoted command closes the quote, and zsh expands `$PWD` in a double-quoted command. Approved as built: the kept expansions, ble.sh's nothing for an empty answer, the default in a quoted command (a later first word from any file; under ble.sh a first word's changed directory without `/`) | ble.sh's integration put `"zzamp&b"` in place of `"sudo cat zza`, and beside the glue's names `zzamp\`; mssh splits command words as Python does, and `[[:space:]]` missed `zz\u00a0a`, which mssh ran as a command of its own |
 | Left as they were | A quoted argument (a known limitation), the file names of a path option's value (`D files`: mssh reads them itself), a `-o noquote` spec's raw names | Not remote command words, or not local file names for the remote shell |

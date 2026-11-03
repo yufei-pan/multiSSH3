@@ -347,29 +347,6 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
 - Revisit when: mssh passes a quoted argument to the remote shell as one quoted word.
 - Approved: 2026-11-02, the user chose "Known limitation (Recommended)".
 
-### ble.sh before bash 4.3: names inside a directory that changes are left out
-- Kind: known limitation
-- What the operator sees: with ble.sh on bash 4.2 (EL7), no name is offered inside a directory whose name the remote
-  shell needs quoted (`mssh h cat a\\\&dir/<TAB>`, or `mssh h "cat a&b/zz<TAB>`); elsewhere such names complete. Names
-  under a typed `~/` or `$HOME/` whose own directories need no quoting complete.
-- Why: ble.sh on bash before 4.3 keeps the typed directory inside the single quotes it puts the rest in, so the remote
-  shell got the typed text quoted once more (`'zzq\\\&x/in\&1'` named `zzq\&x/in&1`). Leaving such names out puts
-  nothing wrong on the line.
-- Revisit when: an operator on EL7 with ble.sh needs names inside such a directory, or ble.sh's insertion on bash 4.2 is
-  fixed.
-- Approved: 2026-11-03, the user chose "Leave those names out (Recommended)".
-
-### zsh: a directory typed with this shell's quoting alone gets no names
-- Kind: known limitation
-- What the operator sees: in zsh, inside a directory typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`,
-  which mssh would pass on as `a&b/`, so the remote shell would read `a` and `b/...`), nothing is offered; bash replaces
-  such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`), or completed by TAB,
-  the names inside it complete.
-- Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
-  to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
-- Revisit when: an operator types such directories in zsh and misses the names.
-- Approved: 2026-11-03, the user chose "Accept (Recommended)".
-
 ### zsh before 5.8: a Ctrl-C during a completion query can reach the query
 - Kind: deferred
 - What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's), now and then, for the length of a
@@ -382,3 +359,119 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
   (`tests/test_complete_keys.py::test_zsh_keeps_the_terminal_while_mssh_asks`) can fail on the legacy image.
 - Revisit when: the change right after 6.40.
 - Approved: 2026-11-01, the user chose "Defer to after 6.40 (Recommended)".
+
+## Found in 6.41's review
+
+The local file names a remote command's completion gives, as 6.41 writes them for the remote shell (the user's words are in
+each entry).
+
+### ble.sh before bash 4.3: names inside a directory that changes are left out
+- Kind: known limitation
+- What the operator sees: with ble.sh on bash 4.2 (EL7), no name is offered inside a directory whose name the remote
+  shell needs quoted (`mssh h cat a\\\&dir/<TAB>`, or `mssh h "cat a&b/zz<TAB>`); elsewhere such names complete. Names
+  under a typed `~/` or `$HOME/` whose own directories need no quoting complete.
+- Why: ble.sh on bash before 4.3 keeps the typed directory inside the single quotes it puts the rest in, so the remote
+  shell got the typed text quoted once more (`'zzq\\\&x/in\&1'` named `zzq\&x/in&1`). Leaving such names out puts
+  nothing wrong on the line.
+- Revisit when: an operator on EL7 with ble.sh needs names inside such a directory, or ble.sh's insertion on bash 4.2 is
+  fixed.
+- Approved: 2026-11-03, the user chose "Leave those names out (Recommended)".
+
+### zsh: a directory the remote shell would read otherwise gets no names
+- Kind: known limitation
+- What the operator sees: in zsh, nothing is offered inside a directory typed so that the remote shell would read it
+  otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
+  the remote shell would read `a` and `b/...`), and one typed bare in a quoted command (`mssh h "cat a&b/zz<TAB>`). bash
+  replaces such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`),
+  or completed by TAB, the names inside it complete.
+- Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
+  to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
+- Revisit when: an operator types such directories in zsh and misses the names.
+- Approved: 2026-11-03, the user chose "Accept (Recommended)"; the quoted command added the same day, "Extend the Accept
+  (Recommended)".
+
+### ble.sh: a name holding a brace is not offered for a remote command typed as words
+- Kind: known limitation
+- What the operator sees: with ble.sh, a local file name holding `{` is not offered for a remote command typed as words
+  (`mssh h rm zzb<TAB>` with a file `zzb{a,b}` offers nothing); in a quoted command it is, and readline and zsh offer it
+  quoted.
+- Why: ble.sh quotes no brace in what it inserts, natively too: `zzb\{a,b\}`, the remote shell's word, went in as
+  `zzb\\{a,b\\}`, which this shell brace-expanded into two words.
+- Revisit when: ble.sh gains a way to insert a quoted brace.
+- Approved: 2026-11-03, the user chose "Known limitation (Recommended)".
+
+### readline and ble.sh: no names inside a directory whose name holds a quote or a backslash
+- Kind: known limitation
+- What the operator sees: in bash, under readline and ble.sh, nothing is offered inside a local directory whose name holds
+  `"`, `'` or `\` (`mssh h cat zzq<TAB>` gives `zzq\\\"x/`, and the next TAB nothing).
+- Why: bash dequotes the word for compgen, and readline's file name completion (ble.sh's too) dequotes its directory
+  part once more before reading it: a `"` or `'` there opens a quote and a `\` goes, so another directory is read. Names
+  inside it would need the glue to list the directory itself.
+- Revisit when: an operator has such directories and misses their names.
+- Approved: 2026-11-03, the user chose "Known limitation (Recommended)".
+
+### ble.sh: an expansion partway through a quoted command's word gets no file names
+- Kind: known limitation
+- What the operator sees: with ble.sh, in a quoted command, a word with a `$` expansion partway through its last part
+  (`mssh h "cat Outer$Inn<TAB>` for a file `Outer$Inner.class`) gets no file names; readline completes it.
+- Why: ble.sh keeps the typed text only where a name starts with its value of the typed word (`COMPV`), and there that
+  value has `$Inn` expanded (this shell expands it inside double quotes): a name written otherwise would replace the
+  command typed.
+- Revisit when: ble.sh offers a way to keep typed text that differs from its value.
+- Approved: 2026-11-03, the user chose "Known limitation (Recommended)".
+
+### readline: TAB on a glob offers nothing
+- Kind: known limitation
+- What the operator sees: under readline, a remote command's word holding `*`, `?` or `[` (`mssh h cat zz*b<TAB>`) gets
+  nothing; 6.40 put in the names it matched.
+- Why: readline's `bashdefault` inserts the names a glob matches quoted for this shell alone (`zz?b` gave `zz\;b`, and
+  the remote shell ran `b`); the glue turns it off for such a word.
+- Revisit when: an operator misses glob completion for remote commands.
+- Approved: 2026-11-03, the user chose "Accept (Recommended)".
+
+### readline: names holding an exclamation mark are not offered in a double-quoted command
+- Kind: known limitation
+- What the operator sees: under readline, in a remote command typed in double quotes (`mssh h "cat zz<TAB>`), a local
+  file name holding `!` is not offered.
+- Why: with history expansion on, bash reads a `!` inside double quotes, and a backslash before it stays in the word, so
+  no writing of the name reaches the remote shell as named. In single quotes (`mssh h 'cat zz<TAB>`) the name is offered;
+  with `set +H` it can be typed.
+- Revisit when: an operator needs such names in double-quoted commands.
+- Approved: 2026-11-03, the user chose "Known limitation (Recommended)".
+
+### readline: a quote opened inside a quoted command gets no names
+- Kind: known limitation
+- What the operator sees: under readline, a word with its own open quote inside a quoted command (`mssh h "cat 'zz<TAB>`)
+  gets nothing. ble.sh, and readline after a `\"`, put the remote shell's word for the name in place of the word, that
+  quote dropped (`mssh h "cat zzamp\\&b"`), which the remote shell reads as named.
+- Why: inside readline's open double quote compgen keeps the `'` as part of the name, so it matches none; completing there
+  would need the glue to read the remote word's own quotes.
+- Revisit when: an operator types such quotes and misses the names.
+- Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
+
+### readline: a default-value expansion in a remote word is written broken
+- Kind: known limitation
+- What the operator sees: under readline, `mssh h cat ${VAR:-x}/zzf<TAB>` puts in a broken word (`${VAR:-x\\\}/zzf...`),
+  which mssh and the remote shell read wrong; 6.40 did the same.
+- Why: readline's word starts after the `:` (`COMP_WORDBREAKS`), so the glue sees `-x}/zzf` and writes that part as a
+  name.
+- Revisit when: an operator types such expansions in a remote command.
+- Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
+
+### A directory completed in a quoted command closes the quote
+- Kind: deferred
+- What the operator sees: in bash, a directory completed in a quoted command closes the quote: `mssh h "ls zzd<TAB>` gives
+  `"ls zzdir" `, and `mssh h "cat ~bi<TAB>` gives `"cat ~bin/"`; the quote has to be taken out to go on into the directory.
+  6.40 did the same for `"ls zzd<TAB>`.
+- Why: readline closes the quote of a single match unless its file name mode finds the match is a directory; in a quoted
+  command the match is the whole command typed (`ls zzdir`), which names none. ble.sh closes it too.
+- Revisit when: 6.41 has shipped.
+- Approved: 2026-11-03, the user chose "Defer both (Recommended)".
+
+### zsh: a variable in a double-quoted command is expanded and nothing completes
+- Kind: deferred
+- What the operator sees: in zsh, `mssh h "ls $PWD/zzd<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzd` and
+  completes nothing; 6.40 did the same.
+- Why: zsh's completion expands the parameter in the quoted word before the glue sees it; not looked into further.
+- Revisit when: 6.41 has shipped.
+- Approved: 2026-11-03, the user chose "Defer both (Recommended)".

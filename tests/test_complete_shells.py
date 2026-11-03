@@ -1244,6 +1244,51 @@ def test_a_local_directory_named_tilde_completes_its_own_names(tmp_path, shell, 
 		assert got == ['cat', '~/zzinside'], line
 
 
+@needs_bash_completion
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, files, remote, end', [
+	('mssh h sudo cat zza', ['zzamp&b'], ['sudo', 'cat', 'zzamp&b'], ' '),
+	('mssh h time cat zza', ['zzamp&b'], ['time', 'cat', 'zzamp&b'], ' '),
+	('mssh h "sudo cat zza', ['zzamp&b'], ['sudo', 'cat', 'zzamp&b'], '" '),
+	('mssh h "nohup cat zza', ['zzamp&b'], ['nohup', 'cat', 'zzamp&b'], '" '),
+	('mssh h "sudo cat zzpl', ['zzplain'], ['sudo', 'cat', 'zzplain'], 'zzplain" '),
+	('mssh h sudo ls zzd', ['zzdir/x'], ['sudo', 'ls', 'zzdir/'], 'zzdir/'),
+])
+def test_bash_completion_s_names_for_the_command_after_sudo_nohup_or_time_complete(tmp_path, shell, typed, files, remote, end):
+	# ble.sh's bash-completion integration took the words bash-completion 2.12's _comp_command_offset completes for sudo,
+	# nohup and time out of COMPREPLY, for ble.sh's own word: "zzamp&b" replaced the whole quoted command, and beside the
+	# glue's own file names the common start zzamp\ went in
+	line, got = review_line(tmp_path, shell, typed, files=files, bash_completion=True)
+	assert got == remote and line.endswith(end), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('blank', ['\xa0', ' ', ' ', '\x1c', '　'])
+def test_a_local_file_name_holding_whitespace_as_mssh_splits_words_is_left_out(tmp_path, shell, blank):
+	# mssh splits its command words as Python's str.split does: zz<no-break space>a made it run cat and the name as commands
+	# of their own. [[:space:]] leaves out glibc's no-break spaces and the separators \x1c to \x1f
+	line, got = review_line(tmp_path, shell, 'mssh h cat zz', files=['zz' + blank + 'a', 'zzplain'])
+	assert line == 'mssh h cat zzplain '
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_local_file_name_holding_a_no_break_space_goes_in_a_quoted_command(tmp_path, shell):
+	# (mssh hands a quoted command on whole, and the remote shell splits on spaces, tabs and newlines alone)
+	line, got = review_line(tmp_path, shell, 'mssh h "cat zz', files=['zz\xa0a'])
+	assert got == ['cat', 'zz\xa0a'], line
+
+
+def test_fish_a_local_file_name_holding_whitespace_as_mssh_splits_words_is_left_out(setup, tmp_path):
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in ('zz\xa0a', 'zz b', 'zz\x1cc', 'zzplain'):
+		(work / name).write_text('')
+	glue = glue_file(home, 'fish')
+	assert [text for text, _ in fish_complete(env, glue, 'mssh h cat zz', cwd=work)] == ['zzplain']
+	assert ['cat', 'zz\xa0a'] in [remote_shell_args(text) for text, _ in fish_complete(env, glue, 'mssh h "cat zz', cwd=work)]
+
+
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
 def test_bash_a_nospace_filenames_spec_s_word_ending_in_a_space_completes(tmp_path, shell):
 	# readline's file name mode was on, and the glue took the space the spec's word ends with for part of a name
@@ -2287,8 +2332,9 @@ def test_bash_glue_has_no_comment_inside_a_command_or_process_substitution():
 GLUE_LOCAL_EXCEPTIONS = {
 	# bash's completion interface, handed to a command's completion function; a locale for one function
 	# (its whole point); ble.sh's conventions: its functions return in ret, layer:{selection}/update
-	# reads sel and gflags
-	'bash': {'COMP_WORDS', 'COMP_CWORD', 'COMP_LINE', 'COMP_POINT', 'COMPREPLY', 'LC_ALL', 'IFS', 'ret', 'sel', 'gflags'},
+	# reads sel and gflags, and its bash-completion integration steps aside while BLE_ATTACHED is empty
+	'bash': {'COMP_WORDS', 'COMP_CWORD', 'COMP_LINE', 'COMP_POINT', 'COMPREPLY', 'LC_ALL', 'IFS', 'ret', 'sel', 'gflags',
+		'BLE_ATTACHED'},
 	# what zsh's pattern matching sets, kept from the shell's own
 	'zsh': {'MATCH', 'MBEGIN', 'MEND', 'match', 'mbegin', 'mend'},
 }
