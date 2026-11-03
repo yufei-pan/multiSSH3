@@ -568,7 +568,8 @@ SAME_AS_BASH_UNQUOTED = [
 	(['-W', 'zza zzb', '-o', 'dirnames', '-o', 'default'], 'zzd', ''),
 ]
 
-# and where a filter leaving nothing makes bash offer nothing at all (the unquoted one is above, with -o default)
+# and in a quoted command, where bash 4.2's filter leaves nothing (it takes !( for a negation of what follows): bash offers
+# nothing at all, mssh its own default's file names, as in a command typed as words (the unquoted one is above, with -o default)
 SAME_AS_BASH_QUOTED = [
 	(['-W', 'zza zzb zzc', '-X', '!(zza)'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)'], 'zz', 'shopt -s extglob'),
@@ -587,7 +588,10 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 			(tmp_path / 'work' / name).mkdir()
 		native = completed_and_listed(session, 'zzsvc ' + word)
 		remote = completed_and_listed(session, 'mssh h ' + ('"zzsvc ' if quoted else 'zzsvc ') + word, quoted)
-		assert remote == ('mssh h ' + native[0], native[1])
+		if quoted and native == ('zzsvc ' + word, []):
+			assert remote == ('mssh h zzsvc ' + word, ['zzdir', 'zzdirb', 'zzfile'])
+		else:
+			assert remote == ('mssh h ' + native[0], native[1])
 	finally:
 		session.close()
 
@@ -852,11 +856,13 @@ def test_a_local_file_name_in_a_quoted_command_reaches_the_remote_shell_as_it_is
 REMOTE_HOME = '/zzremote-home'
 
 
-def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=(), home_dirs=(), steps=()):
+def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=(), home_dirs=(), steps=(), executables=(),
+		bash_completion=False):
 	"""The line after TAB at the end of typed (then the keys of each of steps, the last one's line), and the words the remote
 	shell gets for it (the line read by this shell, its open quote closed, then mssh's command read by sh with HOME at
-	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash without bash-completion, ble, zsh)
-	in a directory holding files and dirs, and HOME holding zzhplain, home_files and home_dirs; extra runs after the glue."""
+	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash, ble, zsh; bash and ble.sh with
+	bash-completion loaded when bash_completion) in a directory holding files, dirs and executables, and HOME holding
+	zzhplain, home_files and home_dirs; extra runs after the glue."""
 	env, home = make_home(tmp_path, [])
 	build_index(env)
 	work = tmp_path / 'work'
@@ -868,14 +874,18 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 		for name in names:
 			(base / name).parent.mkdir(parents=True, exist_ok=True)
 			(base / name).write_text('')
+	for name in executables:
+		(work / name).write_text('#!/bin/sh\n')
+		(work / name).chmod(0o755)
 	(home / 'zzhplain').write_text('')
 	if shell == 'zsh':
 		session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'\n{}".format(work, extra))
 	elif shell == 'ble':
 		import test_complete_blesh as ble
-		session = blesh_session(home, env, ble.glue_file(home), extra="cd '{}'; {}".format(work, extra))
+		pre = '. {} 2>/dev/null'.format(BASH_COMPLETION) if bash_completion else ''
+		session = blesh_session(home, env, ble.glue_file(home), pre=pre, extra="cd '{}'; {}".format(work, extra))
 	else:
-		session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra="cd '{}'; {}".format(work, extra))
+		session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=bash_completion, extra="cd '{}'; {}".format(work, extra))
 	try:
 		if steps:
 			session.send(typed + '\t')
@@ -1121,6 +1131,117 @@ def test_a_user_or_a_variable_being_typed_completes_to_its_directory(tmp_path, s
 		pytest.skip('no user bin here')
 	line, got = review_line(tmp_path, shell, typed)
 	assert line == completed
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, files, executables, completed, remote', [
+	('mssh h "./zzs', [], ['zzscript&x'], 'mssh h "./zzscript\\\\&x" ', ['./zzscript&x']),
+	("mssh h './zzs", [], ['zzscript&x'], "mssh h './zzscript\\&x' ", ['./zzscript&x']),
+	('mssh h "zz', ['zz&f'], [], 'mssh h "zz\\\\&f" ', ['zz&f']),
+	('mssh h "./my', [], ['my script'], 'mssh h "./my\\\\ script" ', ['./my script']),
+	('mssh h "cat zzx; ./zzs', [], ['zzscript&x'], 'mssh h "cat zzx; ./zzscript\\\\&x" ', None),
+])
+def test_the_first_word_of_a_quoted_command_reaches_the_remote_shell_as_named(tmp_path, shell, typed, files, executables, completed, remote):
+	# the glue told a quoted command by the text before its word, which its first word has none of: readline wrote
+	# "./zzscript\\\&x" (the remote shell ran ./zzscript\ in the background), and ./my script was left out
+	if shell == 'zsh' and remote is None:
+		pytest.skip('(zsh: the words of the line are checked, and the remote shell would run the second command)')
+	line, got = review_line(tmp_path, shell, typed, files=files, executables=executables)
+	if shell == 'zsh':
+		# (zsh leaves the quote open, and quotes for it with backslashes as outside one)
+		assert got == remote, line
+	else:
+		assert line == completed
+
+
+def test_fish_the_first_word_of_a_quoted_command_reaches_the_remote_shell_as_named(setup, tmp_path):
+	# a name holding a space was left out there, as in a command typed as words
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / 'my script').write_text('#!/bin/sh\n')
+	(work / 'my script').chmod(0o755)
+	found = fish_complete(env, glue_file(home, 'fish'), 'mssh h "./my', cwd=work)
+	assert ['./my script'] in [remote_shell_args(text) for text, _ in found], found
+
+
+@needs_bash_completion
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, files, completed', [
+	('mssh h "cat zz\\\\&a1', ['zz&a1', 'zz&a2'], 'mssh h "cat zz\\\\&a1" '),
+	('mssh h "ls zzq\\\\&x/', ['zzq&x/in1'], 'mssh h "ls zzq\\\\&x/in1" '),
+	('mssh h "ls zz\\\\ ', ['zz a'], 'mssh h "ls zz\\\\ a" '),
+	("mssh h 'tar -xf zz\\&", ['zz&1.tar'], "mssh h 'tar -xf zz\\&1.tar' "),
+])
+def test_bash_completion_s_names_in_a_quoted_command_complete(tmp_path, shell, typed, files, completed):
+	# bash-completion quotes the word again for compgen (zz\&a1), which readline's open quote dequotes by its own rules (\&
+	# stays in "..."), and ble.sh's delegate got the remote shell's text: nothing came for a word naming zz&a1
+	line, got = review_line(tmp_path, shell, typed, files=files, bash_completion=True)
+	if shell == 'ble' and bash_version() < (4, 3) and '/' in typed:
+		# (ble.sh before bash 4.3 offers nothing inside a directory whose name the remote shell needs quoted)
+		assert line == typed
+	else:
+		assert line == completed
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, steps, completed', [
+	('mssh h "cat zz\\\\&a1', (), 'mssh h "cat zz\\\\&a1" '),
+	("mssh h 'cat zz\\&a", ['2', '\t'], "mssh h 'cat zz\\&a2' "),
+	('mssh h "cd /tmp; cat zz\\\\&a', ['1', '\t'], 'mssh h "cd /tmp; cat zz\\\\&a1" '),
+])
+def test_a_quoted_command_s_name_holding_the_remote_shell_s_quoting_completes_outside_a_directory(tmp_path, shell, typed, steps, completed):
+	# ble.sh before bash 4.3 found nothing for zz\&a1 (its compgen kept the backslash): the delegate gets the word's value
+	line, got = review_line(tmp_path, shell, typed, files=['zz&a1', 'zz&a2'], steps=list(steps))
+	assert line == completed
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed', ['mssh h cat x\\(1\\)/$ZZX/zz', 'mssh h cat x\\{a,b\\}/$ZZX/zz', 'mssh h "cat x(1)/$ZZX/zz'])
+def test_a_kept_part_holding_a_parenthesis_or_a_brace_bare_for_the_remote_shell_gets_no_names(tmp_path, monkeypatch, shell, typed):
+	# the part kept as typed (up to the $ZZX) went in with its ( or { bare for the remote shell: x(1)/x/zzplain stopped it
+	# with a syntax error, and x{a,b}/ split into two words there
+	monkeypatch.setenv('ZZX', 'x')
+	line, got = review_line(tmp_path, shell, typed, files=['x(1)/x/zzplain', 'x{a,b}/x/zzplain'], extra='export ZZX=x')
+	assert line == typed
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_kept_part_quoted_for_the_remote_shell_completes(tmp_path, monkeypatch, shell):
+	monkeypatch.setenv('ZZX', 'x')
+	line, got = review_line(tmp_path, shell, 'mssh h cat x\\\\\\(1\\\\\\)/$ZZX/zz', files=['x(1)/x/zzplain'], extra='export ZZX=x')
+	assert got == ['cat', 'x(1)/x/zzplain'], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_directory_under_an_unset_variable_gets_its_slash(tmp_path, monkeypatch, shell):
+	# an unset $ZZNONE reads as nothing here, so $ZZNONE/tmp names /tmp: the glue took the empty value for one it could not
+	# read, and wrote $ZZNONE/tmp with a space
+	monkeypatch.delenv('ZZNONE', raising=False)
+	line, got = review_line(tmp_path, shell, 'mssh h ls $ZZNONE/tm')
+	assert line.endswith('tmp/') and got == ['ls', '/tmp/'], line
+
+
+def test_bash_a_variable_other_names_start_with_is_listed_with_them(tmp_path):
+	# with ZZW and ZZWX set, $ZZW<TAB> went straight to $ZZW/; bash lists both, and completes ZZWX once typed
+	(tmp_path / 'one').mkdir()
+	(tmp_path / 'two').mkdir()
+	extra = 'ZZW=$PWD ZZWX=/tmp'
+	assert review_line(tmp_path / 'one', 'readline', 'mssh h cat $ZZW', extra=extra)[0] == 'mssh h cat $ZZW'
+	line, got = review_line(tmp_path / 'two', 'readline', 'mssh h cat $ZZW', extra=extra, steps=['X', '\t'])
+	assert line == 'mssh h cat $ZZWX/'
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed', ['mssh h cat \\\\\\~/zz', 'mssh h "cat \\\\~/zz'])
+def test_a_local_directory_named_tilde_completes_its_own_names(tmp_path, shell, typed):
+	# compgen read the word naming the local directory ~ (\~/zz as the remote shell reads it) as the home's: \\~/zzhplain
+	line, got = review_line(tmp_path, shell, typed, dirs=['~'], files=['~/zzinside'])
+	if shell == 'ble' and bash_version() < (4, 3):
+		# (ble.sh before bash 4.3 offers nothing inside a directory whose name the remote shell needs quoted: \~)
+		assert line == typed
+	else:
+		assert got == ['cat', '~/zzinside'], line
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
@@ -1449,12 +1570,12 @@ def test_readline_path_value_files_are_for_the_word_readline_hands_over(tmp_path
 
 def unspaced(tmp_path, reply, given, icase=0, ble=0, prefix=''):
 	"""What _mssh_complete_unspace makes of the engine's words (reply) beside the delegate's (given), the remote command
-	quoted when it has a prefix: the engine's words and the delegate's, each in brackets."""
+	quoted (the engine's D quoted) when it has a prefix: the engine's words and the delegate's, each in brackets."""
 	import shlex
 	script = ('. "$1"; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_icase={}; _mssh_complete_ble={}; '
-		'_mssh_complete_xfields=(0 {}); _mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; '
+		'_mssh_complete_xfields=(0 {}); _mssh_complete_qcommand={}; _mssh_complete_unspace; printf "[%s]" "${{_mssh_complete_reply[@]}}"; echo; '
 		'printf "[%s]" "${{_mssh_complete_delegated[@]}}"; echo'
-		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble, shlex.quote(prefix))
+		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), icase, ble, shlex.quote(prefix), int(bool(prefix)))
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 	assert output.returncode == 0, output
@@ -1629,16 +1750,16 @@ def test_bash_the_delegates_file_names_are_quoted_and_marked_beside_mssh_s_own_w
 def filenamed(tmp_path, reply, given, options, prefix='', quote=''):
 	"""What _mssh_complete_filenames makes of the delegate's words (given) beside the engine's (reply) under the compopt
 	options, in a directory holding the directory zzdir, with HOME there: the delegate's words, each in brackets. prefix
-	and quote: a quoted command's (typed as it is), and the quote it is in."""
+	and quote: a quoted command's (typed as it is), and the quote it is in (the engine's D quoted with a quote)."""
 	import shlex
 	work = tmp_path / 'work'
 	work.mkdir()
 	(work / 'zzdir').mkdir()
 	script = ('. "$1"; HOME=$PWD; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_xfields=(1 {p} zzsvc x); '
-		'_mssh_complete_head_name={p}; _mssh_complete_head_text={p}; _mssh_complete_quote={}; '
+		'_mssh_complete_qcommand={q}; _mssh_complete_head_name={p}; _mssh_complete_head_text={p}; _mssh_complete_quote={}; '
 		'_mssh_complete_filenames {}; printf "[%s]" "${{_mssh_complete_delegated[@]}}"'
 		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(quote), shlex.quote(' ' + options + ' '),
-		p=shlex.quote(prefix))
+		p=shlex.quote(prefix), q=int(bool(quote)))
 	output = subprocess.run([require_shell('bash'), '-c', script, 'probe', str(glue_file(tmp_path, 'bash'))],
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, cwd=str(work))
 	assert output.returncode == 0, output

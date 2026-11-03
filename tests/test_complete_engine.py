@@ -157,6 +157,21 @@ def test_quoted_command_delegates_with_prefix():
 	assert query('mssh h "cat x | gre', word='cat x | gre').delegate == (0, 'cat x | ', ['gre'])
 
 
+@pytest.mark.parametrize('before, word, quoted', [
+	# the glues tell a quoted command by D quoted, its first word too, whose prefix is empty (they took it for a word of a
+	# command typed as words)
+	('mssh h "./zzs', './zzs', True),
+	('mssh h "cat zz', 'cat zz', True),
+	("mssh h 'cat x | gre", 'cat x | gre', True),
+	('mssh h cat zz', 'zz', False),
+	('mssh h ./zzs', './zzs', False),
+])
+def test_a_quoted_command_s_delegation_says_so(before, word, quoted):
+	response = query(before, word=word)
+	assert response.delegate is not None
+	assert ('quoted' in response.directives) == quoted
+
+
 @pytest.mark.parametrize('before, word, readline_word, expected', [
 	# ble.sh sends the word as typed (the glue reads it from COMPS), as zsh and fish do: the opening quote, a backslash,
 	# a ~. Without ble=1 the word is what readline hands over, and the engine would find the quote in it
@@ -822,7 +837,8 @@ def test_query_command_end_to_end(tmp_path):
 	request = b'MSSHC1\0bash\x005.2\0nosort=1\0mssh gpu[01-16] "\0\0\0'
 	result = subprocess.run(ENGINE + ['query'], input=request, env=env, stdout=subprocess.PIPE, timeout=60)
 	assert result.returncode == 0
-	assert result.stdout.startswith(b'MSSHC1\nD nosort\nC nvidia-smi\t')
+	# (the delegation is a quoted command's: D quoted)
+	assert result.stdout.startswith(b'MSSHC1\nD nosort quoted\nC nvidia-smi\t')
 	assert result.stdout.endswith(b'\nE\n\0')
 
 
