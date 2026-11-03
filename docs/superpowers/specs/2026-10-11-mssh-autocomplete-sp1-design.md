@@ -493,43 +493,55 @@ One rule for every name a remote command's completion gives for the remote word 
 should read it), in bash under readline and ble.sh, in a command typed as words and in a quoted one. The second review round
 patched cases one by one; this replaced the patches (2026-11-03).
 
-1. **A leading expansion stays as typed.** When the remote word starts with `~` or `$` and holds a `/` (`~/`, `~user/`,
-   `$HOME/`, `${VAR}/`), its part up to that `/` goes on the line exactly as typed, bare: this shell expands it as for any
-   command, as `ssh h cat ~/x` does, and `$HOME/` behaves like `~/`.
+1. **The typed expansions stay as typed.** The remote word up to the end of its last directory or name that holds an
+   expansion (a `$` or a backtick not quoted, or a leading `~` or `~user`) goes on the line exactly as typed, bare:
+   `~/`, `$HOME/`, `${VAR}/`, `$PWD/scratch/$USER/`, and `~bi` or `$HOME` being typed. So the shell that would expand it
+   as typed still does: this shell in a command typed as words (as `ssh h cat ~/x` does; `$HOME/` behaves like `~/`), and in
+   a quoted command the one the quote leaves it to (`"cat ~/x` and `'cat $HOME/x` are the remote shell's). That part must
+   be the remote shell's text for what it names: where it holds a character the remote shell reads, unquoted for it outside
+   the expansions (`a\&b/$X/`, which mssh passes on as `a&b/...`), no name is offered.
 2. **The rest is the remote shell's word, quoted for here.** Everything after that part (the directories, typed or completed,
    and the name) is written from the name: a backslash before each character the remote shell reads
-   (`_mssh_complete_remote_chars`; in a quoted command, which mssh hands on whole, a space and a tab too), then quoted for this
-   shell: with backslashes outside a quote, for the open quote inside a quoted command. So a typed directory is written again:
-   `zzq\&x/i` (mssh would pass `zzq&x/i` on) becomes `zzq\\\&x/in\\\&1`.
+   (`_mssh_complete_remote_chars`; in a quoted command, which mssh hands on whole, a space and a tab too) and before a `~`
+   it starts with (a local name `~` or `~zzold`, which the remote shell would expand), then quoted for this shell: with
+   backslashes outside a quote, for the open quote inside a quoted command. So a typed directory is written again:
+   `zzq\&x/i` (mssh would pass `zzq&x/i` on) becomes `zzq\\\&x/in\\\&1`. mssh's own remote words from its history are the
+   engine's and keep their `~`.
 3. **Before the word, the line as typed.** In a quoted command the text before the current remote word stays as typed:
    readline's word (the command typed inside the quote) is cut where the current word starts in it, the word as it is or
    quoted for the quote (`\$PWD` in `"..."`); never rebuilt from the remote shell's text. Where it cannot be cut so, no file
-   name is offered.
+   name is offered. The engine hands the words of a quoted command as the remote shell's text, as for a command typed as
+   words, so a word holding the remote shell's quoting (`"cat zz\\&a`, as TAB itself writes it) completes too.
 4. **Left out:** a name holding whitespace (mssh would run each command word as a command of its own; in a quoted command
    only a newline), in readline's double quotes one holding `!`; under ble.sh one holding `{` outside a quoted command (ble.sh
    quotes no brace), and before bash 4.3 one whose directories after the kept part change (ble.sh there keeps the typed text
    inside the quote it puts the rest in).
-5. **A directory** (tested at the path here, its leading part expanded) gets a `/` and, alone, no space; not in a quoted
-   command, where readline marks none.
+5. **A directory** gets a `/` and, alone, no space; not in a quoted command, where readline marks none. A name is a
+   directory when `compgen -d` gives it for bash's word, which expands the word as `compgen -f` did to find the name.
 6. **File names come from the glue alone.** When the remote command's completion gives nothing (not even its empty
    answer) and mssh offers nothing either, the glue gives the file names mssh's own `-o default` would, for bash's word
-   (readline's, after a `:` or `=`; ble.sh's after its split), written by the same rule; not in a quoted command. The
-   shell's own default is off for every delegated word (readline's `-o default`, ble.sh's `ble/default`, which asks again
-   for an empty word and else offers its own file names, quoted for this shell alone).
+   (readline's, after a `:` or `=`; ble.sh's after its split), written by the same rule; for a `~user` being typed the
+   users' homes (`~bin/`), and for a variable that names a directory the variable with its `/` (`$HOME/`); not in a quoted
+   command. The shell's own default is off for every delegated word (readline's `-o default`, ble.sh's `ble/default`, which
+   asks again for an empty word and else offers its own file names, quoted for this shell alone), and readline's
+   `bashdefault` for a word holding a glob (`*`, `?`, `[`), whose matches it inserts quoted for this shell alone: a glob
+   gets nothing.
 
-The delegate matches the names against the word as the remote shell reads it: in a command typed as words, mssh's word
-without its backslashes (a typed `zzq\\\&x/i` is mssh's `zzq\&x/i`, which names `zzq&x/i`).
+The delegate matches the names against the word as the remote shell reads it, without its backslashes (a typed `zzq\\\&x/i`
+is mssh's `zzq\&x/i`, which names `zzq&x/i`; so does `"cat zzq\\&x/i`).
 
 Per shell: readline leaves its file name mode on while every name goes in as it quotes it (nothing kept from the typed word,
 nothing quoted for the remote shell), and quotes, marks and lists them as for the command run here; else the mode goes off
 and the glue writes them all (its quoting of a changed name differs by version: bash 4.2 and 5.1 put a backslash before the
 `$` of a typed `$HOME/`). ble.sh quotes what it inserts and keeps the typed text where a word starts with its value of the
 typed word (`COMPV`): the glue gives it `COMPV` up to the part it writes, then the remote shell's word of that part, so
-ble.sh keeps the typed text up to there (the leading expansion, a quoted command before the word); where `COMPV` does not
-end with that part (an expansion inside it, `"cat Outer$Inn`), no file name is offered. zsh keeps the parts typed before the
-word as typed (`compadd -p`) and quotes what completion adds (`_mssh_complete_compadd`); inside a typed directory the
-remote shell would read otherwise nothing is offered: one typed with this shell's quoting alone (`a\&/`, approved
-2026-11-02, "Accept"), and one typed bare in a quoted command (`"cat a&b/`; zsh's glue is as before).
+ble.sh keeps the typed text up to there (the kept part, a quoted command before the word); where `COMPV` does not end with
+that part (an expansion inside it, `"cat Outer$Inn`), no file name is offered. For a spec with `noquote` ble.sh inserts the
+words as they are, so the glue writes them as readline's file names are written (`printf %q`). zsh keeps the parts typed
+before the word as typed (`compadd -p`) and quotes what completion adds (`_mssh_complete_compadd`), a leading `~` of a name
+too; inside a typed directory the remote shell would read otherwise nothing is offered: one typed with this shell's quoting
+alone (`a\&/`, approved 2026-11-03, "Accept (Recommended)"), and one typed bare in a quoted command (`"cat a&b/`; zsh's glue
+is as before). fish quotes a name's leading `~` for the remote shell too.
 
 ### The rest of 6.41
 
@@ -537,7 +549,7 @@ The deferred fix for local file names in a remote command (approved 2026-11-01, 
 
 | Area | Change | Why |
 |---|---|---|
-| bash: the delegate's words | `_mssh_complete_remote` rewrites them after the delegate, each by `_mssh_complete_write` (the rule above; `_mssh_complete_head` finds the part kept as typed, once a TAB). Under readline, while every name goes in as readline's file name mode would quote it (`filenames` or `fullquote`, not `noquote`), the mode stays on, as in 6.40; else it goes off and `_mssh_complete_filenames` writes them all, `/` after a directory (tested at its path here, `_mssh_complete_local_path`), and nospace when that directory is the one word left. Under ble.sh every word is given as a value, which ble.sh quotes; a changed directory gets its `/`. A word readline inserts as it is is changed only when it holds a backslash (shell text for a name, as scp's completion gives), unescaped first. The nospace rule runs first in every branch. The delegate cuts and matches its names in the remote shell's reading of the word (a command typed as words: without its backslashes) | The fix; one quoting path for changed names. The second review round's patches (typed directories kept as typed, the typed command rebuilt from the remote text) gave `\~/`, `\$PWD` and `cat zzq\&x/in\\\&1` |
+| bash: the delegate's words | `_mssh_complete_remote` rewrites them after the delegate, each by `_mssh_complete_write` (the rule above; `_mssh_complete_head` finds the part kept as typed, once a TAB). Under readline, while every name goes in as readline's file name mode would quote it (`filenames` or `fullquote`, not `noquote`), the mode stays on, as in 6.40; else it goes off and `_mssh_complete_filenames` writes them all, `/` after a directory (one `compgen -d` gives for bash's word, `_mssh_complete_is_dir`), and nospace when that directory is the one word left. Under ble.sh every word is given as a value, which ble.sh quotes; a changed directory gets its `/`. A word readline inserts as it is is changed only when it holds a backslash (shell text for a name, as scp's completion gives), unescaped first. The nospace rule runs first in every branch. The delegate cuts and matches its names in the remote shell's reading of the word (without its backslashes; under readline a quoted command's current word goes to the delegate so read, as compgen dequotes by the open quote's rules) | The fix; one quoting path for changed names. The second review round's patches (typed directories kept as typed, the typed command rebuilt from the remote text) gave `\~/`, `\$PWD` and `cat zzq\&x/in\\\&1` |
 | bash: the default | When the remote command's completion gives nothing (not its empty answer) and mssh offers nothing either, outside a quoted command, the glue gives the file names `compgen -f` finds for bash's word (`_mssh_complete_subword`, as readline's `-o default` would complete it; unescaped under ble.sh), written by the same rule. readline's `-o default` and ble.sh's `ble/default` are off for every delegated word | They give the local names quoted for this shell alone. ble.sh asks again for an empty word (to match in any order), where a check for names needing quoting found none, and its own file names then put in the names the glue left out: `mssh h rm sub/zzb<TAB>` gave `sub/zzb{a,b}`. (They also came for a command's empty answer, the sentinel of git and grub, for which readline offers nothing; now nothing comes in both) |
 | zsh: `_mssh_complete_compadd` | Installed as `compadd` (`functions[compadd]`, the one there was kept and called) while the remote command's completion runs, removed in an `always` block; outside `_mssh` it hands every call on as it came. It reads compadd's options, takes the words (or the arrays of `-a`), and gives the remote shell's word for each (unquoting a `-Q` word first and quoting it again with `(q)`); words that changed go in a call of their own without `-f`, directories with `-S /`; a filter's call (`-D`) keeps every word, in step with its array; a directory of `-p` that zsh wrote itself, not as typed, is quoted for the remote shell too; `-O`, `-A`, `-k` and a `-d` given in the same word go on unchanged | zsh offers no hook on the matches once added; `-f` adds no space after a name it cannot find, and its `/` looks for the changed name |
 | fish | The current word goes to `complete -C` with its backslashes off; each completion's text is left out or quoted as above, its description kept | fish quotes what it inserts: the remote shell's word goes in quoted for fish |
@@ -545,4 +557,5 @@ The deferred fix for local file names in a remote command (approved 2026-11-01, 
 | ble.sh before bash 4.3 | A name inside a directory whose name needed quoting for the remote shell (after the part kept as typed: not `$HOME/`) is left out | ble.sh there keeps the typed `zzq\\\&x/` inside the single quotes it puts the rest in: the remote shell got `zzq\&x/...` |
 | ble.sh: braces | A name holding a brace is left out outside a quoted command | ble.sh quotes no brace, natively too: `zzb\{a,b\}` went in as `zzb\\{a,b\\}`, which this shell brace-expanded |
 | zsh: `compadd -k`, `-dNAME` | The keys of `-k` are taken as words, and a value given in the same word as its option (`-dNAME`) is read; both get the remote quoting. `-O` and `-A` still go on as they came: what they store reaches the line through another `compadd`, which is quoted | They went on unquoted |
+| The rule's third review | A local name's leading `~` gets the remote shell's backslash in every glue (rule 2); the kept part runs to the last directory holding an expansion, and is the word itself for a `~user` or `$VAR` being typed (rule 1); a name is a directory when `compgen -d` gives it under a kept part (`_mssh_complete_is_dir`), else as it is; the engine hands a quoted command's words as the remote shell's text (`parse_context`), and readline's delegate gets the current one as the remote shell reads it; the glue's default gives `~user/` and `$VAR/`; `bashdefault` off for a word holding a glob; ble.sh's noquote words written with `printf %q` | A local directory named `~` went in as `\~/` (`rmdir ~/` there, `rm -r ~` in a quoted command); `sub/$ZZN/` went in as `\\\$ZZN`; `"cat zz\\&a` (as TAB wrote it) got no delegation; `zz?b` got `zz\;b`; ble.sh gave `zzamp\&b` for a noquote spec, nothing for `~bi`, and `$HOME ` |
 | Left as they were | A quoted argument (a known limitation), the file names of a path option's value (`D files`: mssh reads them itself), a `-o noquote` spec's raw names | Not remote command words, or not local file names for the remote shell |

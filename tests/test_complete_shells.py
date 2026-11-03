@@ -954,8 +954,8 @@ def test_a_typed_directory_the_remote_shell_reads_otherwise_is_written_as_its_wo
 	line, remote = review_line(tmp_path, shell, typed, files=[name])
 	if shell == 'zsh' or shell == 'ble' and bash_version() < (4, 3):
 		# zsh keeps a typed directory as typed and offers nothing in such a one (typed with this shell's quoting alone:
-		# approved 2026-11-02, "Accept"; in a quoted command zsh's glue is as before); ble.sh before bash 4.3 offers nothing
-		# inside a directory whose name the remote shell reads otherwise, in a quoted command too
+		# approved 2026-11-03, "Accept (Recommended)"; in a quoted command zsh's glue is as before); ble.sh before bash 4.3
+		# offers nothing inside a directory whose name the remote shell reads otherwise, in a quoted command too
 		assert line == typed
 	else:
 		assert remote == ['cat', name], line
@@ -1009,6 +1009,114 @@ def test_a_local_file_name_holding_braces_is_not_expanded_here(tmp_path, shell):
 		assert line == 'mssh h rm zzb'
 	else:
 		assert remote == ['rm', 'zzb{a,b}'], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, dirs, files, remote', [
+	('mssh h rmdir ', ['~'], [], ['rmdir', '~/']),
+	('mssh h cat ', [], ['~bin'], ['cat', '~bin']),
+	('mssh h "rm -r ', ['~'], [], ['rm', '-r', '~']),
+])
+def test_a_local_name_starting_with_a_tilde_reaches_the_remote_shell_as_named(tmp_path, shell, typed, dirs, files, remote):
+	# a local directory named ~ went in as \~/, and the remote shell read its home: rmdir ~/, or in a quoted command rm -r ~;
+	# a file ~bin named user bin's home there
+	if files:
+		try:
+			pwd.getpwnam('bin')
+		except KeyError:
+			pytest.skip('no user bin here')
+	line, got = review_line(tmp_path, shell, typed, dirs=dirs, files=files)
+	if shell == 'zsh' and '"' in typed:
+		# (zsh marks the directory inside the quote too)
+		remote = remote[:-1] + ['~/']
+	assert got == remote, line
+
+
+def test_fish_a_local_name_starting_with_a_tilde_reaches_the_remote_shell_as_named(setup, tmp_path):
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / '~').mkdir()
+	(work / '~zzold').write_text('')
+	glue = glue_file(home, 'fish')
+	found = [remote_shell_args(text) for text, _ in fish_complete(env, glue, 'mssh h rmdir ', cwd=work)]
+	assert sorted(found) == [['~/'], ['~zzold']]
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, dirs, files, remote', [
+	('mssh h cat sub/$ZZN/zz', [], ['sub/x/zzamp&b'], ['cat', 'sub/x/zzamp&b']),
+	('mssh h cat sub/${ZZN}/zzp', [], ['sub/x/zzplain'], ['cat', 'sub/x/zzplain']),
+	('mssh h ls $HOME/sub/$ZZN/ru', [], [], None),
+])
+def test_a_variable_typed_inside_the_path_stays_as_typed(tmp_path, monkeypatch, shell, typed, dirs, files, remote):
+	# a $ZZN (or ${ZZN}) typed further on in the path went in as the remote shell's literal \$ZZN under readline, and nothing
+	# came under ble.sh; a directory there got no / and a space
+	monkeypatch.setenv('ZZN', 'x')
+	line, got = review_line(tmp_path, shell, typed, files=files, home_dirs=['sub/x/run1'], extra='export ZZN=x')
+	if remote is None:
+		assert line.endswith('/') and got == ['ls', str(tmp_path / 'home' / 'sub' / 'x' / 'run1') + '/'], line
+	else:
+		assert got == remote, line
+	if shell != 'ble':
+		# (ble.sh may write the word again as its value here, when that is shorter)
+		assert ('$ZZN' in line or '${ZZN}' in line), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_kept_directory_typed_for_this_shell_alone_gets_no_names(tmp_path, monkeypatch, shell):
+	# the part kept as typed (up to the $ZZN) must be the remote shell's text: a\&b/ would reach it as a&b/
+	monkeypatch.setenv('ZZN', 'x')
+	line, got = review_line(tmp_path, shell, 'mssh h cat a\\&b/$ZZN/zz', files=['a&b/x/zzf'], extra='export ZZN=x')
+	assert line == 'mssh h cat a\\&b/$ZZN/zz'
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, steps, files, remote', [
+	('mssh h "cat zz', ['1', '\t'], ['zz&a1', 'zz&a2'], ['cat', 'zz&a1']),
+	('mssh h "cat zzq\\\\&x/i', (), ['zzq&x/in1'], ['cat', 'zzq&x/in1']),
+	("mssh h 'cat zzq\\&x/i", (), ['zzq&x/in1'], ['cat', 'zzq&x/in1']),
+])
+def test_a_quoted_command_s_word_holding_the_remote_shell_s_quoting_completes(tmp_path, shell, typed, steps, files, remote):
+	# the engine sent no delegation for a word of a quoted command holding the remote shell's quoting (zz\&a), as TAB itself
+	# wrote it: "cat zz\\&a then 1<TAB> gave nothing
+	if shell == 'zsh' and steps:
+		pytest.skip('zsh writes the common start differently')
+	line, got = review_line(tmp_path, shell, typed, files=files, steps=list(steps))
+	assert got == remote, line
+	if shell == 'zsh':
+		# (zsh leaves the quote open)
+		assert line == typed + 'n1', line
+	else:
+		assert line.endswith(typed.split()[2][0] + ' '), line
+
+
+def test_bash_a_glob_gets_no_names_quoted_for_this_shell_alone(tmp_path):
+	# readline's bashdefault put in the names zz?b matches quoted for this shell alone: zz\;b, and the remote shell ran b
+	line, got = review_line(tmp_path, 'readline', 'mssh h cat zz?b', files=['zz;b'])
+	assert line == 'mssh h cat zz?b'
+
+
+def test_blesh_a_noquote_spec_s_names_reach_the_remote_shell_as_named(tmp_path):
+	# ble.sh inserts a noquote spec's words as they are: zzamp\&b, and the remote shell ran b
+	require_bash_printing('noquote')
+	extra = '_zzn() { COMPREPLY=($(compgen -f -- "$2")); }; complete -o noquote -F _zzn zznq'
+	line, got = review_line(tmp_path, 'ble', 'mssh h zznq zza', files=['zzamp&b'], extra=extra)
+	assert got == ['zznq', 'zzamp&b'], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, completed', [('mssh h cat ~bi', 'mssh h cat ~bin/'), ('mssh h cat $HOME', 'mssh h cat $HOME/')])
+def test_a_user_or_a_variable_being_typed_completes_to_its_directory(tmp_path, shell, typed, completed):
+	# ble.sh's own default gave them; with it off, the glue gave nothing for ~bi and $HOME without its /
+	if shell == 'zsh' and '$' in typed:
+		pytest.skip('zsh writes the value of $HOME there')
+	try:
+		pwd.getpwnam('bin')
+	except KeyError:
+		pytest.skip('no user bin here')
+	line, got = review_line(tmp_path, shell, typed)
+	assert line == completed
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
@@ -1534,13 +1642,13 @@ def filenamed(tmp_path, reply, given, options, prefix='', quote=''):
 
 
 @pytest.mark.parametrize('reply, given, options, prefix, expected', [
-	# quoted for the remote shell, then as printf %q quotes, a leading ~ too (bash 4.2's %q leaves it), a directory marked; a
-	# name holding whitespace left out
-	(['zzr'], ['a b', 'a&c', '~/x', 'zzdir', 'zzdir/', '~/zzdir'], '-o filenames', '', r'[a\\\&c][\~/x][zzdir/][zzdir/][\~/zzdir/]'),
+	# quoted for the remote shell, then as printf %q quotes, a directory marked; a name holding whitespace left out. A leading
+	# ~ of a name, with no part kept as typed, is a local name's: the remote shell's backslash, and no directory ~ here
+	(['zzr'], ['a b', 'a&c', '~/x', 'zzdir', 'zzdir/', '~/zzdir'], '-o filenames', '', r'[a\\\&c][\\~/x][zzdir/][zzdir/][\\~/zzdir]'),
 	# noquote alone: as they are, a directory marked; with fullquote quoted again, and not marked without filenames
 	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote', '', '[a b][~/x][zzdir/]'),
-	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote -o fullquote', '', r'[\~/x][zzdir/]'),
-	(['zzr'], ['a b', '~/x', 'zzdir'], '-o fullquote', '', r'[\~/x][zzdir]'),
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote -o fullquote', '', r'[\\~/x][zzdir/]'),
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o fullquote', '', r'[\\~/x][zzdir]'),
 	# a word mssh offers itself is the same word, and not marked
 	(['zzdir', 'a\\\\\\&c'], ['zzdir', 'a&c', 'zzdirx'], '-o filenames', '', r'[zzdir][a\\\&c][zzdirx]'),
 ])

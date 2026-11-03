@@ -347,6 +347,29 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
 - Revisit when: mssh passes a quoted argument to the remote shell as one quoted word.
 - Approved: 2026-11-02, the user chose "Known limitation (Recommended)".
 
+### ble.sh before bash 4.3: names inside a directory that changes are left out
+- Kind: known limitation
+- What the operator sees: with ble.sh on bash 4.2 (EL7), no name is offered inside a directory whose name the remote
+  shell needs quoted (`mssh h cat a\\\&dir/<TAB>`, or `mssh h "cat a&b/zz<TAB>`); elsewhere such names complete. Names
+  under a typed `~/` or `$HOME/` whose own directories need no quoting complete.
+- Why: ble.sh on bash before 4.3 keeps the typed directory inside the single quotes it puts the rest in, so the remote
+  shell got the typed text quoted once more (`'zzq\\\&x/in\&1'` named `zzq\&x/in&1`). Leaving such names out puts
+  nothing wrong on the line.
+- Revisit when: an operator on EL7 with ble.sh needs names inside such a directory, or ble.sh's insertion on bash 4.2 is
+  fixed.
+- Approved: 2026-11-03, the user chose "Leave those names out (Recommended)".
+
+### zsh: a directory typed with this shell's quoting alone gets no names
+- Kind: known limitation
+- What the operator sees: in zsh, inside a directory typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`,
+  which mssh would pass on as `a&b/`, so the remote shell would read `a` and `b/...`), nothing is offered; bash replaces
+  such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`), or completed by TAB,
+  the names inside it complete.
+- Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
+  to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
+- Revisit when: an operator types such directories in zsh and misses the names.
+- Approved: 2026-11-03, the user chose "Accept (Recommended)".
+
 ### zsh before 5.8: a Ctrl-C during a completion query can reach the query
 - Kind: deferred
 - What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's), now and then, for the length of a
