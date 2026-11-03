@@ -333,18 +333,6 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 Found while confirming and reviewing 6.40's items (the user's words are in each entry).
 
-### Local file names with whitespace or shell characters are wrong in a remote command
-- Kind: deferred
-- What the operator sees: in bash, ble.sh, zsh and fish, a local file name completed for a remote command goes
-  in quoted for this shell, which is not what mssh's remote command needs: `mssh h cat my\ file` makes mssh run
-  `my file` as a command of its own (mssh runs each argument holding whitespace separately), and
-  `mssh h cat a\&b` reaches the remote shell as `cat a&b`, which runs `b`.
-- Why: the fix is the same in all four shells and goes in together: names holding whitespace left out in an
-  unquoted remote word (as the engine already leaves out such words of its own), the rest quoted for the remote
-  shell and then for this one (`a\\\&b`). It comes as its own change after 6.40, in bash, ble.sh, zsh and fish.
-- Revisit when: the change right after 6.40.
-- Approved: 2026-11-01, the user chose "After 6.40 (Recommended)".
-
 ### Inside a quoted argument the engine completes a quoted command
 - Kind: deferred
 - What the operator sees: in every shell, TAB inside a quoted argument of a remote command
