@@ -334,14 +334,17 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 Found while confirming and reviewing 6.40's items (the user's words are in each entry).
 
 ### Inside a quoted argument the engine completes a quoted command
-- Kind: deferred
+- Kind: known limitation
 - What the operator sees: in every shell, TAB inside a quoted argument of a remote command
   (`mssh h cat 'my f<TAB>`) reads the quoted text as a whole quoted command: it completes `f` as an argument of
-  a command `my`, so nothing useful is offered there.
-- Why: the engine takes any quoted word where the remote command goes for a whole quoted command; the fix (look
-  for the remote command's unquoted words before it first) was left for the change after 6.40.
-- Revisit when: the change right after 6.40.
-- Approved: 2026-11-01, the user chose "After 6.40 (Recommended)".
+  a command `my`, so nothing useful is offered there. Typing the whole command in quotes
+  (`mssh h 'cat my f<TAB>`) completes.
+- Why: mssh runs each argument holding whitespace as a command of its own, so `mssh h cat 'my file'` cannot run
+  as meant whatever completion inserts, and a quoted argument without whitespace (`'a&b'`) reaches the remote
+  shell unquoted anyway. Completing there would need quoting for the remote shell inside this shell's quotes: a
+  lot of glue in four shells for a form mssh cannot run.
+- Revisit when: mssh passes a quoted argument to the remote shell as one quoted word.
+- Approved: 2026-11-02, the user chose "Known limitation (Recommended)".
 
 ### zsh before 5.8: a Ctrl-C during a completion query can reach the query
 - Kind: deferred
