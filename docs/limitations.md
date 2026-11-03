@@ -260,7 +260,8 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
   (`mssh h cat <TAB>` with `cat ~/zznotes.txt` in its history) goes on the line as `~/zznotes.txt`, which this
   shell expands to the local home before mssh runs; plain bash inserts `\~/zznotes.txt`, which the remote
   shell expands. The path is right whenever the remote home is the same path as the local one (a shared home,
-  the same user). A `~` the operator typed stays as typed in every shell, as with `ssh h cat ~/x`.
+  the same user). A `~` the operator typed stays as typed in every shell, as with `ssh h cat ~/x`, and so does a
+  typed `$HOME/` (since 6.41).
 - Why: ble.sh leaves the leading `~` of a completion function's word unescaped, and the glue cannot make it
   escape one word: `noquote` and `ble/syntax-raw` apply to the whole reply. A ble.sh completion source of
   mssh's own would, as a bigger change.
