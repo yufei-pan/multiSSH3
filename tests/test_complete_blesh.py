@@ -200,6 +200,7 @@ def test_blesh_tab_completes_the_file_names_of_a_path_value_as_ble_sh_inserts_th
 		session.close()
 
 
-def test_blesh_tab_still_completes_a_local_file_name_with_a_space_in_a_remote_command(tmp_path):
-	# ble.sh's own file names (6.39 did this too, through them)
-	assert blesh_line(tmp_path, 'mssh h cat zzmy\\ f', files=['zzmy file']) == 'mssh h cat zzmy\\ file '
+def test_blesh_tab_offers_no_local_file_name_with_a_space_in_a_remote_command(tmp_path):
+	# mssh would run zzmy file as a command of its own: the glue leaves it out, and ble.sh's own file names are off there
+	# (6.40 inserted zzmy\ file, through them)
+	assert blesh_line(tmp_path, 'mssh h cat zzmy\\ f', files=['zzmy file']) == 'mssh h cat zzmy\\ f'

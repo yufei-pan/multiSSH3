@@ -551,19 +551,17 @@ SAME_AS_BASH_UNQUOTED = [
 	(['-u'], '--user=roo', ''),
 	(['-W', 'alpha beta'], '--x=al', ''),
 	(['-W', 'alpha beta'], 'h:al', ''),
-	# the local file names of the file actions and a command with no compspec (the glue quotes and marks them as bash does: a
-	# space, a & and a directory in the files below). Not -G: bash up to 5.1 gives it every name the glob matches, whatever
-	# the word (zzm completes to zz); test_bash_delegation_quotes_and_marks_the_file_names_it_makes_itself has it
-	(['-f'], 'zzm', ''),
-	(['-f'], 'zzam', ''),
+	# the local file names of the file actions and a command with no compspec (the glue marks them as bash does: a directory in
+	# the files below; a name the remote shell needs quoted for, or holding a space, goes in otherwise: see
+	# test_bash_delegation_quotes_and_marks_the_file_names_it_makes_itself). Not -G: bash up to 5.1 gives it every name the
+	# glob matches, whatever the word
 	(['-f'], 'zzd', ''),
 	(['-f'], 'zz', ''),
 	(['-d'], 'zzd', ''),
-	(['-A', 'file'], 'zzm', ''),
+	(['-A', 'file'], 'zzf', ''),
 	(['-A', 'directory'], 'zzd', ''),
 	(['-o', 'dirnames', '-W', 'other'], 'zzd', ''),
-	([], 'zzm', ''),
-	([], 'zzam', ''),
+	([], 'zzf', ''),
 	([], 'zzd', ''),
 	(['-W', 'zza zzb zzc', '-X', '!(zza)', '-o', 'default'], 'zz', 'shopt -s extglob'),
 	(['-W', 'zza zzb zzc', '-X', '!(zza|zzb)', '-o', 'default'], 'zz', 'shopt -s extglob'),
@@ -583,7 +581,7 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 	import shlex
 	options = '{}; _zzreal() {{ COMPREPLY=(zzalpha zzalpine zzbeta); }}; {}'.format(before or ':',
 		'complete {} zzsvc'.format(' '.join(map(shlex.quote, spec))) if spec else ':')
-	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab', 'zzmy file', 'zzamp&b'], options=options)
+	session = ignoring_case(tmp_path, [], on=False, files=['zzfile', 'a*x', 'ab'], options=options)
 	try:
 		for name in ('zzdir', 'zzdirb'):
 			(tmp_path / 'work' / name).mkdir()
@@ -595,13 +593,15 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 
 
 @pytest.mark.parametrize('spec, word, completed', [
-	# what bash itself does with them (the test above holds the glue to it): quoted, a directory marked with its /
-	('complete -f zzsvc', 'zzm', 'zzmy\\ file '),
-	('complete -f zzsvc', 'zzam', 'zzamp\\&b '),
+	# a directory marked with its /, as bash marks it; a name quoted for the remote shell and then for this one (the remote
+	# shell gets zzamp\&b); a name holding a space left out, as mssh would run it as a command of its own
+	('complete -f zzsvc', 'zzm', 'zzm'),
+	('complete -f zzsvc', 'zzam', 'zzamp\\\\\\&b '),
 	('complete -f zzsvc', 'zzd', 'zzdir/'),
 	('complete -d zzsvc', 'zzd', 'zzdir/'),
-	("complete -G 'zzm*' zzsvc", 'zz', 'zzmy\\ file '),
-	(':', 'zzm', 'zzmy\\ file '),
+	("complete -G 'zzm*' zzsvc", 'zz', 'zz'),
+	(':', 'zzm', 'zzm'),
+	(':', 'zzam', 'zzamp\\\\\\&b '),
 ])
 def test_bash_delegation_quotes_and_marks_the_file_names_it_makes_itself(tmp_path, spec, word, completed):
 	session = ignoring_case(tmp_path, [], on=False, files=['zzmy file', 'zzamp&b'], options=spec)
@@ -718,17 +718,124 @@ def fresh_line(tmp_path, name, shell, typed, keys='\t', **kwargs):
 @needs_bash_completion
 @pytest.mark.skipif(not os.path.exists('/usr/share/bash-completion/completions/scp'), reason='no scp completion')
 @pytest.mark.parametrize('shell', SHELLS)
-@pytest.mark.parametrize('files, typed, completed', [
-	# bash-completion's scp gives file names with their spaces escaped, and ends them with the space they want
-	(['solo one.txt'], 'so', 'solo\\ one.txt '),
-	(['my file.txt', 'my notes.txt'], 'my', 'my\\ '),
+@pytest.mark.parametrize('files, typed, native, remote', [
+	# bash-completion's scp gives file names escaped for this shell, ending in the space they want. One holding a space is
+	# left out (mssh would run each command word as a command of its own), one holding a & is quoted for the remote shell too
+	(['solo one.txt'], 'so', 'solo\\ one.txt ', None),
+	(['my file.txt', 'my notes.txt'], 'my', 'my\\ ', None),
+	(['zzamp&b.txt'], 'zz', 'zzamp\\&b.txt ', ['scp', 'zzamp&b.txt']),
 ])
-def test_bash_a_delegated_file_name_with_a_space_reaches_the_line_as_it_does_natively(tmp_path, shell, files, typed, completed):
-	# under ble.sh the glue used to strip the space, and ble.sh quoted the escaped name again ('solo\ one.txt'), or, for
-	# several, inserted nothing
+def test_bash_a_delegated_file_name_escaped_for_this_shell_reaches_the_remote_shell_as_named(tmp_path, shell, files, typed, native, remote):
+	# (under ble.sh the glue used to strip the space, and ble.sh quoted the escaped name again: 'solo\ one.txt')
 	given = dict(options='. ' + BASH_COMPLETION, files=files)
-	assert fresh_line(tmp_path, 'native', shell, 'scp ' + typed, **given) == 'scp ' + completed
-	assert fresh_line(tmp_path, 'mssh', shell, 'mssh h scp ' + typed, **given) == 'mssh h scp ' + completed
+	assert fresh_line(tmp_path, 'native', shell, 'scp ' + typed, **given) == 'scp ' + native
+	line = fresh_line(tmp_path, 'mssh', shell, 'mssh h scp ' + typed, **given)
+	if remote is None:
+		assert line == 'mssh h scp ' + typed
+	else:
+		assert line.endswith(' ') and remote_args(line) == remote
+
+
+def remote_args(line):
+	"""The arguments the remote shell gets for an mssh line's remote command (its words after mssh and the hosts): mssh joins
+	the words this shell makes of the line into one command, which sh reads again here, as the remote shell does (a & in it
+	ends the command there)."""
+	return remote_shell_args(' '.join(words(line)[2:]))
+
+
+def remote_shell_args(command):
+	"""The words of the first command sh runs for command (globs off)."""
+	output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', command],
+		stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, cwd='/')
+	return output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
+
+
+def remote_names_session(tmp_path, shell):
+	"""A session of shell (readline: bash without bash-completion, ble, zsh) in a directory holding the files zzamp&b,
+	zzmy file and zzplain and the directory zzq&x (holding in&1); cat has no completion in bash, _cat's file names in zsh."""
+	work = tmp_path / 'work'
+	files = ['zzamp&b', 'zzmy file', 'zzplain']
+	if shell == 'zsh':
+		env, home = make_home(tmp_path, [])
+		build_index(env)
+		work.mkdir()
+		for name in files:
+			(work / name).write_text('')
+		session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'".format(work))
+	else:
+		session = shell_session(tmp_path, shell, files=files)
+	(work / 'zzq&x').mkdir()
+	(work / 'zzq&x' / 'in&1').write_text('')
+	return session
+
+
+def remote_names_line(tmp_path, name, shell, typed):
+	"""The line after TAB at the end of typed in a new remote_names_session (ble.sh completes a word once a session)."""
+	(tmp_path / name).mkdir()
+	session = remote_names_session(tmp_path / name, shell)
+	try:
+		return session.line_after(typed)
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_local_file_name_reaches_the_remote_shell_as_it_is_named(tmp_path, shell):
+	# mssh joins the command words into one command, which the remote shell reads again: zzamp&b went in quoted for this
+	# shell alone (zzamp\&b), and the remote shell ran cat zzamp in the background, then b
+	line = remote_names_line(tmp_path, 'amp', shell, 'mssh h cat zza')
+	assert line.endswith(' ') and remote_args(line) == ['cat', 'zzamp&b']
+	assert remote_names_line(tmp_path, 'plain', shell, 'mssh h cat zzp') == 'mssh h cat zzplain '
+	# a directory so named gets its /, no space (ble.sh writes 'zzq\&x/' and closes its quote), and the name in it
+	# completes the same way
+	line = remote_names_line(tmp_path, 'dir', shell, 'mssh h cat zzq')
+	assert line.rstrip("'").endswith('/') and remote_args(line) == ['cat', 'zzq&x/']
+	# (typed as bash and zsh insert it: ble.sh's 'zzq\&x/' is a quoted word, which the engine takes for a quoted command)
+	line = remote_names_line(tmp_path, 'in', shell, 'mssh h cat zzq\\\\\\&x/i')
+	if shell == 'ble' and bash_version() < (4, 3) and remote_args(line) == ['cat', 'zzq\\&x/in&1']:
+		# ble.sh on bash 4.2 keeps the typed zzq\\\&x/ inside the single quotes it puts the rest in: an open finding
+		pytest.xfail('ble.sh on bash 4.2 quotes the typed part of the word again')
+	assert line.endswith(' ') and remote_args(line) == ['cat', 'zzq&x/in&1']
+
+
+def bash_version():
+	'''(major, minor) of the bash the tests run.'''
+	output = subprocess.run([require_shell('bash'), '-c', 'echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}'], stdout=subprocess.PIPE).stdout.split()
+	return int(output[0]), int(output[1])
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_local_file_name_holding_whitespace_is_not_offered_for_a_remote_command(tmp_path, shell):
+	# mssh runs each command word as a command of its own when one holds whitespace: zzmy\ file ran `zzmy file` alone
+	line = remote_names_line(tmp_path, 'space', shell, 'mssh h cat zzm')
+	if shell == 'ble':
+		# ble.sh, finding no word that starts with zzm, matches its letters in order (z, z, m): zzamp&b, quoted as above
+		assert 'zzmy' not in line
+	else:
+		assert line == 'mssh h cat zzm'
+	assert remote_names_line(tmp_path, 'others', shell, 'mssh h cat zzpl') == 'mssh h cat zzplain '
+
+
+def test_fish_a_local_file_name_reaches_the_remote_shell_as_it_is_named(setup, tmp_path):
+	# fish quotes the words it inserts: the glue gives it the remote shell's word for a name (zzamp\&b), and leaves out a
+	# name holding whitespace
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in ('zzamp&b', 'zzmy file', 'zzplain'):
+		(work / name).write_text('')
+	(work / 'zzq&x').mkdir()
+	(work / 'zzq&x' / 'in&1').write_text('')
+	glue = glue_file(home, 'fish')
+	def remote(line):
+		return [remote_shell_args(text) for text, _ in fish_complete(env, glue, line, cwd=work)]
+	# (fish before 3.4 adds the names that hold the typed letters in order: zzplain for zza)
+	assert remote('mssh h cat zza')[0] == ['zzamp&b']
+	assert ['zzmy file'] not in remote('mssh h cat zzm') + remote('mssh h cat zz')
+	assert fish_complete(env, glue, 'mssh h cat zzp', cwd=work)[0] == ('zzplain', '')
+	assert remote('mssh h cat zzq') == [['zzq&x/']]
+	# the word as fish inserted it (zzq\\\&x/), completed as the remote shell reads it
+	assert remote('mssh h cat zzq\\\\\\&x/i') == [['zzq&x/in&1']]
 
 
 @needs_bash_completion
@@ -1035,11 +1142,16 @@ def test_bash_a_nospace_spec_lists_a_word_of_the_engine_and_the_spec_once(tmp_pa
 		session.close()
 
 
-@pytest.mark.parametrize('typed', ['mssh -f zznotes', 'mssh h zzcmd zznotes'])
-def test_bash_a_file_name_ending_in_a_space_is_listed_beside_the_name_without_it(tmp_path, typed):
+@pytest.mark.parametrize('typed, listed', [
+	('mssh -f zznotes', ['zznotes', 'zznotes']),
+	# a remote command's word holding whitespace is left out (mssh would run each command word as a command of its own):
+	# zznotes is the one left, and goes in alone
+	('mssh h zzcmd zznotes', []),
+])
+def test_bash_a_file_name_ending_in_a_space_is_listed_beside_the_name_without_it(tmp_path, typed, listed):
 	session = ignoring_case(tmp_path, [], on=False, files=['zznotes', 'zznotes '])
 	try:
-		assert completed_and_listed(session, typed) == (typed, ['zznotes', 'zznotes'])
+		assert completed_and_listed(session, typed) == (typed, listed)
 	finally:
 		session.close()
 
@@ -1115,10 +1227,11 @@ def test_bash_a_remote_word_matching_a_local_directory_keeps_its_space_beside_ba
 
 
 @pytest.mark.parametrize('spec, listed', [
-	# the delegate's names with their directories, quoted as bash quotes them, a directory marked; mssh's own word as it is
-	('complete -f zzsvc', ['zzamp\\&b', 'zzdir/', 'zzremote']),
+	# the delegate's names with their directories, quoted for the remote shell and then as bash quotes them, a directory
+	# marked; mssh's own word as it is
+	('complete -f zzsvc', ['zzamp\\\\\\&b', 'zzdir/', 'zzremote']),
 	('complete -d zzsvc', ['zzdir/', 'zzremote']),
-	("complete -G 'zz*' zzsvc", ['zzamp\\&b', 'zzdir/', 'zzremote']),
+	("complete -G 'zz*' zzsvc", ['zzamp\\\\\\&b', 'zzdir/', 'zzremote']),
 	# noquote: no backslashes, the directory still marked
 	('complete -f -o noquote zzsvc', ['zzamp&b', 'zzdir/', 'zzremote']),
 ])
@@ -1134,10 +1247,11 @@ def test_bash_the_delegates_file_names_are_quoted_and_marked_beside_mssh_s_own_w
 		session.close()
 
 
-def test_bash_the_delegates_file_names_with_a_space_are_quoted_beside_mssh_s_own_words(tmp_path):
+def test_bash_the_delegates_file_names_with_a_space_are_left_out_beside_mssh_s_own_words(tmp_path):
+	# mssh would run zzmy file as a command of its own; nothing else is left, and no local file name comes in for it
 	session = ignoring_case(tmp_path, history_of('zzsvc zzremote'), on=False, files=['zzmy file'], options='complete -f zzsvc')
 	try:
-		assert session.line_after('mssh h zzsvc zzm') == 'mssh h zzsvc zzmy\\ file '
+		assert session.line_after('mssh h zzsvc zzm') == 'mssh h zzsvc zzm'
 		assert session.line_after('mssh h zzsvc zzr') == 'mssh h zzsvc zzremote '
 	finally:
 		session.close()
@@ -1149,7 +1263,7 @@ def test_bash_the_delegates_file_names_are_quoted_and_marked_beside_mssh_s_own_w
 	session = ignoring_case(tmp_path, history_of('zzsvc zzremote'), on=False, files=['zzamp&b'], options='complete -f -o fullquote zzsvc')
 	try:
 		(tmp_path / 'work' / 'zzdir').mkdir()
-		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp\\&b', 'zzdir/', 'zzremote'])
+		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp\\\\\\&b', 'zzdir/', 'zzremote'])
 	finally:
 		session.close()
 
@@ -1171,14 +1285,15 @@ def filenamed(tmp_path, reply, given, options, prefix=''):
 
 
 @pytest.mark.parametrize('reply, given, options, prefix, expected', [
-	# quoted as printf %q quotes, a leading ~ too (bash 4.2's %q leaves it), a directory marked
-	(['zzr'], ['a b', 'a&c', '~/x', 'zzdir', 'zzdir/', '~/zzdir'], '-o filenames', '', r'[a\ b][a\&c][\~/x][zzdir/][zzdir/][\~/zzdir/]'),
+	# quoted for the remote shell, then as printf %q quotes, a leading ~ too (bash 4.2's %q leaves it), a directory marked; a
+	# name holding whitespace left out
+	(['zzr'], ['a b', 'a&c', '~/x', 'zzdir', 'zzdir/', '~/zzdir'], '-o filenames', '', r'[a\\\&c][\~/x][zzdir/][zzdir/][\~/zzdir/]'),
 	# noquote alone: as they are, a directory marked; with fullquote quoted again, and not marked without filenames
 	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote', '', '[a b][~/x][zzdir/]'),
-	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote -o fullquote', '', r'[a\ b][\~/x][zzdir/]'),
-	(['zzr'], ['a b', '~/x', 'zzdir'], '-o fullquote', '', r'[a\ b][\~/x][zzdir]'),
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o filenames -o noquote -o fullquote', '', r'[\~/x][zzdir/]'),
+	(['zzr'], ['a b', '~/x', 'zzdir'], '-o fullquote', '', r'[\~/x][zzdir]'),
 	# a word mssh offers itself is the same word, and not marked
-	(['zzdir', 'a\\&c'], ['zzdir', 'a&c', 'zzdirx'], '-o filenames', '', r'[zzdir][a\&c][zzdirx]'),
+	(['zzdir', 'a\\\\\\&c'], ['zzdir', 'a&c', 'zzdirx'], '-o filenames', '', r'[zzdir][a\\\&c][zzdirx]'),
 	# in a quoted command they are the remote command's text
 	(['zzr'], ['a b', 'zzdir'], '-o filenames', 'zzsvc ', '[a b][zzdir]'),
 ])
@@ -1195,7 +1310,8 @@ def test_bash_the_delegates_file_names_are_left_to_readline_without_mssh_s_own_w
 		(tmp_path / 'work' / 'zzdir' / 'zzio').mkdir()
 		assert completed_and_listed(session, 'mssh h zzsvc zzdir/zzi') == ('mssh h zzsvc zzdir/zzi', ['zzin/', 'zzio/'])
 		assert session.line_after('mssh h zzsvc zzdir/zzin') == 'mssh h zzsvc zzdir/zzin/'
-		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp&b', 'zzdir/'])
+		# (the name as readline gets it: the remote shell's word, which readline quotes in turn)
+		assert completed_and_listed(session, 'mssh h zzsvc zz') == ('mssh h zzsvc zz', ['zzamp\\&b', 'zzdir/'])
 	finally:
 		session.close()
 
