@@ -910,6 +910,46 @@ echo "[$(trap -p ALRM)]"
 	assert run_glue_script(home, script) == (0, "trap -- 'echo mine' SIGALRM\n[]\n[]", '')
 
 
+def test_the_engine_does_not_inherit_an_ignored_alarm(home):
+	# bash 4.2 and 4.3 ignore SIGALRM during the wait: the engine, and what it starts, must not (a child keeps what its
+	# parent ignores). awk is the engine's child here: its SigIgn mask shows what it got
+	script = r'''
+engine() { printf 'ready\nMSSHC1\nL 4\tign=%s\nE\n' "$(( (16#$(awk '/^SigIgn/{print $2}' /proc/self/status) >> 13) & 1 ))"; }
+. "$1" 2>/dev/null
+_mssh_complete_start engine
+printf '%s' "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, 'MSSHC1\nL 4\tign=0\nE', '')
+
+
+def shell_ignores_alarm(session):
+	'''Whether the shell on session ignores SIGALRM, and its trap for it: ("0", "") when it does neither.'''
+	session.send('\x15')
+	time.sleep(0.3)
+	session.send('echo "@@D[$(( (16#$(awk \'/^SigIgn/{print $2}\' /proc/$$/status) >> 13) & 1 ))|$(trap -p ALRM)]@""@"\r')
+	found = re.findall(r'@@D\[(\d)\|(.*?)\]@@', session.read_until(b']@@', 10))
+	return found[-1] if found else None
+
+
+def test_tab_then_ctrl_c_while_the_engine_answers_leaves_sigalrm_alone(home):
+	# the TAB query ends at the end of its input: nothing in it ignores SIGALRM, which a Ctrl-C there would leave ignored
+	env, home = home
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 3, only='query')))
+	try:
+		before = shell_ignores_alarm(session)
+		assert before == ('0', '')
+		session.send('mssh gp\t')
+		time.sleep(0.8)
+		session.send('\x03')
+		time.sleep(3.5)
+		# the prompt after the engine is done (what was typed meanwhile is the shell's, not ours to look at)
+		session.send('\r')
+		time.sleep(0.5)
+		assert shell_ignores_alarm(session) == before
+	finally:
+		session.close()
+
+
 def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
 	# as Ctrl-C in the editor: the line and ^C stay on screen, a fresh prompt below
 	env, home = home
