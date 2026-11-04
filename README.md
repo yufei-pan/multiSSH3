@@ -958,7 +958,7 @@ Option names count in full only: `--user` is not `--username` and `-c` is not `-
 
 Putting the command after `--` is no substitute for quotes: every word after the hosts is a command of its own, so `mssh web1 -- bash -c 'echo hi'` runs `bash`, `-c` and `echo hi` one after another (when each word is a single word, as in `mssh web1 -- ls -la`, mssh asks whether to join them).
 
-Below is a sample help message output from multiSSH3 6.41 @ 2026-11-03 (no config file, 120 columns; the lines after the options list the programs found on that machine)
+Below is a sample help message output from multiSSH3 6.42 @ 2026-11-04 (no config file, 120 columns; the lines after the options list the programs found on that machine)
 
 ```bash
 $ mssh -h
@@ -1371,6 +1371,15 @@ __DEBUG_MODE = False
 > When ssh cannot connect to a host (it exits with 255 after `ssh: connect to host HOST port PORT: REASON`), the default output shows the line as `SSH not reachable!`, `SSH connection timed out!` or `Cannot find host!` followed by the port and ssh's reason, e.g. `SSH connection timed out! (port 22: Connection timed out)`. Without the host name, unreachable hosts merge into one block. `--json` and `--greppable` output keep ssh's line, and a remote program's error that ends the same way is shown as printed.
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
+
+## Upgrading to 6.42 from 6.41
+
+With zsh before 5.8 (zsh 5.5 is EL8's), run `mssh --completion install` again: the Ctrl-C fix below is in the new glue. Do the same in bash, with or without ble.sh, for the ble.sh and function-name fixes (fish's glue did not change; the last fix needs no install). What you may notice:
+
+- Fix (zsh before 5.8): a Ctrl-C during a completion query (a TAB, the grey text, the warnings) reaches the shell and drops the line. 6.41 and earlier now and then left the terminal with the query, so the Ctrl-C went to the query and the line stayed. The queries no longer take the terminal from the shell; zsh 5.8 and later were not affected.
+- Fix (ble.sh): when a word in a quote gets nothing, ble.sh's second try, which matches the typed letters in any order, now completes it by the quote's rules: `mssh h cat "zzmp<TAB>` with a file `zzamp&b` gives `cat "zzamp\\&b"`, `mssh h "cat zzmp<TAB>` gives `"cat zzamp\\&b"`, and `mssh -f "zzmp<TAB>` gives `-f "zzamp&b"`. 6.41 offered nothing there. A name holding whitespace stays out of a quoted argument, as on the first try.
+- Fix (bash, ble.sh): this shell's internal functions are no longer offered as remote command names: names starting with `_` (bash-completion's `_comp_*` and `_filedir`, the glue's own), bash-completion's `quote`, `dequote` and `quote_readline`, and ble.sh's `ble`, `ble-*`, `ble/*`, `bleopt` and `blehook`, unless a file here or a command on PATH has the name. Under ble.sh `mssh h bed<TAB>` could put in a ble.sh function, and `mssh h sudo "amb<TAB>` bash-completion's `_comp__reassemble_words`, which every host would then try to run. Your other functions and aliases (`module`, `ml`, `nvm`) are still offered, as in 6.41.
+- Fix (bash, ble.sh, zsh, fish): in a quoted argument after another quoted one, `mssh h grep 'a' "zz<TAB>` could put in a local name holding a space (`"zz\\ a"`), which mssh would run as a command of its own. mssh joins an argument without whitespace with the command's other words, quoted or not, so such names are now left out there too. After an argument holding whitespace (`'a b'`, `zz\ a`, `''`), which mssh runs as a command of its own, the word being typed completes as a new command name.
 
 ## Upgrading to 6.41 from 6.40
 
