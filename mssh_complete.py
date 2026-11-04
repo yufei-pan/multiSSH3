@@ -6624,7 +6624,9 @@ _mssh_complete_start() {
 			IFS= read -r -t 0.1 -n 1 _mssh_complete_line && _mssh_complete_got=0 || _mssh_complete_got=$?
 			[[ -n $_mssh_complete_line ]] && _mssh_complete_got=0
 		done
-		if (( _mssh_complete_got == 0 )) && [[ -n $_mssh_complete_line ]]; then
+		# the wait ended with nothing read, but the engine wrote as it ended (read -t 0: is there input): its line is there
+		if { (( _mssh_complete_got == 0 )) && [[ -n $_mssh_complete_line ]]; } || { (( _mssh_complete_got > 128 )) && read -t 0; }; then
+			_mssh_complete_got=0
 			IFS= read -r _mssh_complete_rest || :
 			_mssh_complete_line+=$_mssh_complete_rest
 		fi
@@ -6633,7 +6635,8 @@ _mssh_complete_start() {
 	if [[ -z ${BLE_VERSION-} ]]; then
 		if [[ -n $_mssh_complete_trapped ]]; then eval "$_mssh_complete_trapped"; else trap - INT; fi
 	fi
-	if [[ $_mssh_complete_line == ready ]]; then
+	# eady: bash before 5.0 dropped the r of ready (the loop stops at the first byte it reads: only that one)
+	if [[ $_mssh_complete_line == ready || $_mssh_complete_line == eady ]]; then
 		# it had the terminal: as cancelled unless it says otherwise
 		_mssh_complete_status=1
 	elif (( _mssh_complete_interrupted )); then
