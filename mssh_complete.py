@@ -7229,7 +7229,7 @@ _mssh_complete_compadd() {
 		_mssh_complete_next_compadd "$@"
 		return
 	fi
-	emulate -L zsh -o extended_glob
+	emulate -L zsh; setopt extended_glob
 	local -a _mssh_complete_opts _mssh_complete_bare _mssh_complete_in _mssh_complete_out _mssh_complete_changed _mssh_complete_dirs
 	local -a _mssh_complete_shown _mssh_complete_kept _mssh_complete_parts _mssh_complete_typed
 	local _mssh_complete_arg _mssh_complete_letter _mssh_complete_name _mssh_complete_value _mssh_complete_prefix= _mssh_complete_word

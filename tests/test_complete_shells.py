@@ -1542,8 +1542,8 @@ def test_bash_a_nospace_filenames_spec_s_word_ending_in_a_space_completes(tmp_pa
 
 @pytest.mark.parametrize('typed, extra, remote', [
 	# the keys of an array (-k), and a description array named in the same word (-dNAME), were handed on unquoted
-	('mssh h zzk zzk', "typeset -A zzh=('zzk&y' 1)\n_zzk() { compadd -k zzh }\ncompdef _zzk zzk", ['zzk', 'zzk&y']),
-	('mssh h zzd zzd', "_zzd() { local -a shown=('zzd&y: the amp'); compadd -dshown -- 'zzd&y' }\ncompdef _zzd zzd", ['zzd', 'zzd&y']),
+	('mssh h zzk zzk', "typeset -A zzh\nzzh=('zzk&y' 1)\n_zzk() { compadd -k zzh }\ncompdef _zzk zzk", ['zzk', 'zzk&y']),
+	('mssh h zzd zzd', "_zzd() { local -a shown; shown=('zzd&y: the amp'); compadd -dshown -- 'zzd&y' }\ncompdef _zzd zzd", ['zzd', 'zzd&y']),
 	# matches stored (-O) reach the line through another compadd, which quotes them
 	('mssh h zzo zzx', "_zzo() { local -a found; compadd -O found -- 'zzx&o'; compadd -a found }\ncompdef _zzo zzo", ['zzo', 'zzx&o']),
 ])
@@ -2799,6 +2799,28 @@ def test_zsh_glue_finds_mssh_among_the_autosuggestion_strategies_as_a_whole_word
 
 # a command whose completion is built on _arguments, as most of zsh's are
 ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
+
+
+def test_zsh_completing_a_remote_command_keeps_the_operators_options(setup):
+	# the compadd standing in for the shell's while a remote command completes sets its own options (extended_glob):
+	# zsh 5.0.2 forgets emulate -L when it is also given -o, which left zsh's defaults in the operator's shell
+	env, home = setup
+	(home / 'dots').mkdir()
+	(home / 'dots' / '.zzhidden').write_text('')
+	where = home / 'options'
+	widget = ('_zzoptions() { print -r -- "glob_dots=$options[glob_dots] extended_glob=$options[extended_glob] beep=$options[beep]" >%s }\n'
+		'zle -N _zzoptions\nbindkey "^X^O" _zzoptions\nsetopt glob_dots no_beep\nunsetopt extended_glob') % where
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKEOPTS + '\n' + widget)
+	try:
+		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
+		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		session.send('\x18\x0f')
+		deadline = time.monotonic() + 5
+		while not where.exists() and time.monotonic() < deadline:
+			time.sleep(0.05)
+		assert where.read_text().strip() == 'glob_dots=on extended_glob=off beep=off'
+	finally:
+		session.close()
 
 
 def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):

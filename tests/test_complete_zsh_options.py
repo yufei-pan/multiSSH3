@@ -13,7 +13,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import ENGINE, Session, build_index, make_home, require_shell
+from complete_shell_harness import ENGINE, Session, build_index, make_home, require_shell, zsh_version
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)]
 
@@ -99,11 +99,6 @@ def line_after(session, keys, wait=1.0):
 	end = text.find(']@@', start)
 	session.send('\x15')
 	return text[start + 7:end] if start >= 0 and end > start else None
-
-
-def zsh_version():
-	output = subprocess.run([require_shell('zsh'), '-fc', 'print -r -- $ZSH_VERSION'], stdout=subprocess.PIPE, timeout=30).stdout
-	return tuple(int(part) for part in re.findall(r'\d+', output.decode('ascii', 'replace'))[:2])
 
 
 @pytest.mark.parametrize('option', ['sh_glob', 'ksh_arrays', 'ignore_braces'])

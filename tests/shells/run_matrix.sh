@@ -17,7 +17,7 @@ required=()
 pids=()
 for name in "${images[@]}"; do
 	case $name in
-		centos7) required+=(bash,blesh) ;;
+		centos7) required+=(bash,zsh,blesh) ;;
 		bash5.1|bash5.3) required+=(bash) ;;
 		modern|current|legacy|el9) required+=(bash,zsh,fish,blesh,zas,zsh-syntax-highlighting) ;;
 		*) echo "unknown image: $name" >&2; exit 2 ;;
