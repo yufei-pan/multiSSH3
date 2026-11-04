@@ -542,3 +542,16 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   fixed the terminal handover in 5.8); mssh's own queries no longer take the terminal.
 - Revisit when: zsh-autosuggestions changes its async child, or an operator hits it often.
 - Approved: 2026-11-04, the user chose "KL + draft report (Recommended)".
+
+### bash: the picker or the editor can come up with nothing reading its answer
+- Kind: known limitation
+- What the operator sees: in bash, Ctrl-R's picker or Ctrl-X Ctrl-E's editor now and then comes up after the glue has
+  stopped waiting for it, or after a Ctrl-C pressed just as it started: it draws on the terminal, but the choice made
+  in it is not applied, and the line stays as it was. Press Enter or Esc to close it and try again. In tests timed
+  at that moment on purpose: 1 in 250 to 300 tries; the window is tens of microseconds.
+- Why: the glue waits for the picker's "ready" at most MSSH_COMPLETE_START_TIMEOUT seconds (2) and checks once more
+  after the wait; between that check and its end of the pipe, the picker can still start. Closing it fully needs a
+  claim step (the picker taking the terminal only once the glue confirms it still waits), as the zsh and fish glue
+  have.
+- Revisit when: an operator hits it.
+- Approved: 2026-11-04, the user chose "Known limitation (Recommended)".

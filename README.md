@@ -1382,7 +1382,11 @@ __DEBUG_MODE = False
 
 ## Upgrading to 6.42 from 6.41
 
-With zsh before 5.8 (zsh 5.5 is EL8's), run `mssh --completion install` again: the Ctrl-C fix below is in the new glue. Do the same in bash, with or without ble.sh, for the ble.sh and function-name fixes (fish's glue did not change; the last fix needs no install). What you may notice:
+With zsh before 5.8 (zsh 5.5 is EL8's), run `mssh --completion install` again: the Ctrl-C fix below is in the new glue. Do the same in bash, with or without ble.sh, for the Ctrl-R, ble.sh and function-name fixes (fish's glue did not change; the quoted-argument fix needs no install). What you may notice:
+
+- Fix (bash): a Ctrl-R pick or a Ctrl-X Ctrl-E edit was now and then dropped without a word, leaving the line as it was (about 1 in 50 to 100 on bash 5.2 in tests, less on other versions): the glue waits for the picker's "ready" in reads of 0.1 s, and when it arrived as one ran out, bash 5 kept its first byte where the next read wrote over it, and bash 4.2 to 4.4 dropped it. Both now count.
+- Fix (bash 4.2 and 4.3, e.g. CentOS 7's): the shell could end with "Alarm clock" on Ctrl-R or Ctrl-X Ctrl-E, about once in 1000, when the picker's answer came as a 0.1 s wait ran out (a bash bug fixed in 4.4). The glue now ignores SIGALRM during that wait and puts your own trap for it back after.
+- Fix (zsh 5.0.2, CentOS 7's): the first TAB in a remote command reset your own `setopt` options for the rest of the session (`emulate -L zsh -o ...` forgets `-L` there), so `glob_dots` and the like stopped working. They now stay. mssh's own grey text and warnings still need zsh 5.3; TAB completion works on 5.0.2.
 
 - Fix (zsh before 5.8): a Ctrl-C during a completion query (a TAB, the grey text, the warnings) reaches the shell and drops the line. 6.41 and earlier now and then left the terminal with the query, so the Ctrl-C went to the query and the line stayed. The queries no longer take the terminal from the shell; zsh 5.8 and later were not affected. zsh-autosuggestions' own asynchronous fetch still takes it now and then (below).
 - Fix (ble.sh): when a word in a quote gets nothing, ble.sh's second try, which matches the typed letters in any order, now completes it by the quote's rules: `mssh h cat "zzmp<TAB>` with a file `zzamp&b` gives `cat "zzamp\\&b"`, `mssh h "cat zzmp<TAB>` gives `"cat zzamp\\&b"`, and `mssh -f "zzmp<TAB>` gives `-f "zzamp&b"`. 6.41 offered nothing there. A name holding whitespace stays out of a quoted argument, as on the first try.
@@ -1392,6 +1396,7 @@ With zsh before 5.8 (zsh 5.5 is EL8's), run `mssh --completion install` again: t
   - zsh and fish still offer this shell's internal functions as remote command names (zsh's `_mssh_complete_take_ctrl_r`, fish's `fish_prompt`); to be fixed after 6.42 ([limitations](docs/limitations.md#zsh-and-fish-offer-this-shells-own-functions-as-remote-command-names)).
   - ble.sh: in a quoted word, the second try finds nothing after a directory (`mssh h cat "sub/zzmp<TAB>`) or in a word holding a `$` expansion, a leading `~` or a quote of its own; type the start of the name ([limitations](docs/limitations.md#blesh-in-a-quoted-word-the-second-try-finds-nothing-after-a-directory-or-an-expansion)).
   - zsh before 5.8 with zsh-autosuggestions in its asynchronous mode (its default): a Ctrl-C while typing an mssh line now and then still keeps the line, as the plugin's own processes hold the terminal for a moment; press Ctrl-C again ([limitations](docs/limitations.md#zsh-before-58-with-zsh-autosuggestions-async-mode-a-ctrl-c-now-and-then-keeps-the-line)).
+  - bash: in a window of microseconds at the end of the picker's start, the picker or the editor can still come up with nothing reading its answer; your choice is then not applied, so press Enter or Esc and try again ([limitations](docs/limitations.md#bash-the-picker-or-the-editor-can-come-up-with-nothing-reading-its-answer)).
 
 ## Upgrading to 6.41 from 6.40
 
