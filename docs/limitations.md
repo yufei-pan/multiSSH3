@@ -501,3 +501,44 @@ each entry).
 - Why: zsh's completion expands the parameter in the quoted word before the glue sees it; not looked into further.
 - Revisit when: 6.41 has shipped.
 - Approved: 2026-11-03, the user chose "Defer both (Recommended)".
+
+## Found in 6.42's review
+
+Found while confirming and reviewing 6.42's fixes (the user's words are in each entry).
+
+### zsh and fish offer this shell's own functions as remote command names
+- Kind: deferred
+- What the operator sees: in zsh, a remote command's name completes from this shell's functions and aliases (through
+  `_normal`'s command names), its internal ones too: `mssh h zzlocalf<TAB>` gives a local function `zzlocalfn`, and
+  `mssh h _mssh_complete_t<TAB>` the glue's own `_mssh_complete_take_ctrl_r`. In fish, `mssh h fish_pro<TAB>` gives
+  `fish_prompt`, and `mssh h __mssh<TAB>` lists the glue's own `__mssh_complete*` functions. bash and ble.sh no longer
+  offer this shell's internal functions since 6.42 (names starting with `_`, bash-completion's `quote`, `dequote` and
+  `quote_readline`, ble.sh's own), and still offer the operator's (`module`, `ml`, `nvm`).
+- Why: 6.42 fixed bash first; zsh and fish need the same rule in their own glue.
+- Revisit when: the change after 6.42.
+- Approved: 2026-11-04, the user chose "Fix after 6.42 (Recommended)".
+
+### ble.sh: in a quoted word, the second try finds nothing after a directory or an expansion
+- Kind: known limitation
+- What the operator sees: with ble.sh, in a quoted word, ble.sh's second try (its retry matching the typed letters in
+  any order, `zzmp` finding `zzamp&b`) finds nothing in a word after a directory (`mssh h cat "sub/zzmp<TAB>`), or in a
+  word holding a `$` expansion or a backtick, a leading `~`, or a quote of its own. Typing the start of the name still
+  completes (`mssh h cat "sub/zza<TAB>`). Elsewhere in a quoted word the second try works since 6.42.
+- Why: the cut ble.sh makes of the word for that try would drop that part, and ble.sh matches names against its own
+  value of the typed word (an unset `$ZZNONE` becomes empty), so a name could go in wrong.
+- Revisit when: an operator asks for it.
+- Approved: 2026-11-04, the user chose "Known limitation (Recommended)".
+
+### zsh before 5.8 with zsh-autosuggestions' async mode: a Ctrl-C now and then keeps the line
+- Kind: known limitation
+- What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's) and zsh-autosuggestions in its asynchronous mode
+  (its default from zsh 5.0.8), now and then a Ctrl-C while typing an mssh line keeps the line instead of dropping it: 3
+  of 60 test loops on zsh 5.5 after 6.42's fix, 4 of 60 before. The plugin's own processes briefly hold the terminal:
+  its background child, up to about 0.3 s on mssh lines (as long as mssh's suggestion strategy runs in it), and the
+  `command true` it runs after starting that child, for about a millisecond. It cannot end the shell; press Ctrl-C
+  again. zsh-autosuggestions' synchronous mode (`unset ZSH_AUTOSUGGEST_USE_ASYNC` after loading it) avoids it, with
+  mssh's grey text then given 50 ms.
+- Why: the cause is in the plugin's async fetch on zsh before 5.8, its child and its `command true` (zsh change 44214
+  fixed the terminal handover in 5.8); mssh's own queries no longer take the terminal.
+- Revisit when: zsh-autosuggestions changes its async child, or an operator hits it often.
+- Approved: 2026-11-04, the user chose "KL + draft report (Recommended)".

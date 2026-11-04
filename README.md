@@ -552,6 +552,14 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 
 > With ble.sh, a word that ble.sh splits at an `=` or `:` after a quote, a backslash or an expansion (`"a"=b`, `$V:x`) is read as in 6.39; a `~` after such a split comes back as this machine's home ([limitations](docs/limitations.md#blesh-a-word-split-at-an--or--after-a-quote-backslash-or-expansion-is-read-as-in-639)). On bash 4.3 and 4.4, a remote command's `-o noquote` is not seen, so the local file names completed for it are quoted ([limitations](docs/limitations.md#bash-43-and-44-a-remote-commands--o-noquote-is-not-seen)).
 
+> With ble.sh, in a quoted word, ble.sh's second try (matching the typed letters in any order) finds nothing after a directory (`mssh h cat "sub/zzmp<TAB>`) or in a word holding a `$` expansion, a leading `~` or a quote of its own; typing the start of the name still completes ([limitations](docs/limitations.md#blesh-in-a-quoted-word-the-second-try-finds-nothing-after-a-directory-or-an-expansion)).
+
+> In zsh and fish, a remote command's name also completes from this shell's internal functions (zsh's `_mssh_complete_take_ctrl_r`, fish's `fish_prompt` and the glue's `__mssh_complete*`), which bash and ble.sh leave out since 6.42; to be fixed after 6.42 ([limitations](docs/limitations.md#zsh-and-fish-offer-this-shells-own-functions-as-remote-command-names)).
+
+> With zsh before 5.8 and zsh-autosuggestions in its default asynchronous mode, a Ctrl-C while typing an mssh line now and then keeps the line, as the plugin's own processes hold the terminal for a moment; press Ctrl-C again ([limitations](docs/limitations.md#zsh-before-58-with-zsh-autosuggestions-async-mode-a-ctrl-c-now-and-then-keeps-the-line)).
+
+> On zsh before 5.3, mssh draws no grey text of its own and shows no warnings, as the zle hooks they need (`add-zle-hook-widget`) came in zsh 5.3; with zsh-autosuggestions loaded, its grey text still comes from mssh. TAB completion works.
+
 ## Options
 
 Here details the options for multiSSH3 6.31 @ 2026-10-13
@@ -1376,10 +1384,14 @@ __DEBUG_MODE = False
 
 With zsh before 5.8 (zsh 5.5 is EL8's), run `mssh --completion install` again: the Ctrl-C fix below is in the new glue. Do the same in bash, with or without ble.sh, for the ble.sh and function-name fixes (fish's glue did not change; the last fix needs no install). What you may notice:
 
-- Fix (zsh before 5.8): a Ctrl-C during a completion query (a TAB, the grey text, the warnings) reaches the shell and drops the line. 6.41 and earlier now and then left the terminal with the query, so the Ctrl-C went to the query and the line stayed. The queries no longer take the terminal from the shell; zsh 5.8 and later were not affected.
+- Fix (zsh before 5.8): a Ctrl-C during a completion query (a TAB, the grey text, the warnings) reaches the shell and drops the line. 6.41 and earlier now and then left the terminal with the query, so the Ctrl-C went to the query and the line stayed. The queries no longer take the terminal from the shell; zsh 5.8 and later were not affected. zsh-autosuggestions' own asynchronous fetch still takes it now and then (below).
 - Fix (ble.sh): when a word in a quote gets nothing, ble.sh's second try, which matches the typed letters in any order, now completes it by the quote's rules: `mssh h cat "zzmp<TAB>` with a file `zzamp&b` gives `cat "zzamp\\&b"`, `mssh h "cat zzmp<TAB>` gives `"cat zzamp\\&b"`, and `mssh -f "zzmp<TAB>` gives `-f "zzamp&b"`. 6.41 offered nothing there. A name holding whitespace stays out of a quoted argument, as on the first try.
 - Fix (bash, ble.sh): this shell's internal functions are no longer offered as remote command names: names starting with `_` (bash-completion's `_comp_*` and `_filedir`, the glue's own), bash-completion's `quote`, `dequote` and `quote_readline`, and ble.sh's `ble`, `ble-*`, `ble/*`, `bleopt` and `blehook`, unless a file here or a command on PATH has the name. Under ble.sh `mssh h bed<TAB>` could put in a ble.sh function, and `mssh h sudo "amb<TAB>` bash-completion's `_comp__reassemble_words`, which every host would then try to run. Your other functions and aliases (`module`, `ml`, `nvm`) are still offered, as in 6.41.
 - Fix (bash, ble.sh, zsh, fish): in a quoted argument after another quoted one, `mssh h grep 'a' "zz<TAB>` could put in a local name holding a space (`"zz\\ a"`), which mssh would run as a command of its own. mssh joins an argument without whitespace with the command's other words, quoted or not, so such names are now left out there too. After an argument holding whitespace (`'a b'`, `zz\ a`, `''`), which mssh runs as a command of its own, the word being typed completes as a new command name.
+- Known limits ([limitations](docs/limitations.md#found-in-642s-review)):
+  - zsh and fish still offer this shell's internal functions as remote command names (zsh's `_mssh_complete_take_ctrl_r`, fish's `fish_prompt`); to be fixed after 6.42 ([limitations](docs/limitations.md#zsh-and-fish-offer-this-shells-own-functions-as-remote-command-names)).
+  - ble.sh: in a quoted word, the second try finds nothing after a directory (`mssh h cat "sub/zzmp<TAB>`) or in a word holding a `$` expansion, a leading `~` or a quote of its own; type the start of the name ([limitations](docs/limitations.md#blesh-in-a-quoted-word-the-second-try-finds-nothing-after-a-directory-or-an-expansion)).
+  - zsh before 5.8 with zsh-autosuggestions in its asynchronous mode (its default): a Ctrl-C while typing an mssh line now and then still keeps the line, as the plugin's own processes hold the terminal for a moment; press Ctrl-C again ([limitations](docs/limitations.md#zsh-before-58-with-zsh-autosuggestions-async-mode-a-ctrl-c-now-and-then-keeps-the-line)).
 
 ## Upgrading to 6.41 from 6.40
 
