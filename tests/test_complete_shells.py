@@ -1421,11 +1421,26 @@ def test_bash_functions_with_a_leading_underscore_are_no_remote_command_names(tm
 
 
 def test_ble_second_try_offers_no_underscore_function_of_bash_completion(tmp_path):
-	# ble.sh asks again for an empty word and matches the typed letters in any order: amb found _comp__reassemble_words
+	# ble.sh asks again for an empty word and matches the typed letters in any order: amb found _comp__reassemble_words, dqt
+	# found dequote (bash-completion's helpers without an underscore: quote, dequote and quote_readline). The name inserted is
+	# none of the functions the filter drops; a real command with a, m, b in order and an underscore is a legitimate name
+	# (and nothing inserted is no failure: what a PATH holds differs between images)
 	if not os.path.exists(BASH_COMPLETION):
 		pytest.skip('bash-completion is not installed')
-	line, got = review_line(tmp_path, 'ble', 'mssh h sudo "amb', bash_completion=True)
-	assert '_' not in line.replace('"', ''), line
+	for number, typed in enumerate(('mssh h sudo "amb', 'mssh h sudo "dqt', 'mssh h sudo "qte')):
+		(tmp_path / str(number)).mkdir()
+		line, got = review_line(tmp_path / str(number), 'ble', typed, bash_completion=True)
+		name = got[-1]
+		assert not name.startswith(('_comp', '_filedir', '_ble', '_mssh_complete', 'ble-', 'ble/')), line
+		assert name not in ('quote', 'dequote', 'quote_readline', 'ble', 'bleopt', 'blehook'), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_bash_completion_s_helpers_without_an_underscore_are_no_remote_command_names(tmp_path, shell):
+	if not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, shell, 'mssh h quote_r', bash_completion=True)
+	assert 'quote_readline' not in line, line
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])

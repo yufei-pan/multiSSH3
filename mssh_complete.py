@@ -5810,10 +5810,11 @@ _mssh_complete_delegate() {
 		# unless a file here or a command on PATH has it (compgen -c lists them: mssh h bed got bled, sudo amb ble/amb, and under
 		# ble.sh's second try sudo "amb _comp__reassemble_words). By name, not every function of this shell: module, ml and nvm
 		# are shell functions here and on the remote host too. A leading underscore marks a completion's or a helper's internal
-		# function by convention (_comp_*, _filedir, _ble_*, _mssh_complete*), ble.sh's own are ble, ble-*, ble/*, bleopt*,
+		# function by convention (_comp_*, _filedir, _ble_*, _mssh_complete*); bash-completion's helpers without one are quote,
+		# dequote and quote_readline (the second try found dequote for sudo "dqt); ble.sh's own are ble, ble-*, ble/*, bleopt*,
 		# blehook* (the wrappers it makes of builtins, bind, read, history, stay: they are the remote shell's builtins)
 		case $_mssh_complete_item in
-		_*|ble|ble-*|ble/*|bleopt|bleopt/*|blehook|blehook/*)
+		_*|quote|dequote|quote_readline|ble|ble-*|ble/*|bleopt|bleopt/*|blehook|blehook/*)
 			if declare -F -- "$_mssh_complete_item" >/dev/null 2>&1; then
 				[[ -e $_mssh_complete_item ]] || type -P -- "$_mssh_complete_item" >/dev/null 2>&1 || continue
 			fi
