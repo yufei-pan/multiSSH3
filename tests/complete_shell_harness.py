@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -45,6 +46,16 @@ def require_shell(name):
 			pytest.fail('{} is required here (MSSH_REQUIRE_SHELLS) but not installed'.format(name))
 		pytest.skip('{} is not installed'.format(name))
 	return path
+
+def zsh_version():
+	'''zsh's version as (major, minor).'''
+	output = subprocess.run([require_shell('zsh'), '-fc', 'print -r -- $ZSH_VERSION'], stdout=subprocess.PIPE, timeout=30).stdout
+	return tuple(int(part) for part in re.findall(r'\d+', output.decode('ascii', 'replace'))[:2])
+
+def require_zsh_5_3():
+	'''Skip the test before zsh 5.3: the glue's own grey text and warnings are not set up there.'''
+	if zsh_version() < (5, 3):
+		pytest.skip("mssh's own grey text and warnings need zsh 5.3 (add-zle-hook-widget)")
 
 def bash_locale(env, multibyte=False):
 	"""

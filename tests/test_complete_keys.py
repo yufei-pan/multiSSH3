@@ -14,7 +14,7 @@ import time
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, WITH_AND_WITHOUT_DEBUG_LOG, with_debug_log, aged, bash_locale, bash_session, blesh_session, build_index,
+from complete_shell_harness import (ENGINE, require_zsh_5_3, WITH_AND_WITHOUT_DEBUG_LOG, with_debug_log, aged, bash_locale, bash_session, blesh_session, build_index,
 	debug_log_size, fish_session, make_home, require_shell, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
@@ -1021,6 +1021,8 @@ def zsh_with(env, home, zas=False, after=False, late=False, shell_history=SHELL_
 
 @pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
 def test_zsh_suggests_and_right_arrow_accepts(home, zas, after):
+	if not zas:
+		require_zsh_5_3()
 	env, home = home
 	session = zsh_with(env, home, zas, after)
 	try:
@@ -1087,6 +1089,7 @@ def underlined(session, text):
 
 @pytest.mark.parametrize('zas', [False, True], ids=['own', 'zsh-autosuggestions'])
 def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
+	require_zsh_5_3()
 	env, home = home
 	known(env, gpu017='invalid')
 	session = zsh_with(env, home, zas)
@@ -1101,6 +1104,7 @@ def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
 
 
 def test_zsh_suggests_warns_and_picks_without_compinit(home):
+	require_zsh_5_3()
 	# only TAB needs zsh's completion system
 	env, home = home
 	known(env, gpu017='invalid')
@@ -1120,6 +1124,7 @@ def test_zsh_suggests_warns_and_picks_without_compinit(home):
 
 
 def test_zsh_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
+	require_zsh_5_3()
 	env, home = home
 	session = zsh_with(env, home)
 	try:
@@ -1132,6 +1137,7 @@ def test_zsh_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
 
 
 def test_zsh_warning_appears_when_the_prober_answers(home):
+	require_zsh_5_3()
 	env, home = home
 	session = zsh_with(env, home)
 	try:
@@ -1145,6 +1151,7 @@ def test_zsh_warning_appears_when_the_prober_answers(home):
 
 
 def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
+	require_zsh_5_3()
 	env, home = home
 	known(env, gpu017='invalid', gpu17='valid')
 	session = zsh_with(env, home)
@@ -1199,6 +1206,7 @@ def test_zsh_underline_goes_away_when_the_host_is_fixed(home, typed, fixes, line
 
 
 def test_zsh_accepted_grey_text_is_not_grey(home):
+	require_zsh_5_3()
 	# a character of the grey text typed first: zsh moved the grey highlight along with it
 	env, home = home
 	session = zsh_with(env, home)
@@ -1230,6 +1238,8 @@ def settled(session, quiet=1.0):
 	('--ipmi_\t', '--ipmi_method'),
 ], ids=['next-word', 'tab-completes', 'tab-lists'])
 def test_zsh_keys_on_a_warned_line(home, keys, below):
+	if below.startswith('⚠'):
+		require_zsh_5_3()
 	env, home = home
 	known(env, gpu017='invalid')
 	session = zsh_with(env, home)
@@ -1246,6 +1256,7 @@ def test_zsh_keys_on_a_warned_line(home, keys, below):
 
 @pytest.mark.parametrize('known_before, delay', [(False, 0.2), (True, 0.0), (True, 0.12)], ids=['answered-while-typing', 'known-typed-at-once', 'known-typed-quickly'])
 def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, delay):
+	require_zsh_5_3()
 	# the answer comes back after the next key, which only changed the word being typed: zsh asks again
 	env, home = home
 	if known_before:
@@ -1315,6 +1326,7 @@ def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
 
 
 def test_zsh_ctrl_c_drops_a_line_while_its_grey_text_is_asked_for(home):
+	require_zsh_5_3()
 	# not lost to the query (zsh before 5.8), which goes on: before zsh 5.8 it shares the shell's process group, and
 	# one the Ctrl-C ended made zsh 5.5 now and then drop the line only at the next key, and that key with it
 	env, home = home
@@ -1393,6 +1405,7 @@ def test_zsh_grey_text_stays_grey_with_zsh_syntax_highlighting(home):
 
 
 def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
+	require_zsh_5_3()
 	env, home = make_home(tmp_path, ["17900000{:02d}\t/x/multiSSH3.py\t-su -f='my file.txt'\tnode1\t/tmp".format(number) for number in range(6)])
 	build_index(env)
 	session = zsh_with(env, home)
@@ -1485,6 +1498,7 @@ def recorded_flags(requests):
 
 @pytest.mark.parametrize('zas', [False, True], ids=['own', 'zsh-autosuggestions'])
 def test_zsh_says_the_locale_it_runs_in_in_every_request(home, zas):
+	require_zsh_5_3()
 	# grey text, warnings, Ctrl-R and TAB: each request holds zsh's measure of its locale, here C by an
 	# LC_ALL it keeps to itself (the engine sees the exported LANG), and the picker draws ASCII
 	env, home = home
@@ -1932,6 +1946,8 @@ def check_warned_picker(session):
 
 @pytest.mark.parametrize('shell', ['bash', 'editor', 'zsh', 'zsh-autosuggestions', 'blesh', 'fish'])
 def test_picker_shows_the_warnings_about_the_line_at_its_top(home, shell):
+	if shell.startswith('zsh'):
+		require_zsh_5_3()
 	env, home = home
 	known(env, gpu017='invalid')
 	session, reason = picker_shell(shell, env, home)
@@ -2057,6 +2073,7 @@ def test_blesh_ignores_the_operators_aliases_and_functions(home, where):
 
 @pytest.mark.parametrize('where', ['before', 'after'])
 def test_zsh_ignores_the_operators_aliases_and_functions(home, where):
+	require_zsh_5_3()
 	env, home = home
 	known(env, gpu017='invalid')
 	session = zsh_with(env, home, **{'rc_' + where: OPERATOR_ZSH})
