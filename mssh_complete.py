@@ -7042,13 +7042,18 @@ _mssh() {
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
 	_mssh_complete_read_locale
 	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM $_mssh_complete_locale"
-	exec {_mssh_complete_qfd}< <(
-		{
-			print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$_mssh_complete_flags"$'\0'"$_mssh_complete_before"$'\0'"$_mssh_complete_after"$'\0'"$PREFIX"$'\0'
-			fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
-		} | _mssh_complete_engine query 2>/dev/null
-	)
-	_mssh_complete_keep_terminal
+	# job control off while the query starts, before zsh 5.8, and Ctrl-C ignored in it (see _mssh_complete_setup);
+	# in a function of its own: a command's completion runs below in the shell's options
+	() {
+		(( _mssh_complete_grabs )) && setopt local_options no_monitor
+		exec {_mssh_complete_qfd}< <(
+			trap '' INT
+			{
+				print -rn -- "MSSHC1"$'\0'"zsh"$'\0'"$ZSH_VERSION"$'\0'"$_mssh_complete_flags"$'\0'"$_mssh_complete_before"$'\0'"$_mssh_complete_after"$'\0'"$PREFIX"$'\0'
+				fc -ln -${MSSH_COMPLETE_SHELL_HISTORY:-1000} 2>/dev/null
+			} | _mssh_complete_engine query 2>/dev/null
+		)
+	}
 	(( _mssh_complete_end = EPOCHREALTIME + ${MSSH_COMPLETE_TIMEOUT:-0.3} ))
 	_mssh_complete_resp=
 	while true; do
@@ -7361,15 +7366,6 @@ _mssh_complete_start_pick() {
 	command sh -c "$_mssh_complete_start_script" sh "$_mssh_complete_limit" @ENGINE@ pick
 }
 
-_mssh_complete_keep_terminal() {
-	# after each `exec {fd}< <(...)`: before zsh 5.8 the process substitution takes the terminal from the
-	# shell (Ctrl-C then goes to it, and the shell's next reads can fail with "error on TTY read"); a
-	# command run in the foreground hands the terminal back when it ends, as zsh-autosuggestions does
-	# (its issue 364)
-	(( _mssh_complete_fork )) && [[ -o monitor ]] && command true
-	return 0
-}
-
 _mssh_complete_is_mssh() {
 	# whether $1 is an mssh command line: an mssh name, then a space
 	emulate -L zsh
@@ -7462,8 +7458,9 @@ _zsh_autosuggest_strategy_mssh() {
 	local -i _mssh_complete_remaining
 	# synchronous zsh-autosuggestions waits for the strategy while the operator types
 	(( ${+ZSH_AUTOSUGGEST_USE_ASYNC} )) || _mssh_complete_limit=0.05
-	exec {_mssh_complete_qfd}< <(_mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
-	_mssh_complete_keep_terminal
+	# job control off while the query starts, before zsh 5.8, and Ctrl-C ignored in it (see _mssh_complete_setup)
+	(( _mssh_complete_grabs )) && setopt local_options no_monitor
+	exec {_mssh_complete_qfd}< <(trap '' INT; _mssh_complete_request 'ghost=1 zas=1 nul=0' "$1" '' | _mssh_complete_engine query 2>/dev/null)
 	(( _mssh_complete_end = EPOCHREALTIME + _mssh_complete_limit ))
 	while true; do
 		(( _mssh_complete_remaining = (_mssh_complete_end - EPOCHREALTIME) * 100 ))
@@ -7574,8 +7571,9 @@ _mssh_complete_ghost_redraw() {
 	_mssh_complete_ghost_cancel
 	(( CURSOR == $#BUFFER )) && _mssh_complete_is_mssh "$BUFFER" || return 0
 	_mssh_complete_asked=$BUFFER
-	exec {_mssh_complete_fd}< <(_mssh_complete_request 'ghost=1 nul=0' "$BUFFER" '' | _mssh_complete_engine query 2>/dev/null)
-	_mssh_complete_keep_terminal
+	# job control off while the query starts, before zsh 5.8, and Ctrl-C ignored in it (see _mssh_complete_setup)
+	(( _mssh_complete_grabs )) && setopt local_options no_monitor
+	exec {_mssh_complete_fd}< <(trap '' INT; _mssh_complete_request 'ghost=1 nul=0' "$BUFFER" '' | _mssh_complete_engine query 2>/dev/null)
 	zle -F $_mssh_complete_fd _mssh_complete_ghost_ready
 }
 
@@ -7695,10 +7693,12 @@ _mssh_complete_warn_cancel() {
 _mssh_complete_warn_ask() {
 	# ask for warnings about the line, after $1 hundredths of a second
 	_mssh_complete_warn_asked=$BUFFER$'\0'$CURSOR
+	# job control off while the query starts, before zsh 5.8, and Ctrl-C ignored in it (see _mssh_complete_setup)
+	(( _mssh_complete_grabs )) && setopt local_options no_monitor
 	exec {_mssh_complete_warn_fd}< <(
+		trap '' INT
 		(( $1 > 0 )) && zselect -t $1
 		_mssh_complete_request 'diag=1 nul=0' "$LBUFFER" "$RBUFFER" | _mssh_complete_engine query 2>/dev/null)
-	_mssh_complete_keep_terminal
 	zle -F $_mssh_complete_warn_fd _mssh_complete_warn_ready
 }
 
@@ -7818,8 +7818,16 @@ _mssh_complete_setup() {
 	# Ctrl-R, warnings, and grey text through zsh-autosuggestions when it is loaded, else with own widgets
 	add-zsh-hook -d precmd _mssh_complete_setup
 	autoload -Uz is-at-least
-	typeset -gi _mssh_complete_fork=0 _mssh_complete_memo=0
-	is-at-least 5.8 || _mssh_complete_fork=1
+	# before zsh 5.8 (its change 44214) the process of an `exec {fd}< <(...)` makes itself the terminal's
+	# foreground process group when the shell does job control: Ctrl-C went to the query and left the line,
+	# and the shell's next read failed until zsh took the terminal back. The queries start with job control
+	# off there (local_options: setting monitor again would make zsh take its process group anew): the
+	# process stays in the shell's group, which keeps the terminal. A Ctrl-C then reaches the query too,
+	# which ignores it (`trap '' INT`; from zsh 5.8 it has a process group of its own, which Ctrl-C does not
+	# reach): a query ended by it made zsh 5.5 now and then drop the line only at the next key, and that
+	# key with it
+	typeset -gi _mssh_complete_grabs=0 _mssh_complete_memo=0
+	is-at-least 5.8 || _mssh_complete_grabs=1
 	# from zsh 5.9 a highlight can carry a memo: the glue's own are then told apart from other plugins'
 	is-at-least 5.9 && _mssh_complete_memo=1
 	_mssh_complete_take_ctrl_r
