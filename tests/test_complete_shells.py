@@ -1542,8 +1542,8 @@ def test_bash_a_nospace_filenames_spec_s_word_ending_in_a_space_completes(tmp_pa
 
 @pytest.mark.parametrize('typed, extra, remote', [
 	# the keys of an array (-k), and a description array named in the same word (-dNAME), were handed on unquoted
-	('mssh h zzk zzk', "typeset -A zzh=('zzk&y' 1)\n_zzk() { compadd -k zzh }\ncompdef _zzk zzk", ['zzk', 'zzk&y']),
-	('mssh h zzd zzd', "_zzd() { local -a shown=('zzd&y: the amp'); compadd -dshown -- 'zzd&y' }\ncompdef _zzd zzd", ['zzd', 'zzd&y']),
+	('mssh h zzk zzk', "typeset -A zzh\nzzh=('zzk&y' 1)\n_zzk() { compadd -k zzh }\ncompdef _zzk zzk", ['zzk', 'zzk&y']),
+	('mssh h zzd zzd', "_zzd() { local -a shown; shown=('zzd&y: the amp'); compadd -dshown -- 'zzd&y' }\ncompdef _zzd zzd", ['zzd', 'zzd&y']),
 	# matches stored (-O) reach the line through another compadd, which quotes them
 	('mssh h zzo zzx', "_zzo() { local -a found; compadd -O found -- 'zzx&o'; compadd -a found }\ncompdef _zzo zzo", ['zzo', 'zzx&o']),
 ])
