@@ -157,19 +157,25 @@ def test_quoted_command_delegates_with_prefix():
 	assert query('mssh h "cat x | gre', word='cat x | gre').delegate == (0, 'cat x | ', ['gre'])
 
 
-@pytest.mark.parametrize('before, word, quoted', [
-	# the glues tell a quoted command by D quoted, its first word too, whose prefix is empty (they took it for a word of a
-	# command typed as words)
-	('mssh h "./zzs', './zzs', True),
-	('mssh h "cat zz', 'cat zz', True),
-	("mssh h 'cat x | gre", 'cat x | gre', True),
-	('mssh h cat zz', 'zz', False),
-	('mssh h ./zzs', './zzs', False),
+@pytest.mark.parametrize('before, word, quoted, whole, delegate', [
+	# the glues tell a quoted command by D whole, its first word too, whose prefix is empty (they took it for a word of a
+	# command typed as words), and a word in a quote by D quoted: a quoted argument without whitespace, which mssh joins
+	# with the command's other words, is one of their words (the engine took it for a command of its own)
+	('mssh h "./zzs', './zzs', True, True, (0, '', ['./zzs'])),
+	('mssh h "cat zz', 'cat zz', True, True, (1, 'cat ', ['cat', 'zz'])),
+	("mssh h 'cat x | gre", 'cat x | gre', True, True, (0, 'cat x | ', ['gre'])),
+	('mssh h cat zz', 'zz', False, False, (1, '', ['cat', 'zz'])),
+	('mssh h ./zzs', './zzs', False, False, (0, '', ['./zzs'])),
+	('mssh h cat "zz', 'zz', True, False, (1, '', ['cat', 'zz'])),
+	("mssh h -- git checkout 'fea", 'fea', True, False, (2, '', ['git', 'checkout', 'fea'])),
+	# (holding whitespace it is a command of its own, as mssh runs it)
+	('mssh h cat "my f', 'my f', True, True, (1, 'my ', ['my', 'f'])),
 ])
-def test_a_quoted_command_s_delegation_says_so(before, word, quoted):
+def test_a_quoted_command_s_delegation_says_so(before, word, quoted, whole, delegate):
 	response = query(before, word=word)
-	assert response.delegate is not None
+	assert response.delegate == delegate
 	assert ('quoted' in response.directives) == quoted
+	assert ('whole' in response.directives) == whole
 
 
 @pytest.mark.parametrize('before, word, readline_word, expected', [
@@ -837,8 +843,8 @@ def test_query_command_end_to_end(tmp_path):
 	request = b'MSSHC1\0bash\x005.2\0nosort=1\0mssh gpu[01-16] "\0\0\0'
 	result = subprocess.run(ENGINE + ['query'], input=request, env=env, stdout=subprocess.PIPE, timeout=60)
 	assert result.returncode == 0
-	# (the delegation is a quoted command's: D quoted)
-	assert result.stdout.startswith(b'MSSHC1\nD nosort quoted\nC nvidia-smi\t')
+	# (the delegation is a quoted command's: D quoted whole)
+	assert result.stdout.startswith(b'MSSHC1\nD nosort quoted whole\nC nvidia-smi\t')
 	assert result.stdout.endswith(b'\nE\n\0')
 
 

@@ -334,18 +334,19 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 Found while confirming and reviewing 6.40's items (the user's words are in each entry).
 
-### Inside a quoted argument the engine completes a quoted command
+### Inside a quoted argument, names holding whitespace are not offered
 - Kind: known limitation
-- What the operator sees: in every shell, TAB inside a quoted argument of a remote command
-  (`mssh h cat 'my f<TAB>`) reads the quoted text as a whole quoted command: it completes `f` as an argument of
-  a command `my`, so nothing useful is offered there. Typing the whole command in quotes
-  (`mssh h 'cat my<TAB>`) completes.
-- Why: mssh runs each argument holding whitespace as a command of its own, so `mssh h cat 'my file'` cannot run
-  as meant whatever completion inserts, and a quoted argument without whitespace (`'a&b'`) reaches the remote
-  shell unquoted anyway. Completing there would need quoting for the remote shell inside this shell's quotes: a
-  lot of glue in four shells for a form mssh cannot run.
+- What the operator sees: in every shell, TAB inside a quoted argument of a remote command typed as words
+  (`mssh h cat 'zz<TAB>`) offers the names for the open quote, quoted for the remote shell (`'zz\&b'`), from the
+  command's own completion as for its other words, but no name holding whitespace. Once the quoted text holds
+  whitespace (`mssh h cat 'my f<TAB>`), TAB reads it as a whole quoted command: it completes `f` as an argument of a
+  command `my`. Typing the whole command in quotes (`mssh h 'cat my<TAB>`) completes such names.
+- Why: mssh runs each argument holding whitespace as a command of its own, so `mssh h cat 'my file'` cannot run as
+  meant whatever completion inserts; a quoted argument without whitespace mssh joins with the command's other words,
+  and the remote shell reads them again.
 - Revisit when: mssh passes a quoted argument to the remote shell as one quoted word.
-- Approved: 2026-11-02, the user chose "Known limitation (Recommended)".
+- Approved: 2026-11-02, the user chose "Known limitation (Recommended)"; updated 2026-11-03, "Update the entry
+  (Recommended)".
 
 ### zsh before 5.8: a Ctrl-C during a completion query can reach the query
 - Kind: deferred
@@ -449,13 +450,36 @@ each entry).
 - Revisit when: an operator types such quotes and misses the names.
 - Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
 
-### readline: a default-value expansion in a remote word is written broken
+### bash: a default-value expansion in a remote word is written broken
 - Kind: known limitation
-- What the operator sees: under readline, `mssh h cat ${VAR:-x}/zzf<TAB>` puts in a broken word (`${VAR:-x\\\}/zzf...`),
-  which mssh and the remote shell read wrong; 6.40 did the same.
-- Why: readline's word starts after the `:` (`COMP_WORDBREAKS`), so the glue sees `-x}/zzf` and writes that part as a
-  name.
+- What the operator sees: under readline and ble.sh, `mssh h cat ${VAR:-x}/zzf<TAB>` puts in a broken word
+  (`${VAR:-x\\\}/zzf...`, ble.sh `'${VAR:-x\}/zzf\&1'`), which mssh and the remote shell read wrong; 6.40 did the same.
+- Why: the word bash completes starts after the `:` (`COMP_WORDBREAKS`; ble.sh splits it there too), so the glue sees
+  `-x}/zzf` and writes that part as a name.
 - Revisit when: an operator types such expansions in a remote command.
+- Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
+
+### A name holding `;`, `|` or `(` in a quoted command cannot be continued
+- Kind: known limitation
+- What the operator sees: in a quoted command, a word holding the remote shell's `;`, `|` or `(` quoted for it
+  (`mssh h "ls zz\\;<TAB>`, as TAB itself writes the common start of `zz;1` and `zz;2`) gets nothing more. A single
+  name still completes from before the `;` (`mssh h "ls zz<TAB>`), and in a command typed as words such names complete.
+  Nothing wrong goes in.
+- Why: the engine finds the last part of a quoted command (after a `;`, `|`, `&&`, `(` ...) without reading the remote
+  shell's quoting, so it takes the quoted `;` for the end of a command; reading it would take a lexer of the remote
+  shell's syntax.
+- Revisit when: an operator works with such names in quoted commands.
+- Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
+
+### Whitespace in names is read as UTF-8
+- Kind: known limitation
+- What the operator sees: the glues leave out a name holding whitespace as mssh splits its words, and they read the
+  no-break spaces and the other non-ASCII whitespace by their UTF-8 bytes. In a Latin-1 locale, where mssh reads a lone
+  `\xa0` or `\x85` byte as whitespace, such a name may be offered, and mssh then runs its parts as commands of their own;
+  in GBK, where `\xc2\xa0` is a character of its own, a name holding it is left out. Neither locale is tested.
+- Why: the glues match bytes so that the rule holds whatever the C library calls whitespace; reading the shell's own
+  encoding would need its decoder in each glue, for locales seldom met.
+- Revisit when: an operator in such a locale hits it.
 - Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
 
 ### A directory completed in a quoted command closes the quote

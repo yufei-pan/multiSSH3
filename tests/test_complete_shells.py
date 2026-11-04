@@ -857,12 +857,12 @@ REMOTE_HOME = '/zzremote-home'
 
 
 def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=(), home_dirs=(), steps=(), executables=(),
-		bash_completion=False):
+		bash_completion=False, engine=ENGINE):
 	"""The line after TAB at the end of typed (then the keys of each of steps, the last one's line), and the words the remote
 	shell gets for it (the line read by this shell, its open quote closed, then mssh's command read by sh with HOME at
 	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash, ble, zsh; bash and ble.sh with
 	bash-completion loaded when bash_completion) in a directory holding files, dirs and executables, and HOME holding
-	zzhplain, home_files and home_dirs; extra runs after the glue."""
+	zzhplain, home_files and home_dirs; extra runs after the glue; engine: the glue's engine command."""
 	env, home = make_home(tmp_path, [])
 	build_index(env)
 	work = tmp_path / 'work'
@@ -879,13 +879,13 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 		(work / name).chmod(0o755)
 	(home / 'zzhplain').write_text('')
 	if shell == 'zsh':
-		session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'\n{}".format(work, extra))
+		session = zsh_session(home, env, glue_file(home, 'zsh', engine), extra="cd '{}'\n{}".format(work, extra))
 	elif shell == 'ble':
 		import test_complete_blesh as ble
 		pre = '. {} 2>/dev/null'.format(BASH_COMPLETION) if bash_completion else ''
-		session = blesh_session(home, env, ble.glue_file(home), pre=pre, extra="cd '{}'; {}".format(work, extra))
+		session = blesh_session(home, env, ble.glue_file(home, engine), pre=pre, extra="cd '{}'; {}".format(work, extra))
 	else:
-		session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=bash_completion, extra="cd '{}'; {}".format(work, extra))
+		session = bash_session(home, env, glue_file(home, 'bash', engine), bash_completion=bash_completion, extra="cd '{}'; {}".format(work, extra))
 	try:
 		if steps:
 			session.send(typed + '\t')
@@ -1276,6 +1276,86 @@ def test_a_local_file_name_holding_a_no_break_space_goes_in_a_quoted_command(tmp
 	# (mssh hands a quoted command on whole, and the remote shell splits on spaces, tabs and newlines alone)
 	line, got = review_line(tmp_path, shell, 'mssh h "cat zz', files=['zz\xa0a'])
 	assert got == ['cat', 'zz\xa0a'], line
+
+
+# what 6.40's engine answers (no D quoted or whole) for mssh h "cat zza (and 'cat zza), and for mssh h "./zzs
+ENGINE_640 = "#!/bin/sh\ncat >/dev/null\nprintf 'MSSHC1\\nX {}\\nE\\n\\0'\n"
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, record, files, executables, remote', [
+	('mssh h "cat zza', '1\\tcat \\tcat\\tzza', ['zzamp&b'], [], ['cat', 'zzamp&b']),
+	("mssh h 'cat zza", '1\\tcat \\tcat\\tzza', ['zzamp&b'], [], ['cat', 'zzamp&b']),
+	('mssh h "./zzs', '0\\t\\t./zzs', [], ['zzscript&x'], ['./zzscript&x']),
+])
+def test_a_quoted_command_completes_with_an_engine_before_6_41(tmp_path, shell, typed, record, files, executables, remote):
+	# a 6.41 glue told a quoted command by the engine's D whole alone: with an older engine on PATH (a system install
+	# beside a newer one, sudo -i, a downgrade) readline wrote "zzamp\\\&b" over the typed cat, and the remote shell ran
+	# zzamp\ and b; zsh quoted the name twice
+	engine = tmp_path / 'engine-6.40'
+	engine.write_text(ENGINE_640.format(record))
+	engine.chmod(0o755)
+	line, got = review_line(tmp_path, shell, typed, files=files, executables=executables, engine=[str(engine)])
+	assert got == remote, line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('quote', ['"', "'"])
+def test_a_quoted_argument_s_names_holding_whitespace_are_left_out(tmp_path, shell, quote):
+	# mssh joins a quoted argument with the command's other words, and the remote shell reads them again, unless one holds
+	# whitespace: cat "zz\\ a" made mssh run cat and zz\ a as commands of their own
+	line, got = review_line(tmp_path, shell, 'mssh h cat {}zz'.format(quote), files=['zz a', 'zz\xa0b', 'zz&c'])
+	assert got == ['cat', 'zz&c'], line
+	if shell != 'zsh':
+		# (zsh leaves the quote open)
+		assert line.endswith(quote + ' '), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_quoted_argument_completes_as_the_command_s_word(tmp_path, shell):
+	# the engine took a quoted argument for a command of its own (zz, as a command name), not the command's word
+	extra = ("_zzw() { compadd zzalpha zzbeta }\ncompdef _zzw zzsvc" if shell == 'zsh'
+		else "complete -W 'zzalpha zzbeta' zzsvc")
+	line, got = review_line(tmp_path, shell, 'mssh h zzsvc "zzal', extra=extra)
+	assert got == ['zzsvc', 'zzalpha'], line
+
+
+def test_fish_a_quoted_argument_s_names_holding_whitespace_are_left_out(setup, tmp_path):
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in ('zz a', 'zz\xa0b', 'zz&c'):
+		(work / name).write_text('')
+	found = fish_complete(env, glue_file(home, 'fish'), 'mssh h cat "zz', cwd=work)
+	assert [remote_shell_args(text) for text, _ in found] == [['zz&c']], found
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_kept_part_of_a_quoted_command_may_hold_a_no_break_space(tmp_path, monkeypatch, shell):
+	# in a quoted command, which mssh hands on whole, only a newline leaves a name out: the kept part zz<no-break space>dir/$ZZX/
+	# was checked as in a command typed as words, and nothing came
+	if shell == 'ble' and bash_version() < (4, 3):
+		pytest.skip('ble.sh on bash 4.2 reads the typed no-break space as another character')
+	monkeypatch.setenv('ZZX', 'x')
+	line, got = review_line(tmp_path, shell, 'mssh h "cat zz\xa0dir/$ZZX/zz', files=['zz\xa0dir/x/zzplain'], extra='export ZZX=x')
+	assert got == ['cat', 'zz\xa0dir/x/zzplain'] and line.endswith('" '), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, files', [
+	('mssh h rm $ZZNONE', []),
+	('mssh h rm $ZZNONE', ['zzonly']),
+	('mssh h rm ${ZZNONE}', []),
+])
+@pytest.mark.parametrize('bash_completion', [False, True])
+def test_a_word_that_is_only_an_unset_variable_gets_no_names(tmp_path, monkeypatch, shell, typed, files, bash_completion):
+	# ble.sh's own default globbed the empty value: rm $ZZNONE became rm \* in an empty directory (every host ran rm *), and
+	# rm zzonly beside one file
+	if bash_completion and not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	monkeypatch.delenv('ZZNONE', raising=False)
+	line, got = review_line(tmp_path, shell, typed, files=files, bash_completion=bash_completion)
+	assert line == typed
 
 
 def test_fish_a_local_file_name_holding_whitespace_as_mssh_splits_words_is_left_out(setup, tmp_path):
@@ -1795,13 +1875,13 @@ def test_bash_the_delegates_file_names_are_quoted_and_marked_beside_mssh_s_own_w
 def filenamed(tmp_path, reply, given, options, prefix='', quote=''):
 	"""What _mssh_complete_filenames makes of the delegate's words (given) beside the engine's (reply) under the compopt
 	options, in a directory holding the directory zzdir, with HOME there: the delegate's words, each in brackets. prefix
-	and quote: a quoted command's (typed as it is), and the quote it is in (the engine's D quoted with a quote)."""
+	and quote: a quoted command's (typed as it is), and the quote it is in (the engine's D quoted whole with a quote)."""
 	import shlex
 	work = tmp_path / 'work'
 	work.mkdir()
 	(work / 'zzdir').mkdir()
 	script = ('. "$1"; HOME=$PWD; _mssh_complete_reply=({}); _mssh_complete_delegated=({}); _mssh_complete_xfields=(1 {p} zzsvc x); '
-		'_mssh_complete_qcommand={q}; _mssh_complete_head_name={p}; _mssh_complete_head_text={p}; _mssh_complete_quote={}; '
+		'_mssh_complete_qcommand={q}; _mssh_complete_inquote={q}; _mssh_complete_head_name={p}; _mssh_complete_head_text={p}; _mssh_complete_quote={}; '
 		'_mssh_complete_filenames {}; printf "[%s]" "${{_mssh_complete_delegated[@]}}"'
 		).format(' '.join(map(shlex.quote, reply)), ' '.join(map(shlex.quote, given)), shlex.quote(quote), shlex.quote(' ' + options + ' '),
 		p=shlex.quote(prefix), q=int(bool(quote)))
