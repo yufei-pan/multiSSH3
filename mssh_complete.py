@@ -785,10 +785,12 @@ def parse_context(before, after, spec):
 	skip = {current}
 	command_words = command_word_index = command_prefix = whole = None
 	if slot == SLOT_COMMAND:
-		# the unquoted command words the current word continues; argparse drops a "--" between them
+		# the command words without whitespace the current word continues; argparse drops a "--" between them
 		def joins(index):
 			role = roles[index][0]
-			return role == ROLE_SEPARATOR or (role == ROLE_COMMAND and not words[index].quoted)
+			# (mssh joins every command word without whitespace, quoted or not: grep 'a' "zz is one command, and zz a would be
+			# two words of it)
+			return role == ROLE_SEPARATOR or (role == ROLE_COMMAND and _joinable(words[index].text))
 		first = current
 		while first > 0 and joins(first - 1):
 			first -= 1
@@ -5804,6 +5806,11 @@ _mssh_complete_delegate() {
 			_mssh_complete_dropped=1
 			continue
 		fi
+		# a function or an alias of this shell (ble.sh's, the glue's own) is no command on the remote host: such a name is left
+		# out, unless a file here or a command on PATH has it (compgen -c lists them: mssh h bed got bled, sudo amb ble/amb)
+		if declare -F -- "$_mssh_complete_item" >/dev/null 2>&1 || alias -- "$_mssh_complete_item" >/dev/null 2>&1; then
+			[[ -e $_mssh_complete_item ]] || type -P -- "$_mssh_complete_item" >/dev/null 2>&1 || continue
+		fi
 		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}
@@ -6336,7 +6343,7 @@ _mssh_complete_tab() {
 	if (( _mssh_complete_delegating )) && (( ${#_mssh_complete_xfields[@]} >= 3 )); then
 		# ble.sh's second try (above): the remote word cut as ble.sh cut the typed word, to nothing or its first character (a
 		# backslash with the one it quotes), and a first word of the remote command to that character always (an empty one would
-		# bring every local command and function, ble.sh's own among them). Nothing for a remote word holding a quote of its own,
+		# bring every command here). Nothing for a remote word holding a quote of its own,
 		# an expansion, a leading ~ or a directory, which the cut would drop: ble.sh matches the names against its value of the
 		# typed word, in which an unset "rm $ZZNONE is "rm , and every name matched (rm ${ZZNONE}zzo went in)
 		if (( _mssh_complete_asked_again )); then

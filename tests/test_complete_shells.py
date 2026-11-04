@@ -1357,6 +1357,64 @@ def test_ble_letters_out_of_order_in_a_quoted_word_complete_by_the_quote_s_rules
 		assert got == remote, line
 
 
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, bash_completion', [
+	('mssh h "bed', False),
+	('mssh h -- "bed', False),
+	('mssh h "cat x; bed', False),
+	('mssh h "_mcp', False),
+	('mssh h bed', False),
+	('mssh h ble-app', False),
+	('mssh h _mssh_complete_t', False),
+	('mssh h sudo "amb', True),
+	('mssh h nohup "amb', True),
+	('mssh h sudo amb', True),
+])
+def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, bash_completion):
+	# a function of this shell is not on the remote host: ble.sh's came in as command names (mssh h "bed got "bled, the start
+	# of ble.sh's functions; mssh h ble-app got ble-append-line; sudo "amb got sudo "ble/"amb), and the glue's own (_mssh_complete)
+	if bash_completion and not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, shell, typed, bash_completion=bash_completion)
+	last = line.split()[-1].replace('"', '')
+	assert last == typed.split()[-1].replace('"', '') or not last.startswith(('ble', '_mssh')), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, extra, executables, offered', [
+	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False),
+	('mssh h zzali', 'alias zzalias=true', [], False),
+	('mssh h zzscr', 'PATH=$PATH:.', ['zzscript'], True),
+])
+def test_bash_local_functions_and_aliases_are_left_out_of_remote_command_names(tmp_path, shell, typed, extra, executables, offered):
+	# a command on PATH still comes
+	line, got = review_line(tmp_path, shell, typed, extra=extra, executables=executables)
+	assert (line != typed) == offered, line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, files, written', [
+	("mssh h grep 'a' \"zz", ['zz a'], None),
+	('mssh h grep "a" "zz', ['zz a'], None),
+	("mssh h grep 'a' \"zz", ['zz a', 'zzb'], "mssh h grep 'a' \"zzb\" "),
+])
+def test_a_quoted_argument_after_a_quoted_word_leaves_whitespace_names_out(tmp_path, shell, typed, files, written):
+	# mssh joins every word without whitespace, quoted or not: the engine took a quoted argument after a quoted word for a
+	# quoted command, and grep 'a' "zz got "zz\\ a", which mssh ran apart from grep
+	line, got = review_line(tmp_path, shell, typed, files=files)
+	assert line == (written or typed)
+
+
+def test_fish_a_quoted_argument_after_a_quoted_word_leaves_whitespace_names_out(setup, tmp_path):
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in ('zz a', 'zzb'):
+		(work / name).write_text('')
+	found = fish_complete(env, glue_file(home, 'fish'), "mssh h grep 'a' \"zz", cwd=work)
+	assert [remote_shell_args(text) for text, _ in found] == [['zzb']], found
+
+
 @pytest.mark.parametrize('typed, remote', [
 	('mssh h zzsvc "zq', None),
 	('mssh h zzsvc "zr', ['zzsvc', 'zr&f']),
