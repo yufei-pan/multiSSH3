@@ -1326,6 +1326,8 @@ def test_a_quoted_argument_completes_as_the_command_s_word(tmp_path, shell):
 	('mssh h cat "zz', ['zz\xa0b'], ''),
 	('mssh h zzsvc "zq', [], 'complete -W \'alpha "zq beta"\' zzsvc'),
 	('mssh h -- "zz', [], ''),
+	# (ble.sh's second try matches against its value of the word, "rm  for an unset variable: every name would match)
+	('mssh h "rm $ZZNONE', ['zzo'], ''),
 ])
 def test_a_quoted_argument_with_nothing_to_offer_gets_nothing(tmp_path, shell, typed, files, extra):
 	# ble.sh asks again for an empty word when the first answer is nothing, and the glue took the quote of the word typed
@@ -1333,6 +1335,26 @@ def test_a_quoted_argument_with_nothing_to_offer_gets_nothing(tmp_path, shell, t
 	# local functions came (-- "ble/"zz)
 	line, got = review_line(tmp_path, shell, typed, files=files, extra=extra)
 	assert line == typed
+
+
+@pytest.mark.parametrize('typed, files, extra, written, remote', [
+	('mssh h cat "zzmp', ['zzamp&b'], '', 'mssh h cat "zzamp\\\\&b" ', ['cat', 'zzamp&b']),
+	("mssh h cat 'zzmp", ['zzamp&b'], '', "mssh h cat 'zzamp\\&b' ", ['cat', 'zzamp&b']),
+	('mssh h cat "zzb', ['zz ab', 'zzaxb'], '', 'mssh h cat "zzaxb" ', ['cat', 'zzaxb']),
+	('mssh h "cat zzmp', ['zzamp&b'], '', 'mssh h "cat zzamp\\\\&b" ', ['cat', 'zzamp&b']),
+	('mssh h "cat zzb', ['zz ab'], '', 'mssh h "cat zz\\\\ ab" ', ['cat', 'zz ab']),
+	('mssh h -- "zzfn', [], 'zzalphafn() { :; }', 'mssh h -- "zzalphafn" ', ['--', 'zzalphafn']),
+	('mssh -f "zzmp', ['zzamp&b'], '', 'mssh -f "zzamp&b" ', None),
+])
+def test_ble_letters_out_of_order_in_a_quoted_word_complete_by_the_quote_s_rules(tmp_path, typed, files, extra, written, remote):
+	# ble.sh asks again, for the word's start on a line without its quote, when the word typed got nothing (zzmp finds
+	# zzamp&b): 6.41 answered nothing in a quote. The glue answers for the line as typed, the remote word cut as ble.sh cut
+	# it: a quoted argument's names holding whitespace left out, a quoted command's kept, mssh's own -f value as the first
+	# ask has it
+	line, got = review_line(tmp_path, 'ble', typed, files=files, extra=extra)
+	assert line == written
+	if remote is not None:
+		assert got == remote, line
 
 
 @pytest.mark.parametrize('typed, remote', [
