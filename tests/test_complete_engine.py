@@ -183,6 +183,14 @@ def test_a_quoted_argument_gets_no_whole_command_from_history(before, word, offe
 	("mssh h -- git checkout 'fea", 'fea', True, False, (2, '', ['git', 'checkout', 'fea'])),
 	# (holding whitespace it is a command of its own, as mssh runs it)
 	('mssh h cat "my f', 'my f', True, True, (1, 'my ', ['my', 'f'])),
+	# mssh joins every command word without whitespace, quoted or not: a quoted argument after another quoted word is one of
+	# its command's words (grep 'a' "zz took zz a for a quoted command's name, and mssh ran grep, a and zz\ a apart)
+	("mssh h grep 'a' \"zz", 'zz', True, False, (2, '', ['grep', 'a', 'zz'])),
+	('mssh h grep "a" "zz', 'zz', True, False, (2, '', ['grep', 'a', 'zz'])),
+	('mssh h "cat" "zz', 'zz', True, False, (1, '', ['cat', 'zz'])),
+	# (after a word holding whitespace, or an empty one, mssh runs each word as a command of its own)
+	("mssh h grep 'a b' \"zz", 'zz', True, True, (0, '', ['zz'])),
+	("mssh h cat '' \"zz", 'zz', True, True, (0, '', ['zz'])),
 ])
 def test_a_quoted_command_s_delegation_says_so(before, word, quoted, whole, delegate):
 	response = query(before, word=word)

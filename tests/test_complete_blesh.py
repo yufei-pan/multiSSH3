@@ -152,8 +152,10 @@ def history_of(*commands):
 	# a ~ typed stays as typed (ble.sh expands it here before the glue sees it), the history's path completes
 	('mssh h cat ~/zzn', ['cat ~/zznotes.txt'], ['mssh', 'h', 'cat', '~/zznotes.txt']),
 	# a backslash or a quote in a word before the current one no longer makes the current one a command name (6.39 read
-	# ble.sh's requoted 'zz a' as a quoted word and completed the command alias)
-	('mssh h fakecmd zz\\ a al', [], ['mssh', 'h', 'fakecmd', 'zz a', 'alpha']),
+	# ble.sh's requoted 'zz&a' as a quoted word and completed the command alias). mssh joins every word without whitespace,
+	# quoted or not; after one holding whitespace (zz\\ a) it runs each word as a command of its own
+	('mssh h fakecmd zz\\&a al', [], ['mssh', 'h', 'fakecmd', 'zz&a', 'alpha']),
+	("mssh h fakecmd 'zz' al", [], ['mssh', 'h', 'fakecmd', 'zz', 'alpha']),
 ])
 def test_blesh_tab_reads_the_line_as_typed(tmp_path, typed, history, expected):
 	assert words(blesh_line(tmp_path, typed, history=history_of(*history))) == expected

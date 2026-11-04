@@ -120,7 +120,8 @@ def test_a_command_after_double_dash_and_hosts_starts_at_its_first_word():
 	('mssh h ls -- ', '', ['ls', ''], 1),
 	('mssh h -- ls -- -l', '', ['ls', '--', '-l'], 2),
 	('mssh h -- l', ' -la', ['l'], 0),
-	("mssh h 'uptime' -- l", '', ['l'], 0),
+	# (a quoted word without whitespace is one of them: mssh h 'uptime' -- l runs "uptime l")
+	("mssh h 'uptime' -- l", '', ['uptime', 'l'], 1),
 ])
 def test_double_dash_between_command_words_does_not_split_the_command(before, after, words, index):
 	context = mc.parse_context(before, after, SPEC)

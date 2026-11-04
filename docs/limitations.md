@@ -481,19 +481,6 @@ each entry).
 - Revisit when: an operator in such a locale hits it.
 - Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
 
-### ble.sh: letters typed out of order in a quoted word find nothing
-- Kind: known limitation
-- What the operator sees: under ble.sh, a word in a quote of this shell (a quoted argument such as
-  `mssh h cat "zzmp<TAB>`, a quoted command's word, or a quoted value of mssh's own options such as `mssh -f "zz<TAB>`)
-  completes only names that begin with what was typed. ble.sh's second try, which matches the typed letters in any
-  order (`zzmp` finding `zzamp&b`), offers nothing there. Outside quotes it still works (`mssh h cat zzmp<TAB>`).
-- Why: that second try asks with an empty word and inserts its match outside the quote the word opened, so it put in
-  names mssh would split and ble.sh's own function names; the glue answers it with nothing for a word that opens a
-  quote. Nothing wrong goes on the line.
-- Revisit when: the glue answers that second try with the quoted-argument rules (names holding whitespace left out,
-  written for the open quote).
-- Approved: 2026-11-03, the user chose "Known limitation (Recommended)".
-
 ### A directory completed in a quoted command or argument closes the quote
 - Kind: deferred
 - What the operator sees: in bash, a directory completed in a quoted command closes the quote: `mssh h "ls zzd<TAB>` gives

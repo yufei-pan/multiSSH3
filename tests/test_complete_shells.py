@@ -1326,6 +1326,8 @@ def test_a_quoted_argument_completes_as_the_command_s_word(tmp_path, shell):
 	('mssh h cat "zz', ['zz\xa0b'], ''),
 	('mssh h zzsvc "zq', [], 'complete -W \'alpha "zq beta"\' zzsvc'),
 	('mssh h -- "zz', [], ''),
+	# (ble.sh's second try matches against its value of the word, "rm  for an unset variable: every name would match)
+	('mssh h "rm $ZZNONE', ['zzo'], ''),
 ])
 def test_a_quoted_argument_with_nothing_to_offer_gets_nothing(tmp_path, shell, typed, files, extra):
 	# ble.sh asks again for an empty word when the first answer is nothing, and the glue took the quote of the word typed
@@ -1333,6 +1335,135 @@ def test_a_quoted_argument_with_nothing_to_offer_gets_nothing(tmp_path, shell, t
 	# local functions came (-- "ble/"zz)
 	line, got = review_line(tmp_path, shell, typed, files=files, extra=extra)
 	assert line == typed
+
+
+@pytest.mark.parametrize('typed, files, extra, written, remote', [
+	('mssh h cat "zzmp', ['zzamp&b'], '', 'mssh h cat "zzamp\\\\&b" ', ['cat', 'zzamp&b']),
+	("mssh h cat 'zzmp", ['zzamp&b'], '', "mssh h cat 'zzamp\\&b' ", ['cat', 'zzamp&b']),
+	('mssh h cat "zzb', ['zz ab', 'zzaxb'], '', 'mssh h cat "zzaxb" ', ['cat', 'zzaxb']),
+	('mssh h "cat zzmp', ['zzamp&b'], '', 'mssh h "cat zzamp\\\\&b" ', ['cat', 'zzamp&b']),
+	('mssh h "cat zzb', ['zz ab'], '', 'mssh h "cat zz\\\\ ab" ', ['cat', 'zz ab']),
+	('mssh h -- "zzfn', ['zzalphafn'], 'chmod +x zzalphafn; PATH=$PATH:.', 'mssh h -- "zzalphafn" ', ['--', 'zzalphafn']),
+	('mssh -f "zzmp', ['zzamp&b'], '', 'mssh -f "zzamp&b" ', None),
+])
+def test_ble_letters_out_of_order_in_a_quoted_word_complete_by_the_quote_s_rules(tmp_path, typed, files, extra, written, remote):
+	# ble.sh asks again, for the word's start on a line without its quote, when the word typed got nothing (zzmp finds
+	# zzamp&b): 6.41 answered nothing in a quote. The glue answers for the line as typed, the remote word cut as ble.sh cut
+	# it: a quoted argument's names holding whitespace left out, a quoted command's kept, mssh's own -f value as the first
+	# ask has it
+	line, got = review_line(tmp_path, 'ble', typed, files=files, extra=extra)
+	assert line == written
+	if remote is not None:
+		assert got == remote, line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, bash_completion', [
+	('mssh h "bed', False),
+	('mssh h -- "bed', False),
+	('mssh h "cat x; bed', False),
+	('mssh h "_mcp', False),
+	('mssh h bed', False),
+	('mssh h ble-app', False),
+	('mssh h _mssh_complete_t', False),
+	('mssh h sudo "amb', True),
+	('mssh h nohup "amb', True),
+	('mssh h sudo amb', True),
+])
+def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, bash_completion):
+	# a function of this shell is not on the remote host: ble.sh's came in as command names (mssh h "bed got "bled, the start
+	# of ble.sh's functions; mssh h ble-app got ble-append-line; sudo "amb got sudo "ble/"amb), and the glue's own (_mssh_complete)
+	if bash_completion and not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, shell, typed, bash_completion=bash_completion)
+	last = line.split()[-1].replace('"', '')
+	assert last == typed.split()[-1].replace('"', '') or not last.startswith(('ble', '_mssh')), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, extra, executables, bash_completion, offered', [
+	# a function of ble.sh's or the glue's own, no other: a user's function, one of Environment Modules / Lmod (module, ml) or
+	# nvm exists on the remote host too (6.41 offered it, the first fix of this left it out), a name that only starts like
+	# ble.sh's (blend) is the user's
+	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False, True),
+	('mssh h modul', 'module() { :; }', [], False, True),
+	('mssh h sudo modul', 'module() { :; }', [], True, True),
+	('mssh h blen', 'blend() { :; }', [], False, True),
+	('mssh h zzali', 'alias zzalias=true', [], False, True),
+	# (an argument word from a command's own completion that is also a function's name)
+	('mssh h zzn u', 'up() { :; }; _zzn() { COMPREPLY=(up); }; complete -F _zzn zzn', [], False, True),
+	('mssh h zzn --f', '_zzn() { COMPREPLY=(--format=); compopt -o nospace; }; complete -F _zzn zzn', [], False, True),
+	('mssh h zzscr', 'PATH=$PATH:.', ['zzscript'], False, True),
+	# (a name of the glue's own or ble.sh's that a file here or a command on PATH has stays)
+	('mssh h ble-zzs', 'PATH=$PATH:.; ble-zzscript() { :; }', ['ble-zzscript'], False, True),
+])
+def test_bash_offers_this_shell_s_own_functions_and_aliases_as_remote_command_names(tmp_path, shell, typed, extra, executables, bash_completion, offered):
+	# the remote shell has its own functions and aliases under these names often (module, ml, nvm): only the names of ble.sh's
+	# and the glue's functions are left out (test_this_shell_s_functions_are_no_remote_commands)
+	if bash_completion and not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, shell, typed, extra=extra, executables=executables, bash_completion=bash_completion)
+	assert (line != typed) == offered, line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, extra, executables, offered', [
+	# a function whose name starts with an underscore is a completion's or a helper's internal one, no remote command;
+	# a script of that name on PATH is
+	('mssh h _zzh', '_zzhelper() { :; }', [], False),
+	('mssh h _zzp', 'PATH=$PATH:.', ['_zzpathcmd'], True),
+	('mssh h _zzp', 'PATH=$PATH:.; _zzpathcmd() { :; }', ['_zzpathcmd'], True),
+	('mssh h zz_h', 'zz_helper() { :; }', [], True),
+])
+def test_bash_functions_with_a_leading_underscore_are_no_remote_command_names(tmp_path, shell, typed, extra, executables, offered):
+	line, got = review_line(tmp_path, shell, typed, extra=extra, executables=executables)
+	assert (line != typed) == offered, line
+
+
+def test_ble_second_try_offers_no_underscore_function_of_bash_completion(tmp_path):
+	# ble.sh asks again for an empty word and matches the typed letters in any order: amb found _comp__reassemble_words, dqt
+	# found dequote (bash-completion's helpers without an underscore: quote, dequote and quote_readline). The name inserted is
+	# none of the functions the filter drops; a real command with a, m, b in order and an underscore is a legitimate name
+	# (and nothing inserted is no failure: what a PATH holds differs between images)
+	if not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	for number, typed in enumerate(('mssh h sudo "amb', 'mssh h sudo "dqt', 'mssh h sudo "qte')):
+		(tmp_path / str(number)).mkdir()
+		line, got = review_line(tmp_path / str(number), 'ble', typed, bash_completion=True)
+		name = got[-1]
+		assert not name.startswith(('_comp', '_filedir', '_ble', '_mssh_complete', 'ble-', 'ble/')), line
+		assert name not in ('quote', 'dequote', 'quote_readline', 'ble', 'bleopt', 'blehook'), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_bash_completion_s_helpers_without_an_underscore_are_no_remote_command_names(tmp_path, shell):
+	if not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, shell, 'mssh h quote_r', bash_completion=True)
+	assert 'quote_readline' not in line, line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, files, written', [
+	("mssh h grep 'a' \"zz", ['zz a'], None),
+	('mssh h grep "a" "zz', ['zz a'], None),
+	("mssh h grep 'a' \"zz", ['zz a', 'zzb'], "mssh h grep 'a' \"zzb\" "),
+])
+def test_a_quoted_argument_after_a_quoted_word_leaves_whitespace_names_out(tmp_path, shell, typed, files, written):
+	# mssh joins every word without whitespace, quoted or not: the engine took a quoted argument after a quoted word for a
+	# quoted command, and grep 'a' "zz got "zz\\ a", which mssh ran apart from grep
+	line, got = review_line(tmp_path, shell, typed, files=files)
+	assert line == (written or typed)
+
+
+def test_fish_a_quoted_argument_after_a_quoted_word_leaves_whitespace_names_out(setup, tmp_path):
+	env, home = setup
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in ('zz a', 'zzb'):
+		(work / name).write_text('')
+	found = fish_complete(env, glue_file(home, 'fish'), "mssh h grep 'a' \"zz", cwd=work)
+	assert [remote_shell_args(text) for text, _ in found] == [['zzb']], found
 
 
 @pytest.mark.parametrize('typed, remote', [
