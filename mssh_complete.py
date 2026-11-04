@@ -6229,7 +6229,7 @@ _mssh_complete_in_quote() {
 
 _mssh_complete_tab() {
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
-	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags _mssh_complete_alrm _mssh_complete_got
+	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0 _mssh_complete_trim=
 	local _mssh_complete_locale _mssh_complete_dropped=0 _mssh_complete_before _mssh_complete_after _mssh_complete_icase=0
 	local _mssh_complete_subword=$2 _mssh_complete_typed_line=0 _mssh_complete_plain=$2 _mssh_complete_value
@@ -6293,7 +6293,6 @@ _mssh_complete_tab() {
 	if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
 		_mssh_complete_flags="nosort=1 ${_mssh_complete_flags#nosort=0 }"
 	fi
-	_mssh_complete_alrm_off
 	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
 	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
 	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
@@ -6304,9 +6303,7 @@ _mssh_complete_tab() {
 			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
 			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
 		} | _mssh_complete_engine query 2>/dev/null || :
-	) && _mssh_complete_got=0 || _mssh_complete_got=$?
-	_mssh_complete_alrm_on
-	(( _mssh_complete_got == 0 )) || return 0
+	) || return 0
 	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || return 0
 	while IFS= read -r _mssh_complete_line; do
 		case ${_mssh_complete_line:0:1} in
@@ -6601,10 +6598,11 @@ _mssh_complete_apply() {
 _mssh_complete_alrm_off() {
 	# for a timed read: bash 4.2 and 4.3 restore SIGALRM's handler before they cancel the read's timer, so the timer going
 	# off between the two (the byte came as it ran out) ended the shell with "Alarm clock"; ignored, it ends nothing (the
-	# read sets its own handler). Not with TMOUT, nor in later bash: readline's and bash's own handler for it would be
-	# replaced by what trap puts back. The caller's _mssh_complete_alrm holds the operator's trap, or - when none is ignored
+	# read sets its own handler). Not in later bash, which has no such window: there readline's and bash's own handler
+	# for it (TMOUT) would be replaced by what trap puts back. The caller's _mssh_complete_alrm holds the operator's trap,
+	# or - when none is ignored
 	_mssh_complete_alrm=-
-	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4 )) && [[ -z ${TMOUT-} || ${TMOUT-} == 0 ]]; then
+	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4 )); then
 		_mssh_complete_alrm=$(trap -p ALRM)
 		trap '' ALRM
 	fi
@@ -6653,11 +6651,12 @@ _mssh_complete_start() {
 			_mssh_complete_line+=$_mssh_complete_rest
 		fi
 		(( _mssh_complete_got > 128 )) || IFS= read -r -d '' _mssh_complete_rest || :
-	} < <("$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
+	} < <(trap - ALRM; "$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
+	# first: a Ctrl-C after the INT trap is back would end this function with SIGALRM still ignored
+	_mssh_complete_alrm_on
 	if [[ -z ${BLE_VERSION-} ]]; then
 		if [[ -n $_mssh_complete_trapped ]]; then eval "$_mssh_complete_trapped"; else trap - INT; fi
 	fi
-	_mssh_complete_alrm_on
 	# eady: bash 4.2 to 4.4 dropped the r of ready (the loop stops at the first byte it reads: only that one)
 	if [[ $_mssh_complete_line == ready || $_mssh_complete_line == eady ]]; then
 		# it had the terminal: as cancelled unless it says otherwise
