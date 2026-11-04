@@ -350,7 +350,8 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -W "\'zz a\' zzc" zzsvc', ['zz a', 'zzc']),
 	('complete -d zzsvc', ['zzdir', 'zzdirb']),
 	('complete -A directory zzsvc', ['zzdir', 'zzdirb']),
-	('zzfn() { :; }; zzfn2() { :; }; complete -A function zzsvc', ['zzfn', 'zzfn2']),
+	# (this shell's functions are not on the remote host: left out)
+	('zzfn() { :; }; zzfn2() { :; }; complete -A function zzsvc', []),
 	('complete -G "zzd*" zzsvc', ['zzdir', 'zzdirb']),
 	# -X, -P and -S go to compgen with the rest, which applies them to its words, but not to a function's or a command's
 	('complete -W "zza.c zzb.h zzc.c" -X "*.c" zzsvc', ['zzb.h']),
