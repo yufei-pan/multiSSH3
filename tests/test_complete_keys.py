@@ -799,7 +799,7 @@ def split_ready_engine(home, command):
 
 
 def test_editor_ready_cut_by_the_wait_still_counts(home):
-	# bash 4.2 drops what a read that timed out had read, later ones keep it but the next read wrote over it:
+	# bash 4.2 to 4.4 drop what a read that timed out had read, 5.0 and later keep it but the next read wrote over it:
 	# either way the answer was lost, and the line fell back to "mssh " with what was typed after it
 	env, home = home
 	session = editor_session(env, home, command=split_ready_engine(home, 'edit'))
