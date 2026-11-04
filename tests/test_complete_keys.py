@@ -799,7 +799,7 @@ def split_ready_engine(home, command):
 
 
 def test_editor_ready_cut_by_the_wait_still_counts(home):
-	# bash 4.2 drops what a read that timed out had read, later ones keep it but the next read wrote over it:
+	# bash 4.2 to 4.4 drop what a read that timed out had read, 5.0 and later keep it but the next read wrote over it:
 	# either way the answer was lost, and the line fell back to "mssh " with what was typed after it
 	env, home = home
 	session = editor_session(env, home, command=split_ready_engine(home, 'edit'))
@@ -820,6 +820,132 @@ def test_picker_ready_cut_by_the_wait_still_counts(home):
 		session.send('\x12')
 		time.sleep(1)
 		assert printed(session, '') == 'mssh split-ok'
+	finally:
+		session.close()
+
+
+READY_SWEEP = r'''
+. "$1" 2>/dev/null
+engine() { sleep "$delay"; printf 'ready\n'; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
+lost=0
+for ((step = 0; step < 250; step++)); do
+	delay=$(printf '0.%06d' $((99000 + step * 4)))
+	_mssh_complete_start engine
+	[[ $_mssh_complete_status == 0 && $_mssh_complete_resp == $'MSSHC1\nL 4\tmssh\nE' ]] || lost=$((lost + 1))
+done
+echo "lost=$lost"
+'''
+
+def run_glue_script(home, script):
+	'''Run script in a bash that has the glue (its path is $1), as (exit status, stdout, stderr).'''
+	env, home = home
+	glue = glue_file(home, 'bash')
+	result = subprocess.run([require_shell('bash'), '-c', script, 'bash', str(glue)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+	return result.returncode, result.stdout.decode().strip(), result.stderr.decode()
+
+
+def test_ready_arriving_as_the_wait_ends_still_counts(home):
+	# the shell waits for "ready" in reads of 0.1 s; a byte that comes as one ends is read all the same (bash 5
+	# says the read timed out, and the next read wrote over the byte: the line was "eady", the answer dropped;
+	# bash 4.2 to 4.4 dropped the byte, and 4.2 and 4.3 could be killed by the timer's SIGALRM, rc 142).
+	# The engine says ready at delays around the read time, 4 microseconds apart: some meet the end of a wait
+	assert run_glue_script(home, READY_SWEEP) == (0, 'lost=0', '')
+
+
+def test_ready_missing_its_first_byte_still_counts(home):
+	# what bash 4.2 to 4.4 leave when a read times out as the byte comes: the loop read the second byte
+	script = r'''
+engine() { printf 'eady\nMSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+_mssh_complete_start engine
+printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
+
+
+def test_ready_written_as_the_whole_wait_ends_is_taken(home):
+	# every read of the wait times out (the stub: as when the engine's byte meets the end of each) but the engine has
+	# written: the shell looks once more before it goes on without it, as the engine would otherwise take the terminal
+	# with nobody reading
+	script = r'''
+read() { if [[ $1 == -r && $2 == -t && $3 == 0.1 ]]; then sleep 0.1; return 142; fi; builtin read "$@"; }
+engine() { printf 'ready\nMSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+MSSH_COMPLETE_START_TIMEOUT=0.3
+_mssh_complete_start engine
+printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
+
+
+def test_a_stray_alarm_while_the_glue_waits_ends_nothing(home):
+	# bash 4.2 and 4.3 ended the shell when a read's timer went off as the read ended ("Alarm clock"): SIGALRM is ignored
+	# during the wait (here sent while it waits without a timer: the shell used to be gone). Not in 4.4 and later, which
+	# leave it to readline and bash (TMOUT)
+	if bash_version(home[0]) >= 44:
+		pytest.skip('bash 4.4 and later do not end the shell, and the glue leaves SIGALRM to them')
+	script = r'''
+engine() { printf 'ready\n'; sleep 0.2; kill -ALRM $$; sleep 0.1; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+_mssh_complete_start engine
+printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
+
+
+def test_the_operators_alarm_trap_is_back_after_the_wait(home):
+	script = r'''
+engine() { printf 'ready\nMSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+trap 'echo mine' ALRM
+_mssh_complete_start engine
+trap -p ALRM
+trap - ALRM
+_mssh_complete_start engine
+echo "[$(trap -p ALRM)]"
+TMOUT=5
+_mssh_complete_start engine
+echo "[$(trap -p ALRM)]"
+'''
+	assert run_glue_script(home, script) == (0, "trap -- 'echo mine' SIGALRM\n[]\n[]", '')
+
+
+def test_the_engine_does_not_inherit_an_ignored_alarm(home):
+	# bash 4.2 and 4.3 ignore SIGALRM during the wait: the engine, and what it starts, must not (a child keeps what its
+	# parent ignores). awk is the engine's child here: its SigIgn mask shows what it got
+	script = r'''
+engine() { printf 'ready\nMSSHC1\nL 4\tign=%s\nE\n' "$(( (16#$(awk '/^SigIgn/{print $2}' /proc/self/status) >> 13) & 1 ))"; }
+. "$1" 2>/dev/null
+_mssh_complete_start engine
+printf '%s' "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, 'MSSHC1\nL 4\tign=0\nE', '')
+
+
+def shell_ignores_alarm(session):
+	'''Whether the shell on session ignores SIGALRM, and its trap for it: ("0", "") when it does neither.'''
+	session.send('\x15')
+	time.sleep(0.3)
+	session.send('echo "@@D[$(( (16#$(awk \'/^SigIgn/{print $2}\' /proc/$$/status) >> 13) & 1 ))|$(trap -p ALRM)]@""@"\r')
+	found = re.findall(r'@@D\[(\d)\|(.*?)\]@@', session.read_until(b']@@', 10))
+	return found[-1] if found else None
+
+
+def test_tab_then_ctrl_c_while_the_engine_answers_leaves_sigalrm_alone(home):
+	# the TAB query ends at the end of its input: nothing in it ignores SIGALRM, which a Ctrl-C there would leave ignored
+	env, home = home
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 3, only='query')))
+	try:
+		before = shell_ignores_alarm(session)
+		assert before == ('0', '')
+		session.send('mssh gp\t')
+		time.sleep(0.8)
+		session.send('\x03')
+		time.sleep(3.5)
+		# the prompt after the engine is done (what was typed meanwhile is the shell's, not ours to look at)
+		session.send('\r')
+		time.sleep(0.5)
+		assert shell_ignores_alarm(session) == before
 	finally:
 		session.close()
 
