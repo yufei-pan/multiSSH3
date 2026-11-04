@@ -828,25 +828,86 @@ READY_SWEEP = r'''
 . "$1" 2>/dev/null
 engine() { sleep "$delay"; printf 'ready\n'; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
 lost=0
-for step in $(seq 0 150); do
-	delay=$(awk -v s=$step 'BEGIN { printf "%.5f", 0.097 + s * 0.00004 }')
+for ((step = 0; step < 250; step++)); do
+	delay=$(printf '0.%06d' $((99000 + step * 4)))
 	_mssh_complete_start engine
 	[[ $_mssh_complete_status == 0 && $_mssh_complete_resp == $'MSSHC1\nL 4\tmssh\nE' ]] || lost=$((lost + 1))
 done
 echo "lost=$lost"
 '''
 
+def run_glue_script(home, script):
+	'''Run script in a bash that has the glue (its path is $1), as (exit status, stdout, stderr).'''
+	env, home = home
+	glue = glue_file(home, 'bash')
+	result = subprocess.run([require_shell('bash'), '-c', script, 'bash', str(glue)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+	return result.returncode, result.stdout.decode().strip(), result.stderr.decode()
+
 
 def test_ready_arriving_as_the_wait_ends_still_counts(home):
 	# the shell waits for "ready" in reads of 0.1 s; a byte that comes as one ends is read all the same (bash 5
-	# says the read timed out, and the next read wrote over the byte: the line was "eady", the answer dropped).
-	# The engine says ready at delays around the read time, 0.04 ms apart: one of them meets the end of a wait
-	env, home = home
-	if bash_version(env) < 50:
-		pytest.skip('bash before 5.0 drops the byte of a read that timed out: nothing to read')
-	glue = glue_file(home, 'bash')
-	result = subprocess.run([require_shell('bash'), '-c', READY_SWEEP, 'bash', str(glue)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-	assert (result.returncode, result.stdout.decode().strip(), result.stderr.decode()) == (0, 'lost=0', '')
+	# says the read timed out, and the next read wrote over the byte: the line was "eady", the answer dropped;
+	# bash 4.2 to 4.4 dropped the byte, and 4.2 and 4.3 could be killed by the timer's SIGALRM, rc 142).
+	# The engine says ready at delays around the read time, 4 microseconds apart: some meet the end of a wait
+	assert run_glue_script(home, READY_SWEEP) == (0, 'lost=0', '')
+
+
+def test_ready_missing_its_first_byte_still_counts(home):
+	# what bash 4.2 to 4.4 leave when a read times out as the byte comes: the loop read the second byte
+	script = r'''
+engine() { printf 'eady\nMSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+_mssh_complete_start engine
+printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
+
+
+def test_ready_written_as_the_whole_wait_ends_is_taken(home):
+	# every read of the wait times out (the stub: as when the engine's byte meets the end of each) but the engine has
+	# written: the shell looks once more before it goes on without it, as the engine would otherwise take the terminal
+	# with nobody reading
+	script = r'''
+read() { if [[ $1 == -r && $2 == -t && $3 == 0.1 ]]; then sleep 0.1; return 142; fi; builtin read "$@"; }
+engine() { printf 'ready\nMSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+MSSH_COMPLETE_START_TIMEOUT=0.3
+_mssh_complete_start engine
+printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
+
+
+def test_a_stray_alarm_while_the_glue_waits_ends_nothing(home):
+	# bash 4.2 and 4.3 ended the shell when a read's timer went off as the read ended ("Alarm clock"): SIGALRM is ignored
+	# during the wait (here sent while it waits without a timer: the shell used to be gone). Not in 4.4 and later, which
+	# leave it to readline and bash (TMOUT)
+	if bash_version(home[0]) >= 44:
+		pytest.skip('bash 4.4 and later do not end the shell, and the glue leaves SIGALRM to them')
+	script = r'''
+engine() { printf 'ready\n'; sleep 0.2; kill -ALRM $$; sleep 0.1; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+_mssh_complete_start engine
+printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
+'''
+	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
+
+
+def test_the_operators_alarm_trap_is_back_after_the_wait(home):
+	script = r'''
+engine() { printf 'ready\nMSSHC1\nL 4\tmssh\nE\n'; }
+. "$1" 2>/dev/null
+trap 'echo mine' ALRM
+_mssh_complete_start engine
+trap -p ALRM
+trap - ALRM
+_mssh_complete_start engine
+echo "[$(trap -p ALRM)]"
+TMOUT=5
+_mssh_complete_start engine
+echo "[$(trap -p ALRM)]"
+'''
+	assert run_glue_script(home, script) == (0, "trap -- 'echo mine' SIGALRM\n[]\n[]", '')
 
 
 def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
