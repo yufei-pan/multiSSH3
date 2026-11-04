@@ -5806,12 +5806,17 @@ _mssh_complete_delegate() {
 			_mssh_complete_dropped=1
 			continue
 		fi
-		# a function or an alias of this shell (ble.sh's, the glue's own) is no command on the remote host: such a name is left
-		# out, unless a file here or a command on PATH has it (compgen -c lists them: mssh h bed got bled, sudo amb ble/amb).
-		# BASH_ALIASES, not alias: alias --format= would define one
-		if declare -F -- "$_mssh_complete_item" >/dev/null 2>&1 || [[ -n ${BASH_ALIASES[$_mssh_complete_item]+set} ]]; then
-			[[ -e $_mssh_complete_item ]] || type -P -- "$_mssh_complete_item" >/dev/null 2>&1 || continue
-		fi
+		# a function of ble.sh's or the glue's own is no command on the remote host: such a name is left out, unless a file
+		# here or a command on PATH has it (compgen -c lists them: mssh h bed got bled, sudo amb ble/amb). By name, not every
+		# function of this shell: module, ml and nvm are shell functions here and on the remote host too (the wrappers ble.sh
+		# makes of builtins, bind, read, history, stay: they are the remote shell's builtins)
+		case $_mssh_complete_item in
+		ble|ble-*|ble/*|_ble_*|bleopt|bleopt/*|blehook|blehook/*|_mssh_complete*)
+			if declare -F -- "$_mssh_complete_item" >/dev/null 2>&1; then
+				[[ -e $_mssh_complete_item ]] || type -P -- "$_mssh_complete_item" >/dev/null 2>&1 || continue
+			fi
+			;;
+		esac
 		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
 		if [[ -n $_mssh_complete_lead && $_mssh_complete_item == "$_mssh_complete_lead"* ]]; then
 			_mssh_complete_item=${_mssh_complete_item:${#_mssh_complete_lead}}

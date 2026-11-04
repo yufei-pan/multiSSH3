@@ -350,8 +350,7 @@ def delegated(tmp_path, setup, words='zzsvc zz', before='', prefix='', word=None
 	('complete -W "\'zz a\' zzc" zzsvc', ['zz a', 'zzc']),
 	('complete -d zzsvc', ['zzdir', 'zzdirb']),
 	('complete -A directory zzsvc', ['zzdir', 'zzdirb']),
-	# (this shell's functions are not on the remote host: left out)
-	('zzfn() { :; }; zzfn2() { :; }; complete -A function zzsvc', []),
+	('zzfn() { :; }; zzfn2() { :; }; complete -A function zzsvc', ['zzfn', 'zzfn2']),
 	('complete -G "zzd*" zzsvc', ['zzdir', 'zzdirb']),
 	# -X, -P and -S go to compgen with the rest, which applies them to its words, but not to a function's or a command's
 	('complete -W "zza.c zzb.h zzc.c" -X "*.c" zzsvc', ['zzb.h']),
@@ -1382,16 +1381,28 @@ def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, b
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
-@pytest.mark.parametrize('typed, extra, executables, offered', [
-	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False),
-	('mssh h zzali', 'alias zzalias=true', [], False),
-	# (a word that is no alias stays, --format= too: alias --format= would have made it one)
-	('mssh h zzn --f', '_zzn() { COMPREPLY=(--format=); compopt -o nospace; }; complete -F _zzn zzn', [], True),
-	('mssh h zzscr', 'PATH=$PATH:.', ['zzscript'], True),
+@pytest.mark.parametrize('typed, extra, executables, bash_completion, offered', [
+	# a function of ble.sh's or the glue's own, no other: a user's function, one of Environment Modules / Lmod (module, ml) or
+	# nvm exists on the remote host too (6.41 offered it, the first fix of this left it out), a name that only starts like
+	# ble.sh's (blend) is the user's
+	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False, True),
+	('mssh h modul', 'module() { :; }', [], False, True),
+	('mssh h sudo modul', 'module() { :; }', [], True, True),
+	('mssh h blen', 'blend() { :; }', [], False, True),
+	('mssh h zzali', 'alias zzalias=true', [], False, True),
+	# (an argument word from a command's own completion that is also a function's name)
+	('mssh h zzn u', 'up() { :; }; _zzn() { COMPREPLY=(up); }; complete -F _zzn zzn', [], False, True),
+	('mssh h zzn --f', '_zzn() { COMPREPLY=(--format=); compopt -o nospace; }; complete -F _zzn zzn', [], False, True),
+	('mssh h zzscr', 'PATH=$PATH:.', ['zzscript'], False, True),
+	# (a name of the glue's own or ble.sh's that a file here or a command on PATH has stays)
+	('mssh h ble-zzs', 'PATH=$PATH:.; ble-zzscript() { :; }', ['ble-zzscript'], False, True),
 ])
-def test_bash_local_functions_and_aliases_are_left_out_of_remote_command_names(tmp_path, shell, typed, extra, executables, offered):
-	# a command on PATH still comes
-	line, got = review_line(tmp_path, shell, typed, extra=extra, executables=executables)
+def test_bash_offers_this_shell_s_own_functions_and_aliases_as_remote_command_names(tmp_path, shell, typed, extra, executables, bash_completion, offered):
+	# the remote shell has its own functions and aliases under these names often (module, ml, nvm): only the names of ble.sh's
+	# and the glue's functions are left out (test_this_shell_s_functions_are_no_remote_commands)
+	if bash_completion and not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, shell, typed, extra=extra, executables=executables, bash_completion=bash_completion)
 	assert (line != typed) == offered, line
 
 
