@@ -1,7 +1,7 @@
-# Shell matrix image: CentOS 7, bash only (end of life: packages come from the vault and archives)
+# Shell matrix image: CentOS 7, bash 4.2 and zsh 5.0.2 (end of life: packages come from the vault and archives)
 FROM centos:7
 RUN sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#\?baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|' /etc/yum.repos.d/CentOS-*.repo \
- && yum -y -q install python3 bash-completion which procps-ng xz gawk \
+ && yum -y -q install python3 bash-completion zsh which procps-ng xz gawk \
  && yum clean all \
  && python3 -m pip install -q --disable-pip-version-check 'pip<22' \
  && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1'
