@@ -1343,7 +1343,7 @@ def test_a_quoted_argument_with_nothing_to_offer_gets_nothing(tmp_path, shell, t
 	('mssh h cat "zzb', ['zz ab', 'zzaxb'], '', 'mssh h cat "zzaxb" ', ['cat', 'zzaxb']),
 	('mssh h "cat zzmp', ['zzamp&b'], '', 'mssh h "cat zzamp\\\\&b" ', ['cat', 'zzamp&b']),
 	('mssh h "cat zzb', ['zz ab'], '', 'mssh h "cat zz\\\\ ab" ', ['cat', 'zz ab']),
-	('mssh h -- "zzfn', [], 'zzalphafn() { :; }', 'mssh h -- "zzalphafn" ', ['--', 'zzalphafn']),
+	('mssh h -- "zzfn', ['zzalphafn'], 'chmod +x zzalphafn; PATH=$PATH:.', 'mssh h -- "zzalphafn" ', ['--', 'zzalphafn']),
 	('mssh -f "zzmp', ['zzamp&b'], '', 'mssh -f "zzamp&b" ', None),
 ])
 def test_ble_letters_out_of_order_in_a_quoted_word_complete_by_the_quote_s_rules(tmp_path, typed, files, extra, written, remote):
@@ -1384,6 +1384,8 @@ def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, b
 @pytest.mark.parametrize('typed, extra, executables, offered', [
 	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False),
 	('mssh h zzali', 'alias zzalias=true', [], False),
+	# (a word that is no alias stays, --format= too: alias --format= would have made it one)
+	('mssh h zzn --f', '_zzn() { COMPREPLY=(--format=); compopt -o nospace; }; complete -F _zzn zzn', [], True),
 	('mssh h zzscr', 'PATH=$PATH:.', ['zzscript'], True),
 ])
 def test_bash_local_functions_and_aliases_are_left_out_of_remote_command_names(tmp_path, shell, typed, extra, executables, offered):

@@ -5807,8 +5807,9 @@ _mssh_complete_delegate() {
 			continue
 		fi
 		# a function or an alias of this shell (ble.sh's, the glue's own) is no command on the remote host: such a name is left
-		# out, unless a file here or a command on PATH has it (compgen -c lists them: mssh h bed got bled, sudo amb ble/amb)
-		if declare -F -- "$_mssh_complete_item" >/dev/null 2>&1 || alias -- "$_mssh_complete_item" >/dev/null 2>&1; then
+		# out, unless a file here or a command on PATH has it (compgen -c lists them: mssh h bed got bled, sudo amb ble/amb).
+		# BASH_ALIASES, not alias: alias --format= would define one
+		if declare -F -- "$_mssh_complete_item" >/dev/null 2>&1 || [[ -n ${BASH_ALIASES[$_mssh_complete_item]+set} ]]; then
 			[[ -e $_mssh_complete_item ]] || type -P -- "$_mssh_complete_item" >/dev/null 2>&1 || continue
 		fi
 		_mssh_complete_item=$_mssh_complete_prefix$_mssh_complete_item
