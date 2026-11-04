@@ -824,6 +824,31 @@ def test_picker_ready_cut_by_the_wait_still_counts(home):
 		session.close()
 
 
+READY_SWEEP = r'''
+. "$1" 2>/dev/null
+engine() { sleep "$delay"; printf 'ready\n'; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
+lost=0
+for step in $(seq 0 150); do
+	delay=$(awk -v s=$step 'BEGIN { printf "%.5f", 0.097 + s * 0.00004 }')
+	_mssh_complete_start engine
+	[[ $_mssh_complete_status == 0 && $_mssh_complete_resp == $'MSSHC1\nL 4\tmssh\nE' ]] || lost=$((lost + 1))
+done
+echo "lost=$lost"
+'''
+
+
+def test_ready_arriving_as_the_wait_ends_still_counts(home):
+	# the shell waits for "ready" in reads of 0.1 s; a byte that comes as one ends is read all the same (bash 5
+	# says the read timed out, and the next read wrote over the byte: the line was "eady", the answer dropped).
+	# The engine says ready at delays around the read time, 0.04 ms apart: one of them meets the end of a wait
+	env, home = home
+	if bash_version(env) < 50:
+		pytest.skip('bash before 5.0 drops the byte of a read that timed out: nothing to read')
+	glue = glue_file(home, 'bash')
+	result = subprocess.run([require_shell('bash'), '-c', READY_SWEEP, 'bash', str(glue)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+	assert (result.returncode, result.stdout.decode().strip(), result.stderr.decode()) == (0, 'lost=0', '')
+
+
 def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
 	# as Ctrl-C in the editor: the line and ^C stay on screen, a fresh prompt below
 	env, home = home

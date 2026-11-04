@@ -6615,10 +6615,13 @@ _mssh_complete_start() {
 	{
 		# in short reads: a trapped Ctrl-C does not end a read. A byte at a time: bash reads a pipe one byte
 		# per call, and a read that times out partway through a line loses what it read of it (bash 4.2
-		# drops it, later ones keep it for the next read to write over); the rest of the line, written
-		# with its first byte, is there without waiting
+		# drops it, later ones keep it in the variable, with the status of a timeout); the rest of the line,
+		# written with its first byte, is there without waiting. The byte that comes as the wait ends is
+		# such a partial read: the variable is emptied before each read, and a byte in it counts as read
 		while (( _mssh_complete_got > 128 && !_mssh_complete_interrupted && _mssh_complete_waited++ < _mssh_complete_tenths )); do
+			_mssh_complete_line=
 			IFS= read -r -t 0.1 -n 1 _mssh_complete_line && _mssh_complete_got=0 || _mssh_complete_got=$?
+			[[ -n $_mssh_complete_line ]] && _mssh_complete_got=0
 		done
 		if (( _mssh_complete_got == 0 )) && [[ -n $_mssh_complete_line ]]; then
 			IFS= read -r _mssh_complete_rest || :
