@@ -2801,6 +2801,28 @@ def test_zsh_glue_finds_mssh_among_the_autosuggestion_strategies_as_a_whole_word
 ZSH_FAKEOPTS = "_fakeopts() { _arguments '--apparent-size[sizes as seen]' '--block-size=[unit]:unit:' }\ncompdef _fakeopts fakeopts"
 
 
+def test_zsh_completing_a_remote_command_keeps_the_operators_options(setup):
+	# the compadd standing in for the shell's while a remote command completes sets its own options (extended_glob):
+	# zsh 5.0.2 forgets emulate -L when it is also given -o, which left zsh's defaults in the operator's shell
+	env, home = setup
+	(home / 'dots').mkdir()
+	(home / 'dots' / '.zzhidden').write_text('')
+	where = home / 'options'
+	widget = ('_zzoptions() { print -r -- "glob_dots=$options[glob_dots] extended_glob=$options[extended_glob] beep=$options[beep]" >%s }\n'
+		'zle -N _zzoptions\nbindkey "^X^O" _zzoptions\nsetopt glob_dots no_beep\nunsetopt extended_glob') % where
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra=ZSH_FAKEOPTS + '\n' + widget)
+	try:
+		assert session.line_after('mssh h fakeopts --appa') == 'mssh h fakeopts --apparent-size '
+		assert session.line_after('mssh h ls dots/') == 'mssh h ls dots/.zzhidden '
+		session.send('\x18\x0f')
+		deadline = time.monotonic() + 5
+		while not where.exists() and time.monotonic() < deadline:
+			time.sleep(0.05)
+		assert where.read_text().strip() == 'glob_dots=on extended_glob=off beep=off'
+	finally:
+		session.close()
+
+
 def test_zsh_runs_delegated_completions_as_zsh_runs_them(setup):
 	# the remote command's completion runs as zsh runs it: with the completion system's options
 	# (_arguments misreads its specs without them) and with the operator's own (glob_dots)
