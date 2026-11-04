@@ -349,19 +349,6 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
 - Approved: 2026-11-02, the user chose "Known limitation (Recommended)"; updated 2026-11-03, "Update the entry
   (Recommended)".
 
-### zsh before 5.8: a Ctrl-C during a completion query can reach the query
-- Kind: deferred
-- What the operator sees: with zsh older than 5.8 (zsh 5.5 is EL8's), now and then, for the length of a
-  completion query (a TAB, the grey text, the warnings; longer when typing starts more), the query's process
-  holds the terminal. A Ctrl-C then reaches the query rather than the shell; zsh usually drops the line anyway,
-  but now and then the line stays. The shell stays alive and the keys typed still reach it. 6.39 does the same:
-  the zsh glue did not change in 6.40.
-- Why: on zsh before 5.8 the glue's hand-back of the terminal sometimes leaves it with the query's process
-  group; why needs its own investigation. Until then the test of it
-  (`tests/test_complete_keys.py::test_zsh_keeps_the_terminal_while_mssh_asks`) can fail on the legacy image.
-- Revisit when: the change right after 6.40.
-- Approved: 2026-11-01, the user chose "Defer to after 6.40 (Recommended)".
-
 ## Found in 6.41's review
 
 The local file names a remote command's completion gives, as 6.41 writes them for the remote shell (the user's words are in

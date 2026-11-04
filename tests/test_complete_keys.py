@@ -6,6 +6,7 @@ so the engine's suggestion for "mssh gp" is the whole line u[01-16] "nvidia-smi"
 '''
 import os
 import re
+import select
 import shlex
 import subprocess
 import time
@@ -1275,41 +1276,60 @@ ZSH_AUTOSUGGEST_STRATEGY=(slow)
 _zsh_autosuggest_strategy_slow() { zmodload zsh/zselect; zselect -t 100 }"""
 
 
+def times_away(session, seconds):
+	'''
+	How often, sampled as fast as Python can for seconds, the terminal's foreground process group was not the
+	shell; what the shell draws meanwhile is read.
+	'''
+	away = 0
+	end = time.monotonic() + seconds
+	while time.monotonic() < end:
+		if os.tcgetpgrp(session.fd) != session.pid:
+			away += 1
+		ready, _, _ = select.select([session.fd], [], [], 0)
+		if ready:
+			session.output += os.read(session.fd, 65536)
+	return away
+
+
 @pytest.mark.parametrize('zas, extra, keys', [
 	(False, '', 'mssh gp'),
 	(False, '', 'mssh --ipmi_\t'),
-	# grey text from zsh-autosuggestions, which gives the terminal back itself: only the warnings' query is left
-	(True, '', 'mssh gpu017 '),
+	# a host word: the warnings' query, asked again from its answer's handler
+	(False, '', 'mssh gpu017 '),
+	# not zsh-autosuggestions' default (async): its own process substitution takes the terminal before zsh 5.8
 	(True, ZAS_SYNC, 'mssh gp'),
 ], ids=['grey-text', 'tab', 'warnings', 'zsh-autosuggestions-sync'])
 def test_zsh_keeps_the_terminal_while_mssh_asks(home, zas, extra, keys):
-	# before zsh 5.8 each query's process substitution took the terminal from the shell (Ctrl-C went to the
-	# query, the shell's reads failed until it took the terminal back) unless the glue gives it back
+	# before zsh 5.8 (zsh change 44214) the process of an `exec {fd}< <(...)` made itself the terminal's foreground
+	# process group: a Ctrl-C went to the query and the line stayed, and the shell's reads failed until it took the
+	# terminal back. Not for a moment: a command run in the foreground to take it back (6.41 and before) held it
+	# meanwhile, and lost it to a query that took it late
 	env, home = home
-	session = zsh_with(env, home, zas, extra=slow_engine_glue(3) + '\n' + extra)
+	session = zsh_with(env, home, zas, extra=slow_engine_glue(1) + '\n' + extra)
 	try:
 		session.send(keys)
-		time.sleep(0.5)
-		# a query being forked holds the terminal until the shell runs the command that gives it back, which a loaded
-		# machine can delay. A terminal really lost stays lost for the whole query (3 s here): the shell must have it back
-		# within a second more
-		deadline = time.monotonic() + 1.0
-		while os.tcgetpgrp(session.fd) != session.pid and time.monotonic() < deadline:
-			time.sleep(0.02)
-		assert os.tcgetpgrp(session.fd) == session.pid
+		assert times_away(session, 1.5) == 0
 	finally:
 		session.close()
 
 
 def test_zsh_ctrl_c_drops_a_line_while_its_grey_text_is_asked_for(home):
-	# not lost to the query (zsh before 5.8)
+	# not lost to the query (zsh before 5.8), which goes on: before zsh 5.8 it shares the shell's process group, and
+	# one the Ctrl-C ended made zsh 5.5 now and then drop the line only at the next key, and that key with it
 	env, home = home
-	session = zsh_with(env, home, extra=slow_engine_glue())
+	finished = home / 'finished'
+	session = zsh_with(env, home, extra='_mssh_complete_engine() {{ sleep 1; {} "$@"; print -n x >> {} }}'.format(
+		' '.join(shlex.quote(part) for part in ENGINE), shlex.quote(str(finished))))
 	try:
 		session.send('mssh gp')
 		time.sleep(0.5)
 		session.send('\x03')
 		assert printed(session, '') == ''
+		deadline = time.monotonic() + 5
+		while not finished.exists() and time.monotonic() < deadline:
+			time.sleep(0.05)
+		assert finished.exists()
 	finally:
 		session.close()
 
