@@ -1406,6 +1406,28 @@ def test_bash_offers_this_shell_s_own_functions_and_aliases_as_remote_command_na
 	assert (line != typed) == offered, line
 
 
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, extra, executables, offered', [
+	# a function whose name starts with an underscore is a completion's or a helper's internal one, no remote command;
+	# a script of that name on PATH is
+	('mssh h _zzh', '_zzhelper() { :; }', [], False),
+	('mssh h _zzp', 'PATH=$PATH:.', ['_zzpathcmd'], True),
+	('mssh h _zzp', 'PATH=$PATH:.; _zzpathcmd() { :; }', ['_zzpathcmd'], True),
+	('mssh h zz_h', 'zz_helper() { :; }', [], True),
+])
+def test_bash_functions_with_a_leading_underscore_are_no_remote_command_names(tmp_path, shell, typed, extra, executables, offered):
+	line, got = review_line(tmp_path, shell, typed, extra=extra, executables=executables)
+	assert (line != typed) == offered, line
+
+
+def test_ble_second_try_offers_no_underscore_function_of_bash_completion(tmp_path):
+	# ble.sh asks again for an empty word and matches the typed letters in any order: amb found _comp__reassemble_words
+	if not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
+	line, got = review_line(tmp_path, 'ble', 'mssh h sudo "amb', bash_completion=True)
+	assert '_' not in line.replace('"', ''), line
+
+
 @pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
 @pytest.mark.parametrize('typed, files, written', [
 	("mssh h grep 'a' \"zz", ['zz a'], None),
