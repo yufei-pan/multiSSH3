@@ -157,6 +157,19 @@ def test_quoted_command_delegates_with_prefix():
 	assert query('mssh h "cat x | gre', word='cat x | gre').delegate == (0, 'cat x | ', ['gre'])
 
 
+@pytest.mark.parametrize('before, word, offered', [
+	# a quoted argument, which mssh joins with the other words, gets no whole command from history (mssh h sudo 'systemctl
+	# restart nginx' runs sudo and the command apart; its words follow the others' as for words typed as words); a quoted
+	# command gets whole ones
+	("mssh h sudo 'sys", 'sys', []),
+	('mssh h grep "grep', 'grep', []),
+	('mssh h "systemctl rest', 'systemctl rest', ['systemctl restart nginx']),
+])
+def test_a_quoted_argument_gets_no_whole_command_from_history(before, word, offered):
+	knowledges = [memory([line(NOW, '-su', 'h', '"systemctl restart nginx"'), line(NOW, '-su', 'h', '"grep connection refused /var/log/syslog"')])]
+	assert texts(query(before, word=word, knowledges=knowledges)) == offered
+
+
 @pytest.mark.parametrize('before, word, quoted, whole, delegate', [
 	# the glues tell a quoted command by D whole, its first word too, whose prefix is empty (they took it for a word of a
 	# command typed as words), and a word in a quote by D quoted: a quoted argument without whitespace, which mssh joins

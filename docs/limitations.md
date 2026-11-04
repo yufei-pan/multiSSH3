@@ -337,10 +337,11 @@ Found while confirming and reviewing 6.40's items (the user's words are in each 
 ### Inside a quoted argument, names holding whitespace are not offered
 - Kind: known limitation
 - What the operator sees: in every shell, TAB inside a quoted argument of a remote command typed as words
-  (`mssh h cat 'zz<TAB>`) offers the names for the open quote, quoted for the remote shell (`'zz\&b'`), from the
-  command's own completion as for its other words, but no name holding whitespace. Once the quoted text holds
-  whitespace (`mssh h cat 'my f<TAB>`), TAB reads it as a whole quoted command: it completes `f` as an argument of a
-  command `my`. Typing the whole command in quotes (`mssh h 'cat my<TAB>`) completes such names.
+  (`mssh h cat 'zz<TAB>`) offers the command's own completion and the local file names for the open quote, quoted for
+  the remote shell (`'zz\&b'`), but no word holding whitespace, and nothing from history but the words that followed the
+  command's other words. Once the quoted text holds whitespace (`mssh h cat 'my f<TAB>`), TAB reads it as a whole quoted
+  command: it completes `f` as an argument of a command `my`, and history's whole commands come. Typing the whole command
+  in quotes (`mssh h 'cat my<TAB>`) completes names holding whitespace.
 - Why: mssh runs each argument holding whitespace as a command of its own, so `mssh h cat 'my file'` cannot run as
   meant whatever completion inserts; a quoted argument without whitespace mssh joins with the command's other words,
   and the remote shell reads them again.
@@ -432,8 +433,8 @@ each entry).
 
 ### readline: names holding an exclamation mark are not offered in a double-quoted command
 - Kind: known limitation
-- What the operator sees: under readline, in a remote command typed in double quotes (`mssh h "cat zz<TAB>`), a local
-  file name holding `!` is not offered.
+- What the operator sees: under readline, in a remote command typed in double quotes (`mssh h "cat zz<TAB>`), or a
+  double-quoted argument (`mssh h cat "zz<TAB>`), a local file name holding `!` is not offered.
 - Why: with history expansion on, bash reads a `!` inside double quotes, and a backslash before it stays in the word, so
   no writing of the name reaches the remote shell as named. In single quotes (`mssh h 'cat zz<TAB>`) the name is offered;
   with `set +H` it can be typed.
@@ -471,6 +472,17 @@ each entry).
 - Revisit when: an operator works with such names in quoted commands.
 - Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
 
+### With an engine older than the glue, quoted arguments behave as in 6.40
+- Kind: known limitation
+- What the operator sees: when PATH finds an older mssh-complete than the glue (a system install beside a newer venv,
+  `sudo -i`, a downgrade), a quoted argument (`mssh h cat "my<TAB>`) is completed as a quoted command, so a name holding
+  whitespace goes in and mssh splits it, as 6.40 does; and a `$'./zzs<TAB>` first word is written so mssh gets the wrong
+  name. Quoted commands complete right. Installing the same version, so that PATH finds it, fixes it.
+- Why: the older engine does not say which kind of quote it is (6.41's `D quoted` and `D whole`); guessing it from the
+  line would add code used only then.
+- Revisit when: mixed installs turn out common.
+- Approved: 2026-11-03, the user chose "Known limitation (Recommended)".
+
 ### Whitespace in names is read as UTF-8
 - Kind: known limitation
 - What the operator sees: the glues leave out a name holding whitespace as mssh splits its words, and they read the
@@ -482,15 +494,18 @@ each entry).
 - Revisit when: an operator in such a locale hits it.
 - Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
 
-### A directory completed in a quoted command closes the quote
+### A directory completed in a quoted command or argument closes the quote
 - Kind: deferred
 - What the operator sees: in bash, a directory completed in a quoted command closes the quote: `mssh h "ls zzd<TAB>` gives
   `"ls zzdir" `, and `mssh h "cat ~bi<TAB>` gives `"cat ~bin/"`; the quote has to be taken out to go on into the directory.
-  6.40 did the same for `"ls zzd<TAB>`.
+  6.40 did the same for `"ls zzd<TAB>`. In a quoted argument a directory whose name the glue writes for the remote shell
+  does too, under readline and ble.sh (`mssh h ls "zzd<TAB>` gives `ls "zzd\\&x" `); zsh keeps the quote open.
 - Why: readline closes the quote of a single match unless its file name mode finds the match is a directory; in a quoted
-  command the match is the whole command typed (`ls zzdir`), which names none. ble.sh closes it too.
+  command the match is the whole command typed (`ls zzdir`), and in a quoted argument the glue's written word
+  (`zzd\\&x`), neither of which names one. ble.sh closes it too.
 - Revisit when: 6.41 has shipped.
-- Approved: 2026-11-03, the user chose "Defer both (Recommended)".
+- Approved: 2026-11-03, the user chose "Defer both (Recommended)"; quoted arguments added the same day, "Extend the
+  deferral (Recommended)".
 
 ### zsh: a variable in a double-quoted command is expanded and nothing completes
 - Kind: deferred

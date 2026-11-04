@@ -1320,6 +1320,38 @@ def test_a_quoted_argument_completes_as_the_command_s_word(tmp_path, shell):
 	assert got == ['zzsvc', 'zzalpha'], line
 
 
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, files, extra', [
+	('mssh h cat "zz', ['zz a'], ''),
+	('mssh h cat "zz', ['zz\xa0b'], ''),
+	('mssh h zzsvc "zq', [], 'complete -W \'alpha "zq beta"\' zzsvc'),
+	('mssh h -- "zz', [], ''),
+])
+def test_a_quoted_argument_with_nothing_to_offer_gets_nothing(tmp_path, shell, typed, files, extra):
+	# ble.sh asks again for an empty word when the first answer is nothing, and the glue took the quote of the word typed
+	# before (COMPS) for a quoted command's: cat "zz\\ a", which mssh ran as two commands; for an empty first word the
+	# local functions came (-- "ble/"zz)
+	line, got = review_line(tmp_path, shell, typed, files=files, extra=extra)
+	assert line == typed
+
+
+@pytest.mark.parametrize('typed, remote', [
+	('mssh h zzsvc "zq', None),
+	('mssh h zzsvc "zr', ['zzsvc', 'zr&f']),
+	('mssh h zzsvc "zs', ['zzsvc', "zsc'd"]),
+	("mssh h zzsvc 'zq", None),
+])
+def test_bash_a_command_s_words_in_a_quoted_argument_reach_the_remote_shell_as_named(tmp_path, typed, remote):
+	# readline put a spec's words (no file names) in as they are: "zq beta" made two commands of it, "zr&f" ran zr in the
+	# background, "zsc'd" broke the remote command
+	extra = 'complete -W \'alpha "zq beta" "zr&f" "zsc\'"\'"\'d"\' zzsvc'
+	line, got = review_line(tmp_path, 'readline', typed, extra=extra)
+	if remote is None:
+		assert line == typed
+	else:
+		assert got == remote and line.endswith('" '), line
+
+
 def test_fish_a_quoted_argument_s_names_holding_whitespace_are_left_out(setup, tmp_path):
 	env, home = setup
 	work = tmp_path / 'work'

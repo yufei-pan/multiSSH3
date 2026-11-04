@@ -4135,8 +4135,9 @@ class Engine(object):
 		if context.mode in PATH_MODES:
 			for feature, score in score_features(self.knowledges, 'f:' + word, context.features, deadline, icase, 2 + context.fold_start).items():
 				out.append(Candidate(feature[2:], 'used before', 'history', score))
-		elif context.quoted:
-			# whole commands, the current word last
+		elif context.whole:
+			# whole commands, the current word last (not in a quoted argument, which mssh joins with the other words: its
+			# words follow them, as for words typed as words)
 			for feature, score in score_features(self.knowledges, 'c:' + word, context.features, deadline, icase, 2 + context.fold_start).items():
 				out.append(Candidate(feature[2:], '', 'history', score))
 		elif context.command_words:
@@ -6050,7 +6051,7 @@ _mssh_complete_remote() {
 	# (_mssh_complete_dropped). $1: value (the words are names that readline's file name mode or ble.sh quotes) or text (words
 	# readline, or ble.sh for a noquote spec, inserts as they are: one holding a backslash is this shell's text for a name, as
 	# scp's completion gives zza\&b, unescaped first; others stay as they are under readline, as for the command run here, and
-	# are names under ble.sh). $2: 1 when they are file names: under ble.sh a directory whose word changed gets its / here
+	# are names under ble.sh and in a quoted argument). $2: 1 when they are file names: under ble.sh a directory whose word changed gets its / here
 	# (ble.sh's mark looks for the word as changed, and finds no directory).
 	# Under readline the file name mode stays on while every name goes in as it quotes it (none changes for the remote shell,
 	# no leading ~ or $ part kept as typed, nothing before the word in a quoted command, whose first word's names readline
@@ -6098,7 +6099,8 @@ _mssh_complete_remote() {
 	for _mssh_complete_item in ${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"}; do
 		_mssh_complete_space=
 		if [[ $1 == text ]]; then
-			if [[ $_mssh_complete_item != *'\'* ]] && (( ! _mssh_complete_ble )); then
+			# (in a quoted argument, which mssh joins with the other words, every word is a name: written for its quote)
+			if [[ $_mssh_complete_item != *'\'* ]] && (( ! _mssh_complete_ble && ! _mssh_complete_inquote )); then
 				_mssh_complete_words+=("$_mssh_complete_item")
 				continue
 			fi
@@ -6251,6 +6253,14 @@ _mssh_complete_tab() {
 			# offers every file, one of which a second TAB puts in place of the word)
 			_mssh_complete_plain=${COMPV:${#progcomp_prefix}}
 		fi
+		# ble.sh asks again for an empty word when the word typed got nothing, to match names in any order, and puts the ones it
+		# matches in outside the quote the word opened (mssh h -- "zz got "ble/"zz, the start of local functions): in a quote,
+		# nothing for it, ble.sh's own names neither
+		if [[ $_mssh_complete_before != *"$COMPS" ]] && [[ $_mssh_complete_subword == [\"\']* || $_mssh_complete_subword == \$\'* ]]; then
+			compopt +o default +o bashdefault 2>/dev/null || :
+			compopt -o ble/no-default 2>/dev/null || :
+			return 0
+		fi
 	fi
 	_mssh_complete_read_locale
 	_mssh_complete_flags="nosort=0 ble=$_mssh_complete_ble term=${TERM-} $_mssh_complete_locale"
@@ -6301,10 +6311,15 @@ _mssh_complete_tab() {
 		esac
 	done <<< "$_mssh_complete_resp"
 	(( _mssh_complete_ended )) || return 0
-	# (an engine before 6.41 sends neither: text before the word, or a word opening a quote, is a quoted command's there)
+	# (an engine before 6.41 sends neither: text before the word, or a word opening a quote, is a quoted command's there.
+	# Under ble.sh the word typed is COMPS, unless ble.sh asks again for a word of its own, an empty one, to match in any
+	# order: the line it hands over then ends with that word, not with COMPS)
 	if (( ! _mssh_complete_inquote )); then
 		_mssh_complete_one=${COMP_WORDS[COMP_CWORD]-}
-		(( _mssh_complete_ble )) && _mssh_complete_one=${COMPS-}
+		if (( _mssh_complete_ble )); then
+			_mssh_complete_one=
+			[[ -n ${COMPS+set} && $_mssh_complete_before == *"$COMPS" ]] && _mssh_complete_one=$COMPS
+		fi
 		[[ -n ${_mssh_complete_xfields[1]-} || $_mssh_complete_one == [\"\']* ]] && _mssh_complete_qcommand=1
 	fi
 	(( _mssh_complete_qcommand )) && _mssh_complete_inquote=1
