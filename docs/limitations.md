@@ -507,7 +507,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   mssh's grey text then given 50 ms.
 - Why: the cause is in the plugin's async fetch on zsh before 5.8, its child and its `command true` (zsh change 44214
   fixed the terminal handover in 5.8); mssh's own queries no longer take the terminal.
-- Revisit when: zsh-autosuggestions changes its async child, or an operator hits it often.
+- Revisit when: zsh-autosuggestions changes its async child (reported: https://github.com/zsh-users/zsh-autosuggestions/issues/861), or an operator hits it often.
 - Approved: 2026-11-04, the user chose "KL + draft report (Recommended)".
 
 ### bash: the picker or the editor can come up with nothing reading its answer

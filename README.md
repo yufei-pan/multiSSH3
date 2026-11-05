@@ -1379,6 +1379,14 @@ __DEBUG_MODE = False
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
 
+## Upgrading to 6.43 from 6.42
+
+Run `mssh --completion install` again in bash (with or without ble.sh), zsh and fish: all three fixes are in the new glue. What you may notice:
+
+- Fix (zsh, fish): this shell's internal functions are no longer offered as remote command names, as in bash since 6.42. In zsh: names starting with `_` (zsh's completion functions, the glue's own, a plugin's), and `compdef`, `compinit`, `add-zsh-hook`, `is-at-least` and the like, and parameters starting with `_`. In fish: names starting with `_` or `fish_` (`mssh h fish_pro<TAB>` gave `fish_prompt`, `mssh h __mssh<TAB>` the glue's own), and fish's own that only make sense in fish (`funcsave`, `prompt_pwd`, `psub` ...). A file here or a command on PATH with the name is still offered. Your other functions and aliases (`zzlocalfn`, `module`) still are, and so are fish's that a remote shell has too (`ls`, `pushd`).
+- Fix (bash, ble.sh): a directory completed in a quote leaves the quote open and adds no space, so you can go on into it: `mssh h "ls zzd<TAB>` gives `"ls zzdir/` (it gave `"ls zzdir" `), `mssh h "cat ~bi<TAB>` gives `"cat ~bin/`, and `mssh h ls "zzd<TAB>` gives `ls "zzd\\&x/`. Under readline the terminal's bell rings for it, as for any TAB with more than one name (it takes a second, hidden word to keep readline from closing the quote), and with `show-all-if-ambiguous` on the two are listed (`ls zzdir/` and `ls zzdir/.`). With TAB bound to `menu-complete` the quote still closes, as before.
+- Fix (zsh): a double-quoted word holding an expansion stays as typed and completes: `mssh h "ls $PWD/zzd<TAB>` gives `"ls $PWD/zzdir/`. 6.42 rewrote the line to `mssh h ls\ /the/directory/zzd` and completed nothing, and `mssh h "echo $USER; cat zzp<TAB>` lost its quote and its meaning; in a quoted argument (`mssh h ls "$PWD/zzp<TAB>`) the quote went too. On an mssh line holding a double quote and a `$` or a backtick, TAB now completes where zsh's `expand-or-complete` would expand; on other lines nothing changes. The glue goes around that widget, so keys and your own widgets calling it are covered; `expand-or-complete-prefix` and `menu-expand-or-complete`, if you bind TAB to one of them, still expand. A backtick is kept but not read, so such a word completes nothing; with the cursor inside such a word (not at its end) nothing is offered.
+
 ## Upgrading to 6.42 from 6.41
 
 With zsh before 5.8 (zsh 5.5 is EL8's), run `mssh --completion install` again: the Ctrl-C fix below is in the new glue. Do the same in bash, with or without ble.sh, for the Ctrl-R, ble.sh and function-name fixes (fish's glue did not change; the quoted-argument fix needs no install). What you may notice:
