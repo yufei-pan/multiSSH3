@@ -1,5 +1,6 @@
 # Shell matrix image: CentOS 7, bash 4.2 and zsh 5.0.2 (end of life: every package at its last vault build, 7.9.2009 and updates; EPEL, if ever needed, from archives.fedoraproject.org/pub/archive/epel/7)
-FROM centos:7
+# by digest, as the CI job needs it: the tag gets no updates, and a digest cannot be moved
+FROM centos:7@sha256:be65f488b7764ad3638f236b7b515b3678369a5124c47b8d32916d6487418ea4
 RUN sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#\?baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|' /etc/yum.repos.d/CentOS-*.repo \
  && yum -y -q update \
  && yum -y -q install python3 bash-completion zsh which procps-ng xz gawk \
