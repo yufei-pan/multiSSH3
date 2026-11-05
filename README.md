@@ -1421,7 +1421,6 @@ Run `mssh --completion install` again (bash, ble.sh, zsh and fish) to get the ne
   - Whitespace in names is read as UTF-8: in a Latin-1 or GBK locale (untested) a name may be offered or left out wrongly ([limitations](docs/limitations.md#whitespace-in-names-is-read-as-utf-8)).
   - bash: a directory completed in a quoted command closes the quote (`mssh h "ls zzd<TAB>` gives `"ls zzdir" `), as in 6.40, and so does one in a quoted argument whose name changes for the remote shell (`ls "zzd\\&x" `); to be fixed after 6.41 ([limitations](docs/limitations.md#a-directory-completed-in-a-quoted-command-or-argument-closes-the-quote)).
   - When PATH finds an mssh-complete older than the glue (a system install beside a newer venv, `sudo -i`), quoted arguments complete as in 6.40; install the same version ([limitations](docs/limitations.md#with-an-engine-older-than-the-glue-quoted-arguments-behave-as-in-640)).
-  - zsh: `mssh h "ls $PWD/zzd<TAB>` rewrites the line to `ls\ /the/directory/zzd` and completes nothing, as in 6.40; to be fixed after 6.41 ([limitations](docs/limitations.md#zsh-a-variable-in-a-double-quoted-command-is-expanded-and-nothing-completes)).
 
 ## Upgrading to 6.40 from 6.39
 

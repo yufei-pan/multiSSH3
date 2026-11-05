@@ -494,14 +494,6 @@ each entry).
 - Approved: 2026-11-03, the user chose "Defer both (Recommended)"; quoted arguments added the same day, "Extend the
   deferral (Recommended)".
 
-### zsh: a variable in a double-quoted command is expanded and nothing completes
-- Kind: deferred
-- What the operator sees: in zsh, `mssh h "ls $PWD/zzd<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzd` and
-  completes nothing; 6.40 did the same.
-- Why: zsh's completion expands the parameter in the quoted word before the glue sees it; not looked into further.
-- Revisit when: 6.41 has shipped.
-- Approved: 2026-11-03, the user chose "Defer both (Recommended)".
-
 ## Found in 6.42's review
 
 Found while confirming and reviewing 6.42's fixes (the user's words are in each entry).

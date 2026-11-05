@@ -939,6 +939,91 @@ def test_bash_the_common_start_of_names_stays_as_typed_and_the_next_tab_complete
 	assert line == typed + 'plain ' and remote == ['cat', str(tmp_path / 'two' / 'home' / 'zzplain')], line
 
 
+@pytest.mark.parametrize('typed, expected, remote_word', [
+	('mssh h "ls $PWD/zzd', 'mssh h "ls $PWD/zzdir/', '/zzdir/'),
+	('mssh h "ls ${PWD}/zzd', 'mssh h "ls ${PWD}/zzdir/', '/zzdir/'),
+	('mssh h "ls $PWD/zzp', 'mssh h "ls $PWD/zzplain" ', '/zzplain'),
+	('mssh h "echo $USER; cat zzp', 'mssh h "echo $USER; cat zzplain" ', None),
+	('mssh h "cat $HOME/zzh', 'mssh h "cat $HOME/zzhplain" ', '/zzhplain'),
+	('mssh h "fakecmd $PWD al', 'mssh h "fakecmd $PWD alpha" ', 'alpha'),
+	('mssh h ls "$PWD/zzp', 'mssh h ls "$PWD/zzplain" ', '/zzplain'),
+	('mssh h ls "$PWD/zzd', 'mssh h ls "$PWD/zzdir/', '/zzdir/'),
+	# a name the remote shell would read otherwise, written for the quote
+	('mssh h "ls $PWD/zza', 'mssh h "ls $PWD/zzamp\\&b" ', '/zzamp&b'),
+	('mssh h ls "$PWD/zza', 'mssh h ls "$PWD/zzamp\\\\&b" ', '/zzamp&b'),
+	# (a backtick, which the glue does not read: as typed)
+	('mssh h "ls `pwd`/zzd', 'mssh h "ls `pwd`/zzd', None),
+])
+def test_zsh_a_double_quoted_word_holding_an_expansion_stays_as_typed_and_completes(tmp_path, typed, expected, remote_word):
+	# zsh's expand-or-complete expands such a word before any completion function runs: mssh h "ls $PWD/zzd became
+	# mssh h ls\ /the/directory/zzd, and "echo $USER; cat zzp lost its quote. And it keeps no quote for such a word
+	# (compstate[quote] is empty), so what went in replaced the opening quote
+	files = ['zzamp&b'] if 'zza' in typed else ['zzplain']
+	line, remote = review_line(tmp_path, 'zsh', typed, dirs=['zzdir'], files=files)
+	assert line == expected
+	if remote_word:
+		assert remote[-1].endswith(remote_word), remote
+
+
+@pytest.mark.parametrize('typed, steps, expected', [
+	# a second TAB goes on to the zsh menu as elsewhere: the widget in between takes nothing from it
+	('mssh h "ls $PWD/zz', ['\t', '\t'], 'mssh h "ls $PWD/zzdir/'),
+	('mssh h "ls $PWD/zz', ['\t', '\t', '\t'], 'mssh h "ls $PWD/zzdirb/'),
+	('mssh h ls zz', ['\t', '\t'], 'mssh h ls zzdir/'),
+	('mssh h ls zz', ['\t', '\t', '\t'], 'mssh h ls zzdirb/'),
+])
+def test_zsh_tab_goes_on_to_the_menu_through_the_widget(tmp_path, typed, steps, expected):
+	line, remote = review_line(tmp_path, 'zsh', typed, dirs=['zzdir', 'zzdirb'], steps=steps)
+	assert line == expected
+
+
+@pytest.mark.parametrize('typed, gone', [
+	# an expansion elsewhere, as zsh does it: on another command's line, on an mssh line without a double quote
+	('ls "$PWD/zzd', '$PWD'),
+	('ls $PWD', '$PWD'),
+	('mssh h ls $PWD', '$PWD'),
+])
+def test_zsh_tab_expands_as_before_off_an_mssh_line_holding_a_double_quote(tmp_path, typed, gone):
+	line, remote = review_line(tmp_path, 'zsh', typed, dirs=['zzdir'])
+	assert gone not in line, line
+
+
+@pytest.mark.parametrize('plugin', ['/opt/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh', '/opt/zsh-autosuggestions/zsh-autosuggestions.zsh'])
+@pytest.mark.parametrize('load', ['pre', 'extra'])
+def test_zsh_quoted_expansion_completes_beside_a_plugin_wrapping_widgets(tmp_path, plugin, load):
+	# zsh-syntax-highlighting wraps every widget when it loads, zsh-autosuggestions at the first prompt
+	if not os.path.exists(plugin):
+		if plugin.split('/')[2] in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
+			pytest.fail(plugin + ' is required here but missing')
+		pytest.skip(plugin + ' is not installed')
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	(home / 'zzdir').mkdir()
+	source = 'source ' + plugin
+	session = zsh_session(home, env, glue_file(home, 'zsh'), **{load: source})
+	try:
+		session.settle = True
+		assert session.line_after('mssh h "ls $PWD/zzd') == 'mssh h "ls $PWD/zzdir/'
+		assert session.line_after('ls "$PWD/zzd').startswith('ls ' + str(home)[:4])
+	finally:
+		session.close()
+
+
+def test_zsh_quoted_expansion_completes_with_compinit_after_the_first_prompt(tmp_path):
+	# compinit defines expand-or-complete anew: the glue's widget goes around it again
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	(home / 'zzdir').mkdir()
+	session = zsh_session(home, env, glue_file(home, 'zsh'), compinit='autoload -Uz add-zsh-hook', extra=LATE_COMPINIT)
+	try:
+		session.settle = True
+		session.send('true\r')
+		session.read_until(b'@@READY@@')
+		assert session.line_after('mssh h "ls $PWD/zzd') == 'mssh h "ls $PWD/zzdir/'
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
 @pytest.mark.parametrize('typed, expected', [
 	('mssh h "ls $PWD/zzd', 'mssh h "ls $PWD/zzdir" '),
