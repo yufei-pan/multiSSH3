@@ -1443,6 +1443,73 @@ def test_bash_completion_s_helpers_without_an_underscore_are_no_remote_command_n
 	assert 'quote_readline' not in line, line
 
 
+@pytest.mark.parametrize('typed, extra, executables, offered', [
+	# the glue's own and zsh's completion functions, as in bash: not on the remote host. In a quoted command too, whose words
+	# are not otherwise changed. What compinit and the glue autoload (compdef, is-at-least)
+	('mssh h _mssh_complete_t', '', [], False),
+	('mssh h "_mssh_complete_t', '', [], False),
+	('mssh h _zzh', '_zzhelper() { : }', [], False),
+	('mssh h compdu', '', [], False),
+	('mssh h "is-at-l', '', [], False),
+	('mssh h add-zsh-ho', '', [], False),
+	('mssh h sudo _mssh_complete_t', '', [], False),
+	# the operator's other functions and aliases stay, typed as words and in a quoted command
+	('mssh h zzlocalf', 'zzlocalfn() { : }', [], True),
+	('mssh h "zzlocalf', 'zzlocalfn() { : }', [], True),
+	('mssh h zzali', 'alias zzalias=true', [], True),
+	# a name a command on PATH has stays
+	('mssh h _zzp', 'path+=($PWD); _zzpathcmd() { : }', ['_zzpathcmd'], True),
+	# a file here with the name stays
+	('mssh h _mssh_complete_t', '', ['_mssh_complete_tzz'], True),
+])
+def test_zsh_offers_the_operator_s_functions_but_not_its_own_as_remote_command_names(tmp_path, typed, extra, executables, offered):
+	line, got = review_line(tmp_path, 'zsh', typed, extra=extra, executables=executables)
+	assert (line != typed) == offered, line
+
+
+@pytest.mark.parametrize('typed, gone, kept', [
+	('mssh h fish_pro', 'fish_prompt', None),
+	('mssh h "fish_pro', 'fish_prompt', None),
+	('mssh h __mssh', '__mssh_complete', None),
+	('mssh h __fish_pr', '__fish_print_addresses', None),
+	('mssh h prompt_p', 'prompt_pwd', None),
+	('mssh h funcs', 'funcsave', None),
+	('mssh h sudo fish_pro', 'fish_prompt', None),
+	# the operator's other functions, and fish's that a remote shell has too
+	('mssh h zzlocalf', None, 'zzlocalfn'),
+	('mssh h "zzlocalf', None, 'zzlocalfn'),
+	('mssh h pushd', None, 'pushd'),
+	# a name a command on PATH has
+	('mssh h fish_zz', None, 'fish_zzcmd'),
+])
+def test_fish_offers_the_operator_s_functions_but_not_its_own_as_remote_command_names(tmp_path, typed, gone, kept):
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	bin_dir = tmp_path / 'bin'
+	bin_dir.mkdir()
+	(bin_dir / 'fish_zzcmd').write_text('#!/bin/sh\n')
+	(bin_dir / 'fish_zzcmd').chmod(0o755)
+	glue = home / 'with-function.fish'
+	glue.write_text(glue_file(home, 'fish').read_text() + '\nfunction zzlocalfn; end\n')
+	found = [text for text, _ in fish_complete(dict(env, PATH=str(bin_dir) + os.pathsep + env['PATH']), glue, typed, cwd=work)]
+	if gone:
+		assert not [text for text in found if gone in text], found
+	if kept:
+		assert [text for text in found if kept in text], found
+
+
+def test_fish_a_local_file_named_as_a_function_of_fish_stays(tmp_path):
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / 'fish_prompt').write_text('#!/bin/sh\n')
+	found = [text for text, _ in fish_complete(env, glue_file(home, 'fish'), 'mssh h fish_pro', cwd=work)]
+	assert 'fish_prompt' in found, found
+
+
 @pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
 @pytest.mark.parametrize('typed, files, written', [
 	("mssh h grep 'a' \"zz", ['zz a'], None),

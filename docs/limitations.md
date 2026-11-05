@@ -506,18 +506,6 @@ each entry).
 
 Found while confirming and reviewing 6.42's fixes (the user's words are in each entry).
 
-### zsh and fish offer this shell's own functions as remote command names
-- Kind: deferred
-- What the operator sees: in zsh, a remote command's name completes from this shell's functions and aliases (through
-  `_normal`'s command names), its internal ones too: `mssh h zzlocalf<TAB>` gives a local function `zzlocalfn`, and
-  `mssh h _mssh_complete_t<TAB>` the glue's own `_mssh_complete_take_ctrl_r`. In fish, `mssh h fish_pro<TAB>` gives
-  `fish_prompt`, and `mssh h __mssh<TAB>` lists the glue's own `__mssh_complete*` functions. bash and ble.sh no longer
-  offer this shell's internal functions since 6.42 (names starting with `_`, bash-completion's `quote`, `dequote` and
-  `quote_readline`, ble.sh's own), and still offer the operator's (`module`, `ml`, `nvm`).
-- Why: 6.42 fixed bash first; zsh and fish need the same rule in their own glue.
-- Revisit when: the change after 6.42.
-- Approved: 2026-11-04, the user chose "Fix after 6.42 (Recommended)".
-
 ### ble.sh: in a quoted word, the second try finds nothing after a directory or an expansion
 - Kind: known limitation
 - What the operator sees: with ble.sh, in a quoted word, ble.sh's second try (its retry matching the typed letters in

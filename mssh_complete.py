@@ -7183,7 +7183,7 @@ _mssh() {
 	(( _mssh_complete_files )) && _files
 	# while the remote command's completion runs, compadd is _mssh_complete_compadd, which hands on to the compadd there
 	# was (fzf-tab's, the builtin). Left in place by a completion cut short, it hands on as it is outside _mssh
-	if (( _mssh_complete_remoting )) && [[ $functions[compadd] != $functions[_mssh_complete_compadd] ]]; then
+	if (( _mssh_complete_delegating )) && [[ $functions[compadd] != $functions[_mssh_complete_compadd] ]]; then
 		unfunction _mssh_complete_saved_compadd 2>/dev/null
 		(( ${+functions[compadd]} )) && functions[_mssh_complete_saved_compadd]=$functions[compadd]
 		functions[compadd]=$functions[_mssh_complete_compadd]
@@ -7206,7 +7206,7 @@ _mssh() {
 		# -o default), unless the engine said there is nothing to offer here (nodefault: a password)
 		(( compstate[nmatches] > _mssh_complete_matches || _mssh_complete_nodefault )) || _default "$@"
 	} always {
-		if (( _mssh_complete_remoting )); then
+		if (( _mssh_complete_delegating )); then
 			if (( ${+functions[_mssh_complete_saved_compadd]} )); then
 				functions[compadd]=$functions[_mssh_complete_saved_compadd]
 				unfunction _mssh_complete_saved_compadd
@@ -7243,9 +7243,12 @@ _mssh_complete_quote_in() {
 }
 
 _mssh_complete_compadd() {
-	# compadd while the completion of a remote command typed as words runs (_mssh_complete_remoting of _mssh, a quoted
-	# argument's too): its words
-	# go in as mssh's remote command needs them, as in the bash glue (_mssh_complete_remote). A word holding whitespace is
+	# compadd while the completion of a remote command runs (_mssh_complete_delegating of _mssh). A function of this shell's
+	# own is left out, as in the bash glue (_mssh_complete_delegate): no command on the remote host (_normal's command names
+	# gave the glue's _mssh_complete_take_ctrl_r): by name, a leading underscore (zsh's completion functions, the glue's and
+	# the plugins') or what compinit and the glue autoload, unless a file here or a command on PATH has the name; the
+	# operator's other functions and the aliases stay. Typed as words (_mssh_complete_remoting, a quoted argument's too) its
+	# words also go in as mssh's remote command needs them, as in the bash glue (_mssh_complete_remote). A word holding whitespace is
 	# left out (mssh would run each command word as a command of its own), unless the call only filters an array (-D,
 	# which keeps it in step with the words), and one holding a character the remote shell reads is quoted for it first:
 	# zza&b goes in as zza\\\&b (a word of -Q is quoted already: unquoted first). Such a word goes in without -f, whose
@@ -7254,7 +7257,7 @@ _mssh_complete_compadd() {
 	# (zzd\\\&x/ for zzd&x/). The words of -a and -k are taken from their arrays. A call storing its matches (-O, -A)
 	# goes on as it came, as every call does outside _mssh: what it stores reaches the line only through another call
 	# (compadd -a), which comes here. Then the compadd there was: fzf-tab's, the builtin
-	if (( ! ${_mssh_complete_remoting:-0} )); then
+	if (( ! ${_mssh_complete_delegating:-0} )); then
 		_mssh_complete_next_compadd "$@"
 		return
 	fi
@@ -7334,7 +7337,7 @@ _mssh_complete_compadd() {
 	else
 		_mssh_complete_in=("${(@)argv[_mssh_complete_at,-1]}")
 	fi
-	if (( _mssh_complete_quoted && _mssh_complete_hidden_at )); then
+	if (( _mssh_complete_remoting && _mssh_complete_quoted && _mssh_complete_hidden_at )); then
 		# each directory of -p that is not the one typed in its place (zsh completed or quoted it) as the remote shell reads it
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
 		_mssh_complete_typed=("${(@s:/:)PREFIX}")
@@ -7356,6 +7359,15 @@ _mssh_complete_compadd() {
 		_mssh_complete_word=$_mssh_complete_in[_mssh_complete_index]
 		_mssh_complete_name=$_mssh_complete_word
 		(( _mssh_complete_quoted )) && _mssh_complete_name=${(Q)_mssh_complete_word}
+		if (( ! _mssh_complete_filter && ${+functions[$_mssh_complete_name]} && ! ${+commands[$_mssh_complete_name]} )) &&
+			[[ $_mssh_complete_name == (_*|compaudit|compdef|compdump|compinit|compinstall|bashcompinit|add-zsh-hook|add-zle-hook-widget|is-at-least) && ! -e $_mssh_complete_prefix$_mssh_complete_name ]]; then
+			continue
+		fi
+		if (( ! _mssh_complete_remoting )); then
+			_mssh_complete_out+=("$_mssh_complete_word")
+			(( _mssh_complete_shown_at )) && _mssh_complete_kept+=("$_mssh_complete_shown[_mssh_complete_index]")
+			continue
+		fi
 		if _mssh_complete_blank "$_mssh_complete_name" && (( ! _mssh_complete_filter )); then
 			continue
 		fi
@@ -8052,6 +8064,14 @@ switch "$FISH_VERSION"
 						for item in (complete -C (string trim -l -- "$cmdline"))
 							set -l parts (string split -m 1 \t -- $item)
 							string match -qr -- $blank $parts[1]; and continue
+							# a function of this shell's own is no command on the remote host, as in the bash glue
+							# (_mssh_complete_delegate): by name, a leading underscore (the glue's, fish's __fish_*) or
+							# fish's own that only make sense in fish, unless a file here or a command on PATH has the
+							# name. The operator's other functions stay, and fish's that remote shells have too (ls, cd)
+							if string match -qr -- '^(_.*|fish_.*|N_|contains_seq|cdh|dirh|nextd|nextd-or-.*|prevd|prevd-or-.*|funced|funcsave|psub|vared|down-or-search|up-or-search|edit_command_buffer|delete-or-exit|prompt_hostname|prompt_login|prompt_pwd)$' $parts[1]
+								and functions -q -- $parts[1]
+								test -e $parts[1]; or command -sq -- $parts[1]; or continue
+							end
 							# (a control character stands in for the backslash: fish 3.3 reads a backslash before $1 as quoting it). A
 							# ~ a name starts with too: the word went to complete -C escaped, so it is a local name's, which the remote
 							# shell would expand
