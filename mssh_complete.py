@@ -21,7 +21,7 @@ try:
 except ImportError:  # not POSIX: the shells are, so nothing starts the detached processes there
 	fcntl = None
 
-version = '0.15'
+version = '0.16'
 __version__ = version
 PROTOCOL = 'MSSHC1'
 MSSH_NAMES = ('mssh', 'mssh3', 'multissh', 'multissh3', 'multiSSH3')
