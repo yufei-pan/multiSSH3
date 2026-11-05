@@ -7415,6 +7415,10 @@ _mssh_complete_compadd() {
 			[[ $_mssh_complete_name == (_*|compaudit|compdef|compdump|compinit|compinstall|bashcompinit|add-zsh-hook|add-zle-hook-widget|is-at-least) && ! -e $_mssh_complete_prefix$_mssh_complete_name ]]; then
 			continue
 		fi
+		# (and _normal's parameters at a command's place, offered for an assignment: the glue's own, _comps, with an underscore)
+		if (( ! _mssh_complete_filter && ${+parameters[$_mssh_complete_name]} )) && [[ $_mssh_complete_name == _* ]]; then
+			continue
+		fi
 		if (( _mssh_complete_remoting )); then
 			if _mssh_complete_blank "$_mssh_complete_name" && (( ! _mssh_complete_filter )); then
 				continue

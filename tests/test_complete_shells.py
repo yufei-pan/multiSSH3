@@ -1590,6 +1590,7 @@ def test_bash_completion_s_helpers_without_an_underscore_are_no_remote_command_n
 	('mssh h _zzh', '_zzhelper() { : }', [], False),
 	('mssh h compdu', '', [], False),
 	('mssh h "is-at-l', '', [], False),
+	('mssh h _mssh_complete_start_sc', '', [], False),
 	('mssh h add-zsh-ho', '', [], False),
 	('mssh h sudo _mssh_complete_t', '', [], False),
 	# the operator's other functions and aliases stay, typed as words and in a quoted command
