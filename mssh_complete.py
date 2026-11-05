@@ -5935,10 +5935,13 @@ _mssh_complete_head() {
 	# (in a quoted command, which mssh hands on whole, whitespace stays the remote shell's)
 	(( ! _mssh_complete_qcommand )) && _mssh_complete_blank "$_mssh_complete_value" && return 1
 	_mssh_complete_rest=${1:${#_mssh_complete_kept}}
-	_mssh_complete_head_path= _mssh_complete_head_read=0
-	if [[ -n $_mssh_complete_kept ]] && _mssh_complete_local_path "$_mssh_complete_kept"; then
-		_mssh_complete_head_path=$_mssh_complete_value
-		_mssh_complete_head_read=1
+	_mssh_complete_head_path= _mssh_complete_head_read=1
+	if [[ -n $_mssh_complete_kept ]]; then
+		if _mssh_complete_local_path "$_mssh_complete_kept"; then
+			_mssh_complete_head_path=$_mssh_complete_value
+		else
+			_mssh_complete_head_read=0
+		fi
 	fi
 	_mssh_complete_unescape "$_mssh_complete_kept"
 	_mssh_complete_head_name=${_mssh_complete_xfields[1]-}$_mssh_complete_value
@@ -6133,7 +6136,8 @@ _mssh_complete_remote() {
 			continue
 		fi
 		_mssh_complete_item=$_mssh_complete_value$_mssh_complete_space
-		if (( _mssh_complete_ble )) && (( ! _mssh_complete_inquote )) && [[ ${2-} == 1 && $_mssh_complete_item != */ ]]; then
+		# (in a quote only alone, _mssh_complete_stay; not on ble.sh's second try, whose word it matches its own way)
+		if (( _mssh_complete_ble && ( ! _mssh_complete_inquote || ( ! _mssh_complete_asked_again && ${#_mssh_complete_delegated[@]} == 1 ) ) )) && [[ ${2-} == 1 && $_mssh_complete_item != */ ]]; then
 			# (alone, the word wants no space after its /)
 			if [[ ! -d $_mssh_complete_item ]] && _mssh_complete_is_dir "$_mssh_complete_path"; then
 				_mssh_complete_item+=/
@@ -6174,7 +6178,7 @@ _mssh_complete_unspace() {
 _mssh_complete_filenames() {
 	# readline's file name mode off (one switch for the whole reply), and the delegate's names as the glue writes them
 	# (_mssh_complete_write), unless noquote without fullquote outside a quoted command (as they are); / after a directory's
-	# name when filenames was on (not in a quoted command, where readline marks none, nor for a word mssh offers itself,
+	# name when filenames was on (in a quote only for a name alone, _mssh_complete_stay; not for a word mssh offers itself,
 	# which is the same word: the dedup keeps one). The mode would put / after mssh's own remote words that name a local
 	# directory, and leave a leading ~ of theirs for this shell to expand. $1: the options compopt printed, ending in a
 	# space. Reads _mssh_complete_reply, sets _mssh_complete_delegated of _mssh_complete_tab. fullquote is new in bash 5.3:
@@ -6185,7 +6189,7 @@ _mssh_complete_filenames() {
 	compopt +o filenames 2>/dev/null || :
 	compopt +o fullquote 2>/dev/null || :
 	(( _mssh_complete_inquote )) || [[ $1 == *' -o fullquote '* || $1 != *' -o noquote '* ]] && _mssh_complete_quoting=1
-	(( ! _mssh_complete_inquote )) && [[ $1 == *' -o filenames '* ]] && _mssh_complete_mark=1
+	(( ! _mssh_complete_inquote || ${#_mssh_complete_delegated[@]} == 1 )) && [[ $1 == *' -o filenames '* ]] && _mssh_complete_mark=1
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
 		_mssh_complete_own["x$_mssh_complete_item"]=1
 	done
@@ -6526,7 +6530,26 @@ _mssh_complete_tab() {
 			COMPREPLY=("$_mssh_complete_one")
 		fi
 	fi
+	(( _mssh_complete_inquote && _mssh_complete_marked && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
 	return 0
+}
+
+_mssh_complete_stay() {
+	# a directory alone in a quote, that the glue marked: the quote stays open, so the operator goes on into it. Neither
+	# closes it by a directory's own rule, as both test the word as a path here, and the word is the command typed (ls zzdir/)
+	# or the remote shell's (zzd\\&x/). Neither has an option for it either (readline's nospace only leaves out the space).
+	# ble.sh: inserted by its action for a part of a word, which adds nothing after it. readline: a second word that continues
+	# this one, so it inserts what they share and adds nothing. A bell for it then, as for any TAB with more than one name,
+	# and the two listed under show-all-if-ambiguous; under menu-complete (COMP_TYPE 37), which would cycle to the second word,
+	# it closes as before
+	if (( _mssh_complete_ble )); then
+		if declare -F ble/complete/cand/yield >/dev/null; then
+			ble/complete/cand/yield substr "$COMPREPLY" ''
+			COMPREPLY=()
+		fi
+	elif (( ${COMP_TYPE:-9} != 37 )); then
+		COMPREPLY+=("$COMPREPLY.")
+	fi
 }
 
 complete -o default -o bashdefault -F _mssh_complete mssh mssh3 multissh multissh3 multiSSH3 2>/dev/null

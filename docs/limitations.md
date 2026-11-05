@@ -481,19 +481,6 @@ each entry).
 - Revisit when: an operator in such a locale hits it.
 - Approved: 2026-11-03, the user chose "Both known limitations (Recommended)".
 
-### A directory completed in a quoted command or argument closes the quote
-- Kind: deferred
-- What the operator sees: in bash, a directory completed in a quoted command closes the quote: `mssh h "ls zzd<TAB>` gives
-  `"ls zzdir" `, and `mssh h "cat ~bi<TAB>` gives `"cat ~bin/"`; the quote has to be taken out to go on into the directory.
-  6.40 did the same for `"ls zzd<TAB>`. In a quoted argument a directory whose name the glue writes for the remote shell
-  does too, under readline and ble.sh (`mssh h ls "zzd<TAB>` gives `ls "zzd\\&x" `); zsh keeps the quote open.
-- Why: readline closes the quote of a single match unless its file name mode finds the match is a directory; in a quoted
-  command the match is the whole command typed (`ls zzdir`), and in a quoted argument the glue's written word
-  (`zzd\\&x`), neither of which names one. ble.sh closes it too.
-- Revisit when: 6.41 has shipped.
-- Approved: 2026-11-03, the user chose "Defer both (Recommended)"; quoted arguments added the same day, "Extend the
-  deferral (Recommended)".
-
 ## Found in 6.42's review
 
 Found while confirming and reviewing 6.42's fixes (the user's words are in each entry).

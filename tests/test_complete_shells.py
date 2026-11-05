@@ -939,6 +939,60 @@ def test_bash_the_common_start_of_names_stays_as_typed_and_the_next_tab_complete
 	assert line == typed + 'plain ' and remote == ['cat', str(tmp_path / 'two' / 'home' / 'zzplain')], line
 
 
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, dirs, expected, remote', [
+	# in a quoted command, whose word is the command typed: no directory here by that name
+	('mssh h "ls zzd', ['zzdir'], 'mssh h "ls zzdir/', ['ls', 'zzdir/']),
+	("mssh h 'ls zzd", ['zzdir'], "mssh h 'ls zzdir/", ['ls', 'zzdir/']),
+	('mssh h "ls zzd', ['zzd&x'], 'mssh h "ls zzd\\\\&x/', ['ls', 'zzd&x/']),
+	("mssh h 'ls zzd", ['zzd&x'], "mssh h 'ls zzd\\&x/", ['ls', 'zzd&x/']),
+	('mssh h "ls zzd', ['zzd x'], 'mssh h "ls zzd\\\\ x/', ['ls', 'zzd x/']),
+	('mssh h "ls $PWD/zzd', ['zzdir'], 'mssh h "ls $PWD/zzdir/', None),
+	# in a quoted argument and a quoted first word, a directory whose written name changes
+	('mssh h ls "zzd', ['zzd&x'], 'mssh h ls "zzd\\\\&x/', ['ls', 'zzd&x/']),
+	('mssh h "zzd', ['zzd&x'], 'mssh h "zzd\\\\&x/', ['zzd&x/']),
+	# (one that does not change: readline and ble.sh do it themselves)
+	('mssh h ls "zzd', ['zzdir'], 'mssh h ls "zzdir/', ['ls', 'zzdir/']),
+	# a user's home being typed
+	('mssh h "cat ~bi', [], 'mssh h "cat ~bin/', None),
+])
+def test_a_directory_completed_in_a_quote_leaves_it_open(tmp_path, shell, typed, dirs, expected, remote):
+	# readline and ble.sh closed it, with a space after it unless the glue had marked the directory ("ls zzdir" , "cat ~bin/"):
+	# each tests the word as a path here to know a directory, and the word is the command typed or the remote shell's
+	line, got = review_line(tmp_path, shell, typed, dirs=dirs)
+	assert line == expected
+	if remote:
+		assert got == remote
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_directory_in_a_quote_can_be_gone_on_into(tmp_path, shell):
+	line, got = review_line(tmp_path, shell, 'mssh h "ls zzd', dirs=['zzdir'], files=['zzdir/in1', 'zzdir/in2'], steps=['i', '\t'])
+	assert line == 'mssh h "ls zzdir/in' and got == ['ls', 'zzdir/in']
+	(tmp_path / 'next').mkdir()
+	line, got = review_line(tmp_path / 'next', shell, 'mssh h "ls zzd', dirs=['zzdir'], files=['zzdir/only'], steps=['\t'])
+	assert line == 'mssh h "ls zzdir/only" ' and got == ['ls', 'zzdir/only']
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_file_completed_in_a_quote_still_closes_it_and_several_names_stop_at_their_start(tmp_path, shell):
+	(tmp_path / 'one').mkdir()
+	(tmp_path / 'two').mkdir()
+	assert review_line(tmp_path / 'one', shell, 'mssh h "ls zzp', files=['zzplain'])[0] == 'mssh h "ls zzplain" '
+	assert review_line(tmp_path / 'two', shell, 'mssh h "ls zz', dirs=['zzdir', 'zzdirb'])[0] == 'mssh h "ls zzdir'
+
+
+def test_readline_show_all_if_ambiguous_leaves_the_quote_open_after_a_directory(tmp_path):
+	line, got = review_line(tmp_path, 'readline', 'mssh h "ls zzd', dirs=['zzdir'], extra="bind 'set show-all-if-ambiguous on'")
+	assert line == 'mssh h "ls zzdir/'
+
+
+def test_readline_menu_complete_never_inserts_the_second_word_of_a_directory_in_a_quote(tmp_path):
+	# menu-complete cycles the names and closes the quote after each, whatever they are: a directory alone comes as before
+	line, got = review_line(tmp_path, 'readline', 'mssh h "ls zzd', dirs=['zzdir'], extra="bind 'TAB:menu-complete'", steps=['\t'])
+	assert not line.rstrip('" ').endswith('/.') and got == ['ls', 'zzdir/'], line
+
+
 @pytest.mark.parametrize('typed, expected, remote_word', [
 	('mssh h "ls $PWD/zzd', 'mssh h "ls $PWD/zzdir/', '/zzdir/'),
 	('mssh h "ls ${PWD}/zzd', 'mssh h "ls ${PWD}/zzdir/', '/zzdir/'),
@@ -1026,7 +1080,7 @@ def test_zsh_quoted_expansion_completes_with_compinit_after_the_first_prompt(tmp
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
 @pytest.mark.parametrize('typed, expected', [
-	('mssh h "ls $PWD/zzd', 'mssh h "ls $PWD/zzdir" '),
+	('mssh h "ls $PWD/zzd', 'mssh h "ls $PWD/zzdir/'),
 	('mssh h "echo \\"a b\\"; cat $HOME/zzh', 'mssh h "echo \\"a b\\"; cat $HOME/zzhplain" '),
 	('mssh h "echo $USER; cat zzpl', 'mssh h "echo $USER; cat zzplain" '),
 ])
@@ -1110,7 +1164,7 @@ def test_a_local_file_name_holding_braces_is_not_expanded_here(tmp_path, shell):
 @pytest.mark.parametrize('typed, dirs, files, remote', [
 	('mssh h rmdir ', ['~'], [], ['rmdir', '~/']),
 	('mssh h cat ', [], ['~bin'], ['cat', '~bin']),
-	('mssh h "rm -r ', ['~'], [], ['rm', '-r', '~']),
+	('mssh h "rm -r ', ['~'], [], ['rm', '-r', '~/']),
 ])
 def test_a_local_name_starting_with_a_tilde_reaches_the_remote_shell_as_named(tmp_path, shell, typed, dirs, files, remote):
 	# a local directory named ~ went in as \~/, and the remote shell read its home: rmdir ~/, or in a quoted command rm -r ~;
