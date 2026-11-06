@@ -200,6 +200,10 @@ def takes_passed_on_value(dest, text, spec):
 LOOKUP_DESTS = frozenset(('env_file', 'env_files', 'host_file', 'config_file'))
 PATH_DESTS = frozenset(('file', 'file_sync', 'env_file', 'env_files', 'config_file', 'store_config_file', 'host_file', 'history_file'))
 USER_DESTS = frozenset(('username', 'ipmi_username'))
+# every string of the options naming a local file (PATH_DESTS and -k): the glues' words for local file names when the engine
+# gives no answer. The glues have no spec to read, and a test holds this to mssh's parser
+FILE_OPTION_WORDS = ('-f', '--file', '-s', '-fs', '--file_sync', '-ef', '--env_file', '-efs', '--env_files', '--config_file', '--store_config_file',
+	'--host_file', '-hf', '--history_file', '-k', '--identity_file', '--key', '--identity')
 
 def _one_line(text):
 	'''text on one line, with NUL, tabs and newlines turned into single spaces.'''
@@ -5884,6 +5888,26 @@ _mssh_complete() {
 	_mssh_complete_guard _mssh_complete_tab "$@"
 }
 
+_mssh_complete_unanswered() {
+	# no answer from the engine (past MSSH_COMPLETE_TIMEOUT, failing, another protocol): bash's own default gives file names quoted
+	# for this shell alone. Right for the first word, a word the engine would read as hosts, and for the value of one of mssh's file
+	# options (the word after it, after its = too, not after a --, which ends mssh's options). Elsewhere, which the glue cannot tell
+	# without the engine, it may be a remote command's word (zzamp\&b reached the remote shell as zzamp&b) or a password: nothing
+	# (ble.sh's second try, for a word of its own that the line ends with, not the word typed, COMPS: its first ask decided)
+	local _mssh_complete_at=$COMP_CWORD
+	if (( _mssh_complete_typed_line )) && [[ $_mssh_complete_before != *"$COMPS" ]]; then
+		:
+	elif (( _mssh_complete_at == 1 )); then
+		[[ ${COMP_WORDS[1]-} != -* ]] && return 0
+	else
+		[[ ${COMP_WORDS[_mssh_complete_at-1]} == '=' ]] && (( _mssh_complete_at-- ))
+		[[ " @FILE_OPTIONS@ " == *" ${COMP_WORDS[_mssh_complete_at-1]} "* && " ${COMP_WORDS[*]:1:_mssh_complete_at-1} " != *' -- '* ]] && return 0
+	fi
+	compopt +o default +o bashdefault 2>/dev/null || :
+	(( _mssh_complete_ble )) && { compopt -o ble/no-default 2>/dev/null || :; }
+	return 0
+}
+
 _mssh_complete_unescape() {
 	# $1 without the backslash of each \x, into _mssh_complete_value: a completion's shell text (scp's solo\ one.txt) as
 	# the name it stands for. By parameter expansion, not read -r: ble.sh hooks read while a completion function runs
@@ -6368,8 +6392,8 @@ _mssh_complete_tab() {
 			} | _mssh_complete_engine query 2>/dev/null || :
 		) || return 1
 		printf '%s' "$_mssh_complete_resp"
-	) || return 0
-	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || return 0
+	) || { _mssh_complete_unanswered; return 0; }
+	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || { _mssh_complete_unanswered; return 0; }
 	local -a _mssh_complete_lines=()
 	mapfile -t _mssh_complete_lines <<< "$_mssh_complete_resp"
 	for _mssh_complete_line in "${_mssh_complete_lines[@]}"; do
@@ -6403,7 +6427,7 @@ _mssh_complete_tab() {
 			E) _mssh_complete_ended=1 ;;
 		esac
 	done
-	(( _mssh_complete_ended )) || return 0
+	(( _mssh_complete_ended )) || { _mssh_complete_unanswered; return 0; }
 	# (an engine before 6.41 sends neither: text before the word, or a word opening a quote, is a quoted command's there.
 	# Under ble.sh the word typed is COMPS, unless ble.sh asks again for a word of its own, an empty one, to match in any
 	# order: the line it hands over then ends with that word, not with COMPS)
@@ -7238,17 +7262,24 @@ _mssh() {
 	# its spaces backslashed), and what goes in replaces the word from its opening quote. The word is read from the line as
 	# typed: the quote goes in IPREFIX, so it stays there, and every word goes in as in an open quote
 	# (_mssh_complete_open, _mssh_complete_dq); with the cursor inside the word nothing is offered, or the quote would go
-	local _mssh_complete_open=$compstate[quote]
+	# (after the = of an option too: mssh --file="$PWD/zz, the option its own part of the line)
+	local _mssh_complete_open=$compstate[quote] _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
 	local -i _mssh_complete_dq=0
-	if [[ -z $compstate[quote] && $words[CURRENT] == \"* && ${${words[CURRENT]//\\?/}//[^\"]/} == \" ]]; then
+	if [[ $_mssh_complete_word == -*=\"* ]]; then
+		_mssh_complete_lead=${_mssh_complete_word%%=*}=
+		_mssh_complete_word=${_mssh_complete_word#*=}
+	fi
+	if [[ -z $compstate[quote] && $_mssh_complete_word == \"* && ${${_mssh_complete_word//\\?/}//[^\"]/} == \" ]]; then
 		[[ -z $SUFFIX ]] || return 0
 		_mssh_complete_dq=1
 		_mssh_complete_open=\"
-		IPREFIX=\"
-		PREFIX=${words[CURRENT]#\"}
+		IPREFIX=$_mssh_complete_lead\"
+		PREFIX=${_mssh_complete_word#\"}
 		_mssh_complete_textopts=(-Q -S '" ')
+	else
+		_mssh_complete_lead=
 	fi
-	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} ${_mssh_complete_open}$PREFIX"
+	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} $_mssh_complete_lead${_mssh_complete_open}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
 	_mssh_complete_read_locale
 	_mssh_complete_flags="nosort=1 icase=0 zas=$(( ${+functions[_zsh_autosuggest_start]} )) term=$TERM $_mssh_complete_locale"
@@ -7275,8 +7306,12 @@ _mssh() {
 		[[ $_mssh_complete_resp == *$'\0' ]] && break
 	done
 	exec {_mssh_complete_qfd}<&-
-	# no answer (the engine failed, was too slow, or speaks another protocol) offers nothing
-	[[ $_mssh_complete_resp == MSSHC1$'\n'*$'\n'E$'\n'$'\0' ]] || _mssh_complete_resp=
+	# no answer (the engine failed, was too slow, or speaks another protocol) offers nothing, and what zsh offers below only where
+	# file names are right (_mssh_complete_local_word)
+	if [[ $_mssh_complete_resp != MSSHC1$'\n'*$'\n'E$'\n'$'\0' ]]; then
+		_mssh_complete_resp=
+		_mssh_complete_local_word || _mssh_complete_nodefault=1
+	fi
 	for _mssh_complete_line in "${(@f)${_mssh_complete_resp%$'\0'}}"; do
 		_mssh_complete_kind=${_mssh_complete_line[1]}
 		_mssh_complete_rest=${_mssh_complete_line[3,-1]}
@@ -7344,6 +7379,8 @@ _mssh() {
 		functions[compadd]=$functions[_mssh_complete_compadd]
 	fi
 	{
+		# (a file name after an option's =: the name alone is the word)
+		(( _mssh_complete_delegating )) || [[ $PREFIX != -*=* ]] || compset -P 1 '*='
 		(( _mssh_complete_files )) && _files
 		if (( _mssh_complete_delegating )); then
 			# (a quoted command's words are the ones inside its quote; a quoted argument is a word of the line's)
@@ -7381,6 +7418,22 @@ _mssh() {
 		fi
 	}
 	return 0
+}
+
+_mssh_complete_local_word() {
+	# with no answer from the engine, whether file names are right for the word at the cursor: the first word, a word the engine would
+	# read as hosts, and the value of one of mssh's file options (the word after it, or after its =, not after a --, which ends mssh's
+	# options). Elsewhere, which the glue cannot tell without the engine, it may be a remote command's word or a password
+	local -a _mssh_complete_named
+	_mssh_complete_named=(@FILE_OPTIONS@)
+	local _mssh_complete_word=$words[CURRENT-1]
+	if [[ $words[CURRENT] == --*=* ]]; then
+		_mssh_complete_word=${words[CURRENT]%%=*}
+	elif (( CURRENT == 2 )); then
+		[[ $words[2] != -* ]]
+		return
+	fi
+	(( ${_mssh_complete_named[(Ie)$_mssh_complete_word]} && ! ${${(@)words[2,CURRENT-1]}[(Ie)--]} ))
 }
 
 _mssh_complete_blank() {
@@ -8261,6 +8314,29 @@ switch "$FISH_VERSION"
 		# needs fish 3.0 or later: register nothing
 	case '*'
 ''' + _fish_nested(_FISH_QUERY, 2) + r'''
+		function __mssh_complete_local_word --argument-names word
+			# with no answer from the engine, whether file names are right for word: the first word, a word the engine would read as
+			# hosts, and the value of one of mssh's file options (the word after it, or after its =, not after a --, which ends
+			# mssh's options). Elsewhere, which the glue cannot tell without the engine, it may be a remote command's word or a password
+			set -l words (commandline -opc)
+			set -e words[1]
+			set -l named @FILE_OPTIONS@
+			if string match -q -- '--*=*' "$word"
+				set -a words (string replace -r '=.*' '' -- "$word")
+			else if not set -q words[1]
+				not string match -q -- '-*' "$word"
+				return
+			end
+			contains -- $words[-1] $named; and not contains -- -- $words[1..-2]
+		end
+		function __mssh_complete_file_names --argument-names word
+			# the file names word starts, after an option's = too: fish 3.3's __fish_complete_path takes the whole word for a path
+			if string match -q -- '-*=*' "$word"
+				__fish_complete_path (string replace -r '^[^=]*=' '' -- "$word") | string replace -r -- '^' (string replace -r '=.*' '=' -- "$word")
+			else
+				__fish_complete_path "$word"
+			end
+		end
 		function __mssh_complete
 			set -l before (string join \n -- (commandline -cp))
 			set -l full (string join \n -- (commandline -p))
@@ -8268,8 +8344,8 @@ switch "$FISH_VERSION"
 			set -l word (commandline -ct)
 			set -l lines (__mssh_complete_query nul=0 "$before" "$after" "$word")
 			or begin
-				# no answer (slow, failing or missing engine): file names, as bash's default completion gives
-				__fish_complete_path "$word"
+				# no answer (slow, failing or missing engine): file names where they are right, as in the bash glue
+				__mssh_complete_local_word "$word"; and __mssh_complete_file_names "$word"
 				return
 			end
 			set -l files 0
@@ -8332,7 +8408,7 @@ switch "$FISH_VERSION"
 				end
 			end
 			if test $files = 1
-				__fish_complete_path (commandline -ct)
+				__mssh_complete_file_names (commandline -ct)
 			end
 		end
 		for name in mssh mssh3 multissh multissh3 multiSSH3
@@ -8544,7 +8620,7 @@ def render_glue(shell, command=None):
 	command = engine_command() if command is None else command
 	quote = _fish_quote if shell.startswith('fish') else shlex.quote
 	text = _GLUES[shell].replace('@VERSION@', version).replace('@ENGINE@', ' '.join(quote(word) for word in command))
-	text = text.replace('@START@', quote(START_SCRIPT))
+	text = text.replace('@START@', quote(START_SCRIPT)).replace('@FILE_OPTIONS@', ' '.join(FILE_OPTION_WORDS))
 	return _zsh_guard(text) if shell == 'zsh' else text
 
 #%% ------------ Printing to a reader that may go ----------------

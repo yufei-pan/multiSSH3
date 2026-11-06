@@ -83,3 +83,9 @@ entries go last, in the same commit as the change:
 - Why we had to change: under `sudo -E` a user's own dotfiles link counted as someone else's: `b` moved the link to the `.bak` and put a regular file in its place, a new config was root's `0600` file the user could not read, and an NFS home that squashes root could not be written at all.
 - Original design was wrong because: it decided "whose file is this" from the real uid alone, so root could not tell the user who ran sudo from a stranger, and it then had root do the user's write with root's rights, where the kernel's own checks for that user were the rule we wanted.
 - Lesson: when root acts on a user's behalf, do it with that user's rights and let the kernel decide what they may write, rather than re-implementing their permissions as root. Compare ownership with the effective uid, which is the identity the write runs under.
+
+## 2026-11-06 multiSSH3: no answer offers file names only where they are right
+- Changed: with no answer from the engine (past MSSH_COMPLETE_TIMEOUT, failing, another protocol) the glues give file names only for the first word and for the value of one of mssh's file options; every other word gets nothing. Before, every word got the shell's default file names.
+- Why we had to change: `mssh h cat zza<TAB>` went in as `zzamp\&b`, quoted for this shell alone, and the remote shell read `cat zzamp&b`; `mssh -p zza<TAB>` offered a file name at a password.
+- Original design was wrong because: "fall back to the shell's default" assumed the word was this shell's. Only the engine knows a remote command's word from a local one, and it is the part that did not answer.
+- Lesson: a fallback that runs when the source of truth is silent must be right without it: list the few cases it can tell for itself, and give nothing for the rest. The glues keep one list of words (`FILE_OPTION_WORDS`), held to mssh's parser by a test, not a second reading of the line.

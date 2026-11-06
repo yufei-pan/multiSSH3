@@ -633,17 +633,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: 6.44.
 - Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
 
-### Tab past its limit inserts a name quoted for this shell only
-- Kind: deferred (6.44)
-- What the operator sees: when TAB's query misses MSSH_COMPLETE_TIMEOUT (a slow engine, a loaded machine), bash, zsh and
-  fish fall back to file names of this shell, quoted for this shell alone: `mssh h cat zza<TAB>` gives `zzamp\&b `, which
-  the remote shell reads as `cat zzamp&b`. And `mssh -p zza<TAB>` offers a file name at a password.
-- Why: the fallback does not know which word it is completing (a remote command's, a password's); that needs the answer
-  the engine did not give in time. The planned fix is to offer nothing past the limit on a remote-command word and a
-  password word.
-- Revisit when: 6.44.
-- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
-
 ### bash: a file name typed inside double quotes with an expansion reaches mssh unexpanded
 - Kind: deferred (6.44)
 - What the operator sees: in bash (readline), `mssh -f "$PWD/zzs<TAB>` gives `mssh -f "\$PWD/zzs.txt" `: the `$` is escaped,
@@ -653,14 +642,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   a remote command go through the glue's own quoting (`_mssh_complete_filenames`), which does not. With ble.sh and in zsh
   the same lines are right.
 - Revisit when: 6.44. The planned fix is to route mssh's own file-name words through `_mssh_complete_filenames`.
-- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: `--file=` followed by a file name offers nothing
-- Kind: deferred (6.44)
-- What the operator sees: in zsh, `mssh --file=zzs<TAB>` offers no names (`mssh --file zzs<TAB>` does).
-- Why: the engine answers `files` (the shell completes them) and the zsh glue gives `_files` the whole word `--file=zzs`, not the
-  part after the `=`. `mssh --file="$PWD/zzs<TAB>` is the same. Bash and ble.sh complete both.
-- Revisit when: 6.44.
 - Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh-autosuggestions (async, its default): keys arriving together take grey text from the older line

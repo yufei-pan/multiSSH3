@@ -478,7 +478,7 @@ A new block is appended to your rc file; changing or removing it replaces the fi
 
 Ranking uses the rest of the line on both sides of the cursor: after `mssh gpu[01-16] "` the commands you run on those hosts come first, and in the hosts of `mssh ▮ "systemctl restart slurmd"` the hosts you restarted slurmd on come first.
 
-Completion never removes what you typed, prints nothing, and falls back to the shell's normal completion when anything is slow or missing.
+Completion never removes what you typed and prints nothing. When the engine is slow or missing, the first word and the value of mssh's file options (`-f`, `--key`, ...) get the shell's file names; every other word gets nothing, as it may be a remote command's or a password.
 
 In bash with readline's `completion-ignore-case` on (`set completion-ignore-case on` in `~/.inputrc`, or `bind` at any time: it is read at every TAB), what you typed matches in any case, and the candidate's own spelling goes in: `mssh storage-e<TAB>` gives `Storage-East`. Names differing only in case stay different names, as mssh compares host, alias and user names exactly; when they alone are left, which readline cannot tell apart, the one in the case you typed goes in, else the most likely. The words of a command before the one being completed and the directories of a path stay as typed, and an option name typed in its own case is never turned into another (`-S` stays `-S`, never `-s`). Letters match as your locale lowers them: in a non-UTF-8 locale (`LANG=C`, or a locale the system lacks) only ASCII letters, in a Turkish UTF-8 one `I` goes with `ı` and `İ` with `i`.
 
@@ -1382,6 +1382,13 @@ __DEBUG_MODE = False
 > When ssh cannot connect to a host (it exits with 255 after `ssh: connect to host HOST port PORT: REASON`), the default output shows the line as `SSH not reachable!`, `SSH connection timed out!` or `Cannot find host!` followed by the port and ssh's reason, e.g. `SSH connection timed out! (port 22: Connection timed out)`. Without the host name, unreachable hosts merge into one block. `--json` and `--greppable` output keep ssh's line, and a remote program's error that ends the same way is shown as printed.
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
+
+## Upgrading to 6.44 from 6.43
+
+Run `mssh --completion install` again (bash, ble.sh, zsh and fish): the fixes below are in the new glue. What you may notice:
+
+- Change (bash, ble.sh, zsh, fish): when TAB's query misses `MSSH_COMPLETE_TIMEOUT`, or the engine fails, a word that may be a remote command's or a password now gets nothing. It got a file name quoted for this shell alone: `mssh h cat zza<TAB>` gave `zzamp\&b `, which the remote shell read as `cat zzamp&b`, and `mssh -p zza<TAB>` offered a file name at a password. The first word and the value of mssh's file options still get file names (`mssh -f zza<TAB>`, `mssh --file=zza<TAB>`); a hosts word after other options (`mssh -q zza<TAB>`) gets nothing.
+- Fix (zsh, fish 3.3): a file name after an option's `=` completes: `mssh --file=zzs<TAB>` and, in zsh, `mssh --file="$PWD/zzs<TAB>` offered nothing.
 
 ## Upgrading to 6.43 from 6.42
 

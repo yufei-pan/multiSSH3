@@ -3189,19 +3189,60 @@ def test_bash_cursor_in_the_middle_of_a_line_with_multibyte_text(setup):
 		session.close()
 
 
-def test_bash_falls_back_to_file_names_when_the_engine_is_slow(setup):
-	env, home = setup
-	slow = home / 'slow-engine'
-	slow.write_text('#!/bin/sh\nsleep 5\n')
-	slow.chmod(0o755)
+# With no answer from the engine: file names only where they are right, the first word and the value of one of mssh's file options.
+# Elsewhere the word may be a remote command's, where the shell's file name is quoted for this shell alone (mssh h cat zza gave
+# zzamp\\&b, and the remote shell read cat zzamp&b), or a password
+NO_ANSWER_NOTHING = ['mssh h zzf', 'mssh h cat zzf', 'mssh -u root h cat zzf', 'mssh h "cat zzf', 'mssh h cat "zzf', 'mssh -p zzf', 'mssh --password zzf',
+	'mssh --password=zzf', 'mssh -pzzf', 'mssh -qp zzf', 'mssh -ip zzf', 'mssh h --ipmi_password zzf', 'mssh h -- -f zzf', 'mssh -- -f zzf']
+NO_ANSWER_NAMES = [('mssh zzf', 'mssh zzfile_unique '), ('mssh -f zzf', 'mssh -f zzfile_unique '), ('mssh --file zzf', 'mssh --file zzfile_unique '),
+	('mssh --file=zzf', 'mssh --file=zzfile_unique '), ('mssh -u root --key zzf', 'mssh -u root --key zzfile_unique '), ('mssh h cat -f zzf', 'mssh h cat -f zzfile_unique ')]
+
+
+def no_answer_session(shell, home, env, engine):
+	"""A session of shell (bash, ble, zsh) whose engine is the script engine, in home, holding zzfile_unique; TAB waits 0.3 s for it."""
+	stand_in = home / 'engine'
+	stand_in.write_text('#!/bin/sh\n{}\n'.format(engine))
+	stand_in.chmod(0o755)
 	(home / 'zzfile_unique').write_text('')
-	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3'), glue_file(home, 'bash', [str(slow)]))
+	env = dict(env, MSSH_COMPLETE_TIMEOUT='0.3')
+	if shell == 'ble':
+		import test_complete_blesh as ble
+		return blesh_session(home, env, ble.glue_file(home, [str(stand_in)]))
+	return (bash_session if shell == 'bash' else zsh_session)(home, env, glue_file(home, shell if shell == 'zsh' else 'bash', [str(stand_in)]))
+
+
+@pytest.mark.parametrize('shell', ['bash', 'ble', 'zsh'])
+@pytest.mark.parametrize('engine', ['sleep 5', 'exit 1', r"printf 'MSSHC9\nE\n\0'"], ids=['slow', 'failing', 'other-protocol'])
+def test_no_answer_offers_file_names_only_where_they_are_right(setup, shell, engine):
+	env, home = setup
+	session = no_answer_session(shell, home, env, engine)
+	try:
+		for typed in NO_ANSWER_NOTHING:
+			assert session.line_after(typed) == typed
+		for typed, line in NO_ANSWER_NAMES:
+			assert session.line_after(typed) == line
+		assert b'_mssh' not in session.output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('shell', ['bash', 'zsh'])
+def test_tab_past_the_limit_comes_back_within_it(setup, shell):
+	env, home = setup
+	session = no_answer_session(shell, home, env, 'sleep 5')
 	try:
 		started = time.monotonic()
-		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
+		assert session.line_after('mssh -f zzf') == 'mssh -f zzfile_unique '
 		assert time.monotonic() - started < 3
 	finally:
 		session.close()
+
+
+def test_the_file_option_words_are_mssh_s_file_options():
+	import multiSSH3
+	spec = mc.spec_from_parser(multiSSH3.get_parser())
+	named = {string for option in spec.options if option.dest in mc.PATH_DESTS or option.dest == 'identity_file' for string in option.strings}
+	assert set(mc.FILE_OPTION_WORDS) == named
 
 
 @WITH_AND_WITHOUT_DEBUG_LOG
@@ -3222,22 +3263,21 @@ def test_zsh_completes_in_a_real_shell(setup, debug):
 		assert debug_log_size(env) == logged
 
 
-@pytest.mark.parametrize('engine', ['sleep 5', 'exit 1', r"printf 'MSSHC9\nE\n\0'"], ids=['slow', 'failing', 'other-protocol'])
-def test_zsh_falls_back_to_file_names_without_an_answer(setup, engine):
-	# no answer: what zsh offers for a command it has no completion for (file names), as bash does
+@pytest.mark.parametrize('typed, line', [('mssh --file=zzs', 'mssh --file=zzsfile '), ('mssh --key=zzs', 'mssh --key=zzsfile '), ('mssh -f=zzs', 'mssh -f=zzsfile '),
+	('mssh --file="$PWD/zzs', 'mssh --file="$PWD/zzsfile" '), ('mssh --file=$PWD/zzs', 'mssh --file=$PWD/zzsfile '), ('mssh --file="zzs', 'mssh --file="zzsfile" '),
+	('mssh --file=zzd', 'mssh --file=zzdir/'), ('mssh --file="$PWD/zzd', 'mssh --file="$PWD/zzdir/'), ('mssh --file=zzdir/i', 'mssh --file=zzdir/in1 ')])
+def test_zsh_a_file_name_after_an_option_s_equals_sign(tmp_path, typed, line):
+	# zsh's _files got the whole word, --file=zzs, and offered nothing
+	got, _ = review_line(tmp_path, 'zsh', typed, files=['zzsfile', 'zzdir/in1'])
+	assert got == line
+
+
+def test_fish_a_file_name_after_an_option_s_equals_sign(setup):
+	# fish 3.3's __fish_complete_path took the whole word for a path
+	require_shell('fish')
 	env, home = setup
-	stand_in = home / 'engine'
-	stand_in.write_text('#!/bin/sh\n{}\n'.format(engine))
-	stand_in.chmod(0o755)
-	(home / 'zzfile_unique').write_text('')
-	session = zsh_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3'), glue_file(home, 'zsh', [str(stand_in)]))
-	try:
-		started = time.monotonic()
-		assert session.line_after('mssh h zzf') == 'mssh h zzfile_unique '
-		assert time.monotonic() - started < 3
-		assert b'_mssh:' not in session.output
-	finally:
-		session.close()
+	(home / 'zzsfile').write_text('')
+	assert fish_complete(env, glue_file(home, 'fish'), 'mssh --file=zzs', cwd=home) == [('--file=zzsfile', '')]
 
 
 @pytest.mark.parametrize('shell', ['bash', 'zsh'])
@@ -3548,8 +3588,8 @@ def no_answer_engine(home, kind):
 
 @pytest.mark.parametrize('timeout', ['timeout', 'no timeout'])
 @pytest.mark.parametrize('engine', sorted(NO_ANSWER))
-def test_fish_falls_back_to_file_names_without_an_answer(setup, tmp_path, engine, timeout):
-	# as bash does (-o default): fish's own file names, within the time limit, and nothing printed
+def test_fish_offers_file_names_only_where_they_are_right_without_an_answer(setup, tmp_path, engine, timeout):
+	# as in bash, within the time limit, and nothing printed
 	require_shell('fish')
 	env, home = setup
 	env = dict(env, MSSH_COMPLETE_TIMEOUT='0.3')
@@ -3558,8 +3598,13 @@ def test_fish_falls_back_to_file_names_without_an_answer(setup, tmp_path, engine
 	(home / 'zzfile_unique').write_text('')
 	glue = glue_file(home, 'fish', no_answer_engine(home, engine))
 	started = time.monotonic()
-	assert fish_complete(env, glue, 'mssh h zzf', cwd=home) == [('zzfile_unique', '')]
+	assert fish_complete(env, glue, 'mssh -f zzf', cwd=home) == [('zzfile_unique', '')]
 	assert time.monotonic() - started < 3
+	for typed in NO_ANSWER_NOTHING:
+		assert fish_complete(env, glue, typed, cwd=home) == []
+	for typed, line in NO_ANSWER_NAMES:
+		word = line.split()[-1]
+		assert [text for text, _ in fish_complete(env, glue, typed, cwd=home)] == [word]
 
 
 # what fish prints when a command fails to start or a background job ends
@@ -3581,7 +3626,7 @@ def test_fish_without_timeout_shows_nothing_but_the_completion(setup, tmp_path, 
 	if engine == 'answering':
 		command, typed, expected = ENGINE, 'mssh gp', 'mssh gpu\\[01-16\\] '
 	else:
-		command, typed, expected = no_answer_engine(home, 'slow'), 'mssh h zzf', 'mssh h zzfile_unique '
+		command, typed, expected = no_answer_engine(home, 'slow'), 'mssh -f zzf', 'mssh -f zzfile_unique '
 		env['MSSH_COMPLETE_TIMEOUT'] = '0.3'
 	# fish completes only commands that exist
 	pre = 'function mssh; end\nsource {}'.format(glue_file(home, 'fish', command))
