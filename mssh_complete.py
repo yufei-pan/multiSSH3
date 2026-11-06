@@ -6652,7 +6652,7 @@ _mssh_complete_start() {
 	# terminal, then as long as the operator takes. Sets _mssh_complete_resp to its answer and
 	# _mssh_complete_status to its exit status, 124 when it was not ready in time, 130 when Ctrl-C
 	# came first. An engine ready too late finds nobody reading and leaves the terminal alone.
-	local _mssh_complete_line= _mssh_complete_rest= _mssh_complete_got=142 _mssh_complete_waited=0 _mssh_complete_tenths=20 _mssh_complete_trapped= _mssh_complete_interrupted=0 _mssh_complete_alrm
+	local _mssh_complete_line= _mssh_complete_rest= _mssh_complete_got=142 _mssh_complete_waited=0 _mssh_complete_tenths=20 _mssh_complete_trapped= _mssh_complete_interrupted=0 _mssh_complete_alrm _mssh_complete_tty=
 	_mssh_complete_resp=
 	_mssh_complete_status=124
 	# in tenths of a second: bash counts in integers
@@ -6662,6 +6662,7 @@ _mssh_complete_start() {
 		# does not die of it); ble.sh reads Ctrl-C as a key
 		_mssh_complete_trapped=$(trap -p INT)
 		trap '_mssh_complete_interrupted=1' INT
+		_mssh_complete_tty=$(stty -g 2>/dev/null) || _mssh_complete_tty=
 	fi
 	_mssh_complete_alrm_off
 	{
@@ -6695,6 +6696,9 @@ _mssh_complete_start() {
 		_mssh_complete_status=1
 	elif (( _mssh_complete_interrupted )); then
 		_mssh_complete_status=130
+		# bash 4.3, 4.4 and 5.0, when the Ctrl-C ended the subshell starting the engine, leave the terminal in the mode it had
+		# when bash runs a command, line by line, for this line: Ctrl-U no longer cleared it, until the next Enter
+		[[ -n $_mssh_complete_tty ]] && { stty "$_mssh_complete_tty" 2>/dev/null || :; }
 		return 0
 	elif (( _mssh_complete_got > 128 )); then
 		return 0

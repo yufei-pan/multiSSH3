@@ -9,6 +9,7 @@ import re
 import select
 import shlex
 import subprocess
+import termios
 import time
 
 import pytest
@@ -2246,5 +2247,23 @@ def test_fish_ignores_the_operators_functions(home, where):
 		if fish_major() >= 4:
 			session.send('\x15mssh gpu017 ')
 			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('delay', [0.01, 0.03])
+def test_bash_ctrl_c_right_after_ctrl_r_leaves_the_terminal_in_readline_s_mode(tmp_path, delay):
+	# with an engine that dies of the signal (the real one, early on): bash 4.3, 4.4 and 5.0 left the terminal cooked until the
+	# next Enter, so Ctrl-U no longer cleared the line. The mode is what counts: the line stays after this Ctrl-C by design
+	env, home = make_home(tmp_path, [])
+	session = bash_session(home, env, glue_file(home, 'bash'))
+	try:
+		session.send('mssh x')
+		session.read_until(b'@@never@@', 0.2)
+		session.send('\x12')
+		time.sleep(delay)
+		session.send('\x03')
+		session.read_until(b'@@never@@', 0.8)
+		assert not termios.tcgetattr(session.fd)[3] & termios.ICANON
 	finally:
 		session.close()
