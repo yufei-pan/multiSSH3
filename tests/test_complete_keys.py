@@ -1040,14 +1040,15 @@ def test_blesh_marks_an_unknown_host_and_says_why(home):
 
 
 def test_blesh_asks_for_the_warnings_again_when_the_first_query_misses_its_limit(home):
-	# a busy machine: the first warnings query takes a second, the limit is 0.3 s; the glue asks again and the next answers at once
+	# a busy machine: the first warnings query takes four seconds, the limit is two; the glue asks again and the next answers at
+	# once. (A 0.3 s limit, the default, was too short for the answering query itself on a loaded machine: no warning in 15 s)
 	env, home = home
 	known(env, gpu017='invalid')
 	engine = home / 'once-slow-engine'
 	engine.write_text('#!/bin/sh\ncat > "$0.request"\nif [ "$1" = query ] && grep -aq diag=1 "$0.request" && [ ! -e "$0.once" ]; then\n'
-		': > "$0.once"; sleep 1\nfi\nexec {} "$@" < "$0.request"\n'.format(' '.join(shlex.quote(part) for part in ENGINE)))
+		': > "$0.once"; sleep 4\nfi\nexec {} "$@" < "$0.request"\n'.format(' '.join(shlex.quote(part) for part in ENGINE)))
 	engine.chmod(0o755)
-	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='300'), glue_file(home, 'bash', command=[str(engine)]))
+	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='2000'), glue_file(home, 'bash', command=[str(engine)]))
 	try:
 		session.send('mssh gpu017 ')
 		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
