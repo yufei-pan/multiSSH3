@@ -633,17 +633,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: 6.44.
 - Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
 
-### bash: a file name typed inside double quotes with an expansion reaches mssh unexpanded
-- Kind: deferred (6.44)
-- What the operator sees: in bash (readline), `mssh -f "$PWD/zzs<TAB>` gives `mssh -f "\$PWD/zzs.txt" `: the `$` is escaped,
-  so mssh receives the literal text `$PWD/zzs.txt` and finds no such file. The same with `--file "$PWD/...` and
-  `--file="$PWD/...`. Names of the remote command are right.
-- Why: the names of mssh's own file words go to readline to quote, which escapes the `$` inside the double quote; the names of
-  a remote command go through the glue's own quoting (`_mssh_complete_filenames`), which does not. With ble.sh and in zsh
-  the same lines are right.
-- Revisit when: 6.44. The planned fix is to route mssh's own file-name words through `_mssh_complete_filenames`.
-- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
-
 ### zsh-autosuggestions (async, its default): keys arriving together take grey text from the older line
 - Kind: deferred (6.44)
 - What the operator sees: with zsh-autosuggestions loaded and its default asynchronous fetching, keys that arrive together (a paste,

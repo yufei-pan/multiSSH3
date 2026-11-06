@@ -5992,9 +5992,11 @@ _mssh_complete_head() {
 		_mssh_complete_value=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
 	done
 	_mssh_complete_value=${_mssh_complete_value//[\$\`]/}
-	[[ $_mssh_complete_value == *$_mssh_complete_remote_chars* ]] && return 1
-	# (in a quoted command, which mssh hands on whole, whitespace stays the remote shell's)
-	(( ! _mssh_complete_qcommand )) && _mssh_complete_blank "$_mssh_complete_value" && return 1
+	if (( ! _mssh_complete_local )); then
+		[[ $_mssh_complete_value == *$_mssh_complete_remote_chars* ]] && return 1
+		# (in a quoted command, which mssh hands on whole, whitespace stays the remote shell's)
+		(( ! _mssh_complete_qcommand )) && _mssh_complete_blank "$_mssh_complete_value" && return 1
+	fi
 	_mssh_complete_rest=${1:${#_mssh_complete_kept}}
 	_mssh_complete_head_path= _mssh_complete_head_read=1
 	if [[ -n $_mssh_complete_kept ]]; then
@@ -6060,13 +6062,13 @@ _mssh_complete_write() {
 	# quoted command, which mssh hands on whole, only a newline), in readline's double quotes one holding a ! (bash would
 	# expand it there), under ble.sh one holding a brace outside a quote (ble.sh quotes none: this shell would expand it),
 	# and before bash 4.3 one whose directories change (ble.sh there keeps the typed text inside the quote it puts the rest
-	# in)
+	# in). A name of mssh's own file word (_mssh_complete_local) is this shell's alone: no remote shell reads it, and any name goes
 	local _mssh_complete_name=${1#"$_mssh_complete_head_name"} _mssh_complete_chars=$_mssh_complete_remote_chars
 	(( ! _mssh_complete_unsplit )) && [[ $1 == "$_mssh_complete_head_name"?* ]] || return 1
 	if (( _mssh_complete_qcommand )); then
 		[[ $_mssh_complete_name == *$'\n'* ]] && return 1
 		_mssh_complete_chars=$_mssh_complete_remote_spaced
-	else
+	elif (( ! _mssh_complete_local )); then
 		_mssh_complete_blank "$_mssh_complete_name" && return 1
 		(( _mssh_complete_ble && ! _mssh_complete_inquote )) && [[ $_mssh_complete_name == *'{'* ]] && return 1
 	fi
@@ -6075,7 +6077,8 @@ _mssh_complete_write() {
 		_mssh_complete_remote_quote "${_mssh_complete_name%/*}" "$_mssh_complete_chars"
 		[[ $_mssh_complete_value == "${_mssh_complete_name%/*}" ]] || return 1
 	fi
-	_mssh_complete_remote_quote "$_mssh_complete_name" "$_mssh_complete_chars"
+	_mssh_complete_value=$_mssh_complete_name
+	(( _mssh_complete_local )) || _mssh_complete_remote_quote "$_mssh_complete_name" "$_mssh_complete_chars"
 	if (( _mssh_complete_ble )) && [[ ${2-} != text ]]; then
 		:
 	elif (( _mssh_complete_inquote )); then
@@ -6318,6 +6321,7 @@ _mssh_complete_tab() {
 	local _mssh_complete_marking= _mssh_complete_marked=0 _mssh_complete_quote= _mssh_complete_head_name= _mssh_complete_head_text=
 	local _mssh_complete_unsplit=0 _mssh_complete_head_path= _mssh_complete_head_read=0 _mssh_complete_qcommand=0 _mssh_complete_inquote=0
 	local _mssh_complete_raw _mssh_complete_lead _mssh_complete_dot= _mssh_complete_again= _mssh_complete_asked_again=0 _mssh_complete_request
+	local _mssh_complete_local=0
 	local -a _mssh_complete_reply=() _mssh_complete_xfields=() _mssh_complete_fields=() _mssh_complete_delegated=() _mssh_complete_words=()
 	local -A _mssh_complete_seen=()
 	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3 )); then
@@ -6518,8 +6522,22 @@ _mssh_complete_tab() {
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
 	fi
 	if (( _mssh_complete_files )); then
-		compopt -o filenames 2>/dev/null || :
-		mapfile -t -O ${#_mssh_complete_reply[@]} _mssh_complete_reply < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
+		_mssh_complete_one=${COMP_WORDS[COMP_CWORD]-}
+		if (( ! _mssh_complete_ble )) && [[ ${_mssh_complete_cur//\\?/} == *\$* && ${_mssh_complete_one#\"} != *[\"\']* ]]; then
+			# a $ this shell expands, in mssh's own file word: readline's file name mode escaped it (in double quotes always, outside
+			# them before bash 5.2), and mssh got the literal text. The glue writes the names, as it does a remote command's, with the
+			# typed part kept. The engine's words go: they are written for that mode, and history holds such a path expanded
+			[[ $_mssh_complete_one == \"* ]] && _mssh_complete_inquote=1
+			_mssh_complete_local=1
+			_mssh_complete_head "$_mssh_complete_cur" || _mssh_complete_unsplit=1
+			mapfile -t _mssh_complete_delegated < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
+			_mssh_complete_reply=()
+			_mssh_complete_filenames ' -o filenames '
+			_mssh_complete_reply=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
+		else
+			compopt -o filenames 2>/dev/null || :
+			mapfile -t -O ${#_mssh_complete_reply[@]} _mssh_complete_reply < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
+		fi
 	fi
 	COMPREPLY=()
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
