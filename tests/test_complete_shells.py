@@ -1086,6 +1086,108 @@ def test_zsh_a_double_quoted_word_holding_an_expansion_stays_as_typed_and_comple
 		assert remote[-1].endswith(remote_word), remote
 
 
+ZSH_QUOTED_NAMES = [
+	# a name per character the remote shell reads (and the double quote: " $ ` \\), with the start typed
+	('Outer$Inner.class', 'Out'), ('zzb`touch PWNED`', 'zzb'), ('zzq"r', 'zzq'), ('zzw\\r', 'zzw'), ('zza&b', 'zza'), ('zzs a', 'zzs'),
+	('zzt!r', 'zzt'), ('zzp(x)', 'zzp'), ('zzu;y', 'zzu'), ('zzv|y', 'zzv'), ('zzx<y>', 'zzx'), ("zzy'y", 'zzy'), ('zz1*y', 'zz1'),
+	('zz2?y', 'zz2'), ('zz3{a,b}', 'zz3'), ('zz4#y', 'zz4'), ('zz5$', 'zz5'), ('zz6\\$7', 'zz6'),
+]
+
+
+@pytest.mark.parametrize('name, start', ZSH_QUOTED_NAMES)
+@pytest.mark.parametrize('typed', ['mssh h "rm $PWD/{}', 'mssh h rm "$PWD/{}'], ids=['command', 'argument'])
+def test_zsh_a_name_after_an_expansion_in_a_double_quote_reaches_the_remote_shell_as_it_is_named(tmp_path, typed, name, start):
+	# the names went in one quoting level short: "rm $PWD/Outer\\$Inner.class" made the remote shell run rm /dir/Outer.class,
+	# and a backtick or a quote in a name was the remote shell's code. The glue writes the remote shell's word for the name
+	# (zsh's own, for no quote) and then the double quote's
+	if typed.startswith('mssh h rm') and ' ' in name:
+		pytest.skip('a quoted argument is joined by mssh with the command: no names holding whitespace there')
+	line, remote = review_line(tmp_path, 'zsh', typed.format(start), files=[name])
+	assert line != typed.format(start) and not (tmp_path / 'work' / 'PWNED').exists(), line
+	assert remote[0] == 'rm' and len(remote) == 2 and remote[1].endswith('/' + name), (line, remote)
+
+
+@pytest.mark.parametrize('typed, dirname', [('mssh h "ls $PWD/zzd', 'zzd$x'), ('mssh h "ls $PWD/zzd', 'zzd&x'), ('mssh h "ls $PWD/zzd', 'zzd`x'),
+	('mssh h ls "$PWD/zzd', 'zzd$x'), ('mssh h ls "$PWD/zzd', 'zzd"x')])
+def test_zsh_a_directory_whose_name_changes_after_an_expansion_in_a_double_quote_leaves_the_quote_open(tmp_path, typed, dirname):
+	# a directory completes with its / and the quote open, as one that needs no quoting does (the quote closed after a name
+	# that is none: the / was missing)
+	line, remote = review_line(tmp_path, 'zsh', typed, dirs=[dirname])
+	assert line.endswith('/') and not line.endswith('" ') and not line.endswith('/" '), line
+	assert remote[-1].endswith('/' + dirname + '/'), (line, remote)
+
+
+@pytest.mark.parametrize('history, expected', [
+	# a history word is the remote command's text: its " and $HOME are the remote shell's, this shell's quote does not read them
+	('"echo $PWD zzq \\"a b\\""', ['echo', 'zzq', 'a b']),
+	("'echo $PWD $HOME zzd'", ['echo', REMOTE_HOME, 'zzd']),
+	("'echo $PWD `echo zzx` zzt'", ['echo', 'zzx', 'zzt']),
+	("\"echo $PWD 'a b'\"", ['echo', 'a b']),
+])
+def test_zsh_mssh_s_history_words_go_into_a_double_quoted_word_with_an_expansion_as_the_remote_shell_gets_them(tmp_path, history, expected):
+	# they went in bare: "echo $PWD zzq "a b"" closed the quote at the history word's own, and a backtick or $HOME in it was
+	# this shell's. What was typed (the $PWD) stays as typed, this shell's: the second word is the directory
+	line, remote = review_line(tmp_path, 'zsh', 'mssh h "echo $PWD ', history=[history])
+	assert line.startswith('mssh h "echo $PWD '), line
+	assert remote[:1] + remote[2:] == expected, (line, remote)
+
+
+@pytest.mark.parametrize('typed, files, expected, prefix', [
+	('mssh -f "$PWD/zzpl', ['zzplain'], 'mssh -f "$PWD/zzplain" ', ['mssh', '-f']),
+	('mssh -f "$PWD/zzs', ['zzs a'], 'mssh -f "$PWD/zzs a" ', ['mssh', '-f']),
+	('mssh -f "$PWD/zzq', ['zzq"b'], 'mssh -f "$PWD/zzq\\"b" ', ['mssh', '-f']),
+	('mssh "$PWD/zzp', ['zzplain'], 'mssh "$PWD/zzplain" ', ['mssh']),
+])
+def test_zsh_mssh_s_own_file_names_complete_in_a_double_quoted_word_with_an_expansion(tmp_path, typed, files, expected, prefix):
+	# the name goes in with the quote closed and a space, as zsh does where it keeps the quote: it left the quote open and a
+	# space after it (Enter gave a PS2 prompt), `zzs\ a` had a literal backslash. 6.42 expanded the word and completed nothing
+	line, _ = review_line(tmp_path, 'zsh', typed, files=files)
+	assert line == expected
+	words = local_words('zsh', line)
+	assert words[:-1] == prefix and words[-1].endswith('/' + files[0]), words
+
+
+@pytest.mark.parametrize('typed, files, expected', [
+	('mssh h cat _com', ['_comps'], 'mssh h cat _comps '),
+	('mssh h "cat _com', ['_comps'], 'mssh h "cat _comps'),
+	('mssh h cat sub/_com', ['sub/_comps'], 'mssh h cat sub/_comps '),
+	('mssh h cat _', ['_'], 'mssh h cat _ '),
+])
+def test_zsh_a_file_here_named_as_a_parameter_of_this_shell_is_still_offered(tmp_path, typed, files, expected):
+	# the filter for _normal's parameters at a command's place (the glue's own, _comps) had no guard for a file here
+	assert review_line(tmp_path, 'zsh', typed, files=files)[0] == expected
+
+
+@pytest.mark.parametrize('typed, expected', [
+	# a call with descriptions (-d): its word closes the quote and adds a space, as every other word of the double quote
+	# (it left the quote open with a space after it)
+	('mssh h "fake4 $PWD --opt', 'mssh h "fake4 $PWD --optd" '),
+	('mssh h "fake5 $PWD --optx', 'mssh h "fake5 $PWD --optx" '),
+	# a call with a suffix of its own (-S): the suffix is the end, the quote stays open, as zsh does where it keeps the quote
+	('mssh h "fake3 $PWD --op', 'mssh h "fake3 $PWD --opt='),
+	('mssh h "fake3 --op', 'mssh h "fake3 --opt='),
+])
+def test_zsh_a_remote_command_s_words_with_descriptions_or_a_suffix_in_a_double_quote_with_an_expansion(tmp_path, typed, expected):
+	extra = """
+_fake3() { compadd -S= -- --opt }
+compdef _fake3 fake3
+_fake4() { local d; d=('--optd  -- a description'); compadd -d d -- --optd }
+compdef _fake4 fake4
+_fake5() { _describe -t options 'opt' '(--optx:xdesc --opty:ydesc)' }
+compdef _fake5 fake5
+"""
+	assert review_line(tmp_path, 'zsh', typed, extra=extra)[0] == expected
+
+
+def test_zsh_the_words_of_a_remote_command_s_own_completion_are_not_filtered_as_command_names(tmp_path):
+	# `_git` is a function name, left out as a command name (mssh h _gi<TAB> offers nothing) but a word of fake2's completion
+	extra = '_fake2() { compadd _git alpha }\ncompdef _fake2 fake2'
+	for name, typed, expected in (('a', 'mssh h fake2 _gi', 'mssh h fake2 _git '), ('b', 'mssh h "fake2 _gi', 'mssh h "fake2 _git'),
+			('c', 'mssh h _mssh_complete_t', 'mssh h _mssh_complete_t')):
+		(tmp_path / name).mkdir()
+		assert review_line(tmp_path / name, 'zsh', typed, extra=extra)[0] == expected
+
+
 @pytest.mark.parametrize('typed, steps, expected', [
 	# a second TAB goes on to the zsh menu as elsewhere: the widget in between takes nothing from it
 	('mssh h "ls $PWD/zz', ['\t', '\t'], 'mssh h "ls $PWD/zzdir/'),
