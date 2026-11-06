@@ -1468,6 +1468,15 @@ def test_bash_the_history_s_words_are_not_offered_for_a_dollar_in_mssh_s_own_fil
 	assert line == 'mssh -f "$PWD/zzs.txt" ', line
 
 
+@pytest.mark.parametrize('typed', ['mssh -f "$PWD/zzd', 'mssh -f $PWD/zzd'])
+def test_bash_a_directory_of_mssh_s_history_is_not_taken_for_the_glue_s_own_word_and_gets_its_slash(tmp_path, typed):
+	# the history holds the directory as typed, $PWD/zzdir: it is not among the names the glue writes, so the glue's own word
+	# for that directory still gets its / (the word stopped at zzdir, with no / and a space)
+	history = ['1790000000\t/x/multiSSH3.py\t-su -f=$PWD/zzdir\th\t"x"']
+	line, _ = review_line(tmp_path, 'readline', typed, files=['zzs.txt'], dirs=['zzdir'], history=history)
+	assert line == typed + 'ir/', line
+
+
 @pytest.mark.parametrize('typed', ['mssh -f "$PWD/zzs.', 'mssh -f $PWD/zzs.', 'mssh --file=$PWD/zzs.', 'mssh --file="$PWD/zzs.', 'mssh -f "$HOME/zzh.', 'mssh -f $PWD/zzdir'])
 def test_bash_with_direxpand_mssh_s_own_names_come_with_the_expanded_directory(tmp_path, typed):
 	# bash puts the expanded path in the word itself before completing, and compgen's names are the expanded ones: the glue's own
