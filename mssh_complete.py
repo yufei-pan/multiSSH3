@@ -7263,7 +7263,8 @@ _mssh() {
 	# (_mssh_complete_open, _mssh_complete_dq); with the cursor inside the word nothing is offered, or the quote would go
 	# (after the = of an option too: mssh --file="$PWD/zz, the option its own part of the line)
 	local _mssh_complete_open=$compstate[quote] _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
-	local -i _mssh_complete_dq=0
+	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0
+	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
 	if [[ $_mssh_complete_word == -*=\"* ]]; then
 		_mssh_complete_lead=${_mssh_complete_word%%=*}=
 		_mssh_complete_word=${_mssh_complete_word#*=}
@@ -7349,6 +7350,16 @@ _mssh() {
 				;;
 		esac
 	done
+	# (an option's value in a quote, mssh --file="$PWD/zz, is mssh's own word; the word of a remote command that starts with one,
+	# sort --output="zz, is the command's, and its completion reads the option off PREFIX: back as it was)
+	if (( _mssh_complete_delegating )) && [[ -n $_mssh_complete_lead ]]; then
+		IPREFIX=$_mssh_complete_was_ipre
+		PREFIX=$_mssh_complete_was_pre
+		_mssh_complete_dq=0
+		_mssh_complete_lead=
+		_mssh_complete_open=$compstate[quote]
+		_mssh_complete_textopts=()
+	fi
 	# the completion functions below run in those options again: under zsh's defaults _arguments misreads
 	# its specs, and a glob in _files that matches nothing aborts the completion
 	for _mssh_complete_name in ${(k)_mssh_complete_compsys_options}; do
@@ -7404,6 +7415,7 @@ _mssh() {
 					PREFIX=${PREFIX[$#PREFIX-_mssh_complete_offset+1,-1]}
 				fi
 				_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
+				_mssh_complete_dq_ipre=$#IPREFIX
 				_mssh_complete_dq_read "$PREFIX"
 				PREFIX=$_mssh_complete_read
 			fi
@@ -7588,7 +7600,9 @@ _mssh_complete_compadd() {
 	# quote, zsh matched no name (a $, a backtick, a ")
 	if (( _mssh_complete_hidden_at && $#_mssh_complete_dq_parts )) && [[ -n $_mssh_complete_opts[_mssh_complete_hidden_at] && $PREFIX == "$_mssh_complete_opts[_mssh_complete_hidden_at]"* ]]; then
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
-		IPREFIX+=${(j:/:)_mssh_complete_dq_parts[1,$#_mssh_complete_parts-1]}/
+		# (less what the command's own compset has moved to IPREFIX since: dd's if=, ssh's -i)
+		_mssh_complete_item=${(j:/:)_mssh_complete_dq_parts[1,$#_mssh_complete_parts-1]}
+		IPREFIX+=${_mssh_complete_item#"${IPREFIX[_mssh_complete_dq_ipre+1,-1]}"}/
 		PREFIX=${PREFIX#"$_mssh_complete_opts[_mssh_complete_hidden_at]"}
 		_mssh_complete_opts[_mssh_complete_hidden_at]=
 		_mssh_complete_bare[_mssh_complete_hidden_bare]=
@@ -7748,24 +7762,28 @@ _mssh_complete_tab_key() {
 }
 
 _mssh_complete_in_mssh() {
-	# whether the cursor is in the arguments of an mssh command, wherever that starts on the line, read as zsh reads it: the words up
-	# to the cursor, from the last separator on, past assignments, the words that run the next one (sudo's options too) and aliases,
-	# which the walk reads in place of their name (a name that is mssh's already stays: alias mssh='noglob mssh')
+	# whether the cursor is in the arguments of an mssh command, wherever that starts on the line, read as zsh reads it: from the
+	# last separator on, every word before the one at the cursor (a word before the cursor and a blank, the word touching it), with
+	# an alias read in place of its name (a name that is mssh's already stays: alias mssh='noglob mssh'). Any of those words may be
+	# the command, whatever runs it (sudo -u root, nice -n 5, timeout 5, xargs, env -u X, repeat 2, a redirection, FOO=(a b)),
+	# so echo mssh "$PWD/zz is read as mssh's too: the cost of not keeping a list of what can run a command
 	emulate -L zsh
+	# (a $( opens a command of its own, as a separator does: zsh reads the rest of the line as one word)
+	local _mssh_complete_line=${LBUFFER//\$\(/ ; }
 	local -a _mssh_complete_words
-	_mssh_complete_words=("${(@z)LBUFFER}")
+	_mssh_complete_words=("${(@z)_mssh_complete_line}")
 	local _mssh_complete_word
-	local -i _mssh_complete_at=$#_mssh_complete_words _mssh_complete_rounds=0
+	local -i _mssh_complete_at=$#_mssh_complete_words _mssh_complete_rounds=0 _mssh_complete_tail=0
+	[[ $LBUFFER == *[[:space:]] ]] && _mssh_complete_tail=1
 	while (( _mssh_complete_at > 0 )); do
-		[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|'&!'|';;'|';&'|';|'|'('|'{') ]] && break
+		[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|'&!'|';;'|';&'|';|') ]] && break
 		(( _mssh_complete_at-- ))
 	done
-	while (( ++_mssh_complete_at < $#_mssh_complete_words )); do
+	while (( ++_mssh_complete_at < $#_mssh_complete_words + _mssh_complete_tail )); do
 		_mssh_complete_word=${(Q)_mssh_complete_words[_mssh_complete_at]}
 		[[ ${_mssh_complete_word:t} == (mssh|mssh3|multissh|multissh3|multiSSH3) ]] && return 0
-		if [[ $_mssh_complete_word != (sudo|doas|time|nice|nohup|env|command|builtin|exec|noglob|nocorrect|if|elif|while|until|then|else|do|'!'|-*|[A-Za-z_]*=*) ]]; then
+		if (( ${+aliases[$_mssh_complete_word]} && ++_mssh_complete_rounds < 10 )); then
 			# (not forever: an alias of a word of its own, or of each other)
-			(( ${+aliases[$_mssh_complete_word]} && ++_mssh_complete_rounds < 10 )) || return 1
 			_mssh_complete_words[_mssh_complete_at]=("${(@z)aliases[$_mssh_complete_word]}")
 			(( _mssh_complete_at-- ))
 		fi
@@ -8146,7 +8164,7 @@ _mssh_complete_warn_redraw() {
 	setopt extended_glob
 	# more keys are waiting, with zsh-autosuggestions: its grey text is for the line before them (its asynchronous fetch has not
 	# answered yet), and a Right among them would take it for this one: x, Right, Enter at mssh gp ran gpxu[01-16] nvidia-smi
-	(( PENDING && ${+functions[_zsh_autosuggest_start]} )) && _mssh_complete_is_mssh "$BUFFER" && POSTDISPLAY=
+	(( PENDING && ${+functions[_zsh_autosuggest_start]} )) && _mssh_complete_in_mssh && POSTDISPLAY=
 	# the line without the word at the cursor, which is still being typed
 	local _mssh_complete_key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
 	if [[ $_mssh_complete_key == "$_mssh_complete_warn_key" ]]; then

@@ -1294,6 +1294,18 @@ ANOTHER_START = [
 	('FOO=1 mssh h "ls $PWD/zzp', ''), ('FOO=1 BAR="a b" sudo mssh h "ls $PWD/zzp', ''), ('true | mssh h "ls $PWD/zzp', ''), ('false || noglob mssh h "ls $PWD/zzp', ''),
 	('{ mssh h "ls $PWD/zzp', ''), ('! mssh h "ls $PWD/zzp', ''), ('if mssh h "ls $PWD/zzp', ''), ('/bin/mssh h "ls $PWD/zzp', ''), ('\\mssh h "ls $PWD/zzp', ''),
 	('mssh h ls "$PWD/zzp', ''), ('mssh -f "$PWD/zzp', ''), ('exec mssh h "ls $PWD/zzp', ''), ('sudo -E mssh h "ls $PWD/zzp', ''),
+	# what runs the command is not for the glue to list: every word from the last separator on may be mssh's name
+	('sudo -u root mssh h "ls $PWD/zzp', ''), ('sudo -H -u root mssh h "ls $PWD/zzp', ''), ('nice -n 5 mssh h "ls $PWD/zzp', ''),
+	('timeout 5 mssh h "ls $PWD/zzp', ''), ('watch mssh h "ls $PWD/zzp', ''), ('xargs mssh h "ls $PWD/zzp', ''), ('env -u X mssh h "ls $PWD/zzp', ''),
+	('env -i FOO=1 mssh h "ls $PWD/zzp', ''), ('exec -a x mssh h "ls $PWD/zzp', ''), ('ionice -c3 mssh h "ls $PWD/zzp', ''),
+	('repeat 2 mssh h "ls $PWD/zzp', ''), ('> /dev/null mssh h "ls $PWD/zzp', ''),
+	('2>&1 mssh h "ls $PWD/zzp', ''), ('FOO=(a b) mssh h "ls $PWD/zzp', ''), ('$(mssh h "ls $PWD/zzp', ''), ('x=$(mssh h "ls $PWD/zzp', ''),
+	('cd /; mssh h "ls $PWD/zzp', ''), ('true &! mssh h "ls $PWD/zzp', ''), ('true |& mssh h "ls $PWD/zzp', ''),
+	# the words of an alias are the line's words, all of them
+	('m3 h "ls $PWD/zzp', "alias m3='sudo -E mssh'"), ('m4 h "ls $PWD/zzp', "alias m4='env FOO=1 mssh -q'"), ('m5 h "ls $PWD/zzp', "alias m5='(mssh'"),
+	('m6 mssh h "ls $PWD/zzp', "alias m6=''"), ('m7 h "ls $PWD/zzp', "alias m7='time sudo -E command mssh --quiet'"),
+	# a { or a ( among the arguments is an argument: the quoted word is still mssh's
+	('mssh h echo { "$PWD/zzp', ''),
 ]
 
 
@@ -1306,11 +1318,80 @@ def test_zsh_a_double_quoted_expansion_stays_as_typed_wherever_the_mssh_command_
 
 
 @pytest.mark.parametrize('typed, extra', [('ls "$PWD/zzp', ''), ('mssh h a; ls "$PWD/zzp', ''), ('mssh h a | cat "$PWD/zzp', ''), ('noglob ls "$PWD/zzp', ''), ('m "$PWD/zzp', 'alias m=ls'),
-	('mssh="$PWD/zzp', ''), ('"$PWD/mssh', '')])
+	('mssh="$PWD/zzp', ''), ('"$PWD/mssh', ''),
+	# every separator ends mssh's command (the walk starts after the last one)
+	('mssh h a & ls "$PWD/zzp', ''), ('mssh h a && ls "$PWD/zzp', ''), ('mssh h a || ls "$PWD/zzp', ''), ('mssh h a |& ls "$PWD/zzp', ''),
+	('mssh h a &! ls "$PWD/zzp', ''), ('mssh h a &| ls "$PWD/zzp', ''), ('mssh h a; { ls "$PWD/zzp', ''), ('mssh h a; ( ls "$PWD/zzp', ''),
+	# aliases of each other are followed a few times, not for ever
+	('a h "$PWD/zzp', 'alias a=b b=a'), ('a h "$PWD/zzp', "alias a='a -x'")])
 def test_zsh_a_double_quoted_expansion_of_another_command_is_left_to_zsh(tmp_path, typed, extra):
 	# as without the glue: the word is expanded (the value of $PWD in the line)
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], extra=extra)
 	assert '$PWD' not in line, line
+
+
+@pytest.mark.parametrize('typed', ['case x in x) mssh h "ls $PWD/zzp', 'time -p mssh h "ls $PWD/zzp', 'function f { mssh h "ls $PWD/zzp',
+	'for (( i=0; i<3; i++ )) mssh h "ls $PWD/zzp'])
+def test_zsh_a_double_quoted_expansion_where_zsh_runs_no_completion_function_stays_as_typed(tmp_path, typed):
+	# zsh completes a case pattern, an option of time, a function's name and the words of a for loop with its own functions, not
+	# _mssh: the word is not expanded (the walk takes these for mssh's too) and not completed
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], pre='mssh() { :; }')
+	assert line == typed, line
+
+
+@pytest.mark.parametrize('typed', ['mssh "echo $HOME"', 'sudo mssh "echo $HOME"', 'FOO=1 mssh "echo $HOME"'])
+def test_zsh_a_quoted_word_right_of_the_cursor_after_mssh_s_name_stays_as_it_is(tmp_path, typed):
+	# a line from history, the cursor just after mssh and a blank: the word after the cursor is not the one completed, and the
+	# walk counts the blank's empty word (it left the last word out, and zsh expanded the quote away: mssh echo\ /home/...)
+	line, _ = review_line(tmp_path, 'zsh', typed, pre='mssh() { :; }', keys='\x1b[D' * (len(typed) - typed.index('"')) + '\t')
+	assert line == typed, line
+
+
+@pytest.mark.parametrize('typed, files, dirs', [
+	# a quote opened after the = of a remote command's option, and nothing it could complete: left as typed (6.43 did; the option
+	# was cut off the word, and the completion read the rest as a name: mssh h sort --output="zz gave --output="zzreport.txt")
+	('mssh h sort --output="zz', ['report.txt'], []), ('mssh h sort --output="/tmp/zz', ['report.txt'], []), ('mssh h grep --file="zz', ['report.txt'], []),
+	('mssh h rsync --exclude-from="zz', ['report.txt'], []), ('mssh h ssh -F="zz', ['report.txt'], []), ('mssh h ssh -i="zz', ['report.txt'], []),
+	('mssh h ssh -o="zz', ['report.txt'], []), ('mssh h zzcmd --out="zz', ['report.txt'], []),
+])
+def test_zsh_a_quote_opened_after_a_remote_option_s_equals_sign_is_left_as_typed(tmp_path, typed, files, dirs):
+	line, _ = review_line(tmp_path, 'zsh', typed, files=files, dirs=dirs, pre='mssh() { :; }')
+	assert line == typed, line
+
+
+@pytest.mark.parametrize('prefix', ['mssh h tar --directory=', 'mssh h sort --output=', 'mssh h grep --file=', 'mssh h git --git-dir=', 'mssh h cp --target-directory=',
+	'sudo mssh h tar --directory='])
+def test_zsh_a_quote_opened_after_a_remote_option_s_equals_sign_does_not_lose_what_was_typed(tmp_path, prefix):
+	# the word was erased (mssh h tar ), or gained its directory twice (--target-directory="$PWD/zzd/innzzd/)
+	line, _ = review_line(tmp_path, 'zsh', prefix + '"$PWD/zzd/inn', dirs=['zzd/inner-dir', 'zzd/inner2-dir'], files=['zzplain', 'zzd/inner.txt'], pre='mssh() { :; }')
+	assert line.startswith(prefix) and line.endswith('$PWD/zzd/inner'), line
+
+
+@pytest.mark.parametrize('typed, expected', [('mssh h ls --color="au', 'mssh h ls --color=auto '), ('mssh h ls --sort="ti', 'mssh h ls --sort=time '),
+	# (and the same option with no quote: the = is the completion's, not the glue's)
+	('mssh h ls --color=au', 'mssh h ls --color=auto '), ('mssh h sort --output=zzpl', 'mssh h sort --output=zzplain '),
+	('mssh h grep --file=zzpl', 'mssh h grep --file=zzplain ')])
+def test_zsh_a_remote_option_s_value_completes_with_and_without_a_quote_after_the_equals_sign(tmp_path, typed, expected):
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], pre='mssh() { :; }')
+	assert line == expected, line
+
+
+@pytest.mark.parametrize('typed, expected', [
+	# the command's own compset moves if=, of= and -i to IPREFIX: the directories typed went in front once more (if=if=$PWD/...)
+	('mssh h "dd if=$PWD/zzd/inner.', 'mssh h "dd if=$PWD/zzd/inner.txt" '),
+	('mssh h "dd of=$PWD/zzd/inner2', 'mssh h "dd of=$PWD/zzd/inner2" '),
+	('mssh h "dd if=/dev/zero of=$PWD/zzd/inner.', 'mssh h "dd if=/dev/zero of=$PWD/zzd/inner.txt" '),
+	('mssh h dd "if=$PWD/zzd/inner.', 'mssh h dd "if=$PWD/zzd/inner.txt" '),
+	('mssh h "ssh -i$PWD/zzd/inner.', 'mssh h "ssh -i$PWD/zzd/inner.txt" '),
+	('mssh h "gcc -I$PWD/zzd/inner-', 'mssh h "gcc -I$PWD/zzd/inner-dir/'),
+	('mssh h "sort --output=$PWD/zzd/inner.', 'mssh h "sort --output=$PWD/zzd/inner.txt" '),
+	('mssh h "tar --directory=$PWD/zzd/inner-', 'mssh h "tar --directory=$PWD/zzd/inner-dir/'),
+	('mssh h "export X=$PWD/zzd/inner.', 'mssh h "export X=$PWD/zzd/inner.txt" '),
+	('mssh h "echo a; dd if=$PWD/zzd/inner.', 'mssh h "echo a; dd if=$PWD/zzd/inner.txt" '),
+])
+def test_zsh_a_command_s_option_value_after_an_expansion_in_a_double_quote_does_not_double_its_prefix(tmp_path, typed, expected):
+	line, _ = review_line(tmp_path, 'zsh', typed, dirs=['zzd/inner-dir'], files=['zzd/inner.txt', 'zzd/inner2'], pre='mssh() { :; }')
+	assert line == expected, line
 
 
 OWN_NAMES_WITH_AN_EXPANSION = [

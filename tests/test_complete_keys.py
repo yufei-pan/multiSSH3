@@ -1538,6 +1538,63 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(hom
 		session.close()
 
 
+@pytest.mark.parametrize('after', [False, True], ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
+@pytest.mark.parametrize('line, extra', [
+	('sudo mssh gp', 'sudo() { "$@"; }'), ('FOO=1 mssh gp', ''), ('m gp', 'alias m=mssh'), ('m gp', "alias m='noglob mssh'"),
+	('time mssh gp', ''), ('true && mssh gp', ''),
+])
+def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_any_mssh_command(home, line, extra, after):
+	require_zsh_5_3()
+	# the hook asked whether the line is an mssh line by its first word: at `sudo mssh gp`, an alias of mssh or after FOO=1, the grey
+	# text of the line before stayed for a Right among the keys, and gpxu[01-16] nvidia-smi ran
+	env, home = home
+	# (the same line in the shell's history: the plugin's own strategy has the grey text for a line that is no mssh line to the engine)
+	session = zsh_with(env, home, True, after, shell_history=line + 'u[01-16] nvidia-smi\n', extra=FAKE_MSSH + '\n' + extra)
+	try:
+		session.send(line)
+		session.read_until(b'nvidia-smi')
+		session.wait_idle(10)
+		session.send('x' + RIGHT + '\r')
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
+		assert len(ran) == 1 and ran[0].replace('\\', '') == 'gpx', ran
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('after', [False, True], ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
+def test_zsh_keys_arriving_together_leave_the_grey_text_of_other_commands_to_zsh_autosuggestions(home, after):
+	require_zsh_5_3()
+	# off an mssh line the plugin behaves as it does alone: the grey text of `ranme he` is still there for the Right that follows
+	env, home = home
+	session = zsh_with(env, home, True, after, shell_history='ranme hello world\n', extra='ranme() { printf "@@RAN[%s]@@\\n" "$*"; }')
+	try:
+		session.send('ranme he')
+		session.read_until(b'llo world')
+		session.wait_idle(10)
+		session.send(RIGHT + RIGHT + '\r')
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
+		assert ran == ['hello world'], ran
+	finally:
+		session.close()
+
+
+def test_zsh_own_grey_text_stays_when_keys_that_change_nothing_arrive_together(home):
+	require_zsh_5_3()
+	# the hook that drops zsh-autosuggestions' stale grey text is for that plugin's: our own text is kept in step by our own hook, which
+	# draws nothing again for keys that leave the line as it is (Ctrl-E twice), so one dropped here stays dropped
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi')
+		session.wait_idle(10)
+		session.send('\x05\x05')
+		session.wait_idle(10)
+		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
+	finally:
+		session.close()
+
+
 def test_zsh_keys_arriving_together_ask_for_the_grey_text_once(home):
 	require_zsh_5_3()
 	# a paste or typing ahead: one engine for the last key, not one per key (13 runs for a 12 key burst without PENDING)
