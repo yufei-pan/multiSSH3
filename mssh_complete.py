@@ -7928,7 +7928,9 @@ _mssh_complete_accept() {
 	# prefixed: the widget it falls back to runs inside
 	local _mssh_complete_take
 	local -a _mssh_complete_words
-	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
+	# (what is drawn is what is taken: a Ctrl-C empties POSTDISPLAY and leaves _mssh_complete_shown, and keys read together get
+	# no redraw between them, so a second accept key would take the same text again)
+	if [[ -n $_mssh_complete_shown && $POSTDISPLAY == "$_mssh_complete_shown" ]] && (( CURSOR == $#BUFFER )); then
 		_mssh_complete_take=$_mssh_complete_shown
 		if [[ $WIDGET == *forward-word ]]; then
 			# the first shell word, escapes and quotes kept with it
@@ -7936,6 +7938,7 @@ _mssh_complete_accept() {
 			_mssh_complete_take=${_mssh_complete_words[1]:+${(M)_mssh_complete_take##[[:space:]]#}${_mssh_complete_words[1]}}
 		fi
 		BUFFER+=${_mssh_complete_take:-$_mssh_complete_shown}
+		POSTDISPLAY=
 		CURSOR=$#BUFFER
 		return 0
 	fi

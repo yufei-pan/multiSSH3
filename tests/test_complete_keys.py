@@ -1510,6 +1510,65 @@ def test_zsh_keys_arriving_together_ask_for_the_grey_text_once(home):
 		session.close()
 
 
+@pytest.mark.parametrize('keys', [RIGHT, '\x05', '\x06', '\x1bf'], ids=['Right', 'Ctrl-E', 'Ctrl-F', 'Alt-f'])
+def test_zsh_an_accept_key_after_ctrl_c_takes_nothing(home, keys):
+	require_zsh_5_3()
+	# Ctrl-C empties POSTDISPLAY and leaves what mssh remembers as shown: the first accept key on the new line took the text of the
+	# line that was dropped, and Enter ran nvidia-smi
+	env, home = home
+	ran = home / 'ran'
+	session = zsh_with(env, home, extra='nvidia-smi() {{ : > {}; }}'.format(shlex.quote(str(ran))))
+	try:
+		session.send('mssh gpu[01-16] ')
+		session.read_until(b'nvidia-smi', 10)
+		session.wait_idle(10)
+		session.send('\x03')
+		session.wait_idle(10)
+		session.send(keys + '\r')
+		session.wait_idle(10)
+		assert not ran.exists()
+		assert printed(session, '') == ''
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('widget', ['zle forward-char; zle forward-char', 'zle end-of-line; zle forward-word', 'zle forward-word; zle forward-word'],
+	ids=['forward-char-twice', 'end-of-line-forward-word', 'forward-word-twice'])
+def test_zsh_a_widget_taking_the_grey_text_twice_takes_it_once(home, widget):
+	require_zsh_5_3()
+	# no redraw between the calls of one widget: the second took the text again (`gpu[01-16] nvidia-smiu[01-16] nvidia-smi`)
+	env, home = home
+	session = zsh_with(env, home, extra="_twice() {{ {}; }}\nzle -N _twice\nbindkey '^X^T' _twice".format(widget))
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.wait_idle(10)
+		session.send('\x18\x14')
+		session.wait_idle(10)
+		line = words(printed(session, ''))
+		assert line in (['mssh', 'gpu[01-16]', 'nvidia-smi'], ['mssh', 'gpu[01-16]']), line
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('keys', ['x\x7f', '\x15mssh gp'], ids=['x-then-backspace', 'ctrl-u-and-retype'])
+def test_zsh_grey_text_comes_back_when_keys_read_together_end_on_the_line_it_was_for(home, keys):
+	require_zsh_5_3()
+	# the redraw that waits for the last key drops the grey text and forgets the line it was for: the line the keys end on is that
+	# same line, and was found "already asked", so the grey text never returned
+	env, home = home
+	session = zsh_with(env, home)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.wait_idle(10)
+		session.send(keys)
+		session.read_until(b'nvidia-smi', 10)
+		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
+	finally:
+		session.close()
+
+
 def settled(session, quiet=1.0):
 	"""The non-empty rows of the screen once the session printed nothing more for a while."""
 	time.sleep(quiet)
