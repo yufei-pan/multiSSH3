@@ -1073,22 +1073,40 @@ def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(
 	('0.5', 300), ('1e3', 300), ('2s', 300), ('', 300), (None, 300), ('300', 300), ('03000', 3000), ('08', 8), ('00', 0),
 ], ids=['0.5', '1e3', '2s', 'empty', 'unset', '300', '03000', '08', '00'])
 def test_blesh_grey_text_limit_is_the_clock_plus_the_milliseconds_given_or_300(limit, milliseconds):
-	# no ble.sh and no load: _mssh_complete_ble_query, cut out of the glue, with the clock and conditional-sync stubbed (the clock
-	# stands still at 1000, conditional-sync prints the time it was given)
+	# no ble.sh and no load: _mssh_complete_ble_query, cut out of the glue, with the clock and conditional-sync stubbed. The clock stands
+	# at 1000 until conditional-sync, which prints the time it was given, runs the condition the query gave it as ble.sh would at each
+	# wake: one millisecond before the limit (it goes on), at the limit (it stops), and with a key waiting (it stops); and the query's
+	# status then says past the limit, or with a key waiting that typing cut it short
 	glue = mc.render_glue('bash', ENGINE).split('\n')
 	start = glue.index('\t_mssh_complete_ble_query() {')
 	function = '\n'.join(glue[start:glue.index('\t}', start) + 1])
 	script = function + """
-ble/util/clock() { ret=1000; }
-ble/util/conditional-sync() { echo "until=$_mssh_complete_until"; }
-ble/decode/has-input() { return 1; }
+clock=1000 waiting=1
+ble/util/clock() { ret=$clock; }
+ble/decode/has-input() { return $waiting; }
+ble/util/conditional-sync() {
+	echo "until=$_mssh_complete_until"
+	clock=$((_mssh_complete_until - 1))
+	eval "$2" && echo before=goes-on || echo before=stops
+	clock=$_mssh_complete_until
+	eval "$2" && echo at=goes-on || echo at=stops
+	clock=$((_mssh_complete_until - 1)) waiting=0
+	eval "$2" && echo key=goes-on || echo key=stops
+	waiting=$final
+	return 148
+}
+final=1
 _mssh_complete_ble_query
+echo "status=$?"
+final=0 clock=1000 waiting=1
+_mssh_complete_ble_query >/dev/null
+echo "typing=$?"
 """
 	env = {key: value for key, value in os.environ.items() if key != 'MSSH_COMPLETE_GHOST_TIMEOUT'}
 	if limit is not None:
 		env['MSSH_COMPLETE_GHOST_TIMEOUT'] = limit
 	done = subprocess.run([require_shell('bash'), '-c', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=30)
-	assert done.stdout.decode() == 'until={}\n'.format(1000 + milliseconds) and done.stderr == b'', (done.stdout, done.stderr)
+	assert done.stdout.decode().split() == ['until={}'.format(1000 + milliseconds), 'before=goes-on', 'at=stops', 'key=stops', 'status=142', 'typing=148'] and done.stderr == b'', (done.stdout, done.stderr)
 
 
 STALE_ENGINE = '''#!{python}
