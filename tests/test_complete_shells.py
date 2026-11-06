@@ -865,8 +865,9 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash, ble, zsh; bash and ble.sh with
 	bash-completion loaded when bash_completion) in a directory holding files, dirs and executables, and HOME holding
 	zzhplain, home_files and home_dirs; extra runs after the glue; engine: the glue's engine command; history: commands of
-	mssh's history (for the host h); keys: the key pressed after typed (TAB); pre runs before the glue."""
-	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
+	mssh's history (for the host h; one holding a tab is a line of the history file); keys: the key pressed after typed (TAB); pre runs before the glue."""
+	# (a history entry holding a tab is a whole line of the history file)
+	env, home = make_home(tmp_path, [command if '\t' in command else '1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
 	build_index(env)
 	work = tmp_path / 'work'
 	work.mkdir()
@@ -1448,6 +1449,38 @@ def test_bash_mssh_s_own_names_keep_a_directory_a_remote_word_would_not_before_a
 def test_bash_a_variable_being_typed_at_mssh_s_own_file_word_stays_a_variable(tmp_path):
 	line, _ = review_line(tmp_path, 'readline', 'mssh -f "$HOM')
 	assert '\\$' not in line and local_words('bash', line)[-1].startswith('/'), line
+
+
+def test_bash_the_history_s_words_are_not_offered_for_a_dollar_in_mssh_s_own_file_word(tmp_path):
+	# the glue writes the names itself, for the mode readline is in; a word of the history (one written with its $PWD, as a single
+	# quote keeps it) is written for the other, and would stand beside them: the word stopped at "$PWD/zzs.
+	history = ['1790000000\t/x/multiSSH3.py\t-su -f=$PWD/zzs.hist\th\t"x"']
+	line, _ = review_line(tmp_path, 'readline', 'mssh -f "$PWD/zzs', files=['zzs.txt'], history=history)
+	assert line == 'mssh -f "$PWD/zzs.txt" ', line
+
+
+@pytest.mark.parametrize('typed', ['mssh -f "$PWD/zzs.', 'mssh -f $PWD/zzs.', 'mssh --file=$PWD/zzs.', 'mssh --file="$PWD/zzs.', 'mssh -f "$HOME/zzh.', 'mssh -f $PWD/zzdir'])
+def test_bash_with_direxpand_mssh_s_own_names_come_with_the_expanded_directory(tmp_path, typed):
+	# bash puts the expanded path in the word itself before completing, and compgen's names are the expanded ones: the glue's own
+	# route (names starting with the typed head) dropped them all, and the word got nothing
+	line, _ = review_line(tmp_path, 'readline', typed, files=['zzs.txt', 'zzdir/in1'], home_files=['zzh.txt'], extra='shopt -s direxpand')
+	assert line != typed and '$' not in line, line
+	assert os.path.exists(local_words('bash', line)[-1].split('=', 1)[-1].rstrip('/')), line
+
+
+@pytest.mark.parametrize('typed', ['mssh -f "$PWD"/zzs.', 'mssh -f "$HOME"/zzh.', 'mssh -f "${PWD}"/zzs.', 'mssh -f "$PWD/"zzs.', 'mssh --file="$PWD"/zzs.',
+	'mssh -k "$HOME"/zzh.', 'mssh -f "$PWD"/zzdir', 'mssh -f "$PWD"/zzdir/in'])
+def test_bash_a_dollar_in_a_word_whose_quote_closes_before_its_end_does_not_reach_mssh_as_a_literal(tmp_path, typed):
+	# readline escaped the $ (bash before 5.2 outside quotes too), and mssh got the literal text \$PWD/zzs.txt: no wrong word
+	# beats the name that could not be written (bash 5.2 and later gave the name before)
+	line, _ = review_line(tmp_path, 'readline', typed, files=['zzs.txt', 'zzdir/in1'], home_files=['zzh.txt'])
+	assert '\\$' not in line, line
+
+
+def test_bash_the_name_in_a_quote_closed_after_the_cursor_keeps_the_dollar(tmp_path):
+	# the cursor inside a quote that is closed: editing a line from history. Readline escaped the $ in the closed quote
+	line, _ = review_line(tmp_path, 'readline', 'mssh -f "$PWD/zzs." h /tmp', files=['zzs.txt'], keys='\x1b[D' * 8 + '\t')
+	assert line == 'mssh -f "$PWD/zzs.txt" h /tmp', line
 
 
 def test_bash_a_name_with_an_exclamation_mark_is_left_out_of_mssh_s_own_names_in_a_double_quote_with_an_expansion(tmp_path):

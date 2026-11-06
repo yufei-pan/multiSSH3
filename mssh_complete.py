@@ -6504,11 +6504,11 @@ _mssh_complete_tab() {
 		_mssh_complete_reply+=(${_mssh_complete_delegated[@]+"${_mssh_complete_delegated[@]}"})
 	fi
 	if (( _mssh_complete_files )); then
-		_mssh_complete_one=${COMP_WORDS[COMP_CWORD]-}
-		if (( ! _mssh_complete_ble )) && [[ ${_mssh_complete_cur//\\?/} == *\$* && ${_mssh_complete_one#\"} != *[\"\']* ]]; then
+		if [[ ${_mssh_complete_cur//\\?/} == *\$* ]] && ! shopt -q direxpand 2>/dev/null; then
 			# a $ this shell expands, in mssh's own file word: readline's file name mode escaped it (in double quotes always, outside
 			# them before bash 5.2), and mssh got the literal text. The glue writes the names, as it does a remote command's, with the
-			# typed part kept. The engine's words go: they are written for that mode, and history holds such a path expanded
+			# typed part kept. The engine's words go: they are written for that mode, and history holds such a path expanded. Not
+			# under direxpand: bash expands the word itself before completing, and the names compgen gives are the expanded ones
 			_mssh_complete_local=1
 			_mssh_complete_head "$_mssh_complete_cur" || _mssh_complete_unsplit=1
 			mapfile -t _mssh_complete_delegated < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
