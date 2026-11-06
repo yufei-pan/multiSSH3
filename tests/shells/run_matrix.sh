@@ -5,9 +5,10 @@
 # The images run at once (the tests mostly wait on shells, not the CPU), each in a container capped at 8 GB, and each with
 # pytest-xdist workers: the processors divided by the images started, at least 1 and at most 8 (MSSH_MATRIX_JOBS sets it; 1 runs
 # the tests one after the other). Each one's output is shown when all are done.
-# A test that fails in the parallel run is run again alone (pytest --lf); the second run decides, so a real failure still fails and
-# a test that only fails under load passes. The first run's FAILED lines stay in the log, and the summary at the end names each
-# test that needed the rerun: a flake stays visible.
+# A test that fails in the parallel run is run again alone (pytest --lf). The first run's FAILED lines stay in the log. A rerun
+# that passes is NOT evidence that the test is fine: a race that fails under load can pass alone. So the exit status tells: 0
+# when every image passed the first time, 1 when something fails on the rerun too, 3 when all passed but some test needed the
+# rerun (1 outranks 3, 3 outranks 0; the CI job takes the status as it is: a rerun turns it red); and the output ends with one "RERUN <image> <test id>" line for each such test.
 # Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [el9] [centos7] [bash5.0] [bash5.1] [bash5.3]   (default: all eight)
 # MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py). The whole suite, e.g. on
 # Python 3.6: MSSH_MATRIX_TESTS=tests tests/shells/run_matrix.sh legacy centos7
@@ -54,9 +55,12 @@ for name in "${images[@]}"; do
 	) > "$logs/$name.log" 2>&1 &
 	pids+=($!)
 done
-status=0
+failed=0
+reran=0
 for index in "${!images[@]}"; do
-	wait "${pids[index]}" || status=1
+	code=0
+	wait "${pids[index]}" || code=$?
+	if [ $code -ne 0 ]; then failed=1; elif grep -q '^=== NEEDED THE RERUN' "$logs/${images[index]}.log"; then reran=1; fi
 	echo "=== ${images[index]} (requires ${required[index]})"
 	cat "$logs/${images[index]}.log"
 done
@@ -68,4 +72,10 @@ for index in "${!images[@]}"; do
 		sed -n '/^=== NEEDED THE RERUN/,/^=== took/p' "$log" | grep -v '^=== took' | sed "s/^/${images[index]}: /"
 	fi
 done
-exit $status
+for index in "${!images[@]}"; do
+	sed -n '/^=== NEEDED THE RERUN/,/^=== took/p' "$logs/${images[index]}.log" | grep '^FAILED\|^ERROR' |
+		sed -e 's/^[A-Z]* //' -e 's/ - .*//' -e "s/^/RERUN ${images[index]} /"
+done
+[ $failed -eq 0 ] || exit 1
+[ $reran -eq 0 ] || exit 3
+exit 0
