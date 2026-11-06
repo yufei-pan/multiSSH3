@@ -3536,6 +3536,39 @@ def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
 		session.close()
 
 
+PASSWORD_WORDS = ['mssh -p zzf', 'mssh --password zzf', 'mssh --password=zzf', 'mssh -p=zzf', 'mssh -pzzf', 'mssh --ipmi_password=zzf', 'mssh -qp zzf',
+	'mssh h --password=zzf']
+
+
+@pytest.mark.parametrize('shell', ['bash', 'ble', 'zsh'])
+def test_a_password_gets_no_file_name_whatever_way_it_is_given_when_mssh_answers(setup, shell):
+	# ble.sh took the file names it makes of a word after an = or an option's letter (-p=zzf, -pzzf: zzfile_unique), and as a second try
+	# for a word with a dash, whose line cannot tell a password, when mssh said nodefault for the first
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	if shell == 'ble':
+		import test_complete_blesh as ble
+		session = blesh_session(home, env, ble.glue_file(home))
+	else:
+		session = (bash_session if shell == 'bash' else zsh_session)(home, env, glue_file(home, shell))
+	try:
+		for typed in PASSWORD_WORDS:
+			assert session.line_after(typed) == typed, typed
+		# (and a file name after the other options still completes)
+		assert session.line_after('mssh -f zzf') == 'mssh -f zzfile_unique '
+	finally:
+		session.close()
+
+
+def test_fish_a_password_gets_no_file_name_whatever_way_it_is_given(setup):
+	require_shell('fish')
+	env, home = setup
+	(home / 'zzfile_unique').write_text('')
+	glue = glue_file(home, 'fish')
+	for typed in PASSWORD_WORDS:
+		assert fish_complete(env, glue, typed, cwd=home) == [], typed
+
+
 @pytest.mark.parametrize('ifs', ["$'\\n'", ':'])
 @pytest.mark.parametrize('shell', ['bash', 'zsh'])
 def test_completion_reads_the_engine_s_answer_whatever_ifs_the_shell_has(setup, shell, ifs):

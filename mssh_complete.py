@@ -3863,6 +3863,10 @@ class Engine(object):
 		'''The slot values the providers rank for the current slot, unframed (they note directives on response).'''
 		response = Response(context) if response is None else response
 		if context.slot == SLOT_OPTION:
+			# (a password attached to its option, -pSECRET, is a password as after -p, -p= and --password=)
+			option, attached = self.spec.lookup(context.prefix)
+			if option is not None and attached and option.dest in PASSWORD_DESTS:
+				response.directives.add('nodefault')
 			return self._options(context, shell)
 		if context.slot == SLOT_VALUE:
 			return self._values(context, response, deadline)
@@ -6353,6 +6357,12 @@ _mssh_complete_tab() {
 			# (mssh's own option value, D files, cut the same)
 			[[ -n $_mssh_complete_again ]] || _mssh_complete_plain=
 			_mssh_complete_plain=${_mssh_complete_plain:0:1}
+		elif [[ $_mssh_complete_before != *"$COMPS" && $COMPS == -* ]]; then
+			# the same second try for a word starting with a dash (an option, or its value after the =: -p=secret): its line is
+			# the words before it, so the engine cannot say there that the word is a password, and ble.sh's own file names
+			# (which it takes after the = or the option's letter) would be offered for it. The first try gave this word all it has
+			compopt +o default +o bashdefault 2>/dev/null || :
+			compopt -o ble/no-default 2>/dev/null || :
 		fi
 	fi
 	(( _mssh_complete_asked_again )) || _mssh_complete_request=$_mssh_complete_before
@@ -6389,7 +6399,10 @@ _mssh_complete_tab() {
 				for _mssh_complete_item in "${_mssh_complete_fields[@]}"; do
 					case $_mssh_complete_item in
 						nosort) compopt -o nosort 2>/dev/null || : ;;
-						nodefault) compopt +o default +o bashdefault 2>/dev/null || : ;;
+						nodefault)
+							compopt +o default +o bashdefault 2>/dev/null || :
+							(( _mssh_complete_ble )) && { compopt -o ble/no-default 2>/dev/null || :; }
+							;;
 						files) _mssh_complete_files=1 ;;
 						icase) _mssh_complete_icase=1 ;;
 						# the current word is in a quote of this shell (a quoted command, or a quoted argument mssh joins with the
