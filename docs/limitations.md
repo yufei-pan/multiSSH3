@@ -603,7 +603,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: bash-completion's own completion of the command (`_tilde`) gives `~bin` beside the glue's word, and readline closes
   the quote for it.
 - Revisit when: bash-completion changes `_tilde`.
-- Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+- Approved: 2026-11-05, the user chose "Known limitation (Recommended)"; the bash 4.2 case 2026-11-06, the same option.
 
 ### bash: the glue sourced while the shell is already in posix mode gives bash's default completion
 - Kind: known limitation
@@ -613,3 +613,56 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: the glue's functions use syntax posix mode does not read; nobody is known to run an interactive posix-mode shell.
 - Revisit when: someone runs an interactive posix-mode shell with the glue.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+
+### bash 4.2: a resize can draw the prompt beside the Ctrl-R menu
+- Kind: known limitation
+- What the operator sees: on bash 4.2, after a window resize with the Ctrl-R menu open, the prompt can appear beside the
+  line, the way bash 4.4 and later always look: bash redraws its own line on a resize, and when that comes after the menu's
+  redraw the prompt stays. The box, filtering, Esc and the printed line stay right. It came up in 3 to 98 of 300 runs,
+  more under load. In a window so narrow that prompt and line wrap (forced at 22 columns, on a test terminal that does not
+  reflow), the wrapped text can overwrite the menu's top row until the next key, or old prompt rows can stay above the
+  line after Esc. The line stays right.
+- Why: `trap '' WINCH` around the menu stopped it, but bash then missed the new width, which is worse. A delayed second
+  redraw cannot guarantee the order, and drawing the prompt ourselves is the expander declined in "No prompt beside the
+  Ctrl-R menu on bash 4.2 and 4.3".
+- Revisit when: an operator on bash 4.2 asks for it.
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### bash before 5.1: a Ctrl-C during TAB leaves posix mode off
+- Kind: known limitation
+- What the operator sees: in an interactive bash before 5.1 with posix mode on, a Ctrl-C that cuts a TAB short leaves
+  posix mode off, with `POSIXLY_CORRECT` gone from every child's environment, until the next TAB on an mssh line or
+  Ctrl-R, however many prompts pass. On 4.2 a `set +o posix` typed in that window is undone by the next TAB, and an
+  exported new value is replaced by the old one, staying exported.
+- Why: bash gives no way to tell the call was cut short, and a prompt hook adds a part for shells nobody is known to run.
+- Revisit when: someone reports using interactive posix mode.
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### zsh: no names inside a directory whose name holds a backslash
+- Kind: known limitation
+- What the operator sees: zsh offers nothing for a word inside a directory whose name holds a backslash. Stock zsh with no
+  glue does the same, on 5.0.2 and 5.9.
+- Why: it comes from zsh itself, and it takes a rare directory name.
+- Revisit when: zsh changes.
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### zsh before 5.3 with zsh-autosuggestions: keys arriving together can run the older line's grey text
+- Kind: known limitation
+- What the operator sees: on zsh before 5.3 (5.0.2 to 5.2) with zsh-autosuggestions in its default asynchronous mode, keys that
+  arrive together (a paste, typing ahead) can take the grey text of the line as it was before them: at `mssh gp` with grey
+  `u[01-16] nvidia-smi`, `x`, Right, Enter runs `mssh gpxu[01-16] nvidia-smi`, and Ctrl-E in place of Right the same. As in 6.43.
+  From zsh 5.3 on, 6.44 drops the grey text while keys are waiting.
+- Why: the fix needs the `line-pre-redraw` hook, which zsh has from 5.3 only.
+- Revisit when: the plugin changes (it does the same alone with its own text).
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### Tab past its limit: a remote option that mssh has too gets a name quoted for this shell
+- Kind: known limitation
+- What the operator sees: when TAB's query misses MSSH_COMPLETE_TIMEOUT (a slow engine, a loaded machine) and a name here needs
+  quoting, `mssh h tail -f zza<TAB>` inserts it quoted for this shell, `zzamp\&b `, which the remote shell reads as
+  `tail -f zzamp&b`. The same after `grep -f`, `du -s`, `sort -k` and `rsync --file=`, on bash and zsh. Every other word that may be a
+  remote command's or a password gets nothing past the limit (6.44; before, all of them did).
+- Why: without the engine's answer the glue cannot tell a remote command's `-f` from mssh's own, and it takes a slow engine and a
+  name that needs quoting together.
+- Revisit when: someone hits it.
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
