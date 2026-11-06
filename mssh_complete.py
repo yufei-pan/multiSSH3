@@ -5840,7 +5840,12 @@ _mssh_complete_delegate() {
 		fi
 		_mssh_complete_compared=$_mssh_complete_item
 		(( _mssh_complete_fold )) && _mssh_complete_compared=${_mssh_complete_item,,}
-		[[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]] && _mssh_complete_delegated+=("$_mssh_complete_item")
+		if [[ $_mssh_complete_compared == "$_mssh_complete_typed"* ]]; then
+			# (not a word twice in a row: bash-completion's _filedir gives a directory twice on bash 4.2 and 4.4, and readline
+			# counts the words to tell a directory alone, which leaves a quote open. Not [-1]: bash 4.2 has no negative index)
+			(( ${#_mssh_complete_delegated[@]} )) && [[ ${_mssh_complete_delegated[${#_mssh_complete_delegated[@]}-1]} == "$_mssh_complete_item" ]] ||
+				_mssh_complete_delegated+=("$_mssh_complete_item")
+		fi
 	done
 	return 0
 }
@@ -6083,7 +6088,7 @@ _mssh_complete_remote() {
 	# words of a function that readline inserts as they are, and ble.sh's when they are no file names, are the command's own
 	# text and stay. Reads and sets _mssh_complete_delegated of _mssh_complete_tab
 	local _mssh_complete_item _mssh_complete_value _mssh_complete_space _mssh_complete_path _mssh_complete_changing=0
-	local -a _mssh_complete_words=()
+	local -a _mssh_complete_words=() _mssh_complete_slashed=()
 	if (( _mssh_complete_qcommand )); then
 		[[ $1 == text ]] && return 0
 		(( _mssh_complete_ble )) && [[ ${2-} != 1 ]] && return 0
@@ -6140,15 +6145,17 @@ _mssh_complete_remote() {
 		fi
 		_mssh_complete_item=$_mssh_complete_value$_mssh_complete_space
 		# (in a quote only alone, _mssh_complete_stay; not on ble.sh's second try, whose word it matches its own way)
-		if (( _mssh_complete_ble && ( ! _mssh_complete_inquote || ( ! _mssh_complete_asked_again && ${#_mssh_complete_delegated[@]} == 1 ) ) )) && [[ ${2-} == 1 && $_mssh_complete_item != */ ]]; then
-			# (alone, the word wants no space after its /)
+		if (( _mssh_complete_ble && ( ! _mssh_complete_inquote || ! _mssh_complete_asked_again ) )) && [[ ${2-} == 1 && $_mssh_complete_item != */ ]]; then
+			# (alone, the word wants no space after its /: in a quote _mssh_complete_unmark below)
 			if [[ ! -d $_mssh_complete_item ]] && _mssh_complete_is_dir "$_mssh_complete_path"; then
+				_mssh_complete_slashed+=(${#_mssh_complete_words[@]})
 				_mssh_complete_item+=/
 				_mssh_complete_marked=1
 			fi
 		fi
 		_mssh_complete_words+=("$_mssh_complete_item")
 	done
+	_mssh_complete_unmark
 	_mssh_complete_delegated=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
 }
 
@@ -6187,12 +6194,12 @@ _mssh_complete_filenames() {
 	# space. Reads _mssh_complete_reply, sets _mssh_complete_delegated of _mssh_complete_tab. fullquote is new in bash 5.3:
 	# one compopt call for both would fail before it
 	local _mssh_complete_item _mssh_complete_path _mssh_complete_quoting=0 _mssh_complete_mark=0 _mssh_complete_value
-	local -a _mssh_complete_words=()
+	local -a _mssh_complete_words=() _mssh_complete_slashed=()
 	local -A _mssh_complete_own=()
 	compopt +o filenames 2>/dev/null || :
 	compopt +o fullquote 2>/dev/null || :
 	(( _mssh_complete_inquote )) || [[ $1 == *' -o fullquote '* || $1 != *' -o noquote '* ]] && _mssh_complete_quoting=1
-	(( ! _mssh_complete_inquote || ${#_mssh_complete_delegated[@]} == 1 )) && [[ $1 == *' -o filenames '* ]] && _mssh_complete_mark=1
+	[[ $1 == *' -o filenames '* ]] && _mssh_complete_mark=1
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
 		_mssh_complete_own["x$_mssh_complete_item"]=1
 	done
@@ -6208,13 +6215,28 @@ _mssh_complete_filenames() {
 		if [[ -z ${_mssh_complete_own["x$_mssh_complete_item"]-} ]] && (( _mssh_complete_mark )) && [[ $_mssh_complete_item != */ ]]; then
 			# (with the mode off, readline would add a space after it, alone: _mssh_complete_marked asks for none)
 			if _mssh_complete_is_dir "$_mssh_complete_path"; then
+				_mssh_complete_slashed+=(${#_mssh_complete_words[@]})
 				_mssh_complete_item+=/
 				_mssh_complete_marked=1
 			fi
 		fi
 		_mssh_complete_words+=("$_mssh_complete_item")
 	done
+	_mssh_complete_unmark
 	_mssh_complete_delegated=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
+}
+
+_mssh_complete_unmark() {
+	# in a quote a directory is marked (its / added, the quote left open: _mssh_complete_stay) only alone: counted after the
+	# names left out are gone (a directory beside a name holding whitespace is alone). Takes the / off the marked ones of
+	# _mssh_complete_slashed, in _mssh_complete_words, and the mark with them. Reads and sets those of the caller
+	local _mssh_complete_index
+	if (( _mssh_complete_inquote && ${#_mssh_complete_words[@]} > 1 )); then
+		for _mssh_complete_index in ${_mssh_complete_slashed[@]+"${_mssh_complete_slashed[@]}"}; do
+			_mssh_complete_words[_mssh_complete_index]=${_mssh_complete_words[_mssh_complete_index]%/}
+		done
+		_mssh_complete_marked=0
+	fi
 }
 
 _mssh_complete_in_quote() {
@@ -6232,6 +6254,23 @@ _mssh_complete_in_quote() {
 	elif [[ $2 == "'" ]]; then
 		_mssh_complete_value=${_mssh_complete_value//\'/\'\\\'\'}
 	fi
+}
+
+_mssh_complete_ask() {
+	# TAB's request to the engine, its answer on stdout: run as $( ) by _mssh_complete_tab. A function, not the text inside
+	# the $( ): in posix mode, bash before 5.1 reads a ) in that text (a <( ) or a case pattern) as the end of the $( ), a
+	# syntax error that wiped the whole line (set -o posix, then mssh h ls zzp<TAB>). Its timed read runs in a subshell of
+	# its own, see _mssh_complete_tab. No comment inside the <( ): bash 4.2 reads a quote or a parenthesis in one as code
+	set +o posix
+	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
+		{
+			local _mssh_complete_ignoring=0
+			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
+			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
+			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
+		} | _mssh_complete_engine query 2>/dev/null || :
+	) || return 1
+	printf '%s' "$_mssh_complete_resp"
 }
 
 _mssh_complete_tab() {
@@ -6307,17 +6346,7 @@ _mssh_complete_tab() {
 	# line: on a host logging idle shells out, a TAB on an mssh line and walking away stayed logged in. And for the same reason no
 	# plain read below, on what this function goes through (mapfile instead): read takes TMOUT for its timeout when it has none
 	# given and does not read a regular file (a pipe, or a here string from bash 5.1).
-	_mssh_complete_resp=$(
-		IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
-			{
-				local _mssh_complete_ignoring=0
-				[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
-				printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
-				fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
-			} | _mssh_complete_engine query 2>/dev/null || :
-		) || exit 1
-		printf '%s' "$_mssh_complete_resp"
-	) || return 0
+	_mssh_complete_resp=$(_mssh_complete_ask) || return 0
 	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || return 0
 	local -a _mssh_complete_lines=()
 	mapfile -t _mssh_complete_lines <<< "$_mssh_complete_resp"
@@ -6549,19 +6578,24 @@ _mssh_complete_stay() {
 	# or the remote shell's (zzd\\&x/). Neither has an option for it either (readline's nospace only leaves out the space).
 	# ble.sh: inserted by its action for a part of a word, which adds nothing after it. readline: a second word that continues
 	# this one, so it inserts what they share and adds nothing. A bell for it then, as for any TAB with more than one name,
-	# and the two listed under show-all-if-ambiguous; under menu-complete (COMP_TYPE 37), which would cycle to the second word,
-	# it closes as before
+	# and the two listed under show-all-if-ambiguous. Only for the completions that insert a word and may close the quote
+	# (COMP_TYPE 9 TAB, 33 and 64 with show-all-if-ambiguous and show-all-if-unmodified): not for listing (63, ?) nor for
+	# insert-completions (42, M-*), where the second word would be a stray word, nor under menu-complete (37), which would
+	# cycle to the second word: it closes as before
 	if (( _mssh_complete_ble )); then
 		if declare -F ble/complete/cand/yield >/dev/null; then
 			ble/complete/cand/yield substr "$COMPREPLY" ''
 			COMPREPLY=()
 		fi
-	elif (( ${COMP_TYPE:-9} != 37 )); then
-		COMPREPLY+=("$COMPREPLY.")
+	else
+		case ${COMP_TYPE:-9} in
+		9|33|64) COMPREPLY+=("$COMPREPLY.") ;;
+		esac
 	fi
 }
 
-complete -o default -o bashdefault -F _mssh_complete mssh mssh3 multissh multissh3 multiSSH3 2>/dev/null
+# (nothing below bash 4, macOS's /bin/bash 3.2: the glue needs mapfile, local -A and ${var,,}, and registers nothing there)
+(( BASH_VERSINFO[0] >= 4 )) && complete -o default -o bashdefault -F _mssh_complete mssh mssh3 multissh multissh3 multiSSH3 2>/dev/null
 
 # ---- grey suggestions, the Ctrl-R picker and the mssh line editor (SP2) ----
 
@@ -7064,7 +7098,7 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		blehook PRECMD+=_mssh_complete_ble_warn_reset
 	}
 	_mssh_complete_ble_warnings
-elif [[ $- == *i* ]]; then
+elif [[ $- == *i* ]] && (( BASH_VERSINFO[0] >= 4 )); then
 	# readline counts READLINE_POINT in bytes before bash 5
 	_mssh_complete_bytes=0
 	(( BASH_VERSINFO[0] < 5 )) && _mssh_complete_bytes=1

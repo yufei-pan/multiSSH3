@@ -858,13 +858,14 @@ REMOTE_HOME = '/zzremote-home'
 
 
 def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=(), home_dirs=(), steps=(), executables=(),
-		bash_completion=False, engine=ENGINE):
+		bash_completion=False, engine=ENGINE, history=(), keys='\t', pre=''):
 	"""The line after TAB at the end of typed (then the keys of each of steps, the last one's line), and the words the remote
 	shell gets for it (the line read by this shell, its open quote closed, then mssh's command read by sh with HOME at
 	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash, ble, zsh; bash and ble.sh with
 	bash-completion loaded when bash_completion) in a directory holding files, dirs and executables, and HOME holding
-	zzhplain, home_files and home_dirs; extra runs after the glue; engine: the glue's engine command."""
-	env, home = make_home(tmp_path, [])
+	zzhplain, home_files and home_dirs; extra runs after the glue; engine: the glue's engine command; history: commands of
+	mssh's history (for the host h); keys: the key pressed after typed (TAB); pre runs before the glue."""
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
 	build_index(env)
 	work = tmp_path / 'work'
 	work.mkdir()
@@ -880,13 +881,13 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 		(work / name).chmod(0o755)
 	(home / 'zzhplain').write_text('')
 	if shell == 'zsh':
-		session = zsh_session(home, env, glue_file(home, 'zsh', engine), extra="cd '{}'\n{}".format(work, extra))
+		session = zsh_session(home, env, glue_file(home, 'zsh', engine), pre=pre, extra="cd '{}'\n{}".format(work, extra))
 	elif shell == 'ble':
 		import test_complete_blesh as ble
-		pre = '. {} 2>/dev/null'.format(BASH_COMPLETION) if bash_completion else ''
+		pre += '\n. {} 2>/dev/null'.format(BASH_COMPLETION) if bash_completion else ''
 		session = blesh_session(home, env, ble.glue_file(home, engine), pre=pre, extra="cd '{}'; {}".format(work, extra))
 	else:
-		session = bash_session(home, env, glue_file(home, 'bash', engine), bash_completion=bash_completion, extra="cd '{}'; {}".format(work, extra))
+		session = bash_session(home, env, glue_file(home, 'bash', engine), bash_completion=bash_completion, pre=pre, extra="cd '{}'; {}".format(work, extra))
 	try:
 		if steps:
 			session.send(typed + '\t')
@@ -896,7 +897,7 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 				session.wait_idle()
 			line = session.line_after(steps[-1], keys='', settle=True)
 		else:
-			line = session.line_after(typed)
+			line = session.line_after(typed, keys=keys)
 	finally:
 		session.close()
 	local = local_words('zsh' if shell == 'zsh' else 'bash', line, home) if line else None
@@ -941,6 +942,7 @@ def test_bash_the_common_start_of_names_stays_as_typed_and_the_next_tab_complete
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('bash_completion', [False, True], ids=['no-bash-completion', 'bash-completion'])
 @pytest.mark.parametrize('typed, dirs, expected, remote', [
 	# in a quoted command, whose word is the command typed: no directory here by that name
 	('mssh h "ls zzd', ['zzdir'], 'mssh h "ls zzdir/', ['ls', 'zzdir/']),
@@ -957,13 +959,77 @@ def test_bash_the_common_start_of_names_stays_as_typed_and_the_next_tab_complete
 	# a user's home being typed
 	('mssh h "cat ~bi', [], 'mssh h "cat ~bin/', None),
 ])
-def test_a_directory_completed_in_a_quote_leaves_it_open(tmp_path, shell, typed, dirs, expected, remote):
+def test_a_directory_completed_in_a_quote_leaves_it_open(tmp_path, shell, bash_completion, typed, dirs, expected, remote):
 	# readline and ble.sh closed it, with a space after it unless the glue had marked the directory ("ls zzdir" , "cat ~bin/"):
-	# each tests the word as a path here to know a directory, and the word is the command typed or the remote shell's
-	line, got = review_line(tmp_path, shell, typed, dirs=dirs)
+	# each tests the word as a path here to know a directory, and the word is the command typed or the remote shell's. With
+	# bash-completion (CentOS 7's bash 4.2, EL8's 4.4) ls's _filedir gives the directory twice: counting its words for "alone"
+	# found two, and the quote closed
+	if bash_completion and '~bi' in typed:
+		# open: bash-completion's own completion for cat gives ~bin (the user name) beside the glue's: the quote closes
+		pytest.xfail('a ~user in a quoted command closes the quote where bash-completion completes the command')
+	line, got = review_line(tmp_path, shell, typed, dirs=dirs, bash_completion=bash_completion)
 	assert line == expected
 	if remote:
 		assert got == remote
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('command', ['ls', 'cd', 'rmdir', 'find', 'pushd', 'sudo ls', 'tar xf'])
+def test_a_directory_completed_in_a_quote_leaves_it_open_for_commands_with_bash_completion(tmp_path, shell, command):
+	line, got = review_line(tmp_path, shell, 'mssh h "{} zzd'.format(command), dirs=['zzdir'], bash_completion=True)
+	assert line == 'mssh h "{} zzdir/'.format(command) and got == command.split() + ['zzdir/']
+
+
+@pytest.mark.parametrize('bash_completion', [False, True], ids=['no-bash-completion', 'bash-completion'])
+def test_bash_completes_mssh_s_own_words_in_posix_mode(tmp_path, bash_completion):
+	# set -o posix, then TAB: bash before 5.1 read the ) of the <( ) inside TAB's $( ) as its end in posix mode, printed a syntax
+	# error and wiped the whole line (4.2, 4.3, 4.4, 5.0); and bash 4.3 to 5.0 do not run a <( ) at all in posix mode (the
+	# query's is run with posix mode off)
+	line, got = review_line(tmp_path, 'readline', 'mssh h "nvid', history=['"nvidia-smi"'], extra='set -o posix', bash_completion=bash_completion)
+	assert line == 'mssh h "nvidia-smi" ' and got == ['nvidia-smi'], line
+
+
+def test_bash_below_4_registers_nothing(tmp_path):
+	# macOS's /bin/bash is 3.2: the glue needs mapfile, local -A and ${var,,}, and printed "mapfile: command not found" four
+	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: a bash 3.2 image)
+	if subprocess.run([require_shell('bash'), '-c', '(( BASH_VERSINFO[0] < 4 ))']).returncode:
+		pytest.skip('bash is 4 or newer')
+	env, home = make_home(tmp_path, [])
+	glue = glue_file(home, 'bash')
+	output = subprocess.run([require_shell('bash'), '--norc', '--noprofile', '-i', '-c', '. {}; complete -p mssh 2>&1; echo done'.format(glue)],
+		stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=60, stdin=subprocess.DEVNULL).stdout.decode()
+	assert 'command not found' not in output and 'invalid option' not in output and 'complete: mssh: no completion' in output, output
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+def test_a_directory_beside_a_name_left_out_leaves_the_quote_open(tmp_path, shell):
+	# `zzd a` holds whitespace: mssh would split it, so it is not offered, and the directory is the one name left
+	line, got = review_line(tmp_path, shell, 'mssh h ls "zzd', dirs=['zzd&x'], files=['zzd a'])
+	assert line == 'mssh h ls "zzd\\\\&x/' and got == ['ls', 'zzd&x/']
+
+
+def test_readline_insert_completions_after_a_directory_in_a_quote_inserts_the_directory_once(tmp_path):
+	# M-* inserted the hidden second word (mssh h ls zzdir/ ls zzdir/. ), and a run passed the stray word to the remote shell
+	line, got = review_line(tmp_path, 'readline', 'mssh h "ls zzd', dirs=['zzdir'], keys='\x1b*')
+	assert line.split() == ['mssh', 'h', 'ls', 'zzdir/'] and got == ['ls', 'zzdir/'], line
+
+
+def test_readline_possible_completions_lists_a_directory_in_a_quote_once(tmp_path):
+	# M-? listed the hidden second word with it (ls zzdir/ ls zzdir/. )
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	(home / 'zzdir').mkdir()
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra="cd '{}'".format(home))
+	try:
+		session.send('mssh h "ls zzd')
+		session.wait_idle()
+		before = len(session.output)
+		session.send('\x1b?')
+		session.wait_idle()
+		shown = session.output[before:].decode('utf-8', 'replace')
+	finally:
+		session.close()
+	assert 'zzdir/' in shown and 'zzdir/.' not in shown, shown
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
@@ -1004,7 +1070,7 @@ def test_readline_menu_complete_never_inserts_the_second_word_of_a_directory_in_
 	('mssh h ls "$PWD/zzp', 'mssh h ls "$PWD/zzplain" ', '/zzplain'),
 	('mssh h ls "$PWD/zzd', 'mssh h ls "$PWD/zzdir/', '/zzdir/'),
 	# a name the remote shell would read otherwise, written for the quote
-	('mssh h "ls $PWD/zza', 'mssh h "ls $PWD/zzamp\\&b" ', '/zzamp&b'),
+	('mssh h "ls $PWD/zza', 'mssh h "ls $PWD/zzamp\\\\&b" ', '/zzamp&b'),
 	('mssh h ls "$PWD/zza', 'mssh h ls "$PWD/zzamp\\\\&b" ', '/zzamp&b'),
 	# (a backtick, which the glue does not read: as typed)
 	('mssh h "ls `pwd`/zzd', 'mssh h "ls `pwd`/zzd', None),
