@@ -6990,9 +6990,10 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		# the engine, from the request file to the answer file: 0 answered, 148 typing interrupted, 142 past the limit. The limit is
 		# read off the clock: conditional-sync's timeout= counts its sleeps, which ble.sh shortens by a delay it measured as the shell
 		# started, so a shell started on a busy machine gave the engine a fraction of the limit for as long as it lived
-		local ret _mssh_complete_until _mssh_complete_status
+		local ret _mssh_complete_until _mssh_complete_status _mssh_complete_limit=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}
+		[[ $_mssh_complete_limit =~ ^[0-9]+$ ]] || _mssh_complete_limit=300
 		ble/util/clock
-		_mssh_complete_until=$((ret + ${MSSH_COMPLETE_GHOST_TIMEOUT:-300}))
+		_mssh_complete_until=$((ret + 10#$_mssh_complete_limit))
 		ble/util/conditional-sync '_mssh_complete_engine_exec query < "$_mssh_complete_request_file" >| "$_mssh_complete_answer_file" 2>/dev/null' '! ble/decode/has-input && { ble/util/clock; ((ret < _mssh_complete_until)); }' 20
 		_mssh_complete_status=$?
 		((_mssh_complete_status == 148)) && ! ble/decode/has-input && return 142

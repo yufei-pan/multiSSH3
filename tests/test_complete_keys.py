@@ -1029,7 +1029,8 @@ def test_blesh_suggests_from_the_engine(home):
 def test_blesh_grey_text_keeps_its_limit_when_ble_sh_measured_a_busy_machine(home):
 	# conditional-sync's timeout= counts its sleeps, and ble.sh shortens each by a delay it measures as the shell starts: a shell
 	# started on a busy machine (here: 25 ms) gave the engine a fraction of the limit for as long as it lived (3 s lasted 25 ms,
-	# the grey text and the warnings never came). The glue reads the limit off the clock
+	# the grey text and the warnings never came). The glue reads the limit off the clock. (On bash 4.2 this proves nothing: the
+	# glue reading the limit the old way, as conditional-sync's timeout=, passes it on the CentOS 7 image)
 	env, home = home
 	busy = 'function ble/util/msleep/.calibrate-loop { _ble_util_msleep_delay=25000; }'
 	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='3000'), glue_file(home, 'bash'), extra=busy)
@@ -1037,6 +1038,26 @@ def test_blesh_grey_text_keeps_its_limit_when_ble_sh_measured_a_busy_machine(hom
 		session.send('mssh gp')
 		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 20)
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('limit, grey', [('0.5', True), ('1e3', True), ('2s', True), ('', True), ('03000', True), ('08', False)])
+def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(home, limit, grey):
+	# 0.5, 1e3 and 2s are syntax errors in $((ret + limit)), and 08 an arithmetic one (octal): each printed one at every key and
+	# lost the grey text. A number of milliseconds with a leading 0 is that number (03000: 3 s; 08 is 8 ms, too short for the engine)
+	env, home = home
+	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT=limit), glue_file(home, 'bash'))
+	try:
+		session.send('mssh gp')
+		if grey:
+			shown = session.read_until(b'nvidia-smi', 20)
+			assert 'nvidia-smi' in shown, shown
+			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+		else:
+			session.wait_idle()
+		output = session.output.decode('utf-8', 'replace')
+		assert 'syntax error' not in output and 'value too great' not in output, output
 	finally:
 		session.close()
 
