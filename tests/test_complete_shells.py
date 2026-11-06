@@ -1260,6 +1260,86 @@ def test_zsh_mssh_s_own_file_names_complete_in_a_double_quoted_word_with_an_expa
 	assert words[:-1] == prefix and words[-1].endswith('/' + files[0]), words
 
 
+ANOTHER_START = [
+	('m h "ls $PWD/zzp', 'alias m=mssh'), ('m2 h "ls $PWD/zzp', "alias m2='m -q'; alias m=mssh"), ('sudo mssh h "ls $PWD/zzp', ''), ('time mssh h "ls $PWD/zzp', ''),
+	('command mssh h "ls $PWD/zzp', ''), ('noglob mssh h "ls $PWD/zzp', ''), ('cd . && mssh h "ls $PWD/zzp', ''), ('true; mssh h "ls $PWD/zzp', ''), ('(mssh h "ls $PWD/zzp', ''),
+	('FOO=1 mssh h "ls $PWD/zzp', ''), ('FOO=1 BAR="a b" sudo mssh h "ls $PWD/zzp', ''), ('true | mssh h "ls $PWD/zzp', ''), ('false || noglob mssh h "ls $PWD/zzp', ''),
+	('{ mssh h "ls $PWD/zzp', ''), ('! mssh h "ls $PWD/zzp', ''), ('if mssh h "ls $PWD/zzp', ''), ('/bin/mssh h "ls $PWD/zzp', ''), ('\\mssh h "ls $PWD/zzp', ''),
+	('mssh h ls "$PWD/zzp', ''), ('mssh -f "$PWD/zzp', ''), ('exec mssh h "ls $PWD/zzp', ''), ('sudo -E mssh h "ls $PWD/zzp', ''),
+]
+
+
+@pytest.mark.parametrize('typed, extra', ANOTHER_START)
+def test_zsh_a_double_quoted_expansion_stays_as_typed_wherever_the_mssh_command_starts(tmp_path, typed, extra):
+	# zsh expands such a word before any completion function runs: m h "ls $PWD/zzp gave m h ls\\ /the/directory/zzp, the quote gone
+	# and the value expanded. The line need not start with an mssh name: the command the cursor is in counts
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], extra=extra, pre='mssh() { :; }')
+	assert line == typed + 'lain" '
+
+
+@pytest.mark.parametrize('typed, extra', [('ls "$PWD/zzp', ''), ('mssh h a; ls "$PWD/zzp', ''), ('mssh h a | cat "$PWD/zzp', ''), ('noglob ls "$PWD/zzp', ''), ('m "$PWD/zzp', 'alias m=ls'),
+	('mssh="$PWD/zzp', '')])
+def test_zsh_a_double_quoted_expansion_of_another_command_is_left_to_zsh(tmp_path, typed, extra):
+	# as without the glue: the word is expanded (the value of $PWD in the line)
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], extra=extra)
+	assert '$PWD' not in line, line
+
+
+OWN_NAMES_WITH_AN_EXPANSION = [
+	('mssh -f "$PWD/zzs', 'zzs.txt', 'mssh -f "$PWD/zzs.txt" '),
+	('mssh --file "$PWD/zzs', 'zzs.txt', 'mssh --file "$PWD/zzs.txt" '),
+	('mssh --file="$PWD/zzs', 'zzs.txt', 'mssh --file="$PWD/zzs.txt" '),
+	('mssh -k "$PWD/zzs', 'zzs.txt', 'mssh -k "$PWD/zzs.txt" '),
+	('mssh -f "${PWD}/zzs', 'zzs.txt', 'mssh -f "${PWD}/zzs.txt" '),
+	('mssh -f $PWD/zzs', 'zzs.txt', 'mssh -f $PWD/zzs.txt '),
+	('mssh --file=$PWD/zzs', 'zzs.txt', 'mssh --file=$PWD/zzs.txt '),
+	# what goes in is written for the quote, or for no quote
+	('mssh -f "$PWD/zza', 'zza&b', 'mssh -f "$PWD/zza&b" '),
+	('mssh -f "$PWD/zzs', 'zzs p', 'mssh -f "$PWD/zzs p" '),
+	('mssh -f "$PWD/zzq', 'zzq"b', 'mssh -f "$PWD/zzq\\"b" '),
+	('mssh -f "$PWD/zzd', 'zzd$x', 'mssh -f "$PWD/zzd\\$x" '),
+	('mssh -f $PWD/zza', 'zza&b', 'mssh -f $PWD/zza\\&b '),
+	('mssh -f $PWD/zzs', 'zzs p', 'mssh -f $PWD/zzs\\ p '),
+	# in a directory, the directory as typed
+	('mssh -f "$PWD/sub dir/zzs', 'sub dir/zzs.txt', 'mssh -f "$PWD/sub dir/zzs.txt" '),
+	('mssh -f $PWD/sub\\ dir/zzs', 'sub dir/zzs.txt', 'mssh -f $PWD/sub\\ dir/zzs.txt '),
+]
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, name, expected', OWN_NAMES_WITH_AN_EXPANSION)
+def test_bash_mssh_s_own_file_names_keep_an_expansion(tmp_path, shell, typed, name, expected):
+	# readline escaped the $ (always in double quotes, on bash before 5.2 outside them too): mssh -f "\\$PWD/zzs.txt" gave mssh the
+	# literal text $PWD/zzs.txt, which it found no file for
+	line, _ = review_line(tmp_path, shell, typed, files=[name])
+	# (ble.sh quotes in its own way: what counts is what mssh gets)
+	if shell == 'readline':
+		assert line == expected
+	assert local_words('bash', line)[-1].endswith('/' + name), line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('typed, line_start', [('mssh -f "$PWD/zzd', 'mssh -f "$PWD/zzdir/'), ('mssh -f $PWD/zzd', 'mssh -f $PWD/zzdir/')])
+def test_bash_a_directory_of_mssh_s_own_names_goes_on_past_an_expansion(tmp_path, shell, typed, line_start):
+	# no space and the quote open, and the next TAB goes on into it
+	line, _ = review_line(tmp_path, shell, typed, dirs=['zzdir'], files=['zzdir/in1'])
+	assert line == line_start
+	(tmp_path / 'again').mkdir()
+	line, _ = review_line(tmp_path / 'again', shell, typed, dirs=['zzdir'], files=['zzdir/in1'], steps=['in', '\t'])
+	assert local_words('bash', line)[-1].endswith('/zzdir/in1'), line
+
+
+def test_bash_a_variable_being_typed_at_mssh_s_own_file_word_stays_a_variable(tmp_path):
+	line, _ = review_line(tmp_path, 'readline', 'mssh -f "$HOM')
+	assert '\\$' not in line and local_words('bash', line)[-1].startswith('/'), line
+
+
+def test_bash_a_name_with_an_exclamation_mark_is_left_out_of_mssh_s_own_names_in_a_double_quote_with_an_expansion(tmp_path):
+	# bash would read the ! at Enter, as in a remote command's double quote
+	line, _ = review_line(tmp_path, 'readline', 'mssh -f "$PWD/zzt', files=['zzt!r'])
+	assert line == 'mssh -f "$PWD/zzt'
+
+
 @pytest.mark.parametrize('dirname', ['zzd x', 'zzd&x', "zzd'x", 'zzd$x', 'zzd"x'])
 @pytest.mark.parametrize('option', ['-f', '--file', '-k'])
 def test_zsh_a_directory_of_mssh_s_own_names_goes_on_in_a_double_quote_with_an_expansion(tmp_path, option, dirname):

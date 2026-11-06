@@ -7728,11 +7728,37 @@ _mssh_complete_tab_key() {
 	# as it always does with a double quote in the word, whose quote marks the comparison keeps: mssh h "ls $PWD/zzd became
 	# mssh h ls\ /the/directory/zzd, and "echo $USER; cat zz lost the command's quote and meaning. Elsewhere as it was: zsh
 	# completes $PWD/zzd typed bare. No emulate here: the completion runs in the operator's options
-	if _mssh_complete_is_mssh "$BUFFER" && [[ $BUFFER == *\"* && $BUFFER == *[\$\`]* ]]; then
+	if [[ $BUFFER == *\"* && $BUFFER == *[\$\`]* ]] && _mssh_complete_in_mssh; then
 		zle complete-word -- "$@"
 	else
 		zle _mssh_complete_orig_expand-or-complete -- "$@"
 	fi
+}
+
+_mssh_complete_in_mssh() {
+	# whether the cursor is in the arguments of an mssh command, wherever that starts on the line, read as zsh reads it: the words up
+	# to the cursor, from the last separator on, past assignments, the words that run the next one (sudo's options too) and aliases,
+	# which the walk reads in place of their name (a name that is mssh's already stays: alias mssh='noglob mssh')
+	emulate -L zsh
+	local -a _mssh_complete_words
+	_mssh_complete_words=("${(@z)LBUFFER}")
+	local _mssh_complete_word
+	local -i _mssh_complete_at=$#_mssh_complete_words _mssh_complete_rounds=0
+	while (( _mssh_complete_at > 0 )); do
+		[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|'&!'|';;'|';&'|';|'|'('|'{') ]] && break
+		(( _mssh_complete_at-- ))
+	done
+	while (( ++_mssh_complete_at < $#_mssh_complete_words )); do
+		_mssh_complete_word=${(Q)_mssh_complete_words[_mssh_complete_at]}
+		[[ ${_mssh_complete_word:t} == (mssh|mssh3|multissh|multissh3|multiSSH3) ]] && return 0
+		if [[ $_mssh_complete_word != (sudo|doas|time|nice|nohup|env|command|builtin|exec|noglob|nocorrect|if|elif|while|until|then|else|do|'!'|-*|[A-Za-z_]*=*) ]]; then
+			# (not forever: an alias of a word of its own, or of each other)
+			(( ${+aliases[$_mssh_complete_word]} && ++_mssh_complete_rounds < 10 )) || return 1
+			_mssh_complete_words[_mssh_complete_at]=("${(@z)aliases[$_mssh_complete_word]}")
+			(( _mssh_complete_at-- ))
+		fi
+	done
+	return 1
 }
 
 (( $+functions[compdef] )) && compdef _mssh mssh mssh3 multissh multissh3 multiSSH3

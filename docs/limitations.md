@@ -567,8 +567,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Kind: known limitation
 - What the operator sees: the double-quoted expansion fix does not reach a `zstyle ':completion:*' completer _expand ...`
   setup, where `mssh h "ls $PWD/zzp<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzp`. As in 6.42. On zsh 5.0.2
-  the quote is lost but the value is not expanded: `mssh h ls\ $PWD/zzp`. (A line not starting with `mssh` is the fifth
-  entry after this one.)
+  the quote is lost but the value is not expanded: `mssh h ls\ $PWD/zzp`.
 - Why: those paths do not go through the wrapped `expand-or-complete` widget's handling of a double-quoted word.
 - Revisit when: someone using `_expand` reports it.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
@@ -612,17 +611,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: the glue's functions use syntax posix mode does not read; nobody is known to run an interactive posix-mode shell.
 - Revisit when: someone runs an interactive posix-mode shell with the glue.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
-
-### zsh: the quote rewrite on a line that does not start with `mssh`
-- Kind: deferred (6.44)
-- What the operator sees: in zsh, the double-quoted expansion fix applies only where the line starts with an mssh name.
-  `alias m=mssh` then `m h "ls $PWD/zzp<TAB>` gives `m h ls\ /the/directory/zzp`: the quote gone and the value expanded.
-  The same after `sudo mssh`, `time mssh`, `command mssh`, `noglob mssh`, `cd . && mssh`, `true; mssh`, `(mssh` and
-  `FOO=1 mssh`. As in 6.42.
-- Why: `_mssh_complete_is_mssh` matches an mssh name at the start of the line only; reading the command position of the
-  line needs the glue to parse it as zsh does.
-- Revisit when: 6.44.
-- Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: going on into a directory completed in a double quote with an expansion gives no names
 - Kind: deferred (6.44)
