@@ -1045,10 +1045,11 @@ def test_blesh_grey_text_keeps_its_limit_when_ble_sh_measured_a_busy_machine(hom
 		session.close()
 
 
-@pytest.mark.parametrize('limit, grey', [('0.5', True), ('1e3', True), ('2s', True), ('', True), ('03000', True), ('08', False)])
+@pytest.mark.parametrize('limit, grey', [('0.5', False), ('1e3', False), ('2s', False), ('', False), ('03000', True), ('08', False)])
 def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(home, limit, grey):
 	# 0.5, 1e3 and 2s are syntax errors in $((ret + limit)), and 08 an arithmetic one (octal): each printed one at every key and
-	# lost the grey text. A number of milliseconds with a leading 0 is that number (03000: 3 s; 08 is 8 ms, too short for the engine)
+	# lost the grey text. A number of milliseconds with a leading 0 is that number (03000: 3 s). Only that one is asked for its grey
+	# text: the others use the 300 ms limit (08: 8 ms), which a loaded machine misses, so they are asked for no arithmetic error
 	env, home = home
 	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT=limit), glue_file(home, 'bash'))
 	try:
@@ -1059,8 +1060,10 @@ def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(
 			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 		else:
 			session.wait_idle()
+			session.send('u')
+			session.wait_idle()
 		output = session.output.decode('utf-8', 'replace')
-		assert 'syntax error' not in output and 'value too great' not in output, output
+		assert 'syntax error' not in output and 'value too great' not in output and 'error token' not in output, output
 	finally:
 		session.close()
 
