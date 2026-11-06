@@ -1048,8 +1048,9 @@ def test_blesh_grey_text_keeps_its_limit_when_ble_sh_measured_a_busy_machine(hom
 @pytest.mark.parametrize('limit, grey', [('0.5', False), ('1e3', False), ('2s', False), ('', False), ('03000', True), ('08', False)])
 def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(home, limit, grey):
 	# 0.5, 1e3 and 2s are syntax errors in $((ret + limit)), and 08 an arithmetic one (octal): each printed one at every key and
-	# lost the grey text. A number of milliseconds with a leading 0 is that number (03000: 3 s). Only that one is asked for its grey
-	# text: the others use the 300 ms limit (08: 8 ms), which a loaded machine misses, so they are asked for no arithmetic error
+	# lost the grey text. Here: no such error is printed, and with a long limit (03000: 3 s) the grey text shows. The limits the
+	# others get (300 ms; 08 is 8 ms) are checked by the test below; their grey text is not asked for, as a loaded machine misses
+	# a limit that short
 	env, home = home
 	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT=limit), glue_file(home, 'bash'))
 	try:
@@ -1066,6 +1067,28 @@ def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(
 		assert 'syntax error' not in output and 'value too great' not in output and 'error token' not in output, output
 	finally:
 		session.close()
+
+
+@pytest.mark.parametrize('limit, milliseconds', [
+	('0.5', 300), ('1e3', 300), ('2s', 300), ('', 300), (None, 300), ('300', 300), ('03000', 3000), ('08', 8), ('00', 0),
+], ids=['0.5', '1e3', '2s', 'empty', 'unset', '300', '03000', '08', '00'])
+def test_blesh_grey_text_limit_is_the_clock_plus_the_milliseconds_given_or_300(limit, milliseconds):
+	# no ble.sh and no load: _mssh_complete_ble_query, cut out of the glue, with the clock and conditional-sync stubbed (the clock
+	# stands still at 1000, conditional-sync prints the time it was given)
+	glue = mc.render_glue('bash', ENGINE).split('\n')
+	start = glue.index('\t_mssh_complete_ble_query() {')
+	function = '\n'.join(glue[start:glue.index('\t}', start) + 1])
+	script = function + """
+ble/util/clock() { ret=1000; }
+ble/util/conditional-sync() { echo "until=$_mssh_complete_until"; }
+ble/decode/has-input() { return 1; }
+_mssh_complete_ble_query
+"""
+	env = {key: value for key, value in os.environ.items() if key != 'MSSH_COMPLETE_GHOST_TIMEOUT'}
+	if limit is not None:
+		env['MSSH_COMPLETE_GHOST_TIMEOUT'] = limit
+	done = subprocess.run([require_shell('bash'), '-c', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=30)
+	assert done.stdout.decode() == 'until={}\n'.format(1000 + milliseconds) and done.stderr == b'', (done.stdout, done.stderr)
 
 
 STALE_ENGINE = '''#!{python}
