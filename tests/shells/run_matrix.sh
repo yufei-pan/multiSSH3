@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run the autocomplete tests in the Docker shell matrix: modern, current (the newest Python), legacy, el9 and centos7 images,
+# Run the autocomplete tests in the Docker shell matrix: modern, current (the newest Python), legacy, el9, el10 and centos7 images,
 # and bash 5.0, 5.1 and 5.3 alone (readline key bindings change between bash versions: see their Dockerfiles; the test of a
-# Ctrl-C right after Ctrl-R runs on bash 5.0 only, no other image has a bash that fails it).
+# Ctrl-C right after Ctrl-R runs on bash 5.0 only, no other image has a bash that fails it). bash3.2 (macOS's) runs one test only,
+# whatever MSSH_MATRIX_TESTS says: that the glue stays silent and registers nothing there.
 # The images run at once (the tests mostly wait on shells, not the CPU), each in a container capped at 8 GB, and each with
 # pytest-xdist workers: the processors divided by the images started, at least 1 and at most 8 (MSSH_MATRIX_JOBS sets it; 1 runs
 # the tests one after the other). Each one's output is shown when all are done.
@@ -9,14 +10,14 @@
 # that passes is NOT evidence that the test is fine: a race that fails under load can pass alone. So the exit status tells: 0
 # when every image passed the first time, 1 when something fails on the rerun too, 3 when all passed but some test needed the
 # rerun (1 outranks 3, 3 outranks 0; the CI job takes the status as it is: a rerun turns it red); and the output ends with one "RERUN <image> <test id>" line for each such test.
-# Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [el9] [centos7] [bash5.0] [bash5.1] [bash5.3]   (default: all eight)
+# Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [el9] [el10] [centos7] [bash3.2] [bash5.0] [bash5.1] [bash5.3]   (default: all ten)
 # MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py). The whole suite, e.g. on
 # Python 3.6: MSSH_MATRIX_TESTS=tests tests/shells/run_matrix.sh legacy centos7
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 images=("$@")
-[ ${#images[@]} -gt 0 ] || images=(modern current legacy el9 centos7 bash5.0 bash5.1 bash5.3)
+[ ${#images[@]} -gt 0 ] || images=(modern current legacy el9 el10 centos7 bash3.2 bash5.0 bash5.1 bash5.3)
 jobs=${MSSH_MATRIX_JOBS:-$(( $(nproc) / ${#images[@]} ))}
 (( jobs >= 1 )) || jobs=1
 [ -n "${MSSH_MATRIX_JOBS:-}" ] || (( jobs <= 8 )) || jobs=8
@@ -25,10 +26,12 @@ trap 'rm -rf "$logs"' EXIT
 required=()
 pids=()
 for name in "${images[@]}"; do
+	tests=${MSSH_MATRIX_TESTS:-tests/test_complete_*.py}
 	case $name in
 		centos7) required+=(bash,zsh,blesh) ;;
+		bash3.2) required+=(bash,bash3); tests=tests/test_complete_shells.py::test_bash_below_4_registers_nothing ;;
 		bash5.0|bash5.1|bash5.3) required+=(bash) ;;
-		modern|current|legacy|el9) required+=(bash,zsh,fish,blesh,zas,zsh-syntax-highlighting) ;;
+		modern|current|legacy|el9|el10) required+=(bash,zsh,fish,blesh,zas,zsh-syntax-highlighting) ;;
 		*) echo "unknown image: $name" >&2; exit 2 ;;
 	esac
 	(
@@ -39,9 +42,9 @@ for name in "${images[@]}"; do
 		# The rerun (pytest --lf) runs what the cache lists as failed; the ids the run left failed after it are the ones that fail alone,
 		# the others passed only on the rerun (the ids come from the cache, whole: the FAILED lines cut them at a " - ")
 		status=0
-		docker run --rm --memory=8g --memory-swap=8g --pids-limit=4096 --user 65534:65534 \
+		docker run --rm --init --memory=8g --memory-swap=8g --pids-limit=4096 --user 65534:65534 \
 			-v "$repo":/repo:ro -w /repo -e MSSH_REQUIRE_SHELLS="${required[-1]}" -e PYTHONDONTWRITEBYTECODE=1 \
-			-e MSSH_MATRIX_TESTS="${MSSH_MATRIX_TESTS:-tests/test_complete_*.py}" -e MSSH_MATRIX_JOBS_RUN="$jobs" \
+			-e MSSH_MATRIX_TESTS="$tests" -e MSSH_MATRIX_JOBS_RUN="$jobs" \
 			"mssh-shell-test-$name" sh -c 'export HOME=$(mktemp -d); python3 -V
 				failed_ids() { python3 -c "import json, sys; print(*sorted(json.load(open(sys.argv[1]))), sep=chr(10))" "$HOME/.pc/v/cache/lastfailed" 2>/dev/null || :; }
 				workers=; [ "$MSSH_MATRIX_JOBS_RUN" -le 1 ] || workers="-n $MSSH_MATRIX_JOBS_RUN"

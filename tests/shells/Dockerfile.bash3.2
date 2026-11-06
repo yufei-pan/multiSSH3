@@ -1,0 +1,6 @@
+# Shell matrix image: bash 3.2 alone (macOS's /bin/bash), the official bash image, pinned. The glue registers nothing there, so
+# run_matrix.sh runs only the test that says so
+FROM bash:3.2@sha256:44900632c47e54937a3c2d7de2b4d05af7aee6d269c71c3116204842ee26101c
+RUN apk add --no-cache python3 py3-pytest py3-pytest-xdist git \
+ && [ "$(command -v bash)" = /usr/local/bin/bash ]
+ENV LANG=C.UTF-8

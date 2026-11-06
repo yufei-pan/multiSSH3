@@ -1108,6 +1108,8 @@ def test_bash_below_4_registers_nothing(tmp_path):
 	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: the matrix's bash3.2 image,
 	# where a newer bash fails it)
 	if subprocess.run([require_shell('bash'), '-c', '(( BASH_VERSINFO[0] < 4 ))']).returncode:
+		if 'bash3' in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
+			pytest.fail('bash older than 4 is required here (MSSH_REQUIRE_SHELLS) but bash is 4 or newer')
 		pytest.skip('bash is 4 or newer')
 	env, home = make_home(tmp_path, [])
 	glue = glue_file(home, 'bash')
