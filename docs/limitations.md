@@ -566,8 +566,9 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 ### zsh: a double-quoted expansion is still expanded where the completer is `_expand`
 - Kind: known limitation
 - What the operator sees: the double-quoted expansion fix does not reach a `zstyle ':completion:*' completer _expand ...`
-  setup, where `mssh h "ls $PWD/zzp<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzp`. As in 6.42. (A line not
-  starting with `mssh` is the next entry but two.)
+  setup, where `mssh h "ls $PWD/zzp<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzp`. As in 6.42. On zsh 5.0.2
+  the quote is lost but the value is not expanded: `mssh h ls\ $PWD/zzp`. (A line not starting with `mssh` is the fifth
+  entry after this one.)
 - Why: those paths do not go through the wrapped `expand-or-complete` widget's handling of a double-quoted word.
 - Revisit when: someone using `_expand` reports it.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
@@ -605,7 +606,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### bash: the glue sourced while the shell is already in posix mode gives bash's default completion
 - Kind: known limitation
-- What the operator sees: on bash before 5.1 (4.2, 4.4 and 5.0 checked), `set -o posix` (or `bash --posix`) before the glue
+- What the operator sees: on bash before 5.1 (4.2, 4.3, 4.4 and 5.0 checked), `set -o posix` (or `bash --posix`) before the glue
   is sourced: TAB on an mssh line completes as bash does with no glue, silently (`mssh h "nvid<TAB>` stays as typed). On
   bash 5.1 and later it works. Turning posix mode on after the glue is loaded works on every version.
 - Why: the glue's functions use syntax posix mode does not read; nobody is known to run an interactive posix-mode shell.
@@ -640,5 +641,24 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: the fallback does not know which word it is completing (a remote command's, a password's); that needs the answer
   the engine did not give in time. The planned fix is to offer nothing past the limit on a remote-command word and a
   password word.
+- Revisit when: 6.44.
+- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
+
+### bash: a file name typed inside double quotes with an expansion reaches mssh unexpanded
+- Kind: deferred (6.44)
+- What the operator sees: in bash (readline), `mssh -f "$PWD/zzs<TAB>` gives `mssh -f "\$PWD/zzs.txt" `: the `$` is escaped,
+  so mssh receives the literal text `$PWD/zzs.txt` and finds no such file. The same with `--file "$PWD/...` and
+  `--file="$PWD/...`. Names of the remote command are right.
+- Why: the names of mssh's own file words go to readline to quote, which escapes the `$` inside the double quote; the names of
+  a remote command go through the glue's own quoting (`_mssh_complete_filenames`), which does not. With ble.sh and in zsh
+  the same lines are right.
+- Revisit when: 6.44. The planned fix is to route mssh's own file-name words through `_mssh_complete_filenames`.
+- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: `--file=` followed by a file name offers nothing
+- Kind: deferred (6.44)
+- What the operator sees: in zsh, `mssh --file=zzs<TAB>` offers no names (`mssh --file zzs<TAB>` does).
+- Why: the engine answers `files` (the shell completes them) and the zsh glue gives `_files` the whole word `--file=zzs`, not the
+  part after the `=`. `mssh --file="$PWD/zzs<TAB>` is the same. Bash and ble.sh complete both.
 - Revisit when: 6.44.
 - Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
