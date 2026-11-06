@@ -523,13 +523,16 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: an operator hits it.
 - Approved: 2026-11-04, the user chose "Known limitation (Recommended)".
 
-### TMOUT after Ctrl-R (bash before 5.2)
+### TMOUT after Ctrl-R or in the line editor (bash before 5.2)
 - Kind: deferred
 - What the operator sees: on a host setting `TMOUT`, Ctrl-R on an mssh line and walking away leaves the shell logged in
-  until the next Enter.
-- Why: moving the wait's read into `$( )` fixed nothing on any version (tested); it needs a design pass.
+  until the next Enter. The same with the line editor (`MSSH_COMPLETE_EDITOR=1`) on bash 4.4, 5.0 and 5.1: `mssh h ` and
+  walking away stays logged in, also after Esc or a TAB in the editor; bash 5.2 logs out. Off mssh lines 6.43 logs out
+  (6.42 stayed logged in everywhere).
+- Why: moving the wait's read into `$( )` fixed nothing on any version (tested); it needs a design pass. The editor has
+  the same cause.
 - Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred, design first (Recommended)", kept for Ctrl-R when they then picked "Fix TAB in 6.43 (Recommended)".
+- Approved: 2026-11-05, the user chose "Deferred, design first (Recommended)", kept for Ctrl-R when they then picked "Fix TAB in 6.43 (Recommended)"; the line editor added the same day, "Add to the design pass (Recommended)".
 
 ### Ctrl-C after Ctrl-R loses the first letter (bash 4.3, 4.4, 5.0)
 - Kind: deferred
@@ -537,15 +540,40 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   `ssh h rm x`.
 - Why: a bare binding doing `trap x INT; trap - INT` does it too (seen on 4.4 and 5.0), and having no INT trap on those
   versions was not enough.
+- Also: since 6.43 puts the terminal's mode back after a Ctrl-C right after Ctrl-R, the terminal is still left cooked (the
+  line editor and Ctrl-U misbehave until the next Enter) in a small window around each 0.1 s read boundary: 2 of 480
+  tries (about 0.4%), measured in 6.43's second review. The idea to test in the design pass: `stty -isig`.
 - Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)".
+- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the residual window added the same day, "Add to the design pass (Recommended)".
 
 ### Ctrl-C during TAB's query loses the first letter (bash 4.3 to 5.2)
 - Kind: deferred
 - What the operator sees: `^C` with no new prompt; Enter then runs `ssh h rm x` for `mssh h rm x`, so a line that looks
-  cancelled runs. A second Ctrl-C gives a clean prompt (checked on 4.4, 5.0, 5.1, 5.2).
+  cancelled runs. A second Ctrl-C gives a clean prompt (checked on 4.4, 5.0, 5.1, 5.2; 24 of 24 in 6.43's second review).
+  6.42 sometimes gave a clean prompt at once (6 of 24 tries on 4.4.23, 4 of 24 on 5.1.16, 2 of 24 on 5.0 and 5.2, 4 of 24
+  on EL9); 6.43's `$( )` for the query makes it 0 of 24 on 4.3, 4.4.20, 4.4.23, 5.0, 5.1.8, 5.1.16 and 5.2: the line always
+  stays. The window lasts only as long as the query.
 - Why: bash's bug, fixed in 5.3: a completion with no mssh glue does it. `$( )` does not cure it, and ignoring INT
   during the query makes it worse: `trap - INT` then breaks every later Ctrl-C on that line before 5.3 (tested). Next
   idea, untested: `stty -isig` during the query.
 - Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)".
+- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the new evidence added the same day, "Keep deferred, release 6.43 (Recommended)".
+
+## Found in 6.43's review
+
+### zsh: a double-quoted expansion is still expanded where the completer is `_expand`, or after `FOO=1 mssh`
+- Kind: known limitation
+- What the operator sees: the double-quoted expansion fix does not reach a `zstyle ':completion:*' completer _expand ...`
+  setup, where `mssh h "ls $PWD/zzp<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzp`, nor a line starting with an
+  assignment, `FOO=1 mssh h "ls $PWD/zzp<TAB>`, which also expands. Both as in 6.42.
+- Why: those paths do not go through the wrapped `expand-or-complete` widget's handling of a double-quoted word.
+- Revisit when: someone using `_expand` reports it.
+- Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+
+### ble.sh: a variable name typed inside a double-quoted command is completed with a space and the quote left open
+- Kind: known limitation
+- What the operator sees: with ble.sh, `mssh h "cat $HOM<TAB>` gives `"cat $HOME `: the variable's name and a space, the quote
+  still open. As in 6.42.
+- Why: low impact, seen at once, and the quote stays open.
+- Revisit when: someone reports it.
+- Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
