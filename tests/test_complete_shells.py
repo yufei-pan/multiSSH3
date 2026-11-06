@@ -1089,6 +1089,19 @@ def test_bash_gets_posix_mode_back_after_a_ctrl_c_cut_a_tab_short(tmp_path, sett
 		session.close()
 
 
+def test_the_guard_turns_posix_mode_off_for_a_call_on_bash_before_5_1_only(tmp_path):
+	# bash 5.1 and later read <( ) in posix mode: the glue leaves the mode alone there (nothing else shows the difference: the
+	# mode comes back either way)
+	env, home = make_home(tmp_path, [])
+	glue = glue_file(home, 'bash')
+	script = '. {}; set -o posix; zzinside() {{ shopt -oq posix && echo inside=on || echo inside=off; }}; _mssh_complete_guard zzinside; ' \
+		'shopt -oq posix && echo after=on || echo after=off; echo version=$((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))'.format(glue)
+	output = subprocess.run([require_shell('bash'), '--norc', '--noprofile', '-i', '-c', script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+		env=env, timeout=60, stdin=subprocess.DEVNULL).stdout.decode()
+	version = int(re.search(r'version=(\d+)', output).group(1))
+	assert ('inside=on' if version >= 501 else 'inside=off') in output and 'after=on' in output, output
+
+
 def test_bash_below_4_registers_nothing(tmp_path):
 	# macOS's /bin/bash is 3.2: the glue needs mapfile, local -A and ${var,,}, and printed "mapfile: command not found" four
 	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: a bash 3.2 image)
