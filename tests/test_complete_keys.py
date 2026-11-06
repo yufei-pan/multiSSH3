@@ -1495,13 +1495,16 @@ ARRIVING_TOGETHER = [
 ]
 
 
+@pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
 @pytest.mark.parametrize('keys', [keys for keys, _ in ARRIVING_TOGETHER], ids=[name for _, name in ARRIVING_TOGETHER])
-def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(home, keys):
+def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(home, keys, zas, after):
+	if zas and keys == '\x1bf\x1bf':
+		pytest.skip("zsh-autosuggestions' own word accept stops inside gpu\\[01-16\\], one key at a time too, and Enter then continues the line")
 	require_zsh_5_3()
 	# zsh redraws once for keys read together (PENDING): the grey text then shown was asked for a shorter or other line,
 	# and an accept key took it all the same (`gpu[01-16] nvidia-smiu[01-16] nvidia-smi` ran, or `gpxu[01-16] nvidia-smi`)
 	env, home = home
-	session = zsh_with(env, home, extra=FAKE_MSSH)
+	session = zsh_with(env, home, zas, after, extra=FAKE_MSSH)
 	try:
 		session.send('mssh gp')
 		session.read_until(b'nvidia-smi', 10)
