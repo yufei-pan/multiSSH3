@@ -969,7 +969,7 @@ Option names count in full only: `--user` is not `--username` and `-c` is not `-
 
 Putting the command after `--` is no substitute for quotes: every word after the hosts is a command of its own, so `mssh web1 -- bash -c 'echo hi'` runs `bash`, `-c` and `echo hi` one after another (when each word is a single word, as in `mssh web1 -- ls -la`, mssh asks whether to join them).
 
-Below is a sample help message output from multiSSH3 6.43 @ 2026-11-05 (no config file, 120 columns; the lines after the options list the programs found on that machine)
+Below is a sample help message output from multiSSH3 6.44 @ 2026-11-05 (no config file, 120 columns; the lines after the options list the programs found on that machine)
 
 ```bash
 $ mssh -h
@@ -1388,12 +1388,14 @@ __DEBUG_MODE = False
 Run `mssh --completion install` again (bash, ble.sh, zsh and fish): the fixes below are in the new glue. What you may notice:
 
 - Change (bash, ble.sh, zsh, fish): when TAB's query misses `MSSH_COMPLETE_TIMEOUT`, or the engine fails, a word that may be a remote command's or a password now gets nothing. It got a file name quoted for this shell alone: `mssh h cat zza<TAB>` gave `zzamp\&b `, which the remote shell read as `cat zzamp&b`, and `mssh -p zza<TAB>` offered a file name at a password. The first word and the value of mssh's file options still get file names (`mssh -f zza<TAB>`, `mssh --file=zza<TAB>`); a hosts word after other options (`mssh -q zza<TAB>`) gets nothing.
-- Fix (bash): `mssh -f "$PWD/zzs<TAB>` keeps the `$`: readline escaped it, in double quotes always and outside them before bash 5.2 (also `--file`, `--file=` and `-k`), so mssh got the literal text `$PWD/zzs.txt` and found no such file. Such a word's list now shows the whole word, and mssh's history offers nothing for it.
-- Fix (zsh): a double-quoted word holding an expansion stays as typed in any mssh command, not only on a line that starts with an mssh name: after an alias (`alias m=mssh`, `m h "ls $PWD/zzp<TAB>` gave `m h ls\ /the/directory/zzp`), `sudo`, `time`, `command`, `noglob`, `&&`, `;`, `(` or `FOO=1`. It goes by the command the cursor is in: `mssh h a; ls "$PWD/zz<TAB>` is left to zsh. After `sudo -u root mssh`, whose `root` the glue takes for a command, it behaves as in 6.43.
+- Fix (bash): `mssh -f "$PWD/zzs<TAB>` keeps the `$`: readline escaped it, in double quotes always and outside them before bash 5.2 (also `--file`, `--file=` and `-k`), so mssh got the literal text `$PWD/zzs.txt` and found no such file. Such a word's list now shows the whole word, and mssh's history offers nothing for it. A `$` with a quote closed before the word's end (`mssh -f "$PWD"/zzs<TAB>`) gets no name, where readline would give mssh the literal `\$PWD`. With `shopt -s direxpand` bash puts the expanded path in the word, as in 6.43.
+- Fix (zsh): a double-quoted word holding an expansion stays as typed in any mssh command, not only on a line that starts with an mssh name: after an alias (`alias m=mssh`, `m h "ls $PWD/zzp<TAB>` gave `m h ls\ /the/directory/zzp`), `sudo`, `time`, `command`, `noglob`, `&&`, `;`, `(` or `FOO=1`. It goes by the command the cursor is in: `mssh h a; ls "$PWD/zz<TAB>` is left to zsh. Any word from the last separator (`;`, `&&`, `|`, a newline, ...) on up to the cursor may be mssh's name, whatever runs it: `sudo -u root mssh`, `nice -n 5 mssh`, `timeout 5 mssh`, `xargs mssh`, a redirection first, and an alias of any of them. So `echo mssh "$PWD/zz<TAB>` completes where zsh would expand. A function you wrote (`m() { mssh "$@"; }`) is not followed.
 - Fix (zsh): TAB goes on into a directory completed in a double-quoted word holding an expansion: `mssh h "ls $PWD/zzd<TAB>` for a directory `zzd x`, then `in<TAB>`, gave nothing. The same in `mssh h ls "$PWD/zzd` and `mssh h "echo $USER; ls zzd`.
-- Fix (zsh, with zsh-autosuggestions in its default asynchronous mode): keys arriving together no longer take the grey text of the line before them: at `mssh gp`, `x` Right Enter ran `gpxu[01-16] nvidia-smi`. On mssh lines the grey text goes while more keys are waiting. Off mssh lines the plugin behaves as it does alone.
+- Fix (zsh 5.3 and later, with zsh-autosuggestions in its default asynchronous mode): keys arriving together no longer take the grey text of the line before them: at `mssh gp`, `x` Right Enter ran `gpxu[01-16] nvidia-smi`. On mssh lines the grey text goes while more keys are waiting, on any line with an mssh command in it (`sudo mssh gp`, `FOO=1 mssh gp`, an alias of mssh); a function of yours that calls mssh (`m() { mssh "$@"; }`) is not seen. Off mssh lines the plugin behaves as it does alone.
 - Change (bash): a list of names in a quote shows directories with their `/`, as a list outside a quote does.
-- Fix (zsh, fish 3.3): a file name after an option's `=` completes: `mssh --file=zzs<TAB>` and, in zsh, `mssh --file="$PWD/zzs<TAB>` offered nothing.
+- Fix (zsh, fish 3.3): a file name after an option's `=` completes: `mssh --file=zzs<TAB>` and, in zsh, `mssh --file="$PWD/zzs<TAB>` offered nothing. Also the one-dash options (`-f=zzs`, `-k=`, `-s=`) when the query is too slow.
+- Fix (ble.sh): no file name is offered at a password given as `-p=`, `--password=`, `--ipmi_password=` or `-pSECRET`.
+- Fix (fish): `mssh h -- -x<TAB>` printed `complete: -C: option requires an argument`.
 
 ## Upgrading to 6.43 from 6.42
 
