@@ -3286,14 +3286,18 @@ def first_build(tmp_path):
 	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
 	env, home = make_home(tmp_path, HISTORY)
 	fd = hold_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
-	# more than the engine needs, less than the 2 s it used to wait for the first build
-	yield dict(env, MSSH_COMPLETE_TIMEOUT='1'), home
+	# the shell waits ten seconds, and the engine is told to wait a minute for the first build: it answers before the shell gives up
+	# only by honouring its own deadline (a fraction of a second). The shell's limit is the check, not a time measured on a
+	# machine whose load stretches CPU-bound work
+	assert ENGINE[-2] == mc.MODULE_LOADER
+	patched = mc.MODULE_LOADER.replace('sys.exit(module.main())', 'module.FIRST_BUILD_BUDGET = 60\nsys.exit(module.main())')
+	yield dict(env, MSSH_COMPLETE_TIMEOUT='10'), home, ENGINE[:-2] + [patched, ENGINE[-1]]
 	os.close(fd)
 
 
 def test_bash_first_tab_answers_while_the_first_build_runs(first_build):
-	env, home = first_build
-	session = bash_session(home, env, glue_file(home, 'bash'))
+	env, home, engine = first_build
+	session = bash_session(home, env, glue_file(home, 'bash', engine))
 	try:
 		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
 	finally:
@@ -3301,8 +3305,8 @@ def test_bash_first_tab_answers_while_the_first_build_runs(first_build):
 
 
 def test_zsh_first_tab_answers_while_the_first_build_runs(first_build):
-	env, home = first_build
-	session = zsh_session(home, env, glue_file(home, 'zsh'))
+	env, home, engine = first_build
+	session = zsh_session(home, env, glue_file(home, 'zsh', engine))
 	try:
 		assert session.line_after('mssh --no_wa') == 'mssh --no_watch '
 	finally:
@@ -3310,8 +3314,8 @@ def test_zsh_first_tab_answers_while_the_first_build_runs(first_build):
 
 
 def test_fish_first_tab_answers_while_the_first_build_runs(first_build):
-	env, home = first_build
-	assert [text for text, _ in fish_complete(env, glue_file(home, 'fish'), 'mssh --no_wa')] == ['--no_watch']
+	env, home, engine = first_build
+	assert [text for text, _ in fish_complete(env, glue_file(home, 'fish', engine), 'mssh --no_wa')] == ['--no_watch']
 
 
 # compinit as rc files run it, with its dump file
