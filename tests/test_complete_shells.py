@@ -1015,6 +1015,63 @@ def test_bash_keeps_posix_mode_after_a_tab(tmp_path):
 		session.close()
 
 
+@pytest.mark.parametrize('setting, shown', [
+	('export POSIXLY_CORRECT=1', 'declare -x POSIXLY_CORRECT="1"'),
+	('POSIXLY_CORRECT=1', 'declare -- POSIXLY_CORRECT="1"'),
+	('set -o posix', 'declare -- POSIXLY_CORRECT="y"'),
+	('export POSIXLY_CORRECT=y', 'declare -x POSIXLY_CORRECT="y"'),
+], ids=['exported', 'not-exported', 'set-o-posix', 'exported-y'])
+def test_bash_leaves_posixly_correct_as_it_was_after_a_tab(tmp_path, setting, shown):
+	# posix mode is turned off for the call on bash before 5.1 (no <( ) in it) and back on after: set -o posix sets POSIXLY_CORRECT=y,
+	# not exported, and set +o posix unsets it, so an exported 1 became an unexported y at the first prompt
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	(home / 'zzplain').write_text('')
+	session = bash_session(home, env, glue_file(home, 'bash'), extra="cd '{}'; {}".format(home, setting))
+	try:
+		session.send('mssh h ls zzp\t')
+		session.wait_idle()
+		session.send('\x15echo "posix=$(shopt -oq posix && echo on || echo off)= var=$(declare -p POSIXLY_CORRECT 2>&1)="\r')
+		assert 'posix=on= var={}='.format(shown) in session.read_until(b'var=declare', 10) + session.read_until(b'"=', 10)
+	finally:
+		session.close()
+
+
+SLOW_ONCE = """#!/bin/sh
+if [ -e {slow} ]; then sleep 4; fi
+exec {engine} "$@"
+"""
+
+
+@pytest.mark.parametrize('cut', [0.05, 0.3, 0.8])
+@pytest.mark.parametrize('setting', ['set -o posix', 'export POSIXLY_CORRECT=1'])
+def test_bash_gets_posix_mode_back_after_a_ctrl_c_cut_a_tab_short(tmp_path, setting, cut):
+	# a Ctrl-C in the call leaves the shell without posix mode, as it leaves nocasematch: the glue puts it back at the next TAB,
+	# the exported POSIXLY_CORRECT with it
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	(home / 'zzplain').write_text('')
+	slow = home / 'slow'
+	slow.write_text('')
+	engine = home / 'slow-once'
+	engine.write_text(SLOW_ONCE.format(slow=shlex.quote(str(slow)), engine=' '.join(shlex.quote(part) for part in ENGINE)))
+	engine.chmod(0o755)
+	session = bash_session(home, env, glue_file(home, 'bash', [str(engine)]), extra="cd '{}'; {}".format(home, setting))
+	try:
+		session.send('mssh h ls zzp\t')
+		time.sleep(cut)
+		session.send('\x03')
+		session.wait_idle()
+		slow.unlink()
+		session.send('mssh h ls zzp\t')
+		session.wait_idle()
+		session.send('\x15echo "posix=$(shopt -oq posix && echo on || echo off)= var=$(declare -p POSIXLY_CORRECT 2>&1)="\r')
+		got = session.read_until(b'var=declare', 10) + session.read_until(b'"=', 10)
+		assert 'posix=on= var=' in got and ('declare -x' in got) == setting.startswith('export'), got
+	finally:
+		session.close()
+
+
 def test_bash_below_4_registers_nothing(tmp_path):
 	# macOS's /bin/bash is 3.2: the glue needs mapfile, local -A and ${var,,}, and printed "mapfile: command not found" four
 	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: a bash 3.2 image)

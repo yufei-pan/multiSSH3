@@ -5529,6 +5529,20 @@ _mssh_complete_split() {
 # bash's default IFS: space, tab, newline
 _mssh_complete_default_ifs=$' \t\n'
 
+# set while the guard has posix mode off (and the POSIXLY_CORRECT it took with it): a Ctrl-C that cut the call short leaves it
+# set, and the next guard call puts posix mode back
+_mssh_complete_posix_off=
+_mssh_complete_posix_value=
+_mssh_complete_posix_exported=0
+
+_mssh_complete_posix_back() {
+	# posix mode on again, with the POSIXLY_CORRECT it had: set -o posix alone sets it to y, not exported
+	set -o posix
+	POSIXLY_CORRECT=$_mssh_complete_posix_value
+	(( _mssh_complete_posix_exported )) && export POSIXLY_CORRECT
+	_mssh_complete_posix_off=
+}
+
 _mssh_complete_guard() {
 	# run "$@", a glue function bash, readline or ble.sh calls, with nocasematch off (with it on, the glue's own
 	# [[ ]] tests matched in any case: complete -p's -f passed for -F, and a remote command ran here as its
@@ -5536,13 +5550,24 @@ _mssh_complete_guard() {
 	# joins. The shell's nocasematch comes back on return, also after the shell's code changed it; a Ctrl-C
 	# that cuts a call short leaves it off
 	local IFS=$_mssh_complete_default_ifs _mssh_complete_was=0 _mssh_complete_rc=0 _mssh_complete_posix=0
+	# posix mode that a Ctrl-C left off: on again (not from inside another guard call, which has it off on purpose: the local of
+	# that call is seen from here, and gone after a Ctrl-C. Not FUNCNAME, which bash 4.2 leaves with the cut call's frames)
+	[[ -n $_mssh_complete_posix_off && -z ${_mssh_complete_posix_owner+x} ]] && _mssh_complete_posix_back
 	shopt -q nocasematch && _mssh_complete_was=1
 	shopt -u nocasematch
-	# posix mode (set -o posix after the glue loaded) is off for the call: bash before 5.1 has no <( ) in it, and the glue uses
-	# them. It comes back on return; a Ctrl-C that cuts a call short leaves it off, as for nocasematch
-	shopt -oq posix && { _mssh_complete_posix=1; set +o posix; }
+	# posix mode (set -o posix after the glue loaded) is off for the call on bash before 5.1, which has no <( ) in it, and the
+	# glue uses them. It comes back on return
+	if (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] < 501 )) && shopt -oq posix; then
+		local _mssh_complete_posix_owner=1
+		_mssh_complete_posix=1
+		_mssh_complete_posix_value=$POSIXLY_CORRECT
+		_mssh_complete_posix_exported=0
+		[[ $(declare -p POSIXLY_CORRECT 2>/dev/null) == 'declare -x'* ]] && _mssh_complete_posix_exported=1
+		_mssh_complete_posix_off=1
+		set +o posix
+	fi
 	"$@" || _mssh_complete_rc=$?
-	(( _mssh_complete_posix )) && set -o posix
+	(( _mssh_complete_posix )) && _mssh_complete_posix_back
 	if (( _mssh_complete_was )); then
 		shopt -s nocasematch
 	else
