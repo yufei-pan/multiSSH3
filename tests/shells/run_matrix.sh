@@ -36,19 +36,31 @@ for name in "${images[@]}"; do
 		start=$SECONDS
 		# the repository is read-only inside: no bytecode; HOME is a fresh directory, which holds pytest's cache for the rerun. Each
 		# run is capped (memory, no swap, pids) and runs as nobody, so a runaway test stays inside its own container.
+		# The rerun (pytest --lf) runs what the cache lists as failed; the ids the run left failed after it are the ones that fail alone,
+		# the others passed only on the rerun (the ids come from the cache, whole: the FAILED lines cut them at a " - ")
 		status=0
 		docker run --rm --memory=8g --memory-swap=8g --pids-limit=4096 --user 65534:65534 \
 			-v "$repo":/repo:ro -w /repo -e MSSH_REQUIRE_SHELLS="${required[-1]}" -e PYTHONDONTWRITEBYTECODE=1 \
 			-e MSSH_MATRIX_TESTS="${MSSH_MATRIX_TESTS:-tests/test_complete_*.py}" -e MSSH_MATRIX_JOBS_RUN="$jobs" \
 			"mssh-shell-test-$name" sh -c 'export HOME=$(mktemp -d); python3 -V
+				failed_ids() { python3 -c "import json, sys; print(*sorted(json.load(open(sys.argv[1]))), sep=chr(10))" "$HOME/.pc/v/cache/lastfailed" 2>/dev/null || :; }
 				workers=; [ "$MSSH_MATRIX_JOBS_RUN" -le 1 ] || workers="-n $MSSH_MATRIX_JOBS_RUN"
 				python3 -m pytest -q -o cache_dir=$HOME/.pc $workers $MSSH_MATRIX_TESTS > $HOME/first.log 2>&1 && status=0 || status=$?
 				cat $HOME/first.log
-				if [ $status -ne 0 ] && grep -q "^FAILED\|^ERROR" $HOME/first.log; then
-					echo "=== run again alone: the tests that failed"
-					python3 -m pytest -q -o cache_dir=$HOME/.pc --lf $MSSH_MATRIX_TESTS && status=0 || status=$?
-					[ $status -ne 0 ] || { echo "=== NEEDED THE RERUN (passed alone):"; grep "^FAILED\|^ERROR" $HOME/first.log; }
+				if [ $status -ne 0 ]; then
+					failed_ids > $HOME/first.ids
+					if [ -s $HOME/first.ids ]; then
+						echo "=== run again alone: the tests that failed"
+						python3 -m pytest -q -o cache_dir=$HOME/.pc --lf $MSSH_MATRIX_TESTS && status=0 || status=$?
+						failed_ids > $HOME/second.ids
+						grep -vxFf $HOME/second.ids $HOME/first.ids > $HOME/passed.ids || :
+						if [ -s $HOME/passed.ids ]; then
+							echo "=== NEEDED THE RERUN (passed alone):"
+							sed "s/^/RERUNID /" $HOME/passed.ids
+						fi
+					fi
 				fi
+				echo "=== exit $status"
 				exit $status' || status=$?
 		echo "=== took $(( SECONDS - start )) s with $jobs workers"
 		exit $status
@@ -60,21 +72,26 @@ reran=0
 for index in "${!images[@]}"; do
 	code=0
 	wait "${pids[index]}" || code=$?
-	if [ $code -ne 0 ]; then failed=1; elif grep -q '^=== NEEDED THE RERUN' "$logs/${images[index]}.log"; then reran=1; fi
+	if [ $code -ne 0 ]; then failed=1; fi
+	if grep -q '^=== NEEDED THE RERUN' "$logs/${images[index]}.log"; then reran=1; fi
 	echo "=== ${images[index]} (requires ${required[index]})"
 	cat "$logs/${images[index]}.log"
 done
 echo "=== summary"
 for index in "${!images[@]}"; do
 	log="$logs/${images[index]}.log"
-	echo "${images[index]}: $(grep -E ' passed| failed' "$log" | tail -1) ($(grep '^=== took' "$log"))"
-	if grep -q '^=== NEEDED THE RERUN' "$log"; then
-		sed -n '/^=== NEEDED THE RERUN/,/^=== took/p' "$log" | grep -v '^=== took' | sed "s/^/${images[index]}: /"
+	# pytest's last line of a run: "N passed, ... in 12.3s"; the first run's and, when it was run again, the rerun's
+	summaries=$(grep -E '^[0-9]+ [a-z]+.* in [0-9.]+s' "$log" || :)
+	first=$(printf '%s\n' "$summaries" | head -1)
+	[ -n "$first" ] || first="no pytest summary (the run ended early: see its log)"
+	line="${images[index]}: $first"
+	if grep -q '^=== run again alone' "$log"; then
+		line="$line; run again alone: $(printf '%s\n' "$summaries" | tail -1)"
 	fi
+	echo "$line ($(grep '^=== took' "$log" | tail -1 | sed 's/^=== //'), $(grep '^=== exit' "$log" | tail -1 | sed 's/^=== //'))"
 done
 for index in "${!images[@]}"; do
-	sed -n '/^=== NEEDED THE RERUN/,/^=== took/p' "$logs/${images[index]}.log" | { grep '^FAILED\|^ERROR' || true; } |
-		sed -e 's/^[A-Z]* //' -e 's/ - .*//' -e "s/^/RERUN ${images[index]} /"
+	{ grep '^RERUNID ' "${logs}/${images[index]}.log" || :; } | sed "s/^RERUNID /RERUN ${images[index]} /"
 done
 [ $failed -eq 0 ] || exit 1
 [ $reran -eq 0 ] || exit 3
