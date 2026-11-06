@@ -3550,6 +3550,16 @@ def test_fish_a_file_name_after_an_option_s_equals_sign(setup):
 	assert fish_complete(env, glue_file(home, 'fish'), 'mssh --file=zzs', cwd=home) == [('--file=zzsfile', '')]
 
 
+@pytest.mark.parametrize('typed', ['mssh h -- -x', 'mssh h -- -f', 'mssh h --  -x', 'mssh h -- -'])
+def test_fish_a_remote_command_word_starting_with_a_dash_prints_no_error_and_gets_nothing(setup, typed):
+	# complete -C "-x" was read as an option of complete: "complete: -C: option requires an argument" (fish_complete fails on
+	# anything fish prints). No command starts with a dash: nothing
+	require_shell('fish')
+	env, home = setup
+	(home / 'zzsfile').write_text('')
+	assert fish_complete(env, glue_file(home, 'fish'), typed, cwd=home) == []
+
+
 @pytest.mark.parametrize('shell', ['bash', 'zsh'])
 def test_file_names_when_mssh_has_nothing_to_offer(setup, shell):
 	# an answer with nothing in it: bash's -o default offers file names, and zsh does the same,
