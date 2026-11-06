@@ -512,7 +512,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### bash: the picker or the editor can come up with nothing reading its answer
 - Kind: known limitation
-- What the operator sees: in bash, Ctrl-R's picker or Ctrl-X Ctrl-E's editor now and then comes up after the glue has
+- What the operator sees: in bash, Ctrl-R's picker or the line editor now and then comes up after the glue has
   stopped waiting for it, or after a Ctrl-C pressed just as it started: it draws on the terminal, but the choice made
   in it is not applied, and the line stays as it was. Press Enter or Esc to close it and try again. In tests timed
   at that moment on purpose: 1 in 250 to 300 tries; the window is tens of microseconds.
@@ -522,3 +522,30 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   have.
 - Revisit when: an operator hits it.
 - Approved: 2026-11-04, the user chose "Known limitation (Recommended)".
+
+### TMOUT after Ctrl-R (bash before 5.2)
+- Kind: deferred
+- What the operator sees: on a host setting `TMOUT`, Ctrl-R on an mssh line and walking away leaves the shell logged in
+  until the next Enter.
+- Why: moving the wait's read into `$( )` fixed nothing on any version (tested); it needs a design pass.
+- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
+- Approved: 2026-11-05, the user chose "Deferred, design first (Recommended)", kept for Ctrl-R when they then picked "Fix TAB in 6.43 (Recommended)".
+
+### Ctrl-C after Ctrl-R loses the first letter (bash 4.3, 4.4, 5.0)
+- Kind: deferred
+- What the operator sees: `mssh h rm x`, Ctrl-R, Esc, Ctrl-C shows nothing and the line stays on screen; Enter then runs
+  `ssh h rm x`.
+- Why: a bare binding doing `trap x INT; trap - INT` does it too (seen on 4.4 and 5.0), and having no INT trap on those
+  versions was not enough.
+- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
+- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)".
+
+### Ctrl-C during TAB's query loses the first letter (bash 4.3 to 5.2)
+- Kind: deferred
+- What the operator sees: `^C` with no new prompt; Enter then runs `ssh h rm x` for `mssh h rm x`, so a line that looks
+  cancelled runs. A second Ctrl-C gives a clean prompt (checked on 4.4, 5.0, 5.1, 5.2).
+- Why: bash's bug, fixed in 5.3: a completion with no mssh glue does it. `$( )` does not cure it, and ignoring INT
+  during the query makes it worse: `trap - INT` then breaks every later Ctrl-C on that line before 5.3 (tested). Next
+  idea, untested: `stty -isig` during the query.
+- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
+- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)".

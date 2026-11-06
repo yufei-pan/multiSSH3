@@ -51,6 +51,7 @@ Each later sub-project gets its own spec → plan → implementation cycle.
 | Quality | Replay evaluation of keystroke savings and candidate rank is the primary metric; a TAB that alters or deletes operator-typed text must never occur |
 | Python floor | Same as multiSSH3/cas-toolbox (`>=3.6` syntax: no walrus, no dataclasses) |
 | History hosts field | `~/.mssh_history` records the hosts exactly as typed. Before this change it recorded them expanded, sorted and validated (aliases replaced by members, unresolvable names dropped, with an error printed while recording); lines written before the change keep that form |
+| `TMOUT` in bash | Before bash 5.2 a read in the shell, timed or on a pipe, cancels the line's alarm. On TAB's path and at the first prompt the glue has none: TAB's timed read runs in `$( )`, the rest use `mapfile`. Ctrl-R's wait is deferred (docs/limitations.md). |
 | Shell test matrix | Docker images: modern (Debian trixie), legacy (Rocky Linux 8 + EPEL) and CentOS 7 (bash only). Tested floors: bash 4.2, bash-completion 2.1, zsh 5.5, fish 3.3, Python 3.6. Inside the matrix, a missing required shell is a failure, not a skip |
 | CentOS 7 | bash compatibility only (bash 4.2.46, bash-completion 2.1, Python 3.6.8); its zsh 5.0.2 and fish 2.3.1 are not supported |
 | fish < 3.0 | Unsupported: the glue registers nothing and the installer refuses with a message (6.39: the installer no longer refuses) |
