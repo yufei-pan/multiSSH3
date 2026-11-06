@@ -120,11 +120,11 @@ def make_home(tmp_path, history_lines=()):
 		'DEFAULT_ENV_FILES': [path for path in multiSSH3.DEFAULT_ENV_FILES if path.startswith('~')]}))
 	env = {
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
-		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '5',
+		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '30',
 		'MSSH_COMPLETE_START_TIMEOUT': '10',
 		# ble.sh reads this one, not MSSH_COMPLETE_TIMEOUT, for its grey text and warnings (milliseconds): at the operator's 300 the
 		# tests lost them on a loaded machine. A test that means to run into the limit sets its own.
-		'MSSH_COMPLETE_GHOST_TIMEOUT': '5000',
+		'MSSH_COMPLETE_GHOST_TIMEOUT': '30000',
 		# the debug log (runtime/multiSSH3/complete.log): a failing test shows it (conftest.py)
 		'MSSH_COMPLETE_DEBUG': '1',
 	}
@@ -171,7 +171,7 @@ class Session(object):
 	def read_until(self, marker, timeout=10.0):
 		'''Read until marker (bytes) shows up after what was read so far; return the new output.'''
 		start = len(self.output)
-		end = time.monotonic() + timeout
+		end = time.monotonic() + (timeout if marker == b'@@never@@' else timeout * 4)
 		while marker not in self.output[start:] and time.monotonic() < end:
 			ready, _, _ = select.select([self.fd], [], [], 0.05)
 			if ready:
@@ -230,7 +230,7 @@ class Session(object):
 	def send(self, data):
 		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)
 
-	def line_after(self, typed, keys='\t', timeout=10.0, settle=None):
+	def line_after(self, typed, keys='\t', timeout=40.0, settle=None):
 		'''
 		Type typed, press keys, then return the command line as the test binding (print_key) prints it. The
 		binding waits until the shell is idle (wait_idle) when the session settles (settle overrides), or

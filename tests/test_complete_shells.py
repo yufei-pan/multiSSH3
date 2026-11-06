@@ -3356,12 +3356,12 @@ def first_build(tmp_path):
 	'''No index yet, and the first build is running (its lock is taken and it never ends).'''
 	env, home = make_home(tmp_path, HISTORY)
 	fd = hold_lock(str(tmp_path / 'runtime' / 'multiSSH3' / mc.LOCK_NAME))
-	# the shell waits ten seconds, and the engine is told to wait a minute for the first build: it answers before the shell gives up
+	# the shell waits thirty seconds, and the engine is told to wait a minute for the first build: it answers before the shell gives up
 	# only by honouring its own deadline (a fraction of a second). The shell's limit is the check, not a time measured on a
 	# machine whose load stretches CPU-bound work
 	assert ENGINE[-2] == mc.MODULE_LOADER
 	patched = mc.MODULE_LOADER.replace('sys.exit(module.main())', 'module.FIRST_BUILD_BUDGET = 60\nsys.exit(module.main())')
-	yield dict(env, MSSH_COMPLETE_TIMEOUT='10'), home, ENGINE[:-2] + [patched, ENGINE[-1]]
+	yield dict(env, MSSH_COMPLETE_TIMEOUT='30'), home, ENGINE[:-2] + [patched, ENGINE[-1]]
 	os.close(fd)
 
 

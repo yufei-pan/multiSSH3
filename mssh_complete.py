@@ -6605,6 +6605,12 @@ _mssh_complete_engine() {
 	@ENGINE@ "$@"
 }
 
+_mssh_complete_engine_exec() {
+	# for ble/util/conditional-sync, which signals its background shell alone: as that shell, the engine
+	# ends when typing or the limit cancels it, and cannot write into the next query's answer
+	exec @ENGINE@ "$@"
+}
+
 _mssh_complete_is_mssh() {
 	# whether $1 is an mssh command line: an mssh name, then a space
 	[[ $1 =~ ^[[:space:]]*([^[:space:]]*/)?(mssh|mssh3|multissh|multissh3|multiSSH3)[[:space:]] ]]
@@ -6958,6 +6964,19 @@ if [[ -n ${BLE_VERSION-} ]]; then
 	blehook/eval-after-load keymap_emacs '_mssh_complete_guard _mssh_complete_ble_bind emacs'
 	blehook/eval-after-load keymap_vi '_mssh_complete_guard _mssh_complete_ble_bind vi_imap'
 
+	_mssh_complete_ble_query() {
+		# the engine, from the request file to the answer file: 0 answered, 148 typing interrupted, 142 past the limit. The limit is
+		# read off the clock: conditional-sync's timeout= counts its sleeps, which ble.sh shortens by a delay it measured as the shell
+		# started, so a shell started on a busy machine gave the engine a fraction of the limit for as long as it lived
+		local ret _mssh_complete_until _mssh_complete_status
+		ble/util/clock
+		_mssh_complete_until=$((ret + ${MSSH_COMPLETE_GHOST_TIMEOUT:-300}))
+		ble/util/conditional-sync '_mssh_complete_engine_exec query < "$_mssh_complete_request_file" >| "$_mssh_complete_answer_file" 2>/dev/null' '! ble/decode/has-input && { ble/util/clock; ((ret < _mssh_complete_until)); }' 20
+		_mssh_complete_status=$?
+		((_mssh_complete_status == 148)) && ! ble/decode/has-input && return 142
+		return "$_mssh_complete_status"
+	}
+
 	_mssh_complete_ble_source() {
 		# define ble.sh's mssh suggestion source and put it first
 		declare -F ble/complete/auto-complete/enter >/dev/null 2>&1 || return 0
@@ -6971,7 +6990,7 @@ if [[ -n ${BLE_VERSION-} ]]; then
 			local _mssh_complete_request_file=$_ble_base_run/$$.mssh-complete.request _mssh_complete_answer_file=$_ble_base_run/$$.mssh-complete.answer _mssh_complete_line _mssh_complete_text= _mssh_complete_sync_status
 			# >|: the files are written again for every question, which > refuses under noclobber
 			_mssh_complete_request 'ghost=1 ble=1 nul=0' "$_ble_edit_str" '' >| "$_mssh_complete_request_file" 2>/dev/null || return 1
-			ble/util/conditional-sync '_mssh_complete_engine query < "$_mssh_complete_request_file" >| "$_mssh_complete_answer_file" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			_mssh_complete_ble_query
 			_mssh_complete_sync_status=$?
 			((_mssh_complete_sync_status == 148)) && return 148
 			((_mssh_complete_sync_status == 0)) || return 1
@@ -7017,7 +7036,7 @@ if [[ -n ${BLE_VERSION-} ]]; then
 		if _mssh_complete_is_mssh "$_ble_edit_str"; then
 			# >| for noclobber, as for the grey text
 			_mssh_complete_request 'diag=1 nul=0' "${_ble_edit_str::_ble_edit_ind}" "${_ble_edit_str:_ble_edit_ind}" >| "$_mssh_complete_request_file" 2>/dev/null || return 0
-			ble/util/conditional-sync '_mssh_complete_engine query < "$_mssh_complete_request_file" >| "$_mssh_complete_answer_file" 2>/dev/null' '! ble/decode/has-input' 20 "timeout=${MSSH_COMPLETE_GHOST_TIMEOUT:-300}"
+			_mssh_complete_ble_query
 			_mssh_complete_sync_status=$?
 			if ((_mssh_complete_sync_status == 148)); then
 				# typing interrupted: ask again at the next redraw
@@ -7834,6 +7853,8 @@ _mssh_complete_ghost_redraw() {
 		fi
 		return 0
 	fi
+	# more keys are waiting (a paste, typing ahead): the last one's redraw asks, one engine and not one per key
+	(( PENDING )) && return 0
 	_mssh_complete_last=$BUFFER
 	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
 		_mssh_complete_full=$_mssh_complete_prior$_mssh_complete_shown
@@ -7991,6 +8012,8 @@ _mssh_complete_warn_redraw() {
 		[[ -n $_mssh_complete_warn_drawn && -z ${(M)region_highlight:#<-> <-> ${(b)_mssh_complete_warn_drawn}} ]] && _mssh_complete_warn_mark
 		return 0
 	fi
+	# more keys are waiting: the last one's redraw asks
+	(( PENDING )) && return 0
 	_mssh_complete_warn_key=$_mssh_complete_key
 	_mssh_complete_warn_cancel
 	# the marks shown stay until the answer, but no longer redrawn: they were placed for other words

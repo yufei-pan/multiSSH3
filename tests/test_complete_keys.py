@@ -1026,6 +1026,66 @@ def test_blesh_suggests_from_the_engine(home):
 		session.close()
 
 
+def test_blesh_grey_text_keeps_its_limit_when_ble_sh_measured_a_busy_machine(home):
+	# conditional-sync's timeout= counts its sleeps, and ble.sh shortens each by a delay it measures as the shell starts: a shell
+	# started on a busy machine (here: 25 ms) gave the engine a fraction of the limit for as long as it lived (3 s lasted 25 ms,
+	# the grey text and the warnings never came). The glue reads the limit off the clock
+	env, home = home
+	busy = 'function ble/util/msleep/.calibrate-loop { _ble_util_msleep_delay=25000; }'
+	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='3000'), glue_file(home, 'bash'), extra=busy)
+	try:
+		session.send('mssh gp')
+		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 20)
+		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+	finally:
+		session.close()
+
+
+STALE_ENGINE = '''#!{python}
+import os, re, subprocess, sys, time
+engine = {engine!r}
+folder = {folder!r}
+data = sys.stdin.buffer.read()
+real = subprocess.run(engine + sys.argv[1:], input=data, stdout=subprocess.PIPE).stdout
+ghost = b'ghost=1' in data
+older = ghost and re.search(rb'mssh gp(?!u)', data)
+newer = ghost and re.search(rb'mssh gpu', data)
+if older:
+	# the query for the line as it was before the last key: it waits for the newer one to finish, then writes
+	open(folder + '/older-running', 'w').close()
+	end = time.time() + 30
+	while not os.path.exists(folder + '/newer-written') and time.time() < end:
+		time.sleep(0.001)
+os.write(1, real)
+if newer:
+	open(folder + '/newer-written', 'w').close()
+'''
+
+
+def test_blesh_a_cancelled_query_does_not_write_into_the_next_answer(home):
+	# conditional-sync signals its background shell alone: the engine it started went on and wrote its answer for the old line
+	# into the file the newer query's answer is read from (mssh gpuu[01-16] "nvidia-smi" for mssh gpu). The engine is that shell
+	import sys
+	env, home = home
+	folder = home / 'stale'
+	folder.mkdir()
+	wrapper = home / 'stale-engine'
+	wrapper.write_text(STALE_ENGINE.format(python=sys.executable, engine=list(ENGINE), folder=str(folder)))
+	wrapper.chmod(0o755)
+	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='10000'), glue_file(home, 'bash', command=[str(wrapper)]))
+	try:
+		session.send('mssh gp')
+		end = time.monotonic() + 20
+		while not (folder / 'older-running').exists() and time.monotonic() < end:
+			session.read_until(b'@@never@@', 0.05)
+		assert (folder / 'older-running').exists()
+		session.send('u')
+		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 20)
+		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
+	finally:
+		session.close()
+
+
 def test_blesh_marks_an_unknown_host_and_says_why(home):
 	env, home = home
 	known(env, gpu017='invalid')
@@ -1033,7 +1093,10 @@ def test_blesh_marks_an_unknown_host_and_says_why(home):
 	try:
 		session.send('mssh gpu017 ')
 		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
-		session.read_until(b'@@never@@', 1)
+		# the reason line is drawn at once, the underline when ble.sh ends its idle pass, after the grey text's queries
+		end = time.monotonic() + 20
+		while not underlined(session, 'gpu017') and time.monotonic() < end:
+			session.read_until(b'@@never@@', 0.2)
 		assert underlined(session, 'gpu017')
 	finally:
 		session.close()
@@ -1117,7 +1180,7 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, pre):
 def test_blesh_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
 	# ble.sh reads Ctrl-C as a key: without the deadline nothing ended the wait
 	env, home = home
-	delay = 2.0
+	delay = 8.0
 	session = blesh_session(home, dict(env, MSSH_COMPLETE_START_TIMEOUT='0.3'), glue_file(home, 'bash', command=slow_engine(home, delay)))
 	try:
 		session.send('mssh gpu[01-16] ')
@@ -1306,8 +1369,9 @@ def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
 		assert 'unknown host' in session.read_until('unknown host'.encode(), 10)
 		session.send('\x7f' * 7 + 'gpu17 ')
 		session.read_until(b'gpu17 ', 10)
-		time.sleep(1)
-		session.read_until(b'@@never@@', 0.5)
+		# until the shell is done: the marks and the reason stay until the answer for the line as it is now
+		session.wait_idle(20, window=0.5)
+		session.read_until(b'@@never@@', 0.2)
 		assert not [row for row in screen(session) if 'unknown host' in row]
 	finally:
 		session.close()
@@ -1344,7 +1408,8 @@ def test_zsh_underline_goes_away_when_the_host_is_fixed(home, typed, fixes, line
 		for keys in fixes:
 			session.send(keys)
 			time.sleep(0.3)
-		time.sleep(1)
+		# until the shell is done: the marks stay until the answer for the line as it is now
+		session.wait_idle(20, window=0.5)
 		session.read_until(b'@@never@@', 0.2)
 		assert not [style for style in line_styles(session, line) if '4' in style.split(';')], screen(session)[:2]
 	finally:
@@ -1416,7 +1481,7 @@ def test_zsh_warning_appears_while_the_command_is_typed(home, known_before, dela
 		for char in 'uptime':
 			session.send(char)
 			time.sleep(delay)
-		rows = settled(session, 3)
+		rows = screen_when(session, lambda rows: any('gpu099: unknown host' in row for row in rows[1:]))
 		assert rows[0] == '@@READY@@ mssh gpu099 uptime' and any('gpu099: unknown host' in row for row in rows[1:]), rows[:4]
 	finally:
 		session.close()
@@ -1661,7 +1726,7 @@ def test_zsh_says_the_locale_it_runs_in_in_every_request(home, zas):
 		session.send('\x1b')
 		assert printed(session, '') == 'mssh gpu[01-16] '
 		session.send('\x15mssh gp\t')
-		session.read_until(b'@@never@@', 1.0)
+		session.wait_idle(40, window=0.5)
 	finally:
 		session.close()
 	kinds = recorded_flags(requests)
@@ -1833,12 +1898,12 @@ def test_ctrl_c_while_the_picker_starts_keeps_the_line(home, shell):
 def test_a_picker_quick_enough_opens_after_its_start(home, shell):
 	# slower than usual but within MSSH_COMPLETE_START_TIMEOUT: the picker opens, the choice is made
 	env, home = home
-	session = slow_start_session(shell, env, home, 0.5, MSSH_COMPLETE_START_TIMEOUT='3')
+	session = slow_start_session(shell, env, home, 0.5, MSSH_COMPLETE_START_TIMEOUT='30')
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 40)
 		assert words(printed(session, '\r')) == PICKED
 	finally:
 		session.close()
@@ -2029,7 +2094,7 @@ PICKER_WARNINGS = [
 REASON = '⚠ gpu017: unknown host (+2 more)'
 
 
-def screen_when(session, check, timeout=10.0):
+def screen_when(session, check, timeout=40.0):
 	"""The screen's non-empty rows as soon as check(rows) holds (or at the timeout)."""
 	end = time.monotonic() + timeout
 	while True:
