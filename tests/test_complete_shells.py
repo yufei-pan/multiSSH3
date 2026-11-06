@@ -1694,8 +1694,10 @@ def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, b
 	# nvm exists on the remote host too (6.41 offered it, the first fix of this left it out), a name that only starts like
 	# ble.sh's (blend) is the user's
 	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False, True),
-	('mssh h modul', 'module() { :; }', [], False, True),
-	('mssh h sudo modul', 'module() { :; }', [], True, True),
+	# (nvm, whole: a name that starts others on PATH is ambiguous, and then nothing is added to the line: modul with clang-tools'
+	# modularize-N, and module with the modulemd-validator of EL8 and EL9)
+	('mssh h nvm', 'nvm() { :; }', [], False, True),
+	('mssh h sudo nvm', 'nvm() { :; }', [], True, True),
 	('mssh h blen', 'blend() { :; }', [], False, True),
 	('mssh h zzali', 'alias zzalias=true', [], False, True),
 	# (an argument word from a command's own completion that is also a function's name)
@@ -1985,7 +1987,8 @@ def test_bash_delegation_of_real_completions_gives_what_bash_gives_the_command_i
 	# bash-completion's own specs, as a remote command meets them: functions with nospace and filenames (git, rsync, cd,
 	# scp), -F alone (systemctl, ls)
 	options = 'git init -q . && git checkout -q -b main && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m x; . ' + BASH_COMPLETION
-	session = ignoring_case(tmp_path, [], on=False, files=['solo one.txt'], options=options)
+	# (no whitespace in the name: a name holding it has not been offered since 6.42, on purpose, and another test covers that)
+	session = ignoring_case(tmp_path, [], on=False, files=['solo.txt'], options=options)
 	try:
 		(tmp_path / 'work' / 'zzdir').mkdir()
 		for line in ('git checko', 'git checkout ma', 'git log --form', 'git commit --am', 'systemctl rest', 'ls --alm', 'cd zzd',

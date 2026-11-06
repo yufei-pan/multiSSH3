@@ -1524,8 +1524,11 @@ def test_zsh_grey_text_stays_grey_with_zsh_syntax_highlighting(home):
 		session.read_until(b'nvidia-smi', 10)
 		# Ctrl-L: a key that leaves the line as it is
 		session.send('\x0c')
-		time.sleep(0.5)
-		session.read_until(b'@@never@@', 0.2)
+		# (not a fixed sleep: on a loaded machine the redraw takes longer. Quiet first, so a repaint that turns it white is seen)
+		session.wait_idle(10, window=0.5)
+		deadline = time.monotonic() + 10
+		while not greyed(session, 'nvidia-smi') and time.monotonic() < deadline:
+			session.read_until(b'@@never@@', 0.2)
 		assert greyed(session, 'nvidia-smi')
 	finally:
 		session.close()
