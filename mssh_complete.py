@@ -5662,13 +5662,16 @@ _mssh_complete_compgen() {
 	# word. An & in a -X pattern stands for the word compgen was given, as bash has it. A word naming a local directory ~
 	# (\~/ as the remote shell reads it) gets ./ before it and off its words (_mssh_complete_dot): compgen would read the home
 	local _mssh_complete_item _mssh_complete_before=${#_mssh_complete_results[@]}
-	while IFS= read -r _mssh_complete_item; do
+	local -a _mssh_complete_found=()
+	mapfile -t _mssh_complete_found < <(_mssh_complete_operator compgen "$@" -- "${_mssh_complete_dot-}$_mssh_complete_current" 2>/dev/null || :)
+	for _mssh_complete_item in ${_mssh_complete_found[@]+"${_mssh_complete_found[@]}"}; do
 		_mssh_complete_results+=("${_mssh_complete_item#"${_mssh_complete_dot-}"}")
-	done < <(_mssh_complete_operator compgen "$@" -- "${_mssh_complete_dot-}$_mssh_complete_current" 2>/dev/null || :)
+	done
 	if (( ${#_mssh_complete_results[@]} == _mssh_complete_before )) && [[ -n $_mssh_complete_head ]]; then
-		while IFS= read -r _mssh_complete_item; do
+		mapfile -t _mssh_complete_found < <(_mssh_complete_operator compgen "$@" -- "$_mssh_complete_tail" 2>/dev/null || :)
+		for _mssh_complete_item in ${_mssh_complete_found[@]+"${_mssh_complete_found[@]}"}; do
 			_mssh_complete_results+=("$_mssh_complete_head$_mssh_complete_item")
-		done < <(_mssh_complete_operator compgen "$@" -- "$_mssh_complete_tail" 2>/dev/null || :)
+		done
 	fi
 	return 0
 }
@@ -5697,9 +5700,7 @@ _mssh_complete_delegate() {
 	[[ $_mssh_complete_current == *"$_mssh_complete_word" ]] && _mssh_complete_tail=$_mssh_complete_word
 	_mssh_complete_head=${_mssh_complete_current%"$_mssh_complete_tail"}
 	if [[ $_mssh_complete_cword -eq 0 ]]; then
-		while IFS= read -r _mssh_complete_item; do
-			_mssh_complete_results+=("$_mssh_complete_item")
-		done < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
+		mapfile -t _mssh_complete_results < <(compgen -c -- "$_mssh_complete_current" 2>/dev/null || :)
 		# bash completes a command's name as a file name: quoted, and a directory marked
 		(( ${#_mssh_complete_results[@]} )) && { compopt -o filenames 2>/dev/null || :; }
 	else
@@ -5758,10 +5759,12 @@ _mssh_complete_delegate() {
 			fi
 			if [[ -n $_mssh_complete_command ]]; then
 				# its output lines, blank ones left out (aws_completer prints a lone newline for nothing)
-				while IFS= read -r _mssh_complete_item || [[ -n $_mssh_complete_item ]]; do
-					[[ -n $_mssh_complete_item ]] && _mssh_complete_results+=("$_mssh_complete_item")
-				done < <(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
+				local -a _mssh_complete_found=()
+				mapfile -t _mssh_complete_found < <(_mssh_complete_operator _mssh_complete_run_command "$_mssh_complete_command" "$_mssh_complete_cmd" \
 					"$_mssh_complete_current" "$_mssh_complete_prev" 2>/dev/null </dev/null || :)
+				for _mssh_complete_item in ${_mssh_complete_found[@]+"${_mssh_complete_found[@]}"}; do
+					[[ -n $_mssh_complete_item ]] && _mssh_complete_results+=("$_mssh_complete_item")
+				done
 			fi
 			# the fallbacks and plusdirs: directory names, then file names, as file names
 			_mssh_complete_listed=${#_mssh_complete_results[@]}
@@ -6300,16 +6303,25 @@ _mssh_complete_tab() {
 	# readline's completion-ignore-case is read at every TAB (a bind or a re-read ~/.inputrc changes it), in
 	# the subshell writing the request: beside the engine's start, the subshell bind -v needs costs no time.
 	# No comment inside: bash 4.2 reads a quote or a parenthesis in a comment in <( ) as code
-	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
-		{
-			local _mssh_complete_ignoring=0
-			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
-			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
-		} | _mssh_complete_engine query 2>/dev/null || :
+	# The timed read in a subshell ($( )): before bash 5.2 one in this shell cancels the alarm of the line's TMOUT, for good on that
+	# line: on a host logging idle shells out, a TAB on an mssh line and walking away stayed logged in. And for the same reason no
+	# plain read below, on what this function goes through (mapfile instead): read takes TMOUT for its timeout when it has none
+	# given and does not read a regular file (a pipe, or a here string from bash 5.1).
+	_mssh_complete_resp=$(
+		IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
+			{
+				local _mssh_complete_ignoring=0
+				[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
+				printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
+				fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
+			} | _mssh_complete_engine query 2>/dev/null || :
+		) || exit 1
+		printf '%s' "$_mssh_complete_resp"
 	) || return 0
 	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || return 0
-	while IFS= read -r _mssh_complete_line; do
+	local -a _mssh_complete_lines=()
+	mapfile -t _mssh_complete_lines <<< "$_mssh_complete_resp"
+	for _mssh_complete_line in "${_mssh_complete_lines[@]}"; do
 		case ${_mssh_complete_line:0:1} in
 			D)
 				_mssh_complete_split "${_mssh_complete_line:2}" ' '
@@ -6339,7 +6351,7 @@ _mssh_complete_tab() {
 				;;
 			E) _mssh_complete_ended=1 ;;
 		esac
-	done <<< "$_mssh_complete_resp"
+	done
 	(( _mssh_complete_ended )) || return 0
 	# (an engine before 6.41 sends neither: text before the word, or a word opening a quote, is a quoted command's there.
 	# Under ble.sh the word typed is COMPS, unless ble.sh asks again for a word of its own, an empty one, to match in any
@@ -6432,9 +6444,7 @@ _mssh_complete_tab() {
 	fi
 	if (( _mssh_complete_files )); then
 		compopt -o filenames 2>/dev/null || :
-		while IFS= read -r _mssh_complete_item; do
-			_mssh_complete_reply+=("$_mssh_complete_item")
-		done < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
+		mapfile -t -O ${#_mssh_complete_reply[@]} _mssh_complete_reply < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
 	fi
 	COMPREPLY=()
 	for _mssh_complete_item in ${_mssh_complete_reply[@]+"${_mssh_complete_reply[@]}"}; do
@@ -6464,9 +6474,10 @@ _mssh_complete_tab() {
 		_mssh_complete_delegated=()
 		_mssh_complete_one='^\$(\{?)([A-Za-z_][A-Za-z0-9_]*)\}?$'
 		if [[ $_mssh_complete_raw == '~'* && $_mssh_complete_raw != */* ]]; then
-			while IFS= read -r _mssh_complete_item; do
+			mapfile -t _mssh_complete_words < <(compgen -u -- "${_mssh_complete_value:1}" 2>/dev/null || :)
+			for _mssh_complete_item in ${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"}; do
 				_mssh_complete_delegated+=("$_mssh_complete_lead~$_mssh_complete_item/")
-			done < <(compgen -u -- "${_mssh_complete_value:1}" 2>/dev/null || :)
+			done
 			_mssh_complete_marked=1
 		elif [[ $_mssh_complete_raw =~ $_mssh_complete_one ]]; then
 			# the variables the typed name starts ($ZZW: ZZW and ZZWX), as bash lists them; one alone (or the one a ${ names)
@@ -6474,10 +6485,7 @@ _mssh_complete_tab() {
 			_mssh_complete_one=${BASH_REMATCH[2]}
 			_mssh_complete_words=("$_mssh_complete_one")
 			if [[ -z ${BASH_REMATCH[1]} ]]; then
-				_mssh_complete_words=()
-				while IFS= read -r _mssh_complete_item; do
-					_mssh_complete_words+=("$_mssh_complete_item")
-				done < <(compgen -v -- "$_mssh_complete_one" 2>/dev/null || :)
+				mapfile -t _mssh_complete_words < <(compgen -v -- "$_mssh_complete_one" 2>/dev/null || :)
 			fi
 			if (( ${#_mssh_complete_words[@]} > 1 )); then
 				# (as typed, the name changed: ble.sh lists them itself)
@@ -6497,9 +6505,10 @@ _mssh_complete_tab() {
 				fi
 			fi
 		else
-			while IFS= read -r _mssh_complete_item; do
+			mapfile -t _mssh_complete_words < <(compgen -f -- "$_mssh_complete_dot$_mssh_complete_value" 2>/dev/null || :)
+			for _mssh_complete_item in ${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"}; do
 				_mssh_complete_delegated+=("$_mssh_complete_lead${_mssh_complete_item#"$_mssh_complete_dot"}")
-			done < <(compgen -f -- "$_mssh_complete_dot$_mssh_complete_value" 2>/dev/null || :)
+			done
 		fi
 		if (( ${#_mssh_complete_delegated[@]} )); then
 			(( _mssh_complete_ble )) || { compopt -o filenames 2>/dev/null || :; }
@@ -6781,10 +6790,14 @@ _mssh_complete_arm() {
 
 _mssh_complete_previous() {
 	# the Ctrl-R binding of readline keymap $1, as a bind argument or x:<shell command> (bind -x),
-	# into _mssh_complete_found; fails when it is unbound or cannot be told (bind -x before bash 4.3)
+	# into _mssh_complete_found; fails when it is unbound or cannot be told (bind -x before bash 4.3).
+	# mapfile, no read: this runs at the first prompt, where a read on a pipe takes TMOUT for its timeout and, before bash 5.2,
+	# cancels the alarm of that line: a login left at its first prompt stayed logged in
 	local _mssh_complete_line
+	local -a _mssh_complete_bound=()
 	_mssh_complete_found=
-	while IFS= read -r _mssh_complete_line; do
+	mapfile -t _mssh_complete_bound < <(bind -m "$1" -X 2>/dev/null || :)
+	for _mssh_complete_line in ${_mssh_complete_bound[@]+"${_mssh_complete_bound[@]}"}; do
 		# bind -X prints '"\C-r": "command"', from bash 5.3 on '"\C-r" "command"'
 		[[ $_mssh_complete_line == '"\C-r": "'*'"' || $_mssh_complete_line == '"\C-r" "'*'"' ]] || continue
 		_mssh_complete_line=${_mssh_complete_line#'"\C-r"'}
@@ -6794,13 +6807,14 @@ _mssh_complete_previous() {
 		_mssh_complete_line=${_mssh_complete_line//'\"'/'"'}
 		_mssh_complete_found=x:${_mssh_complete_line//'\\'/'\'}
 		return 0
-	done < <(bind -m "$1" -X 2>/dev/null || :)
-	while IFS= read -r _mssh_complete_line; do
+	done
+	mapfile -t _mssh_complete_bound < <(bind -m "$1" -s 2>/dev/null; bind -m "$1" -p 2>/dev/null || :)
+	for _mssh_complete_line in ${_mssh_complete_bound[@]+"${_mssh_complete_bound[@]}"}; do
 		if [[ $_mssh_complete_line == '"\C-r": '* ]]; then
 			_mssh_complete_found=$_mssh_complete_line
 			return 0
 		fi
-	done < <(bind -m "$1" -s 2>/dev/null; bind -m "$1" -p 2>/dev/null || :)
+	done
 	return 1
 }
 
@@ -7083,11 +7097,13 @@ elif [[ $- == *i* ]]; then
 			# what space does, read without grep: the operator's grep alias or function (colours, line
 			# numbers) or GREP_OPTIONS would change what it prints
 			_mssh_complete_binding=
-			while IFS= read -r _mssh_complete_line; do
+			local -a _mssh_complete_bound=()
+			mapfile -t _mssh_complete_bound < <(bind -m emacs -p 2>/dev/null || :)
+			for _mssh_complete_line in ${_mssh_complete_bound[@]+"${_mssh_complete_bound[@]}"}; do
 				if [[ $_mssh_complete_line == '" ": '* ]]; then
 					_mssh_complete_binding=${_mssh_complete_line#'" ": '}
 				fi
-			done < <(bind -m emacs -p 2>/dev/null || :)
+			done
 			# space is ours already when the rc file is sourced again: keep the binding it had before
 			if [[ -z $_mssh_complete_binding && $(bind -m emacs -s 2>/dev/null) == *'" ": "\C-x\C-t\C-x\C-y"'* ]]; then
 				_mssh_complete_binding=${_mssh_complete_space_previous:-self-insert}

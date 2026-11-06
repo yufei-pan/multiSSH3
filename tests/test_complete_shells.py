@@ -3,6 +3,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -4176,3 +4177,74 @@ def test_uninstall_says_nothing_of_a_dump_without_mssh(tmp_path, shell, dump):
 	_, messages = mc.uninstall(shell, home=str(home), environ=env)
 
 	assert not [message for message in messages if 'zcompdump' in message]
+
+
+@pytest.mark.parametrize('typed', ['mssh --ver', 'mssh h ls zzp', 'mssh h "ls zzd', 'mssh h zzc', 'mssh -f zzp'])
+def test_bash_tab_on_an_mssh_line_leaves_the_auto_logout_of_tmout(tmp_path, typed):
+	# before bash 5.2 a read in the shell with a timeout, also the one read takes from TMOUT itself for a pipe (from bash 5.1 a
+	# here string too), cancels the line's alarm: a TAB and walking away stayed logged in on a host setting TMOUT
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	work = tmp_path / 'work'
+	(work / 'zzdir').mkdir(parents=True)
+	(work / 'zzplain').write_text('')
+	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra="cd '{}'; TMOUT=2".format(work))
+	try:
+		session.send(typed + '\t')
+		output = session.read_until(b'auto-logout', 8)
+		assert 'auto-logout' in output, output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('editor', ['', '1'])
+def test_bash_the_first_prompt_leaves_the_auto_logout_of_tmout(tmp_path, editor):
+	# the glue takes its keys at the first prompt: a read on a pipe there cancelled that line's alarm before bash 5.2, so a login
+	# left at its first prompt stayed logged in
+	env, home = make_home(tmp_path, [])
+	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR=editor), glue_file(home, 'bash'), bash_completion=False, extra='TMOUT=2')
+	try:
+		output = session.read_until(b'auto-logout', 8)
+		assert 'auto-logout' in output, output
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('extra', ['', 'TMOUT=60'])
+def test_bash_a_slow_engine_ends_tab_quietly(tmp_path, extra):
+	# the timed read gone by in its subshell: nothing on the terminal (no Alarm clock, no Terminated), the default's names come
+	env, home = make_home(tmp_path, [])
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / 'zzplain').write_text('')
+	engine = home / 'slow-engine'
+	engine.write_text('#!/bin/sh\nsleep 2\n')
+	engine.chmod(0o755)
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.2'), glue_file(home, 'bash', [str(engine)]), bash_completion=False,
+		extra="cd '{}'; {}".format(work, extra))
+	try:
+		session.send('mssh zzp\t')
+		output = session.read_until(b'zzplain', 5)
+		assert 'zzplain' in output and 'Alarm' not in output and 'Terminated' not in output, output
+	finally:
+		session.close()
+
+
+def test_bash_tab_sends_the_shell_s_history_to_the_engine(tmp_path):
+	# from the subshell of the subshell the timed read went to: fc -ln still has what this shell ran
+	env, home = make_home(tmp_path, [])
+	seen = home / 'seen'
+	engine = home / 'seeing-engine'
+	engine.write_text('#!/bin/sh\ncat > {}\n'.format(shlex.quote(str(seen))))
+	engine.chmod(0o755)
+	session = bash_session(home, env, glue_file(home, 'bash', [str(engine)]), bash_completion=False)
+	try:
+		session.send("echo zz-from-history\n"); session.read_until(b"@@READY@@", 3)
+		session.send('mssh x\t')
+		for _ in range(40):
+			time.sleep(0.05)
+			if seen.exists() and b'zz-from-history' in seen.read_bytes():
+				break
+		assert b'zz-from-history' in seen.read_bytes()
+	finally:
+		session.close()
