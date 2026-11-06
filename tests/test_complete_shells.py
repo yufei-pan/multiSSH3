@@ -966,6 +966,8 @@ def test_a_directory_completed_in_a_quote_leaves_it_open(request, tmp_path, shel
 	# each tests the word as a path here to know a directory, and the word is the command typed or the remote shell's. With
 	# bash-completion (CentOS 7's bash 4.2, EL8's 4.4) ls's _filedir gives the directory twice: counting its words for "alone"
 	# found two, and the quote closed
+	if bash_completion and not os.path.exists(BASH_COMPLETION):
+		pytest.skip('bash-completion is not installed')
 	if bash_completion and '~bi' in typed:
 		# open: bash-completion's own completion for cat gives ~bin (the user name) beside the glue's: the quote closes
 		# (strict: the run reports when this gets fixed)
@@ -1297,13 +1299,13 @@ ANOTHER_START = [
 	('mssh h ls "$PWD/zzp', ''), ('mssh -f "$PWD/zzp', ''), ('exec mssh h "ls $PWD/zzp', ''), ('sudo -E mssh h "ls $PWD/zzp', ''),
 	# what runs the command is not for the glue to list: every word from the last separator on may be mssh's name
 	('sudo -u root mssh h "ls $PWD/zzp', ''), ('sudo -H -u root mssh h "ls $PWD/zzp', ''), ('nice -n 5 mssh h "ls $PWD/zzp', ''),
-	('timeout 5 mssh h "ls $PWD/zzp', ''), ('watch mssh h "ls $PWD/zzp', ''), ('xargs mssh h "ls $PWD/zzp', ''), ('env -u X mssh h "ls $PWD/zzp', ''),
-	('env -i FOO=1 mssh h "ls $PWD/zzp', ''), ('exec -a x mssh h "ls $PWD/zzp', ''), ('ionice -c3 mssh h "ls $PWD/zzp', ''),
+	('xargs mssh h "ls $PWD/zzp', ''), ('env -u X mssh h "ls $PWD/zzp', ''),
+	('ionice -c3 mssh h "ls $PWD/zzp', ''),
 	('repeat 2 mssh h "ls $PWD/zzp', ''), ('> /dev/null mssh h "ls $PWD/zzp', ''),
-	('2>&1 mssh h "ls $PWD/zzp', ''), ('FOO=(a b) mssh h "ls $PWD/zzp', ''), ('$(mssh h "ls $PWD/zzp', ''), ('x=$(mssh h "ls $PWD/zzp', ''),
+	('2>&1 mssh h "ls $PWD/zzp', ''), ('$(mssh h "ls $PWD/zzp', ''), ('x=$(mssh h "ls $PWD/zzp', ''),
 	('cd /; mssh h "ls $PWD/zzp', ''), ('true &! mssh h "ls $PWD/zzp', ''), ('true |& mssh h "ls $PWD/zzp', ''),
 	# the words of an alias are the line's words, all of them
-	('m3 h "ls $PWD/zzp', "alias m3='sudo -E mssh'"), ('m4 h "ls $PWD/zzp', "alias m4='env FOO=1 mssh -q'"), ('m5 h "ls $PWD/zzp', "alias m5='(mssh'"),
+	('m3 h "ls $PWD/zzp', "alias m3='sudo -E mssh'"), ('m5 h "ls $PWD/zzp', "alias m5='(mssh'"),
 	('m6 mssh h "ls $PWD/zzp', "alias m6=''"), ('m7 h "ls $PWD/zzp', "alias m7='time sudo -E command mssh --quiet'"),
 	# a { or a ( among the arguments is an argument: the quoted word is still mssh's
 	('mssh h echo { "$PWD/zzp', ''),
@@ -1329,6 +1331,16 @@ def test_zsh_a_double_quoted_expansion_of_another_command_is_left_to_zsh(tmp_pat
 	# as without the glue: the word is expanded (the value of $PWD in the line)
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], extra=extra)
 	assert '$PWD' not in line, line
+
+
+@pytest.mark.parametrize('typed, extra', [('watch mssh h "ls $PWD/zzp', ''), ('exec -a x mssh h "ls $PWD/zzp', ''), ('FOO=(a b) mssh h "ls $PWD/zzp', ''),
+	('timeout 5 mssh h "ls $PWD/zzp', ''), ('env -i FOO=1 mssh h "ls $PWD/zzp', ''), ('m4 h "ls $PWD/zzp', "alias m4='env FOO=1 mssh -q'")])
+def test_zsh_a_double_quoted_expansion_after_a_precommand_with_options_is_never_expanded(tmp_path, typed, extra):
+	# where zsh runs _mssh the word stays as typed and completes (zsh 5.9, 5.8); zsh 5.5 and 5.0 run no completion function after
+	# some of these (watch, exec -a, an array assignment, timeout, env -i): the line stays as typed, the case of the next test. Either way the
+	# word is not expanded
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], extra=extra, pre='mssh() { :; }')
+	assert line in (typed, typed + 'lain" '), line
 
 
 @pytest.mark.parametrize('typed', ['case x in x) mssh h "ls $PWD/zzp', 'time -p mssh h "ls $PWD/zzp', 'function f { mssh h "ls $PWD/zzp',
@@ -2099,10 +2111,11 @@ def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, b
 	# nvm exists on the remote host too (6.41 offered it, the first fix of this left it out), a name that only starts like
 	# ble.sh's (blend) is the user's
 	('mssh h zzlocalf', 'zzlocalfn() { :; }', [], False, True),
-	# (nvm, whole: a name that starts others on PATH is ambiguous, and then nothing is added to the line: modul with clang-tools'
-	# modularize-N, and module with the modulemd-validator of EL8 and EL9)
-	('mssh h nvm', 'nvm() { :; }', [], False, True),
-	('mssh h sudo nvm', 'nvm() { :; }', [], True, True),
+	# (zznvm, whole: a name that starts others on PATH is ambiguous, and then nothing is added to the line: modul with clang-tools'
+	# modularize-N, module with the modulemd-validator of EL8 and EL9, and nvm with the nvme of the GitHub runners. What a host
+	# has on PATH differs: these are names no host has)
+	('mssh h zznvm', 'zznvm() { :; }', [], False, True),
+	('mssh h sudo zznvm', 'zznvm() { :; }', [], True, True),
 	('mssh h blen', 'blend() { :; }', [], False, True),
 	('mssh h zzali', 'alias zzalias=true', [], False, True),
 	# (an argument word from a command's own completion that is also a function's name)
@@ -2113,7 +2126,7 @@ def test_this_shell_s_functions_are_no_remote_commands(tmp_path, shell, typed, b
 	('mssh h ble-zzs', 'PATH=$PATH:.; ble-zzscript() { :; }', ['ble-zzscript'], False, True),
 ])
 def test_bash_offers_this_shell_s_own_functions_and_aliases_as_remote_command_names(tmp_path, shell, typed, extra, executables, bash_completion, offered):
-	# the remote shell has its own functions and aliases under these names often (module, ml, nvm): only the names of ble.sh's
+	# the remote shell has its own functions and aliases under these names often (module, ml, nvm; here a name of that kind): only the names of ble.sh's
 	# and the glue's functions are left out (test_this_shell_s_functions_are_no_remote_commands)
 	if bash_completion and not os.path.exists(BASH_COMPLETION):
 		pytest.skip('bash-completion is not installed')
