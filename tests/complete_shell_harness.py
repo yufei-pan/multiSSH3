@@ -122,6 +122,9 @@ def make_home(tmp_path, history_lines=()):
 		'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
 		'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8'), 'MSSH_COMPLETE_TIMEOUT': '5',
 		'MSSH_COMPLETE_START_TIMEOUT': '10',
+		# ble.sh reads this one, not MSSH_COMPLETE_TIMEOUT, for its grey text and warnings (milliseconds): at the operator's 300 the
+		# tests lost them on a loaded machine. A test that means to run into the limit sets its own.
+		'MSSH_COMPLETE_GHOST_TIMEOUT': '5000',
 		# the debug log (runtime/multiSSH3/complete.log): a failing test shows it (conftest.py)
 		'MSSH_COMPLETE_DEBUG': '1',
 	}

@@ -407,13 +407,11 @@ def test_the_query_command_answers_in_time_while_the_first_build_runs(home):
 	directory = mc.cache_dir()
 	held = hold_lock(os.path.join(directory, mc.LOCK_NAME))
 	request = '\0'.join([mc.PROTOCOL, 'bash', '5.2', '', 'mssh --no_wa', '', '--no_wa']) + '\0'
-	started = time.monotonic()
-	result = subprocess.run([sys.executable, '-I', mc.__file__, 'query'], input=request.encode(), stdout=subprocess.PIPE, timeout=30)
-	took = time.monotonic() - started
+	# the first-build budget is a minute here, so the query can answer before the timeout only by honouring its own deadline
+	# (a fraction of a second); the timeout is the check, not a measured time, which a loaded machine stretches
+	code = 'import sys; sys.path.insert(0, sys.argv[1]); import mssh_complete as mc; mc.FIRST_BUILD_BUDGET = 60; sys.exit(mc.main(["query"]))'
+	result = subprocess.run([sys.executable, '-I', '-c', code, os.path.dirname(mc.__file__)], input=request.encode(), stdout=subprocess.PIPE, timeout=30)
 	assert 'C --no_watch\t' in result.stdout.decode()
-	# the shells wait 0.3 s by default; the answer used to come after the 2 s first-build budget
-	assert took < 1.0
-
 
 
 def test_history_with_absurd_timestamps_still_builds(home):

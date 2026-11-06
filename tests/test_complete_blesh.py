@@ -85,7 +85,7 @@ def test_blesh_typing_is_not_held_up_by_a_slow_engine(setup):
 	slow = home / 'slow-engine'
 	slow.write_text('#!/bin/sh\nsleep 5\n')
 	slow.chmod(0o755)
-	session = blesh_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3'), glue_file(home, [str(slow)]))
+	session = blesh_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='0.3', MSSH_COMPLETE_GHOST_TIMEOUT='300'), glue_file(home, [str(slow)]))
 	try:
 		started = time.monotonic()
 		for char in 'mssh gpu[01-16] uptime':

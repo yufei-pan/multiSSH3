@@ -431,12 +431,25 @@ def test_pick_and_edit_without_a_terminal_step_aside(tmp_path):
 		assert (edit.returncode, edit.stdout, edit.stderr) == (3, b'', b'')
 
 
+_SLAVES = {}
+
+
+def close_terminal(master):
+	'''Close the master side of a terminal start_on_a_terminal made, and the slave side it kept open.'''
+	import os
+	os.close(master)
+	os.close(_SLAVES.pop(master))
+
+
 def start_on_a_terminal(args, data, env, listening, command=None, stderr=None):
 	'''
 	Start the engine with a pseudo-terminal as its controlling terminal, the request on stdin and
 	stdout a pipe; listening False: nobody reads that pipe any more (the shell stopped waiting).
 	data None: stdin is /dev/null. command: the engine command to run (default ENGINE); stderr: where
 	its stderr goes (default /dev/null). Returns (process, the terminal's master side, the pipe's read end or None).
+	The terminal's slave side stays open here, as the shell on a real terminal keeps it, until close_terminal(master): with
+	none open the master reads EIO, which terminal_output takes for the end of the output, from the moment the program
+	says ready until it opens /dev/tty.
 	'''
 	import os
 	import pty
@@ -449,7 +462,7 @@ def start_on_a_terminal(args, data, env, listening, command=None, stderr=None):
 	process = subprocess.Popen((ENGINE if command is None else command) + args, stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
 		stdout=write_end, stderr=subprocess.DEVNULL if stderr is None else stderr, env=env, start_new_session=True, preexec_fn=lambda: os.close(os.open(name, os.O_RDWR)))
 	os.close(write_end)
-	os.close(slave)
+	_SLAVES[master] = slave
 	if not listening:
 		os.close(read_end)
 		read_end = None
@@ -487,8 +500,8 @@ def test_pick_and_edit_say_ready_before_they_take_the_terminal(tmp_path, args, d
 	env, _ = make_home(tmp_path, HISTORY)
 	process, master, read_end = start_on_a_terminal(args, data, env, listening=True)
 	try:
-		first = terminal_output(read_end, 5.0, until=b'\n')
-		# until it drew: a second was too little while other tests loaded the machine
+		# start to ready took 4.7 s on a loaded machine; the read ends as soon as ready arrives
+		first = terminal_output(read_end, 10.0, until=b'\n')
 		expected = b'type to filter' if args[0] == 'pick' else b'mssh '
 		drawn = terminal_output(master, 5.0, until=expected)
 		assert first == b'ready\n' and expected in drawn
@@ -496,7 +509,7 @@ def test_pick_and_edit_say_ready_before_they_take_the_terminal(tmp_path, args, d
 		assert process.wait(10) in (0, 1)
 	finally:
 		process.kill()
-		os.close(master)
+		close_terminal(master)
 		os.close(read_end)
 
 
@@ -512,7 +525,7 @@ def test_pick_and_edit_leave_the_terminal_alone_when_nobody_waits_any_more(tmp_p
 		assert terminal_output(master, 0.3) == b''
 	finally:
 		process.kill()
-		os.close(master)
+		close_terminal(master)
 
 
 # the engine run with a function of its replaced first: python -I -c CODE REPO ARGS...
@@ -568,7 +581,7 @@ def test_pick_claims_the_terminal_before_it_takes_it(tmp_path):
 		assert process.wait(10) == 1
 	finally:
 		process.kill()
-		os.close(master)
+		close_terminal(master)
 		os.close(read_end)
 
 
@@ -587,7 +600,7 @@ def test_pick_leaves_the_terminal_alone_when_the_shell_claimed_it(tmp_path, take
 		assert terminal_output(master, 0.3) == b'' and terminal_output(read_end, 0.3) == b''
 	finally:
 		process.kill()
-		os.close(master)
+		close_terminal(master)
 		os.close(read_end)
 
 
