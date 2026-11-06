@@ -6144,7 +6144,7 @@ _mssh_complete_remote() {
 	# words of a function that readline inserts as they are, and ble.sh's when they are no file names, are the command's own
 	# text and stay. Reads and sets _mssh_complete_delegated of _mssh_complete_tab
 	local _mssh_complete_item _mssh_complete_value _mssh_complete_space _mssh_complete_path _mssh_complete_changing=0
-	local -a _mssh_complete_words=() _mssh_complete_slashed=()
+	local -a _mssh_complete_words=()
 	if (( _mssh_complete_qcommand )); then
 		[[ $1 == text ]] && return 0
 		(( _mssh_complete_ble )) && [[ ${2-} != 1 ]] && return 0
@@ -6200,18 +6200,16 @@ _mssh_complete_remote() {
 			continue
 		fi
 		_mssh_complete_item=$_mssh_complete_value$_mssh_complete_space
-		# (in a quote only alone, _mssh_complete_stay; not on ble.sh's second try, whose word it matches its own way)
+		# (in a quote not on ble.sh's second try, whose word it matches its own way)
 		if (( _mssh_complete_ble && ( ! _mssh_complete_inquote || ! _mssh_complete_asked_again ) )) && [[ ${2-} == 1 && $_mssh_complete_item != */ ]]; then
-			# (alone, the word wants no space after its /: in a quote _mssh_complete_unmark below)
+			# (alone, the word wants no space after its /)
 			if [[ ! -d $_mssh_complete_item ]] && _mssh_complete_is_dir "$_mssh_complete_path"; then
-				_mssh_complete_slashed+=(${#_mssh_complete_words[@]})
 				_mssh_complete_item+=/
 				_mssh_complete_marked=1
 			fi
 		fi
 		_mssh_complete_words+=("$_mssh_complete_item")
 	done
-	_mssh_complete_unmark
 	_mssh_complete_delegated=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
 }
 
@@ -6244,13 +6242,12 @@ _mssh_complete_unspace() {
 _mssh_complete_filenames() {
 	# readline's file name mode off (one switch for the whole reply), and the delegate's names as the glue writes them
 	# (_mssh_complete_write), unless noquote without fullquote outside a quoted command (as they are); / after a directory's
-	# name when filenames was on (in a quote only for a name alone, _mssh_complete_stay; not for a word mssh offers itself,
-	# which is the same word: the dedup keeps one). The mode would put / after mssh's own remote words that name a local
-	# directory, and leave a leading ~ of theirs for this shell to expand. $1: the options compopt printed, ending in a
-	# space. Reads _mssh_complete_reply, sets _mssh_complete_delegated of _mssh_complete_tab. fullquote is new in bash 5.3:
+	# name when filenames was on (not for a word mssh offers itself, which is the same word: the dedup keeps one). The mode
+	# would put / after mssh's own remote words that name a local directory, and leave a leading ~ of theirs for this shell
+	# to expand. $1: the options compopt printed, ending in a space. Reads _mssh_complete_reply, sets _mssh_complete_delegated of _mssh_complete_tab. fullquote is new in bash 5.3:
 	# one compopt call for both would fail before it
 	local _mssh_complete_item _mssh_complete_path _mssh_complete_quoting=0 _mssh_complete_mark=0 _mssh_complete_value
-	local -a _mssh_complete_words=() _mssh_complete_slashed=()
+	local -a _mssh_complete_words=()
 	local -A _mssh_complete_own=()
 	compopt +o filenames 2>/dev/null || :
 	compopt +o fullquote 2>/dev/null || :
@@ -6271,28 +6268,13 @@ _mssh_complete_filenames() {
 		if [[ -z ${_mssh_complete_own["x$_mssh_complete_item"]-} ]] && (( _mssh_complete_mark )) && [[ $_mssh_complete_item != */ ]]; then
 			# (with the mode off, readline would add a space after it, alone: _mssh_complete_marked asks for none)
 			if _mssh_complete_is_dir "$_mssh_complete_path"; then
-				_mssh_complete_slashed+=(${#_mssh_complete_words[@]})
 				_mssh_complete_item+=/
 				_mssh_complete_marked=1
 			fi
 		fi
 		_mssh_complete_words+=("$_mssh_complete_item")
 	done
-	_mssh_complete_unmark
 	_mssh_complete_delegated=(${_mssh_complete_words[@]+"${_mssh_complete_words[@]}"})
-}
-
-_mssh_complete_unmark() {
-	# in a quote a directory is marked (its / added, the quote left open: _mssh_complete_stay) only alone: counted after the
-	# names left out are gone (a directory beside a name holding whitespace is alone). Takes the / off the marked ones of
-	# _mssh_complete_slashed, in _mssh_complete_words, and the mark with them. Reads and sets those of the caller
-	local _mssh_complete_index
-	if (( _mssh_complete_inquote && ${#_mssh_complete_words[@]} > 1 )); then
-		for _mssh_complete_index in ${_mssh_complete_slashed[@]+"${_mssh_complete_slashed[@]}"}; do
-			_mssh_complete_words[_mssh_complete_index]=${_mssh_complete_words[_mssh_complete_index]%/}
-		done
-		_mssh_complete_marked=0
-	fi
 }
 
 _mssh_complete_in_quote() {

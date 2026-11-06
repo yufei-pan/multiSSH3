@@ -590,7 +590,8 @@ def test_bash_delegation_gives_what_bash_gives_the_command_itself(tmp_path, spec
 		native = completed_and_listed(session, 'zzsvc ' + word)
 		remote = completed_and_listed(session, 'mssh h ' + ('"zzsvc ' if quoted else 'zzsvc ') + word, quoted)
 		if quoted and native == ('zzsvc ' + word, []):
-			assert remote == ('mssh h zzsvc ' + word, ['zzdir', 'zzdirb', 'zzfile'])
+			# (directories with their /, as bash lists them outside a quote)
+			assert remote == ('mssh h zzsvc ' + word, ['zzdir/', 'zzdirb/', 'zzfile'])
 		else:
 			assert remote == ('mssh h ' + native[0], native[1])
 	finally:
