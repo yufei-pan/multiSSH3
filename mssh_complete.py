@@ -7465,7 +7465,7 @@ _mssh_complete_local_word() {
 	local -a _mssh_complete_named
 	_mssh_complete_named=(@FILE_OPTIONS@)
 	local _mssh_complete_word=$words[CURRENT-1]
-	if [[ $words[CURRENT] == --*=* ]]; then
+	if [[ $words[CURRENT] == -*=* ]]; then
 		_mssh_complete_word=${words[CURRENT]%%=*}
 	elif (( CURRENT == 2 )); then
 		[[ $words[2] != -* ]]
@@ -8411,7 +8411,7 @@ switch "$FISH_VERSION"
 			set -l words (commandline -opc)
 			set -e words[1]
 			set -l named @FILE_OPTIONS@
-			if string match -q -- '--*=*' "$word"
+			if string match -q -- '-*=*' "$word"
 				set -a words (string replace -r '=.*' '' -- "$word")
 			else if not set -q words[1]
 				not string match -q -- '-*' "$word"
@@ -8477,7 +8477,10 @@ switch "$FISH_VERSION"
 						else
 							set cmdline "$cmdline "
 						end
-						for item in (complete -C (string trim -l -- "$cmdline"))
+						# (the line as the attached argument of the option: a word starting with a dash, mssh h -- -x, would be taken for an
+						# option of complete after a -C of its own. No command starts with a dash: nothing for it)
+						set -l typed (string trim -l -- "$cmdline")
+						for item in (string match -q -- '-*' "$typed"; or complete "--do-complete=$typed")
 							set -l parts (string split -m 1 \t -- $item)
 							string match -qr -- $blank $parts[1]; and continue
 							# a function of this shell's own is no command on the remote host, as in the bash glue

@@ -3429,9 +3429,12 @@ def test_bash_cursor_in_the_middle_of_a_line_with_multibyte_text(setup):
 # Elsewhere the word may be a remote command's, where the shell's file name is quoted for this shell alone (mssh h cat zza gave
 # zzamp\\&b, and the remote shell read cat zzamp&b), or a password
 NO_ANSWER_NOTHING = ['mssh h zzf', 'mssh h cat zzf', 'mssh -u root h cat zzf', 'mssh h "cat zzf', 'mssh h cat "zzf', 'mssh -p zzf', 'mssh --password zzf',
-	'mssh --password=zzf', 'mssh -pzzf', 'mssh -qp zzf', 'mssh -ip zzf', 'mssh h --ipmi_password zzf', 'mssh h -- -f zzf', 'mssh -- -f zzf']
+	'mssh --password=zzf', 'mssh -pzzf', 'mssh -qp zzf', 'mssh -ip zzf', 'mssh h --ipmi_password zzf', 'mssh h -- -f zzf', 'mssh -- -f zzf',
+	'mssh -p=zzf', 'mssh -u=zzf', 'mssh -q=zzf', 'mssh -- -f=zzf']
 NO_ANSWER_NAMES = [('mssh zzf', 'mssh zzfile_unique '), ('mssh -f zzf', 'mssh -f zzfile_unique '), ('mssh --file zzf', 'mssh --file zzfile_unique '),
-	('mssh --file=zzf', 'mssh --file=zzfile_unique '), ('mssh -u root --key zzf', 'mssh -u root --key zzfile_unique '), ('mssh h cat -f zzf', 'mssh h cat -f zzfile_unique ')]
+	('mssh --file=zzf', 'mssh --file=zzfile_unique '), ('mssh -u root --key zzf', 'mssh -u root --key zzfile_unique '), ('mssh h cat -f zzf', 'mssh h cat -f zzfile_unique '),
+	('mssh -f=zzf', 'mssh -f=zzfile_unique '), ('mssh -k=zzf', 'mssh -k=zzfile_unique '), ('mssh -s=zzf', 'mssh -s=zzfile_unique '),
+	('mssh -ef=zzf', 'mssh -ef=zzfile_unique '), ('mssh -hf=zzf', 'mssh -hf=zzfile_unique ')]
 
 
 def no_answer_session(shell, home, env, engine):
