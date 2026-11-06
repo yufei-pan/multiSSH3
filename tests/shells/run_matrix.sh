@@ -73,7 +73,7 @@ for index in "${!images[@]}"; do
 	fi
 done
 for index in "${!images[@]}"; do
-	sed -n '/^=== NEEDED THE RERUN/,/^=== took/p' "$logs/${images[index]}.log" | grep '^FAILED\|^ERROR' |
+	sed -n '/^=== NEEDED THE RERUN/,/^=== took/p' "$logs/${images[index]}.log" | { grep '^FAILED\|^ERROR' || true; } |
 		sed -e 's/^[A-Z]* //' -e 's/ - .*//' -e "s/^/RERUN ${images[index]} /"
 done
 [ $failed -eq 0 ] || exit 1
