@@ -532,7 +532,7 @@ Hosts are checked in the background by `mssh-complete probe`: DNS, `ssh -G` (whi
 | --- | --- |
 | `MSSH_COMPLETE_TIMEOUT` | Seconds the shell waits for an answer (default 0.3) |
 | `MSSH_COMPLETE_START_TIMEOUT` | seconds the shell waits for the Ctrl-R menu (and bash's line editor) to open (default 2); past that, Ctrl-R does what it did before and space is a space. Ctrl-C while it opens keeps the line. A menu that opens later leaves the terminal alone |
-| `MSSH_COMPLETE_GHOST_TIMEOUT` | ble.sh only: milliseconds a grey suggestion may take (default 300) |
+| `MSSH_COMPLETE_GHOST_TIMEOUT` | ble.sh only: milliseconds a grey suggestion or the warnings query may take (default 300); a warnings query that misses it is asked again after 0.3, 1 and 3 seconds |
 | `MSSH_COMPLETE_SHELL_HISTORY` | Lines of shell history sent along (default 1000) |
 | `MSSH_COMPLETE_EDITOR` | `1` turns on the plain-bash mssh line editor (`install bash editor` sets it) |
 | `MSSH_COMPLETE_PING_TTL` | Seconds a host that answered ping is expected to keep answering (default: mssh's unreachable host expiry, 600) |

@@ -7022,7 +7022,14 @@ if [[ -n ${BLE_VERSION-} ]]; then
 				_mssh_complete_warn_key=
 				return 0
 			fi
-			((_mssh_complete_sync_status == 0)) || return 0
+			if ((_mssh_complete_sync_status != 0)); then
+				# no answer within the limit (a busy machine): ask again after the next of the delays, which run out
+				if ((${#_mssh_complete_warn_delays[@]})); then
+					ble/util/idle.push --sleep "${_mssh_complete_warn_delays[0]}" _mssh_complete_ble_warn_ask
+					_mssh_complete_warn_delays=("${_mssh_complete_warn_delays[@]:1}")
+				fi
+				return 0
+			fi
 			while IFS= read -r _mssh_complete_line; do
 				case $_mssh_complete_line in
 					'W '*)
