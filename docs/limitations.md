@@ -374,7 +374,7 @@ each entry).
   replaces such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`),
   the names inside it complete. A directory completed by TAB goes on completing, except in a double-quoted command
   (`"ls zzd<TAB>`, then `in<TAB>`) for a directory whose name holds `$`, a backtick, `"`, `\` or `!`, where it gives
-  nothing (and see "zsh: going on into a directory completed in a double quote with an expansion gives no names").
+  nothing.
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
   to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
 - Revisit when: an operator types such directories in zsh and misses the names.
@@ -611,15 +611,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: the glue's functions use syntax posix mode does not read; nobody is known to run an interactive posix-mode shell.
 - Revisit when: someone runs an interactive posix-mode shell with the glue.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
-
-### zsh: going on into a directory completed in a double quote with an expansion gives no names
-- Kind: deferred (6.44)
-- What the operator sees: in zsh, `mssh h "ls $PWD/zzd<TAB>` completes a directory `zzd x` (also `zzd&x`, `zzd$x`, a
-  backtick, `"`, `'` or `!` in the name) right, and the next `in<TAB>` inside it gives nothing. The same in
-  `mssh h ls "$PWD/zzd` (a space excepted) and `mssh h "echo $USER; ls zzd`. Nothing wrong goes into the line.
-- Why: the first step is written for the double quote; the second never unquotes what the first wrote.
-- Revisit when: 6.44.
-- Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh-autosuggestions (async, its default): keys arriving together take grey text from the older line
 - Kind: deferred (6.44)

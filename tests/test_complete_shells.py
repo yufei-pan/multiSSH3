@@ -1260,6 +1260,20 @@ def test_zsh_mssh_s_own_file_names_complete_in_a_double_quoted_word_with_an_expa
 	assert words[:-1] == prefix and words[-1].endswith('/' + files[0]), words
 
 
+@pytest.mark.parametrize('typed', ['mssh h "ls $PWD/zzd', 'mssh h ls "$PWD/zzd', 'mssh h "echo $USER; ls zzd'], ids=['command', 'argument', 'after-a-separator'])
+@pytest.mark.parametrize('dirname', ['zzd x', 'zzd&x', 'zzd$x', 'zzd`x', 'zzd"x', "zzd'x", 'zzd!x'])
+def test_zsh_going_on_into_a_directory_completed_in_a_double_quote_with_an_expansion(tmp_path, typed, dirname):
+	# the first TAB wrote the directory for the double quote, the second read it as a word of no quote, a directory that is not there,
+	# and offered nothing. Mssh's own names have one level less, and another test
+	if ' x' in dirname and typed == 'mssh h ls "$PWD/zzd':
+		pytest.skip('a quoted argument holding a space is not offered: mssh would split it')
+	line, _ = review_line(tmp_path, 'zsh', typed, dirs=[dirname], files=[dirname + '/in1'], steps=['in', '\t'])
+	assert line.endswith('/in1" '), line
+	# what the remote shell reads: the word after the quoted command's separator, or the argument's
+	command = ' '.join(local_words('zsh', line)[2:])
+	assert remote_shell_args(command.rpartition(';')[2])[-1].endswith(dirname + '/in1'), line
+
+
 ANOTHER_START = [
 	('m h "ls $PWD/zzp', 'alias m=mssh'), ('m2 h "ls $PWD/zzp', "alias m2='m -q'; alias m=mssh"), ('sudo mssh h "ls $PWD/zzp', ''), ('time mssh h "ls $PWD/zzp', ''),
 	('command mssh h "ls $PWD/zzp', ''), ('noglob mssh h "ls $PWD/zzp', ''), ('cd . && mssh h "ls $PWD/zzp', ''), ('true; mssh h "ls $PWD/zzp', ''), ('(mssh h "ls $PWD/zzp', ''),
