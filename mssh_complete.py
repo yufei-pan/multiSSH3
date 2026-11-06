@@ -6590,12 +6590,13 @@ _mssh_complete_tab() {
 			COMPREPLY=("$_mssh_complete_one")
 		fi
 	fi
-	(( _mssh_complete_inquote && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
+	(( _mssh_complete_inquote && ( _mssh_complete_marked || ${#_mssh_complete_delegated[@]} ) && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
 	return 0
 }
 
 _mssh_complete_stay() {
-	# a directory alone in a quote (marked by the glue or by the command's own completion): the quote stays open, so the operator goes on into it. Neither
+	# a directory alone in a quote (marked by the glue, or given by the command's own completion): the quote stays open, so
+	# the operator goes on into it. Neither
 	# closes it by a directory's own rule, as both test the word as a path here, and the word is the command typed (ls zzdir/)
 	# or the remote shell's (zzd\\&x/). Neither has an option for it either (readline's nospace only leaves out the space).
 	# ble.sh: inserted by its action for a part of a word, which adds nothing after it. readline: a second word that continues
@@ -6604,6 +6605,7 @@ _mssh_complete_stay() {
 	# (COMP_TYPE 9 TAB, 33 and 64 with show-all-if-ambiguous and show-all-if-unmodified): not for listing (63, ?) nor for
 	# insert-completions (42, M-*), where the second word would be a stray word, nor under menu-complete (37), which would
 	# cycle to the second word: it closes as before
+	# (a word of mssh's own history that ends in a / is no directory: the gate leaves it out, and it closes)
 	if (( _mssh_complete_ble )); then
 		if declare -F ble/complete/cand/yield >/dev/null; then
 			ble/complete/cand/yield substr "$COMPREPLY" ''

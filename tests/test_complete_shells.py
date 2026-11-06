@@ -986,6 +986,20 @@ def test_a_directory_completed_in_a_quote_leaves_it_open_for_commands_with_bash_
 	assert line == expected.format(command) and got == command.split() + ['zzdir/']
 
 
+@pytest.mark.parametrize('shell', ['readline', 'ble'])
+@pytest.mark.parametrize('bash_completion', [False, True], ids=['no-bash-completion', 'bash-completion'])
+@pytest.mark.parametrize('typed, expected', [
+	('mssh h "curl http', 'mssh h "curl http://example.com/api/" '),
+	("mssh h 'curl http", "mssh h 'curl http://example.com/api/' "),
+	('mssh h "du -s /srv/zzx/ /srv/zzy', 'mssh h "du -s /srv/zzx/ /srv/zzy/" '),
+])
+def test_a_word_of_mssh_s_history_ending_in_a_slash_closes_the_quote(tmp_path, shell, bash_completion, typed, expected):
+	# the quote stays open for a directory (above); a word of the history ending in a / is no directory: the quote stayed open
+	# on it too (a bell and a continuation prompt at Enter), where 6.42 closed it
+	line, got = review_line(tmp_path, shell, typed, history=['"curl http://example.com/api/"', '"du -s /srv/zzx/ /srv/zzy/"'], dirs=['zzdir'], bash_completion=bash_completion)
+	assert line == expected, line
+
+
 @pytest.mark.parametrize('bash_completion', [False, True], ids=['no-bash-completion', 'bash-completion'])
 @pytest.mark.parametrize('typed, expected, remote', [
 	# mssh's own words, and the file names of a remote command (compgen in a <( ), which bash before 5.1 does not run in posix mode)
