@@ -648,11 +648,12 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### zsh before 5.3 with zsh-autosuggestions: keys arriving together can run the older line's grey text
 - Kind: known limitation
-- What the operator sees: on zsh before 5.3 (5.0.2 to 5.2) with zsh-autosuggestions in its default asynchronous mode, keys that
+- What the operator sees: on zsh before 5.3 (5.0.2 to 5.2) with zsh-autosuggestions (in its synchronous mode too), keys that
   arrive together (a paste, typing ahead) can take the grey text of the line as it was before them: at `mssh gp` with grey
   `u[01-16] nvidia-smi`, `x`, Right, Enter runs `mssh gpxu[01-16] nvidia-smi`, and Ctrl-E in place of Right the same. As in 6.43.
   From zsh 5.3 on, 6.44 drops the grey text while keys are waiting.
-- Why: the fix needs the `line-pre-redraw` hook, which zsh has from 5.3 only.
+- Why: the plugin's `_zsh_autosuggest_modify` gives the old grey text back while keys are waiting (`$PENDING > 0 || $KEYS_QUEUED_COUNT > 0`),
+  before it checks the text against what was typed. The glue drops the text in a `line-pre-redraw` hook, which zsh has from 5.3 only.
 - Revisit when: the plugin changes (it does the same alone with its own text).
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
 

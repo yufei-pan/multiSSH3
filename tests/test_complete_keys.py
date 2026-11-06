@@ -1513,16 +1513,18 @@ ARRIVING_TOGETHER = [
 ]
 
 
-@pytest.mark.parametrize('zas, after', [(False, False), (True, False), (True, True)], ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
+@pytest.mark.parametrize('zas, after, sync', [(False, False, False), (True, False, False), (True, True, False), (True, False, True)],
+	ids=['own', 'zsh-autosuggestions', 'zsh-autosuggestions-loaded-after', 'zsh-autosuggestions-synchronous'])
 @pytest.mark.parametrize('keys', [keys for keys, _ in ARRIVING_TOGETHER], ids=[name for _, name in ARRIVING_TOGETHER])
-def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(home, keys, zas, after):
+def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(home, keys, zas, after, sync):
 	if zas and keys == '\x1bf\x1bf':
 		pytest.skip("zsh-autosuggestions' own word accept stops inside gpu\\[01-16\\], one key at a time too, and Enter then continues the line")
 	require_zsh_5_3()
 	# zsh redraws once for keys read together (PENDING): the grey text then shown was asked for a shorter or other line,
 	# and an accept key took it all the same (`gpu[01-16] nvidia-smiu[01-16] nvidia-smi` ran, or `gpxu[01-16] nvidia-smi`)
 	env, home = home
-	session = zsh_with(env, home, zas, after, extra=FAKE_MSSH)
+	# (the plugin's synchronous mode too: its _zsh_autosuggest_modify gives the old text back for keys that are waiting, in both)
+	session = zsh_with(env, home, zas, after, extra=FAKE_MSSH + ('\nunset ZSH_AUTOSUGGEST_USE_ASYNC' if sync else ''))
 	try:
 		session.send('mssh gp')
 		session.read_until(b'nvidia-smi')
@@ -1538,18 +1540,20 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(hom
 		session.close()
 
 
-@pytest.mark.parametrize('after', [False, True], ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
+@pytest.mark.parametrize('after, sync', [(False, False), (True, False), (False, True)],
+	ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after', 'zsh-autosuggestions-synchronous'])
 @pytest.mark.parametrize('line, extra', [
 	('sudo mssh gp', 'sudo() { "$@"; }'), ('FOO=1 mssh gp', ''), ('m gp', 'alias m=mssh'), ('m gp', "alias m='noglob mssh'"),
 	('time mssh gp', ''), ('true && mssh gp', ''),
 ])
-def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_any_mssh_command(home, line, extra, after):
+def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_any_mssh_command(home, line, extra, after, sync):
 	require_zsh_5_3()
 	# the hook asked whether the line is an mssh line by its first word: at `sudo mssh gp`, an alias of mssh or after FOO=1, the grey
 	# text of the line before stayed for a Right among the keys, and gpxu[01-16] nvidia-smi ran
 	env, home = home
 	# (the same line in the shell's history: the plugin's own strategy has the grey text for a line that is no mssh line to the engine)
-	session = zsh_with(env, home, True, after, shell_history=line + 'u[01-16] nvidia-smi\n', extra=FAKE_MSSH + '\n' + extra)
+	session = zsh_with(env, home, True, after, shell_history=line + 'u[01-16] nvidia-smi\n',
+		extra=FAKE_MSSH + '\n' + extra + ('\nunset ZSH_AUTOSUGGEST_USE_ASYNC' if sync else ''))
 	try:
 		session.send(line)
 		session.read_until(b'nvidia-smi')

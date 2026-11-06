@@ -8177,8 +8177,8 @@ _mssh_complete_warn_redraw() {
 	emulate -L zsh
 	setopt extended_glob
 	# more keys are waiting, on a line with an mssh command: the grey text is for the line before them (zsh-autosuggestions'
-	# asynchronous fetch has not answered yet), and a Right among them would take it for this one: x, Right, Enter at mssh gp
-	# ran gpxu[01-16] nvidia-smi. (Without the plugin it is the glue's own, which clears itself when keys are waiting)
+	# _zsh_autosuggest_modify gives the old text back while keys are waiting, in its synchronous mode too, before it checks it
+	# against what was typed), and a Right among them would take it for this one: x, Right, Enter at mssh gp ran gpxu[01-16] nvidia-smi. (Without the plugin it is the glue's own, which clears itself when keys are waiting)
 	(( PENDING )) && _mssh_complete_in_mssh && POSTDISPLAY=
 	# the line without the word at the cursor, which is still being typed
 	local _mssh_complete_key=${LBUFFER%%[^[:space:]]#}$'\0'${RBUFFER##[^[:space:]]#}
