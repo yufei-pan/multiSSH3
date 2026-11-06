@@ -3483,6 +3483,19 @@ def test_no_answer_offers_file_names_only_where_they_are_right(setup, shell, eng
 		session.close()
 
 
+@pytest.mark.parametrize('engine', ['sleep 5', 'exit 1'], ids=['slow', 'failing'])
+def test_no_answer_ble_asking_again_with_a_word_cut_at_an_equals_sign_or_colon_gets_no_file_name(setup, engine):
+	# ble.sh asks again with the part of the word after its = or :, with a line that ends in another word: it is not mssh's
+	# first word or a file option's value as it seems (mssh a=zzf gave a=zzfile_unique), and the first ask decided
+	env, home = setup
+	session = no_answer_session('ble', home, env, engine)
+	try:
+		for typed in ('mssh a=zzf', 'mssh a:zzf', 'mssh -f a=zzf', 'mssh -f a:zzf', 'mssh h cat -f a:zzf'):
+			assert session.line_after(typed) == typed
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('shell', ['bash', 'zsh'])
 def test_tab_past_the_limit_comes_back_within_it(setup, shell):
 	env, home = setup
