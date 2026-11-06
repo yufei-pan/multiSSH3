@@ -7928,8 +7928,8 @@ _mssh_complete_accept() {
 	# prefixed: the widget it falls back to runs inside
 	local _mssh_complete_take
 	local -a _mssh_complete_words
-	# (what is drawn is what is taken: a Ctrl-C empties POSTDISPLAY and leaves _mssh_complete_shown, and keys read together get
-	# no redraw between them, so a second accept key would take the same text again)
+	# (what is drawn is what is taken: a Ctrl-C empties POSTDISPLAY and leaves _mssh_complete_shown, and one widget calling two
+	# accept widgets runs no redraw hook between the calls, so the second would take the same text again)
 	if [[ -n $_mssh_complete_shown && $POSTDISPLAY == "$_mssh_complete_shown" ]] && (( CURSOR == $#BUFFER )); then
 		_mssh_complete_take=$_mssh_complete_shown
 		if [[ $WIDGET == *forward-word ]]; then
