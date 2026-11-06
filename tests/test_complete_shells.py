@@ -959,14 +959,15 @@ def test_bash_the_common_start_of_names_stays_as_typed_and_the_next_tab_complete
 	# a user's home being typed
 	('mssh h "cat ~bi', [], 'mssh h "cat ~bin/', None),
 ])
-def test_a_directory_completed_in_a_quote_leaves_it_open(tmp_path, shell, bash_completion, typed, dirs, expected, remote):
+def test_a_directory_completed_in_a_quote_leaves_it_open(request, tmp_path, shell, bash_completion, typed, dirs, expected, remote):
 	# readline and ble.sh closed it, with a space after it unless the glue had marked the directory ("ls zzdir" , "cat ~bin/"):
 	# each tests the word as a path here to know a directory, and the word is the command typed or the remote shell's. With
 	# bash-completion (CentOS 7's bash 4.2, EL8's 4.4) ls's _filedir gives the directory twice: counting its words for "alone"
 	# found two, and the quote closed
 	if bash_completion and '~bi' in typed:
 		# open: bash-completion's own completion for cat gives ~bin (the user name) beside the glue's: the quote closes
-		pytest.xfail('a ~user in a quoted command closes the quote where bash-completion completes the command')
+		# (strict: the run reports when this gets fixed)
+		request.node.add_marker(pytest.mark.xfail(strict=True, reason='a ~user in a quoted command closes the quote where bash-completion completes the command'))
 	line, got = review_line(tmp_path, shell, typed, dirs=dirs, bash_completion=bash_completion)
 	assert line == expected
 	if remote:
@@ -974,19 +975,44 @@ def test_a_directory_completed_in_a_quote_leaves_it_open(tmp_path, shell, bash_c
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble'])
-@pytest.mark.parametrize('command', ['ls', 'cd', 'rmdir', 'find', 'pushd', 'sudo ls', 'tar xf'])
-def test_a_directory_completed_in_a_quote_leaves_it_open_for_commands_with_bash_completion(tmp_path, shell, command):
-	line, got = review_line(tmp_path, shell, 'mssh h "{} zzd'.format(command), dirs=['zzdir'], bash_completion=True)
-	assert line == 'mssh h "{} zzdir/'.format(command) and got == command.split() + ['zzdir/']
+@pytest.mark.parametrize('typed, expected', [
+	('mssh h "{} zzd', 'mssh h "{} zzdir/'),
+	('mssh h \'{} zzd', "mssh h '{} zzdir/"),
+])
+@pytest.mark.parametrize('command', ['ls', 'cd', 'rmdir', 'find', 'pushd', 'sudo ls', 'tar xf', 'scp', 'rsync -a'])
+def test_a_directory_completed_in_a_quote_leaves_it_open_for_commands_with_bash_completion(tmp_path, shell, command, typed, expected):
+	# scp and rsync (their completion marks nothing, and gives the directory beside other words) closed the quote
+	line, got = review_line(tmp_path, shell, typed.format(command), dirs=['zzdir'], bash_completion=True)
+	assert line == expected.format(command) and got == command.split() + ['zzdir/']
 
 
 @pytest.mark.parametrize('bash_completion', [False, True], ids=['no-bash-completion', 'bash-completion'])
-def test_bash_completes_mssh_s_own_words_in_posix_mode(tmp_path, bash_completion):
-	# set -o posix, then TAB: bash before 5.1 read the ) of the <( ) inside TAB's $( ) as its end in posix mode, printed a syntax
-	# error and wiped the whole line (4.2, 4.3, 4.4, 5.0); and bash 4.3 to 5.0 do not run a <( ) at all in posix mode (the
-	# query's is run with posix mode off)
-	line, got = review_line(tmp_path, 'readline', 'mssh h "nvid', history=['"nvidia-smi"'], extra='set -o posix', bash_completion=bash_completion)
-	assert line == 'mssh h "nvidia-smi" ' and got == ['nvidia-smi'], line
+@pytest.mark.parametrize('typed, expected, remote', [
+	# mssh's own words, and the file names of a remote command (compgen in a <( ), which bash before 5.1 does not run in posix mode)
+	('mssh h "nvid', 'mssh h "nvidia-smi" ', ['nvidia-smi']),
+	('mssh h ls zzp', 'mssh h ls zzplain ', ['ls', 'zzplain']),
+	('mssh h "ls zzp', 'mssh h "ls zzplain" ', ['ls', 'zzplain']),
+])
+def test_bash_completes_in_posix_mode(tmp_path, bash_completion, typed, expected, remote):
+	# set -o posix after the glue loaded, then TAB. 6.43 turned posix mode off only for the engine's query: the file names
+	# printed "bash: <(...): No such file or directory" at each TAB on bash 4.2 to 5.0, and without bash-completion completed
+	# nothing (6.42 completed them). The glue turns posix mode off for the call, and back on
+	line, got = review_line(tmp_path, 'readline', typed, history=['"nvidia-smi"'], files=['zzplain'], extra='set -o posix', bash_completion=bash_completion)
+	assert line == expected and got == remote, line
+
+
+def test_bash_keeps_posix_mode_after_a_tab(tmp_path):
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	(home / 'zzplain').write_text('')
+	session = bash_session(home, env, glue_file(home, 'bash'), extra="cd '{}'; set -o posix".format(home))
+	try:
+		session.send('mssh h ls zzp\t')
+		session.wait_idle()
+		session.send('\x15echo "posix=$(shopt -oq posix && echo on || echo off)="\r')
+		assert 'posix=on=' in session.read_until(b'posix=on=', 10)
+	finally:
+		session.close()
 
 
 def test_bash_below_4_registers_nothing(tmp_path):
@@ -1145,6 +1171,50 @@ def test_zsh_mssh_s_own_file_names_complete_in_a_double_quoted_word_with_an_expa
 	assert line == expected
 	words = local_words('zsh', line)
 	assert words[:-1] == prefix and words[-1].endswith('/' + files[0]), words
+
+
+@pytest.mark.parametrize('dirname', ['zzd x', 'zzd&x', "zzd'x", 'zzd$x', 'zzd"x'])
+@pytest.mark.parametrize('option', ['-f', '--file', '-k'])
+def test_zsh_a_directory_of_mssh_s_own_names_goes_on_in_a_double_quote_with_an_expansion(tmp_path, option, dirname):
+	# TAB gave "$PWD/zzd x/ and the next one "$PWD/zzd\\ x/in1": the directory part of the names was written for no quote (zsh's
+	# _path_files gives it as a prefix of its own), and mssh got the backslash
+	line, _ = review_line(tmp_path, 'zsh', 'mssh {} "$PWD/zzd'.format(option), dirs=[dirname], files=[dirname + '/in1'], steps=['in', '\t'])
+	words = local_words('zsh', line)
+	assert words and words[-1].endswith('/' + dirname + '/in1') and words[:-1] == ['mssh', option], line
+	# the same typed whole
+	typed = 'mssh {} "$PWD/{}/in'.format(option, dirname.replace('\\', '\\\\').replace('$', '\\$').replace('"', '\\"'))
+	(tmp_path / 'again').mkdir()
+	line, _ = review_line(tmp_path / 'again', 'zsh', typed, dirs=[dirname], files=[dirname + '/in1'])
+	words = local_words('zsh', line)
+	assert words and words[-1].endswith('/' + dirname + '/in1') and words[:-1] == ['mssh', option], line
+
+
+@pytest.mark.parametrize('typed', ['mssh -f "$PWD/zzt', 'mssh h rm "$PWD/zzt', 'mssh h "rm $PWD/zzt'], ids=['own-names', 'remote-argument', 'remote-command'])
+@pytest.mark.parametrize('bang_hist', [True, False], ids=['bang_hist', 'no_bang_hist'])
+def test_zsh_a_name_with_an_exclamation_mark_in_a_double_quote_with_an_expansion_survives_enter(tmp_path, typed, bang_hist):
+	# "$PWD/zzt!r" gave "event not found" at Enter (zsh's history expansion) for mssh's own names; the quoted argument of a
+	# remote command is written for the remote shell as well. What mssh gets read by the remote shell is the name
+	env, home = make_home(tmp_path, [])
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	(work / 'zzt!r').write_text('')
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'\n{}\nmssh() {{ printf 'GOT<%s>\\n' \"$@\"; }}".format(
+		work, '' if bang_hist else 'setopt no_bang_hist'))
+	try:
+		session.send(typed + '\t')
+		session.wait_idle()
+		start = len(session.output)
+		session.send('\r')
+		session.wait_idle()
+		text = session.output[start:].decode('utf-8', 'replace')
+		assert 'event not found' not in text
+		last = re.findall(r'GOT<([^>\r]*)>', text)
+		assert last, text
+		output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1"; for word; do :; done; printf %s "$word"', 'sh', last[-1]], stdout=subprocess.PIPE, timeout=30)
+		assert output.stdout.decode().endswith('/zzt!r'), (last, text)
+	finally:
+		session.close()
 
 
 @pytest.mark.parametrize('typed, files, expected', [

@@ -5535,10 +5535,14 @@ _mssh_complete_guard() {
 	# completion function) and IFS at bash's default (space, tab, newline), a local, for the glue's splits and
 	# joins. The shell's nocasematch comes back on return, also after the shell's code changed it; a Ctrl-C
 	# that cuts a call short leaves it off
-	local IFS=$_mssh_complete_default_ifs _mssh_complete_was=0 _mssh_complete_rc=0
+	local IFS=$_mssh_complete_default_ifs _mssh_complete_was=0 _mssh_complete_rc=0 _mssh_complete_posix=0
 	shopt -q nocasematch && _mssh_complete_was=1
 	shopt -u nocasematch
+	# posix mode (set -o posix after the glue loaded) is off for the call: bash before 5.1 has no <( ) in it, and the glue uses
+	# them. It comes back on return; a Ctrl-C that cuts a call short leaves it off, as for nocasematch
+	shopt -oq posix && { _mssh_complete_posix=1; set +o posix; }
 	"$@" || _mssh_complete_rc=$?
+	(( _mssh_complete_posix )) && set -o posix
 	if (( _mssh_complete_was )); then
 		shopt -s nocasematch
 	else
@@ -6257,11 +6261,9 @@ _mssh_complete_in_quote() {
 }
 
 _mssh_complete_ask() {
-	# TAB's request to the engine, its answer on stdout: run as $( ) by _mssh_complete_tab. A function, not the text inside
-	# the $( ): in posix mode, bash before 5.1 reads a ) in that text (a <( ) or a case pattern) as the end of the $( ), a
-	# syntax error that wiped the whole line (set -o posix, then mssh h ls zzp<TAB>). Its timed read runs in a subshell of
-	# its own, see _mssh_complete_tab. No comment inside the <( ): bash 4.2 reads a quote or a parenthesis in one as code
-	set +o posix
+	# TAB's request to the engine, its answer on stdout: run as $( ) by _mssh_complete_tab. A function, not the text inside the
+	# $( ). Its timed read runs in a subshell of its own, see _mssh_complete_tab. No comment inside the <( ): bash 4.2 reads a
+	# quote or a parenthesis in one as code
 	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
 		{
 			local _mssh_complete_ignoring=0
@@ -6568,12 +6570,12 @@ _mssh_complete_tab() {
 			COMPREPLY=("$_mssh_complete_one")
 		fi
 	fi
-	(( _mssh_complete_inquote && _mssh_complete_marked && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
+	(( _mssh_complete_inquote && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
 	return 0
 }
 
 _mssh_complete_stay() {
-	# a directory alone in a quote, that the glue marked: the quote stays open, so the operator goes on into it. Neither
+	# a directory alone in a quote (marked by the glue or by the command's own completion): the quote stays open, so the operator goes on into it. Neither
 	# closes it by a directory's own rule, as both test the word as a path here, and the word is the command typed (ls zzdir/)
 	# or the remote shell's (zzd\\&x/). Neither has an option for it either (readline's nospace only leaves out the space).
 	# ble.sh: inserted by its action for a part of a word, which adds nothing after it. readline: a second word that continues
@@ -7466,16 +7468,22 @@ _mssh_complete_compadd() {
 	else
 		_mssh_complete_in=("${(@)argv[_mssh_complete_at,-1]}")
 	fi
-	if (( _mssh_complete_remoting && _mssh_complete_quoted && _mssh_complete_hidden_at )); then
-		# each directory of -p that is not the one typed in its place (zsh completed or quoted it) as the remote shell reads it
+	if (( _mssh_complete_hidden_at && ( _mssh_complete_remoting && _mssh_complete_quoted || _mssh_complete_dq && ! _mssh_complete_remoting ) )); then
+		# each directory of -p that is not the one typed in its place (zsh completed or quoted it) as the remote shell reads it; in a
+		# double quote with an expansion, mssh's own names too: -p is written for no quote there, and the next TAB went in as
+		# "$PWD/zzd\ x/in1", a literal backslash, for a directory "zzd x"
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
 		_mssh_complete_typed=("${(@s:/:)PREFIX}")
 		for (( _mssh_complete_index = 1; _mssh_complete_index < $#_mssh_complete_parts; _mssh_complete_index++ )); do
 			[[ $_mssh_complete_parts[_mssh_complete_index] == "$_mssh_complete_typed[_mssh_complete_index]" ]] && continue
 			_mssh_complete_name=${(Q)_mssh_complete_parts[_mssh_complete_index]}
-			_mssh_complete_value=${_mssh_complete_name//(#m)[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#]/\\$MATCH}
-			[[ $_mssh_complete_value == '~'* ]] && _mssh_complete_value=\\$_mssh_complete_value
-			if [[ $_mssh_complete_value != "$_mssh_complete_name" ]]; then
+			if (( _mssh_complete_remoting )); then
+				_mssh_complete_value=${_mssh_complete_name//(#m)[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#]/\\$MATCH}
+				[[ $_mssh_complete_value == '~'* ]] && _mssh_complete_value=\\$_mssh_complete_value
+			else
+				_mssh_complete_value=$_mssh_complete_name
+			fi
+			if (( ! _mssh_complete_remoting )) || [[ $_mssh_complete_value != "$_mssh_complete_name" ]]; then
 				_mssh_complete_quote_in "$_mssh_complete_value"
 				_mssh_complete_parts[_mssh_complete_index]=$_mssh_complete_inq
 			fi
@@ -7506,7 +7514,9 @@ _mssh_complete_compadd() {
 				(( _mssh_complete_quoted )) && _mssh_complete_value=$_mssh_complete_word || _mssh_complete_value=${(q)_mssh_complete_name}
 			fi
 			_mssh_complete_quote_in "$_mssh_complete_value"
-			_mssh_complete_word=${_mssh_complete_inq//\\\!/\!}
+			_mssh_complete_word=$_mssh_complete_inq
+			# (a command's word, written \! by zsh for the remote shell, is \! here once; mssh's own names keep the \! zsh's history takes off)
+			(( _mssh_complete_delegating )) && _mssh_complete_word=${_mssh_complete_inq//\\\!/\!}
 			# (a directory whose word changed: zsh's mark looks for the word as written and finds no directory: its / here, quote open)
 			if (( _mssh_complete_file && ! _mssh_complete_shown_at )) && [[ $_mssh_complete_word != "$_mssh_complete_name" && -d $_mssh_complete_prefix$_mssh_complete_name ]]; then
 				_mssh_complete_dirs+=("$_mssh_complete_word")
