@@ -7853,8 +7853,13 @@ _mssh_complete_ghost_redraw() {
 		fi
 		return 0
 	fi
-	# more keys are waiting (a paste, typing ahead): the last one's redraw asks, one engine and not one per key
-	(( PENDING )) && return 0
+	# more keys are waiting (a paste, typing ahead): the last one's redraw asks, one engine and not one per key. The grey text
+	# is gone until then (it was the answer for a line that is no more: a Right key taking it would put its text on this one)
+	if (( PENDING )); then
+		_mssh_complete_ghost_clear
+		_mssh_complete_last=
+		return 0
+	fi
 	_mssh_complete_last=$BUFFER
 	if [[ -n $_mssh_complete_shown ]] && (( CURSOR == $#BUFFER )); then
 		_mssh_complete_full=$_mssh_complete_prior$_mssh_complete_shown

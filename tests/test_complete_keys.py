@@ -1434,6 +1434,58 @@ def test_zsh_accepted_grey_text_is_not_grey(home):
 		session.close()
 
 
+ARRIVING_TOGETHER = [
+	# the grey text shown is the answer for "mssh gp": keys arriving in one read must not take it for a line that moved on
+	(RIGHT + RIGHT, 'a Right key twice'),
+	('x' + RIGHT, 'a letter then Right'),
+	('u' + RIGHT, 'the next letter of the grey text then Right'),
+	('\x05\x05', 'Ctrl-E twice'),
+	('\x7f' + RIGHT, 'Backspace then Right'),
+	('\x1bf\x1bf', 'Alt-f twice'),
+]
+
+
+@pytest.mark.parametrize('keys', [keys for keys, _ in ARRIVING_TOGETHER], ids=[name for _, name in ARRIVING_TOGETHER])
+def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(home, keys):
+	require_zsh_5_3()
+	# zsh redraws once for keys read together (PENDING): the grey text then shown was asked for a shorter or other line,
+	# and an accept key took it all the same (`gpu[01-16] nvidia-smiu[01-16] nvidia-smi` ran, or `gpxu[01-16] nvidia-smi`)
+	env, home = home
+	session = zsh_with(env, home, extra=FAKE_MSSH)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.wait_idle(10)
+		session.send(keys + '\r')
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[', 10) + session.read_until(b']@@', 10)))
+		assert len(ran) == 1, ran
+		line = ran[0].replace('\\', '')
+		# what was typed with the text of one answer at most, never a second one on top
+		assert line.count('nvidia-smi') <= 1 and line.count('gpu[01-16]') <= 1, ran
+		assert line in {'gp', 'gpu[01-16] nvidia-smi', 'gpu[01-16]', 'gpx', 'gpu', 'g'}, ran
+	finally:
+		session.close()
+
+
+def test_zsh_keys_arriving_together_ask_for_the_grey_text_once(home):
+	require_zsh_5_3()
+	# a paste or typing ahead: one engine for the last key, not one per key (13 runs for a 12 key burst without PENDING)
+	env, home = home
+	command, requests = recording_engine(home)
+	session = zsh_with(env, home, command=command)
+	try:
+		session.send('mssh gp')
+		session.read_until(b'nvidia-smi', 10)
+		session.wait_idle(10)
+		before = len(recorded_flags(requests).get('ghost', []))
+		session.send('\x15mssh gpu[01-16] ')
+		session.wait_idle(10, window=1.0)
+		asked = len(recorded_flags(requests).get('ghost', [])) - before
+		assert asked <= 2, asked
+	finally:
+		session.close()
+
+
 def settled(session, quiet=1.0):
 	"""The non-empty rows of the screen once the session printed nothing more for a while."""
 	time.sleep(quiet)
