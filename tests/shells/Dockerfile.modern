@@ -3,7 +3,7 @@ FROM debian:trixie-slim
 # Turkish locales (UTF-8 and ISO-8859-9), where readline lowers I to the dotless i, and two-byte locales
 # that are not UTF-8 (GB18030, EUC-KR)
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends bash bash-completion zsh fish locales python3 python3-pytest procps xz-utils \
+ && apt-get install -y -qq --no-install-recommends bash bash-completion zsh fish locales python3 python3-pytest python3-pytest-xdist procps xz-utils git \
  && rm -rf /var/lib/apt/lists/* \
  && localedef -i tr_TR -f UTF-8 tr_TR.UTF-8 && localedef -i tr_TR -f ISO-8859-9 tr_TR.ISO-8859-9 \
  && localedef -i zh_CN -f GB18030 zh_CN.GB18030 && localedef -i ko_KR -f EUC-KR ko_KR.EUC-KR

@@ -1,0 +1,8 @@
+# Shell matrix image: bash 5.0 alone (the bash of Ubuntu 20.04 and Debian 10), the official bash image, pinned.
+# The test that Ctrl-C right after Ctrl-R leaves the terminal in its cooked mode fails on bash 4.3, 4.4.23 and 5.0 only:
+# no other image of the matrix has such a bash
+FROM bash:5.0.18-alpine3.22@sha256:ef67bfc4af6de1e3e8a09dcab80ffe1ed9c8fe51bbb3402d4b5b32e6f6156c81
+# Alpine's bash-completion brings Alpine's own bash as /bin/bash: the bash on PATH stays the pinned one
+RUN apk add --no-cache 'python3~3.12' 'py3-pytest~8.3' py3-pytest-xdist bash-completion git \
+ && [ "$(command -v bash)" = /usr/local/bin/bash ]
+ENV LANG=C.UTF-8

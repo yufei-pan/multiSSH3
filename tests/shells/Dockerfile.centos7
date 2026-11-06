@@ -3,10 +3,10 @@
 FROM centos:7@sha256:be65f488b7764ad3638f236b7b515b3678369a5124c47b8d32916d6487418ea4
 RUN sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#\?baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|' /etc/yum.repos.d/CentOS-*.repo \
  && yum -y -q update \
- && yum -y -q install python3 bash-completion zsh which procps-ng xz gawk \
+ && yum -y -q install python3 bash-completion zsh which procps-ng xz gawk git \
  && yum clean all \
  && python3 -m pip install -q --disable-pip-version-check 'pip<22' \
- && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1'
+ && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1' 'pytest-xdist==2.5.0' 'pytest-forked==1.4.0' 'execnet==1.9.0'
 # no C.UTF-8 here, and the C locale would hide bash 4.2's byte-counted COMP_POINT
 ENV LANG=en_US.UTF-8
 # ble.sh (Bash Line Editor), pinned: the autocomplete tests also run inside it

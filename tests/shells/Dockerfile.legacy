@@ -1,9 +1,10 @@
 # Shell matrix image: RHEL 8 era shells and Python 3.6 (see the autocomplete spec)
 FROM rockylinux:8
 RUN dnf -q -y install epel-release \
- && dnf -q -y install bash bash-completion zsh fish python36 procps-ng glibc-langpack-en which xz gawk \
+ && dnf -q -y install bash bash-completion zsh fish python36 procps-ng glibc-langpack-en which xz gawk git \
  && dnf clean all \
- && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1'
+ && python3 -m pip install -q --disable-pip-version-check 'pytest==7.0.1' 'pytest-xdist==2.5.0' 'pytest-forked==1.4.0' 'execnet==1.9.0'
+# (pytest-xdist: the tests run in parallel workers, run_matrix.sh; the last release that runs on Python 3.6)
 ENV LANG=en_US.UTF-8
 # ble.sh (Bash Line Editor), pinned: the autocomplete tests also run inside it
 ADD --checksum=sha256:7a2445f138e7f099dd5dee749391a8b045646d1b8a605975885be5b34b6b5f7e \
