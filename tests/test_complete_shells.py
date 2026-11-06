@@ -1629,7 +1629,8 @@ def test_fish_a_local_name_starting_with_a_tilde_reaches_the_remote_shell_as_nam
 	(work / '~').mkdir()
 	(work / '~zzold').write_text('')
 	glue = glue_file(home, 'fish')
-	found = [remote_shell_args(text) for text, _ in fish_complete(env, glue, 'mssh h rmdir ', cwd=work)]
+	# (cat: fish 4.2's own rmdir completion offers directories alone)
+	found = [remote_shell_args(text) for text, _ in fish_complete(env, glue, 'mssh h cat ', cwd=work)]
 	assert sorted(found) == [['~/'], ['~zzold']]
 
 
@@ -2964,6 +2965,11 @@ def test_zsh_and_fish_requests_say_the_locale_the_shell_runs_in(tmp_path, shell,
 	assert mc._measured_utf8(mc.Request(shell, 'mssh ', flags=flags)) is taken[0]
 
 
+def fish_version():
+	output = subprocess.run([require_shell('fish'), '--version'], stdout=subprocess.PIPE, timeout=30).stdout.decode()
+	return tuple(int(part) for part in output.split()[-1].split('.')[:2])
+
+
 @pytest.mark.parametrize('shell, exported, setting, utf8', [
 	# zsh follows an LC_ALL or LC_CTYPE set in the shell and not exported, which the engine never sees
 	('zsh', 'UTF-8', 'LC_ALL=C', False),
@@ -2980,7 +2986,8 @@ def test_zsh_and_fish_requests_say_the_locale_the_shell_set_itself(tmp_path, she
 	env['LANG'] = locale if exported == 'UTF-8' else exported
 	setting = setting.format(utf8=locale)
 	assert mc._measured_utf8(mc.Request(shell, 'mssh ', flags=glue_request_flags(tmp_path, shell, env, setting))) is utf8
-	if shell == 'fish':
+	# (fish 4.2 reads text as UTF-8 in any locale, and has no fish_allow_singlebyte_locale; what the engine writes still goes by the locale)
+	if shell == 'fish' and (utf8 or fish_version() < (4, 2)):
 		# fish itself reads text so, once kept from taking a UTF-8 locale for a single-byte one
 		script = "set -g fish_allow_singlebyte_locale 1\n" + setting + "\nstring length -- (printf '\\xc3\\xa9')"
 		output = subprocess.run([require_shell('fish'), '--no-config', '-c', script], env=env, stdout=subprocess.PIPE, timeout=30)

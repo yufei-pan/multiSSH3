@@ -544,7 +544,9 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   versions was not enough.
 - Also: since 6.43 puts the terminal's mode back after a Ctrl-C right after Ctrl-R, the terminal is still left cooked (the
   line editor and Ctrl-U misbehave until the next Enter) in a small window around each 0.1 s read boundary: 2 of 480
-  tries (about 0.4%), measured in 6.43's second review. The idea to test in the design pass: `stty -isig`.
+  tries (about 0.4%), measured in 6.43's second review. Short of CPU the window is far wider: on bash 5.0 in a container capped
+  at 0.4 of a processor, 8 of 40 tries on 6.43's glue and 12 of 40 on 6.44's, the same code, and a loaded host makes
+  test_bash_ctrl_c_right_after_ctrl_r_leaves_the_terminal_in_readline_s_mode fail for this cause. The idea to test in the design pass: `stty -isig`.
 - Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
 - Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the residual window added the same day, "Add to the design pass (Recommended)".
 
