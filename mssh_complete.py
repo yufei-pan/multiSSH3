@@ -6285,21 +6285,6 @@ _mssh_complete_in_quote() {
 	fi
 }
 
-_mssh_complete_ask() {
-	# TAB's request to the engine, its answer on stdout: run as $( ) by _mssh_complete_tab. A function, not the text inside the
-	# $( ). Its timed read runs in a subshell of its own, see _mssh_complete_tab. No comment inside the <( ): bash 4.2 reads a
-	# quote or a parenthesis in one as code
-	IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
-		{
-			local _mssh_complete_ignoring=0
-			[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
-			printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
-			fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
-		} | _mssh_complete_engine query 2>/dev/null || :
-	) || return 1
-	printf '%s' "$_mssh_complete_resp"
-}
-
 _mssh_complete_tab() {
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
@@ -6373,7 +6358,17 @@ _mssh_complete_tab() {
 	# line: on a host logging idle shells out, a TAB on an mssh line and walking away stayed logged in. And for the same reason no
 	# plain read below, on what this function goes through (mapfile instead): read takes TMOUT for its timeout when it has none
 	# given and does not read a regular file (a pipe, or a here string from bash 5.1).
-	_mssh_complete_resp=$(_mssh_complete_ask) || return 0
+	_mssh_complete_resp=$(
+		IFS= read -r -d '' -t "${MSSH_COMPLETE_TIMEOUT:-0.3}" _mssh_complete_resp < <(
+			{
+				local _mssh_complete_ignoring=0
+				[[ $(bind -v 2>/dev/null) == *'completion-ignore-case on'* ]] && _mssh_complete_ignoring=1
+				printf '%s\0' MSSHC1 bash "$BASH_VERSION" "$_mssh_complete_flags icase=$_mssh_complete_ignoring" "$_mssh_complete_request" "$_mssh_complete_after" "$_mssh_complete_subword"
+				fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null
+			} | _mssh_complete_engine query 2>/dev/null || :
+		) || return 1
+		printf '%s' "$_mssh_complete_resp"
+	) || return 0
 	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || return 0
 	local -a _mssh_complete_lines=()
 	mapfile -t _mssh_complete_lines <<< "$_mssh_complete_resp"
