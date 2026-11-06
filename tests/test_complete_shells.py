@@ -1278,6 +1278,16 @@ def test_zsh_going_on_into_a_directory_completed_in_a_double_quote_with_an_expan
 	assert remote_shell_args(command.rpartition(';')[2])[-1].endswith(dirname + '/in1'), line
 
 
+@pytest.mark.parametrize('function', ["_path_files -g '*.txt'; _path_files -/", 'local d=${PREFIX%/*}/; compadd -p "$d" -- inner.txt; compadd -p "$d" -- inner-dir'],
+	ids=['path-files', 'compadd'])
+def test_zsh_a_second_list_of_names_from_a_command_s_completion_goes_on_in_a_double_quote_with_an_expansion(tmp_path, function):
+	# a completion may add names in several calls (here files, then directories): each one starts from the word as typed. Only the
+	# first one's names gave an `in` that stops short of both
+	line, _ = review_line(tmp_path, 'zsh', 'mssh h "zzsvc $PWD/zzd/in', dirs=['zzd/inner-dir'], files=['zzd/inner.txt'],
+		extra='_zzsvc() {{ {} }}; compdef _zzsvc zzsvc'.format(function))
+	assert line == 'mssh h "zzsvc $PWD/zzd/inner', line
+
+
 ANOTHER_START = [
 	('m h "ls $PWD/zzp', 'alias m=mssh'), ('m2 h "ls $PWD/zzp', "alias m2='m -q'; alias m=mssh"), ('sudo mssh h "ls $PWD/zzp', ''), ('time mssh h "ls $PWD/zzp', ''),
 	('command mssh h "ls $PWD/zzp', ''), ('noglob mssh h "ls $PWD/zzp', ''), ('cd . && mssh h "ls $PWD/zzp', ''), ('true; mssh h "ls $PWD/zzp', ''), ('(mssh h "ls $PWD/zzp', ''),
@@ -1296,7 +1306,7 @@ def test_zsh_a_double_quoted_expansion_stays_as_typed_wherever_the_mssh_command_
 
 
 @pytest.mark.parametrize('typed, extra', [('ls "$PWD/zzp', ''), ('mssh h a; ls "$PWD/zzp', ''), ('mssh h a | cat "$PWD/zzp', ''), ('noglob ls "$PWD/zzp', ''), ('m "$PWD/zzp', 'alias m=ls'),
-	('mssh="$PWD/zzp', '')])
+	('mssh="$PWD/zzp', ''), ('"$PWD/mssh', '')])
 def test_zsh_a_double_quoted_expansion_of_another_command_is_left_to_zsh(tmp_path, typed, extra):
 	# as without the glue: the word is expanded (the value of $PWD in the line)
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], extra=extra)
@@ -1345,6 +1355,13 @@ def test_bash_a_directory_of_mssh_s_own_names_goes_on_past_an_expansion(tmp_path
 	(tmp_path / 'again').mkdir()
 	line, _ = review_line(tmp_path / 'again', shell, typed, dirs=['zzdir'], files=['zzdir/in1'], steps=['in', '\t'])
 	assert local_words('bash', line)[-1].endswith('/zzdir/in1'), line
+
+
+@pytest.mark.parametrize('directory, written', [('sub dir', 'sub dir'), ('sub&dir', 'sub&dir')])
+def test_bash_mssh_s_own_names_keep_a_directory_a_remote_word_would_not_before_an_expansion(tmp_path, directory, written):
+	# the rules of the remote shell's words are not this word's: it is a local one
+	line, _ = review_line(tmp_path, 'readline', 'mssh -f "$PWD/{}/$ZZ/zzs'.format(written), files=[directory + '/in/zzs.txt'], pre='export ZZ=in')
+	assert line == 'mssh -f "$PWD/{}/$ZZ/zzs.txt" '.format(written)
 
 
 def test_bash_a_variable_being_typed_at_mssh_s_own_file_word_stays_a_variable(tmp_path):

@@ -6509,7 +6509,6 @@ _mssh_complete_tab() {
 			# a $ this shell expands, in mssh's own file word: readline's file name mode escaped it (in double quotes always, outside
 			# them before bash 5.2), and mssh got the literal text. The glue writes the names, as it does a remote command's, with the
 			# typed part kept. The engine's words go: they are written for that mode, and history holds such a path expanded
-			[[ $_mssh_complete_one == \"* ]] && _mssh_complete_inquote=1
 			_mssh_complete_local=1
 			_mssh_complete_head "$_mssh_complete_cur" || _mssh_complete_unsplit=1
 			mapfile -t _mssh_complete_delegated < <(compgen -f -- "$_mssh_complete_plain" 2>/dev/null || :)
@@ -7407,7 +7406,6 @@ _mssh() {
 				_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
 				_mssh_complete_dq_read "$PREFIX"
 				PREFIX=$_mssh_complete_read
-				words[CURRENT]=$PREFIX
 			fi
 			(( _mssh_complete_offset = CURRENT - _mssh_complete_dcword ))
 			if (( _mssh_complete_offset >= 1 )); then
@@ -7586,16 +7584,14 @@ _mssh_complete_compadd() {
 		_mssh_complete_in=("${(@)argv[_mssh_complete_at,-1]}")
 	fi
 	# directories read from the double quote (_mssh_complete_dq_parts of _mssh) and left as they are: their text as typed goes in front,
-	# for this call. -p must start the word, which holds them as read: written for the quote, zsh matched no name (a $, a backtick, a ")
-	local _mssh_complete_iprefix=$IPREFIX _mssh_complete_rest_prefix=$PREFIX
-	local -i _mssh_complete_moved=0
+	# for this call (zsh puts both back when this function returns). -p must start the word, which holds them as read: written for the
+	# quote, zsh matched no name (a $, a backtick, a ")
 	if (( _mssh_complete_hidden_at && $#_mssh_complete_dq_parts )) && [[ -n $_mssh_complete_opts[_mssh_complete_hidden_at] && $PREFIX == "$_mssh_complete_opts[_mssh_complete_hidden_at]"* ]]; then
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
 		IPREFIX+=${(j:/:)_mssh_complete_dq_parts[1,$#_mssh_complete_parts-1]}/
 		PREFIX=${PREFIX#"$_mssh_complete_opts[_mssh_complete_hidden_at]"}
 		_mssh_complete_opts[_mssh_complete_hidden_at]=
 		_mssh_complete_bare[_mssh_complete_hidden_bare]=
-		_mssh_complete_moved=1
 	elif (( _mssh_complete_hidden_at && ( _mssh_complete_remoting && _mssh_complete_quoted || _mssh_complete_dq && ! _mssh_complete_remoting ) )); then
 		# each directory of -p that is not the one typed in its place (zsh completed or quoted it) as the remote shell reads it; in a
 		# double quote with an expansion, mssh's own names too: -p is written for no quote there, and the next TAB went in as
@@ -7703,10 +7699,6 @@ _mssh_complete_compadd() {
 	fi
 	(( $#_mssh_complete_changed )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" "${_mssh_complete_closing_opts[@]}" - "${_mssh_complete_changed[@]}" && _mssh_complete_rc=0
 	(( $#_mssh_complete_dirs )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" -S / - "${_mssh_complete_dirs[@]}" && _mssh_complete_rc=0
-	if (( _mssh_complete_moved )); then
-		IPREFIX=$_mssh_complete_iprefix
-		PREFIX=$_mssh_complete_rest_prefix
-	fi
 	return $_mssh_complete_rc
 }
 
