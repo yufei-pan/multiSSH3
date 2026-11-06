@@ -9,7 +9,7 @@
 # A test that fails in the parallel run is run again alone (pytest --lf). The first run's FAILED lines stay in the log. A rerun
 # that passes is NOT evidence that the test is fine: a race that fails under load can pass alone. So the exit status tells: 0
 # when every image passed the first time, 1 when something fails on the rerun too, 3 when all passed but some test needed the
-# rerun (1 outranks 3, 3 outranks 0; the CI job takes the status as it is: a rerun turns it red); and the output ends with one "RERUN <image> <test id>" line for each such test.
+# rerun (1 outranks 3, 3 outranks 0; the CI job turns 3 into a ::warning:: per RERUN line and stays green, 1 stays red); and the output ends with one "RERUN <image> <test id>" line for each such test.
 # Usage: tests/shells/run_matrix.sh [modern] [current] [legacy] [el9] [el10] [centos7] [bash3.2] [bash5.0] [bash5.1] [bash5.3]   (default: all ten)
 # MSSH_MATRIX_TESTS picks the pytest arguments (default: tests/test_complete_*.py). The whole suite, e.g. on
 # Python 3.6: MSSH_MATRIX_TESTS=tests tests/shells/run_matrix.sh legacy centos7

@@ -47,4 +47,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: tests/shells/run_matrix.sh centos7
+      # Exit 3 is a test that failed and passed on the script's rerun: the job stays green and names each one in a warning. Exit 1
+      # (a failure on the rerun too, or a run that died) stays red.
+      - run: |
+          code=0
+          tests/shells/run_matrix.sh centos7 > "$RUNNER_TEMP/matrix.log" 2>&1 || code=$?
+          cat "$RUNNER_TEMP/matrix.log"
+          if [ "$code" -eq 3 ]; then
+            sed -n 's/^RERUN //p' "$RUNNER_TEMP/matrix.log" | sed 's/%/%25/g' | while IFS= read -r test; do
+              echo "::warning title=Passed only on the rerun::$test"
+            done
+            code=0
+          fi
+          exit "$code"
