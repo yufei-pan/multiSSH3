@@ -82,3 +82,15 @@ def test_sdist_and_metadata_carry_the_license_text(egg_info):
 	metadata = metadata_lines(egg_info)
 	if "License-Expression: GPL-3.0-or-later" in metadata:
 		assert "License-File: LICENSE" in metadata
+
+
+def test_no_two_commands_differ_only_in_case(egg_info):
+	# pip 9 (stock on EL7 and EL8) reads entry_points.txt with a parser that folds case, so two commands that differ only
+	# in case make it fail to upgrade or uninstall the package. The mixed-case command is a script file (scripts=) instead.
+	entry_points = (egg_info[0] / "entry_points.txt").read_text(encoding="utf-8")
+	names = [line.split("=")[0].strip() for line in entry_points.splitlines() if "=" in line]
+	assert sorted(names) == ["mssh", "mssh-complete", "mssh3", "multissh", "multissh3"]
+	assert len({name.casefold() for name in names}) == len(names)
+	# the mixed-case command ships in the sdist as a script, so the six spellings stay six commands
+	assert "scripts/multiSSH3" in sdist_files(egg_info)
+	assert (PACKAGE_ROOT / "scripts" / "multiSSH3").read_text(encoding="utf-8").startswith("#!")

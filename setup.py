@@ -27,13 +27,15 @@ setup(
     author_email='pan@zopyr.us',
     url='https://github.com/yufei-pan/multiSSH3',
     py_modules=['multiSSH3', 'mssh_complete'],
+    # The mixed-case command is a script file and not an entry point: pip 9 (stock on EL7 and EL8) reads entry_points.txt with a
+    # parser that folds case, so two commands that differ only in case make it fail to upgrade or uninstall the package.
+    scripts=['scripts/multiSSH3'],
     entry_points={
         'console_scripts': [
             'mssh=multiSSH3:main',
             'mssh3=multiSSH3:main',
             'multissh=multiSSH3:main',
             'multissh3=multiSSH3:main',
-            'multiSSH3=multiSSH3:main',
             'mssh-complete=mssh_complete:main',
         ],
     },
