@@ -1377,6 +1377,15 @@ def test_zsh_a_remote_option_s_value_completes_with_and_without_a_quote_after_th
 	assert line == expected, line
 
 
+@pytest.mark.parametrize('typed, expected', [('mssh --file="$PWD/zzp', 'mssh --file="$PWD/zzplain" '), ('mssh --file="zzp', 'mssh --file="zzplain" '),
+	('mssh -f="$PWD/zzp', 'mssh -f="$PWD/zzplain" '), ('mssh h --file="$PWD/zzp', 'mssh h --file="$PWD/zzplain" '),
+	('sudo mssh --file="$PWD/zzp', 'sudo mssh --file="$PWD/zzplain" ')])
+def test_zsh_mssh_s_own_option_keeps_the_quote_opened_after_its_equals_sign(tmp_path, typed, expected):
+	# the quote goes with the option (the lead of the word): without it the completion took the quote out (--file=$PWD/zzplain)
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'])
+	assert line == expected, line
+
+
 @pytest.mark.parametrize('typed, expected', [
 	# the command's own compset moves if=, of= and -i to IPREFIX: the directories typed went in front once more (if=if=$PWD/...)
 	('mssh h "dd if=$PWD/zzd/inner.', 'mssh h "dd if=$PWD/zzd/inner.txt" '),

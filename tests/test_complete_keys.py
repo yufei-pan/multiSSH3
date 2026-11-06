@@ -1564,14 +1564,15 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_
 @pytest.mark.parametrize('after', [False, True], ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
 def test_zsh_keys_arriving_together_leave_the_grey_text_of_other_commands_to_zsh_autosuggestions(home, after):
 	require_zsh_5_3()
-	# off an mssh line the plugin behaves as it does alone: the grey text of `ranme he` is still there for the Right that follows
+	# off an mssh line the plugin behaves as it does alone: the grey text of `ranme he` is still there for the Right that takes it
 	env, home = home
 	session = zsh_with(env, home, True, after, shell_history='ranme hello world\n', extra='ranme() { printf "@@RAN[%s]@@\\n" "$*"; }')
 	try:
 		session.send('ranme he')
 		session.read_until(b'llo world')
 		session.wait_idle(10)
-		session.send(RIGHT + RIGHT + '\r')
+		# (Left, then Right back to the end while more keys wait, then Right takes the grey text)
+		session.send(LEFT + RIGHT + RIGHT + '\r')
 		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
 		assert ran == ['hello world'], ran
 	finally:
