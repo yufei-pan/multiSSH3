@@ -372,7 +372,9 @@ each entry).
   otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
   the remote shell would read `a` and `b/...`), and one typed bare in a quoted command (`mssh h "cat a&b/zz<TAB>`). bash
   replaces such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`),
-  or completed by TAB, the names inside it complete.
+  the names inside it complete. A directory completed by TAB goes on completing, except in a double-quoted command
+  (`"ls zzd<TAB>`, then `in<TAB>`) for a directory whose name holds `$`, a backtick, `"`, `\` or `!`, where it gives
+  nothing (and see "zsh: going on into a directory completed in a double quote with an expansion gives no names").
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
   to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
 - Revisit when: an operator types such directories in zsh and misses the names.
@@ -561,11 +563,11 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ## Found in 6.43's review
 
-### zsh: a double-quoted expansion is still expanded where the completer is `_expand`, or after `FOO=1 mssh`
+### zsh: a double-quoted expansion is still expanded where the completer is `_expand`
 - Kind: known limitation
 - What the operator sees: the double-quoted expansion fix does not reach a `zstyle ':completion:*' completer _expand ...`
-  setup, where `mssh h "ls $PWD/zzp<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzp`, nor a line starting with an
-  assignment, `FOO=1 mssh h "ls $PWD/zzp<TAB>`, which also expands. Both as in 6.42.
+  setup, where `mssh h "ls $PWD/zzp<TAB>` rewrites the line to `mssh h ls\ /the/directory/zzp`. As in 6.42. (A line not
+  starting with `mssh` is the next entry but two.)
 - Why: those paths do not go through the wrapped `expand-or-complete` widget's handling of a double-quoted word.
 - Revisit when: someone using `_expand` reports it.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
@@ -577,3 +579,55 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: low impact, seen at once, and the quote stays open.
 - Revisit when: someone reports it.
 - Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+
+## Found in 6.43's second review
+
+### zsh: a variable name typed inside a double-quoted command is completed with a space and the quote left open
+- Kind: known limitation
+- What the operator sees: in zsh, `mssh h "cat $HOM<TAB>` gives `"cat $HOME ` (the name, a space, the quote still open) and
+  `"cat ${HOM` gives `"cat ${HOME} `. The same in `mssh h cat "$HOM`, `mssh -f "$HOM` and `mssh h "echo a; cat $HOM`.
+  A single-quoted command calls mssh's completion and stays right. Seen in zsh 5.0.2, 5.5.1, 5.8 and 5.9. 6.42 gave
+  `mssh h cat\ ` there, with the quote lost.
+- Why: zsh hands a parameter name to its own completer before `_mssh` is called.
+- Revisit when: the zsh glue wraps the parameter completer.
+- Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+
+### bash-completion: a `~name` word closes the quote
+- Kind: known limitation
+- What the operator sees: with bash-completion loaded, `mssh h "cat ~bi<TAB>` gives `"cat ~bin" `, quote closed, for every
+  command that bash-completion has a completion for (`"cd ~bi`, `'cat ~bi`, `cat "~bi` too). A command with none
+  (`zzcmd`) stays open, `~bin/`, except on bash 4.2, where it closes too. As in 6.42 with bash-completion; without it,
+  fixed in 6.43.
+- Why: bash-completion's own completion of the command (`_tilde`) gives `~bin` beside the glue's word, and readline closes
+  the quote for it.
+- Revisit when: bash-completion changes `_tilde`.
+- Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+
+### bash: the glue sourced while the shell is already in posix mode gives bash's default completion
+- Kind: known limitation
+- What the operator sees: on bash before 5.1 (4.2, 4.4 and 5.0 checked), `set -o posix` (or `bash --posix`) before the glue
+  is sourced: TAB on an mssh line completes as bash does with no glue, silently (`mssh h "nvid<TAB>` stays as typed). On
+  bash 5.1 and later it works. Turning posix mode on after the glue is loaded works on every version.
+- Why: the glue's functions use syntax posix mode does not read; nobody is known to run an interactive posix-mode shell.
+- Revisit when: someone runs an interactive posix-mode shell with the glue.
+- Approved: 2026-11-05, the user chose "Known limitation (Recommended)".
+
+### zsh: the quote rewrite on a line that does not start with `mssh`
+- Kind: deferred (6.44)
+- What the operator sees: in zsh, the double-quoted expansion fix applies only where the line starts with an mssh name.
+  `alias m=mssh` then `m h "ls $PWD/zzp<TAB>` gives `m h ls\ /the/directory/zzp`: the quote gone and the value expanded.
+  The same after `sudo mssh`, `time mssh`, `command mssh`, `noglob mssh`, `cd . && mssh`, `true; mssh`, `(mssh` and
+  `FOO=1 mssh`. As in 6.42.
+- Why: `_mssh_complete_is_mssh` matches an mssh name at the start of the line only; reading the command position of the
+  line needs the glue to parse it as zsh does.
+- Revisit when: 6.44.
+- Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: going on into a directory completed in a double quote with an expansion gives no names
+- Kind: deferred (6.44)
+- What the operator sees: in zsh, `mssh h "ls $PWD/zzd<TAB>` completes a directory `zzd x` (also `zzd&x`, `zzd$x`, a
+  backtick, `"`, `'` or `!` in the name) right, and the next `in<TAB>` inside it gives nothing. The same in
+  `mssh h ls "$PWD/zzd` (a space excepted) and `mssh h "echo $USER; ls zzd`. Nothing wrong goes into the line.
+- Why: the first step is written for the double quote; the second never unquotes what the first wrote.
+- Revisit when: 6.44.
+- Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
