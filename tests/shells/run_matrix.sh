@@ -86,7 +86,9 @@ for index in "${!images[@]}"; do
 	[ -n "$first" ] || first="no pytest summary (the run ended early: see its log)"
 	line="${images[index]}: $first"
 	if grep -q '^=== run again alone' "$log"; then
-		line="$line; run again alone: $(printf '%s\n' "$summaries" | tail -1)"
+		# the rerun's own summary only: when the rerun died before printing one, the first run's would stand there
+		again=$(sed -n '/^=== run again alone/,$p' "$log" | { grep -E '^[0-9]+ [a-z]+.* in [0-9.]+s' || :; } | tail -1)
+		line="$line; run again alone: ${again:-no pytest summary (the rerun ended early: see its log)}"
 	fi
 	echo "$line ($(grep '^=== took' "$log" | tail -1 | sed 's/^=== //'), $(grep '^=== exit' "$log" | tail -1 | sed 's/^=== //'))"
 done
