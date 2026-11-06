@@ -1006,6 +1006,9 @@ def test_a_word_of_mssh_s_history_ending_in_a_slash_closes_the_quote(tmp_path, s
 	('mssh h "nvid', 'mssh h "nvidia-smi" ', ['nvidia-smi']),
 	('mssh h ls zzp', 'mssh h ls zzplain ', ['ls', 'zzplain']),
 	('mssh h "ls zzp', 'mssh h "ls zzplain" ', ['ls', 'zzplain']),
+	# a remote command that is mssh itself: its completion (this glue's) runs inside the glue's, one guard call in another
+	('mssh h mssh zzp', 'mssh h mssh zzplain ', ['mssh', 'zzplain']),
+	('mssh h "mssh zzp', 'mssh h "mssh zzplain" ', ['mssh', 'zzplain']),
 ])
 def test_bash_completes_in_posix_mode(tmp_path, bash_completion, typed, expected, remote):
 	# set -o posix after the glue loaded, then TAB. 6.43 turned posix mode off only for the engine's query: the file names
