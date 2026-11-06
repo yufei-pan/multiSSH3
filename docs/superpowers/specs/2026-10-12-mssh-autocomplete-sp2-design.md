@@ -174,7 +174,7 @@ The editor always hands back the line and the cursor; readline carries on.
 ## bash with ble.sh
 
 - When `BLE_VERSION` is set and both `_ble_complete_auto_source` and `ble/complete/auto-complete/enter` exist, the glue defines `ble/complete/auto-complete/source:mssh` and prepends `mssh` to `_ble_complete_auto_source`. Otherwise it adds nothing (TAB still works as in SP1).
-- The source returns 1 (next source) unless the line is an mssh line with the cursor at the end. It writes the request to a temporary file, runs `mssh-complete query` through `ble/util/conditional-sync` with `timeout=300`, returns 148 if the user typed meanwhile, and otherwise calls `ble/complete/auto-complete/enter h 0 "<text>" '' "<line + text>"` (a whole-line suggestion, like ble.sh's history source) for both `line` and `word` suggestions.
+- The source returns 1 (next source) unless the line is an mssh line with the cursor at the end. It writes the request to a temporary file, runs `mssh-complete query` through `ble/util/conditional-sync` (`_mssh_complete_ble_query`; the engine is that background shell, by `exec`, so a cancel ends it) with a limit of 300 ms read off `ble/util/clock` (conditional-sync's own `timeout=` counts sleeps, which ble.sh shortens by a delay it measured at start-up on a busy machine), returns 148 if the user typed meanwhile, and otherwise calls `ble/complete/auto-complete/enter h 0 "<text>" '' "<line + text>"` (a whole-line suggestion, like ble.sh's history source) for both `line` and `word` suggestions.
 - ble.sh draws the grey text and handles its accept keys.
 
 ## fish

@@ -631,3 +631,14 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: the first step is written for the double quote; the second never unquotes what the first wrote.
 - Revisit when: 6.44.
 - Noted: 2026-11-05, the user's standing rule that deferrals are noted, not asked.
+
+### Tab past its limit inserts a name quoted for this shell only
+- Kind: deferred (6.44)
+- What the operator sees: when TAB's query misses MSSH_COMPLETE_TIMEOUT (a slow engine, a loaded machine), bash, zsh and
+  fish fall back to file names of this shell, quoted for this shell alone: `mssh h cat zza<TAB>` gives `zzamp\&b `, which
+  the remote shell reads as `cat zzamp&b`. And `mssh -p zza<TAB>` offers a file name at a password.
+- Why: the fallback does not know which word it is completing (a remote command's, a password's); that needs the answer
+  the engine did not give in time. The planned fix is to offer nothing past the limit on a remote-command word and a
+  password word.
+- Revisit when: 6.44.
+- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
