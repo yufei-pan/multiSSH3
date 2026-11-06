@@ -7788,8 +7788,9 @@ _mssh_complete_in_mssh() {
 	local _mssh_complete_word
 	local -i _mssh_complete_at=$#_mssh_complete_words _mssh_complete_rounds=0 _mssh_complete_tail=0
 	[[ $LBUFFER == *[[:space:]] ]] && _mssh_complete_tail=1
+	# (zsh's lexer gives &! as &|)
 	while (( _mssh_complete_at > 0 )); do
-		[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|'&!'|';;'|';&'|';|') ]] && break
+		[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|';;'|';&'|';|') ]] && break
 		(( _mssh_complete_at-- ))
 	done
 	while (( ++_mssh_complete_at < $#_mssh_complete_words + _mssh_complete_tail )); do
