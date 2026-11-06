@@ -6590,15 +6590,15 @@ _mssh_complete_tab() {
 			COMPREPLY=("$_mssh_complete_one")
 		fi
 	fi
-	(( _mssh_complete_inquote && ( _mssh_complete_marked || ${#_mssh_complete_delegated[@]} ) && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
+	(( _mssh_complete_inquote && ${#_mssh_complete_delegated[@]} && ${#COMPREPLY[@]} == 1 )) && [[ $COMPREPLY == */ ]] && _mssh_complete_stay
 	return 0
 }
 
 _mssh_complete_stay() {
-	# a directory alone in a quote (marked by the glue, or given by the command's own completion): the quote stays open, so
-	# the operator goes on into it. Neither
-	# closes it by a directory's own rule, as both test the word as a path here, and the word is the command typed (ls zzdir/)
-	# or the remote shell's (zzd\\&x/). Neither has an option for it either (readline's nospace only leaves out the space).
+	# a directory alone in a quote (one of the glue's own file names or the command's own completion, both in
+	# _mssh_complete_delegated): the quote stays open, so the operator goes on into it. Neither readline nor ble.sh closes it by
+	# a directory's own rule, as both test the word as a path here, and the word is the command typed (ls zzdir/) or the
+	# remote shell's (zzd\\&x/). Neither has an option for it either (readline's nospace only leaves out the space).
 	# ble.sh: inserted by its action for a part of a word, which adds nothing after it. readline: a second word that continues
 	# this one, so it inserts what they share and adds nothing. A bell for it then, as for any TAB with more than one name,
 	# and the two listed under show-all-if-ambiguous. Only for the completions that insert a word and may close the quote
