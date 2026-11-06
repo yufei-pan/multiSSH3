@@ -63,7 +63,7 @@ def printed(session, keys, wait=0.6):
 	session.send(keys)
 	time.sleep(wait)
 	session.send(session.print_key)
-	text = session.read_until(b']@@', 10)
+	text = session.read_until(b']@@')
 	start = text.rfind('@@LINE[')
 	end = text.find(']@@', start)
 	return text[start + 7:end] if start >= 0 and end > start else None
@@ -82,7 +82,7 @@ def read_until_shown(session, text, timeout=10.0):
 		shown = plain(session.output[start:].decode('utf-8', 'replace'))
 		if text in shown or time.monotonic() >= end:
 			return shown
-		session.read_until(b'@@never@@', 0.1)
+		session.read_for(0.1)
 
 
 def words(line):
@@ -110,7 +110,7 @@ def test_bash_ctrl_r_opens_the_picker_on_mssh_lines(home, debug):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 	finally:
 		session.close()
@@ -131,7 +131,7 @@ def test_bash_picker_draws_in_the_locale_bash_runs_in(home):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		assert 'type to filter \u00b7' in session.read_until('type to filter \u00b7'.encode('utf-8'), 10)
+		assert 'type to filter \u00b7' in session.read_until('type to filter \u00b7'.encode('utf-8'))
 	finally:
 		session.close()
 
@@ -150,7 +150,7 @@ def test_bash_picker_draws_in_the_locale_bash_measured_not_the_exported_one(home
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
+		assert 'type to filter - ' in session.read_until(b'type to filter')
 	finally:
 		session.close()
 
@@ -162,7 +162,7 @@ def test_bash_ctrl_r_cancel_keeps_the_line(home):
 		session.send('mssh gpu[01-16] nv')
 		time.sleep(0.3)
 		session.send('\x12')
-		session.read_until(b'commands for', 10)
+		session.read_until(b'commands for')
 		assert printed(session, '\x1b') == 'mssh gpu[01-16] nv'
 	finally:
 		session.close()
@@ -178,7 +178,7 @@ def test_bash_ctrl_r_cancel_takes_esc_however_the_terminal_sends_it(home, esc):
 		session.send('mssh gpu[01-16] nv')
 		time.sleep(0.3)
 		session.send('\x12')
-		session.read_until(b'commands for', 10)
+		session.read_until(b'commands for')
 		assert printed(session, esc) == 'mssh gpu[01-16] nv'
 	finally:
 		session.close()
@@ -190,12 +190,12 @@ def test_bash_ctrl_r_on_other_lines_is_still_reverse_search(home):
 	try:
 		# the second Ctrl-R finds the older match, as readline's own search does
 		session.send('\x12aa\x12\r')
-		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n'))
 		# and the next prompt opens the picker again on mssh lines
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		assert 'commands for' in session.read_until(b'commands for', 10)
+		assert 'commands for' in session.read_until(b'commands for')
 	finally:
 		session.close()
 
@@ -213,7 +213,7 @@ def test_bash_ctrl_r_on_other_lines_calls_a_previous_shell_command(home, where):
 			# bash 4.2 cannot list bind -x bindings: Ctrl-R stays the shell command everywhere
 			assert printed(session, '') == 'FZF'
 		else:
-			assert 'commands for' in session.read_until(b'commands for', 10)
+			assert 'commands for' in session.read_until(b'commands for')
 	finally:
 		session.close()
 
@@ -238,7 +238,7 @@ def test_bash_ctrl_r_over_fzf_keeps_every_shell_command_key(home, mode):
 	try:
 		assert printed(session, 'ls\x12') == 'FZF'
 		session.send('\x15mssh gpu[01-16] \x12')
-		assert 'commands for' in session.read_until(b'commands for', 10)
+		assert 'commands for' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		if mode == 'vi':
 			# vi command mode keeps fzf's Ctrl-R: the glue leaves that keymap alone
@@ -283,9 +283,9 @@ def test_bash_picker_draws_again_when_the_terminal_is_resized(home):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		session.resize(24, 50)
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		rows = rendered(session).lines()
 		box = rows[1:13]
 		# bash 4.2/4.3: no prompt beside the menu (docs/limitations.md), but 4.2 redraws its line itself on a resize: when that
@@ -298,7 +298,7 @@ def test_bash_picker_draws_again_when_the_terminal_is_resized(home):
 		session.send('\x1b')
 		assert printed(session, '') == 'mssh gpu[01-16] '
 		session.send('\x15echo "[$COLUMNS]"\r')
-		session.read_until(b'[50]', 10)
+		session.read_until(b'[50]')
 		rows = settled(session)
 		assert not [row for row in rows if 'filter' in row or '│' in row or '|' in row] and rows[-2:] == ['[50]', '@@READY@@'], rows
 	finally:
@@ -321,7 +321,7 @@ def test_bash_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
 		# the engine is ready by now
 		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
 		session.send('\r')
-		assert re.search(r'[\r\n]aa2\r\n', session.read_until(b'aa2\r\n', 10))
+		assert re.search(r'[\r\n]aa2\r\n', session.read_until(b'aa2\r\n'))
 		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
 	finally:
 		session.close()
@@ -339,7 +339,7 @@ def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
 		session.send('\x12')
 		time.sleep(0.3)
 		session.send('\x03')
-		session.read_until(b'@@READY@@ mssh gpu[01-16] ', 5)
+		session.read_until(b'@@READY@@ mssh gpu[01-16] ', 20)
 		assert time.monotonic() - started < delay
 		rows = [row for row in screen(session) if row]
 		assert rows == ['@@READY@@ mssh gpu[01-16]'], rows
@@ -358,26 +358,26 @@ def test_bash_shell_options_do_not_break_ctrl_r_or_the_editor(home, option):
 	try:
 		# a path to mssh: space is a space, Ctrl-R the picker
 		session.send('/x/mssh gpu[01-16] \x12')
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		assert words(printed(session, '\r')) == ['/x/mssh'] + PICKED[1:]
 		if bash_version(env) >= 44:
 			session.send('\x15mssh gp')
-			session.read_until(b'nvidia-smi', 10)
+			session.read_until(b'nvidia-smi')
 			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 		# never ready in time: Ctrl-R searches as before, space is a space
 		session.send('\x15MSSH_COMPLETE_START_TIMEOUT=0\r/x/mssh gpu[01-16] \x12aa')
 		read_until_shown(session, 'echo aa2', 10)
 		assert reverse_search_found(session, 'echo aa2'), screen(session)
 		session.send('\x07\x15mssh xy\r')
-		assert '@@RAN[xy]@@' in session.read_until(b'@@RAN[xy]@@', 10)
+		assert '@@RAN[xy]@@' in session.read_until(b'@@RAN[xy]@@')
 		session.send('echo "[alive]"\r')
-		assert '[alive]\r\n' in session.read_until(b'[alive]\r\n', 10)
+		assert '[alive]\r\n' in session.read_until(b'[alive]\r\n')
 		# the option is still the operator's
 		name = {'set -e': 'errexit', 'set -u': 'nounset'}.get(option, option.split()[-1])
 		start = len(session.output)
 		session.send('if shopt -qo {0} 2>/dev/null || shopt -q {0} 2>/dev/null; then echo "@@OPT""=on@@"; else echo "@@OPT""=off@@"; fi\r'.format(name))
-		session.read_until(b'@@OPT=o', 10)
-		session.read_until(b'@@READY@@', 5)
+		session.read_until(b'@@OPT=o')
+		session.read_until(b'@@READY@@', 20)
 		assert '@@OPT=on@@' in session.output[start:].decode('utf-8', 'replace')
 	finally:
 		session.close()
@@ -390,11 +390,11 @@ def test_bash_ctrl_r_keeps_the_last_argument(home):
 		session.send('true lastarg\r')
 		time.sleep(0.3)
 		session.send('mssh x\x12')
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		session.send('\x1b')
 		time.sleep(0.3)
 		session.send('\x15echo "[$_]"\r')
-		assert '[lastarg]' in session.read_until(b'[lastarg]', 10)
+		assert '[lastarg]' in session.read_until(b'[lastarg]')
 	finally:
 		session.close()
 
@@ -417,7 +417,7 @@ def ran(session, keys, wait=1.0):
 	session.send(keys)
 	time.sleep(wait)
 	session.send('\r')
-	output = plain(session.read_until(b'@@RAN', 10) + session.read_until(b'@@READY@@', 5))
+	output = plain(session.read_until(b'@@RAN') + session.read_until(b'@@READY@@', 20))
 	found = re.search(r'@@RAN\[.*?\]@@|bash: .*', output)
 	return found.group(0).strip() if found else output
 
@@ -435,7 +435,7 @@ def test_bash_never_inserts_a_bang_bash_would_expand(bang_home):
 		session.send('mssh web2 ')
 		time.sleep(0.3)
 		session.send('\x12')
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		assert ran(session, '\tlegacy\r') == '@@RAN[-su web2 yyold !legacy done!]@@'
 	finally:
 		session.close()
@@ -459,10 +459,10 @@ def test_bash_vi_mode_ctrl_r(home):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15\x12aa\x12\r')
-		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n'))
 	finally:
 		session.close()
 
@@ -484,7 +484,7 @@ def test_taking_the_keys_leaves_the_operators_variables_alone(home):
 		pre='previous=MINE line=MINE keymap=MINE status=MINE')
 	try:
 		session.send('printf "@@%s@@\\n" "VARS:$previous,$line,$keymap,$status"\r')
-		assert '@@VARS:MINE,MINE,MINE,MINE@@' in session.read_until(b'@@\r\n', 10)
+		assert '@@VARS:MINE,MINE,MINE,MINE@@' in session.read_until(b'@@\r\n')
 	finally:
 		session.close()
 
@@ -497,7 +497,7 @@ def test_editor_needs_bash_4_4(home):
 	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1'), glue_file(home, 'bash'))
 	try:
 		session.send('bind -p | grep -F \'" ": \'\r')
-		assert '" ": self-insert' in session.read_until(b'self-insert', 10)
+		assert '" ": self-insert' in session.read_until(b'self-insert')
 	finally:
 		session.close()
 
@@ -530,7 +530,7 @@ def test_editor_draws_in_the_locale_bash_measured_not_the_exported_one(home):
 		session.send('mssh ')
 		time.sleep(0.5)
 		session.send('gpu[01-16] \x12')
-		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
+		assert 'type to filter - ' in session.read_until(b'type to filter')
 	finally:
 		session.close()
 
@@ -541,7 +541,7 @@ def test_editor_keeps_passwords_out_of_the_debug_log(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh -p hunter2 host1 uptime\r')
-		assert '@@RAN[-p hunter2 host1 uptime]@@' in session.read_until(b'@@RAN[-p hunter2 host1 uptime]@@', 15)
+		assert '@@RAN[-p hunter2 host1 uptime]@@' in session.read_until(b'@@RAN[-p hunter2 host1 uptime]@@', 60)
 	finally:
 		session.close()
 	path = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
@@ -554,7 +554,7 @@ def test_editor_runs_pasted_lines_in_order(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh host1 uptime\rmssh host2 uptime\r')
-		output = session.read_until(b'@@RAN[host2 uptime]@@', 15)
+		output = session.read_until(b'@@RAN[host2 uptime]@@', 60)
 		assert '@@RAN[host1 uptime]@@' in output and '@@RAN[host2 uptime]@@' in output
 		assert output.index('@@RAN[host1 uptime]@@') < output.index('@@RAN[host2 uptime]@@')
 		assert 'not found' not in output
@@ -569,7 +569,7 @@ def test_editor_space_keeps_the_last_argument(home):
 		session.send('true lastarg\r')
 		time.sleep(0.5)
 		session.send('echo "[$_]"\r')
-		assert '[lastarg]' in session.read_until(b'[lastarg]', 10)
+		assert '[lastarg]' in session.read_until(b'[lastarg]')
 	finally:
 		session.close()
 
@@ -582,9 +582,9 @@ def test_editor_space_keeps_magic_space_when_the_glue_loads_again(home):
 	try:
 		for _ in range(2):
 			session.send('. {}\r'.format(home / 'glue.bash'))
-			session.read_until(b'@@READY@@', 10)
+			session.read_until(b'@@READY@@')
 		session.send('echo hi\r')
-		session.read_until(b'@@READY@@', 10)
+		session.read_until(b'@@READY@@')
 		# space after !! expands it, as magic-space does
 		assert printed(session, 'echo !! ') == 'echo echo hi '
 	finally:
@@ -599,7 +599,7 @@ def test_editor_shows_and_accepts_the_suggestion(home, debug):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gp')
-		assert '\x1b[38;5;244mu[01-16] "nvidia-smi"' in session.read_until(b'nvidia-smi', 10)
+		assert '\x1b[38;5;244mu[01-16] "nvidia-smi"' in session.read_until(b'nvidia-smi')
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 	finally:
 		session.close()
@@ -614,7 +614,7 @@ def test_editor_marks_an_unknown_host_and_says_why(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode()))
 	finally:
 		session.close()
 
@@ -625,7 +625,7 @@ def test_editor_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
 	try:
 		session.send('mssh node01 journalctl -u slurmd')
 		reason = "⚠ -u is mssh's --username here — quote the command: 'journalctl -u slurmd'"
-		assert reason in plain(session.read_until(b'slurmd\'', 10))
+		assert reason in plain(session.read_until(b'slurmd\''))
 		assert underlined(session, '-u')
 	finally:
 		session.close()
@@ -638,7 +638,7 @@ def test_editor_marks_an_mssh_option_ending_the_line_before_enter(home):
 	try:
 		session.send('mssh node01 df -h')
 		reason = "⚠ -h is mssh's --help here — quote the command: 'df -h'"
-		assert reason in plain(session.read_until(b"df -h'", 10))
+		assert reason in plain(session.read_until(b"df -h'"))
 		assert underlined(session, '-h')
 	finally:
 		session.close()
@@ -652,9 +652,9 @@ def test_editor_enter_runs_what_was_typed(home, debug):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.send('\r')
-		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@', 10)
+		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@')
 	finally:
 		session.close()
 	if debug == '0':
@@ -666,7 +666,7 @@ def test_editor_keeps_a_burst_of_type_ahead(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gpu[01-16] "nvidia-smi"\r')
-		assert '@@RAN[gpu[01-16] nvidia-smi]@@' in session.read_until(b'@@RAN', 10) + session.read_until(b'@@READY@@', 10)
+		assert '@@RAN[gpu[01-16] nvidia-smi]@@' in session.read_until(b'@@RAN') + session.read_until(b'@@READY@@')
 	finally:
 		session.close()
 
@@ -712,9 +712,9 @@ def test_editor_enter_sent_as_csi_u_runs_the_line(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.send('\x1b[13u')
-		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@', 10)
+		assert '@@RAN[gp]@@' in session.read_until(b'@@RAN[gp]@@')
 	finally:
 		session.close()
 
@@ -739,7 +739,7 @@ def test_editor_ctrl_c_leaves_the_line_on_screen(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gpu017 upt')
-		session.read_until('unknown host'.encode(), 10)
+		session.read_until('unknown host'.encode())
 		time.sleep(0.3)
 		session.send('\x03')
 		rows = settled(session)
@@ -754,15 +754,15 @@ def test_editor_draws_again_when_the_terminal_is_resized(home):
 	session = editor_session(env, home)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.resize(24, 30)
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		grid = rendered(session)
 		assert grid.lines()[:3] == ['@@READY@@ mssh gpu[01-16] "nvi', 'dia-smi"', ''] and grid.cursor == (0, 17)
 		session.send('\x03')
-		session.read_until(b'^C', 10)
+		session.read_until(b'^C')
 		session.send('echo "[$COLUMNS]"\r')
-		session.read_until(b'[30]', 10)
+		session.read_until(b'[30]')
 		rows = settled(session)
 		assert rows[-4:] == ['@@READY@@ mssh gp^C', '@@READY@@ echo "[$COLUMNS]"', '[30]', '@@READY@@'], rows
 	finally:
@@ -778,12 +778,12 @@ def test_editor_goes_on_without_an_engine_slow_to_start(home):
 	try:
 		started = time.monotonic()
 		session.send('mssh host1 uptime\r')
-		assert '@@RAN[host1 uptime]@@' in session.read_until(b'@@RAN[host1 uptime]@@', 10)
+		assert '@@RAN[host1 uptime]@@' in session.read_until(b'@@RAN[host1 uptime]@@')
 		assert time.monotonic() - started < delay - 0.5
 		# the editor is ready by now
 		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
 		session.send('echo "[ok]"\r')
-		assert '[ok]\r\n' in session.read_until(b'[ok]\r\n', 10)
+		assert '[ok]\r\n' in session.read_until(b'[ok]\r\n')
 	finally:
 		session.close()
 
@@ -931,7 +931,7 @@ def shell_ignores_alarm(session):
 	session.send('\x15')
 	time.sleep(0.3)
 	session.send('echo "@@D[$(( (16#$(awk \'/^SigIgn/{print $2}\' /proc/$$/status) >> 13) & 1 ))|$(trap -p ALRM)]@""@"\r')
-	found = re.findall(r'@@D\[(\d)\|(.*?)\]@@', session.read_until(b']@@', 10))
+	found = re.findall(r'@@D\[(\d)\|(.*?)\]@@', session.read_until(b']@@'))
 	return found[-1] if found else None
 
 
@@ -964,8 +964,8 @@ def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
 		session.send('mssh ')
 		time.sleep(0.3)
 		session.send('\x03')
-		session.read_until(b'^C', 5)
-		session.read_until(b'@@READY@@', 5)
+		session.read_until(b'^C', 20)
+		session.read_until(b'@@READY@@', 20)
 		rows = [row for row in screen(session) if row]
 		assert rows == ['@@READY@@ mssh ^C', '@@READY@@'], rows
 		# the editor is ready by now
@@ -982,7 +982,7 @@ def test_editor_ctrl_r_opens_the_picker(home):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		session.send('\r')
 		time.sleep(0.3)
 		assert words(printed(session, '')) == PICKED
@@ -997,7 +997,7 @@ def test_editor_without_colours_still_edits(home):
 		session.send('mssh gp')
 		time.sleep(0.5)
 		session.send('u\r')
-		output = session.read_until(b'@@RAN[gpu]@@', 10)
+		output = session.read_until(b'@@RAN[gpu]@@')
 		assert '@@RAN[gpu]@@' in output
 		assert '\x1b[38;5;244m' not in output and '\x1b[2m' not in output
 	finally:
@@ -1022,7 +1022,7 @@ def test_blesh_suggests_from_the_engine(home):
 	session = blesh_session(home, env, glue_file(home, 'bash'))
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		# only the engine knows the command: the shell history is about echo
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 	finally:
@@ -1039,7 +1039,7 @@ def test_blesh_grey_text_keeps_its_limit_when_ble_sh_measured_a_busy_machine(hom
 	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='3000'), glue_file(home, 'bash'), extra=busy)
 	try:
 		session.send('mssh gp')
-		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 20)
+		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 80)
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 	finally:
 		session.close()
@@ -1056,7 +1056,7 @@ def test_blesh_grey_text_goes_on_with_a_limit_that_is_no_number_of_milliseconds(
 	try:
 		session.send('mssh gp')
 		if grey:
-			shown = session.read_until(b'nvidia-smi', 20)
+			shown = session.read_until(b'nvidia-smi', 80)
 			assert 'nvidia-smi' in shown, shown
 			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 		else:
@@ -1127,10 +1127,10 @@ def test_blesh_a_cancelled_query_does_not_write_into_the_next_answer(home):
 		session.send('mssh gp')
 		end = time.monotonic() + 20
 		while not (folder / 'older-running').exists() and time.monotonic() < end:
-			session.read_until(b'@@never@@', 0.05)
+			session.read_for(0.05)
 		assert (folder / 'older-running').exists()
 		session.send('u')
-		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 20)
+		assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 80)
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 	finally:
 		session.close()
@@ -1142,11 +1142,11 @@ def test_blesh_marks_an_unknown_host_and_says_why(home):
 	session = blesh_session(home, env, glue_file(home, 'bash'))
 	try:
 		session.send('mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 60))
 		# the reason line is drawn at once, the underline when ble.sh ends its idle pass, after the grey text's queries
 		end = time.monotonic() + 20
 		while not underlined(session, 'gpu017') and time.monotonic() < end:
-			session.read_until(b'@@never@@', 0.2)
+			session.read_for(0.2)
 		assert underlined(session, 'gpu017')
 	finally:
 		session.close()
@@ -1164,7 +1164,7 @@ def test_blesh_asks_for_the_warnings_again_when_the_first_query_misses_its_limit
 	session = blesh_session(home, dict(env, MSSH_COMPLETE_GHOST_TIMEOUT='2000'), glue_file(home, 'bash', command=[str(engine)]))
 	try:
 		session.send('mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 60))
 		# it did run into the limit first
 		assert (home / 'once-slow-engine.once').exists()
 	finally:
@@ -1179,7 +1179,7 @@ def test_blesh_warning_appears_when_the_prober_answers(home):
 		time.sleep(0.2)
 		known(env, gpu099='invalid')
 		# no key pressed: the glue asks again while the prober works
-		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 15)
+		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 60)
 	finally:
 		session.close()
 
@@ -1193,13 +1193,13 @@ def test_blesh_keeps_suggesting_and_warning_with_noclobber(home):
 	try:
 		for host in ('gpu017', 'gpu018'):
 			session.send('mssh gp')
-			assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 10)
+			assert 'nvidia-smi' in session.read_until(b'nvidia-smi')
 			session.send('\x03')
-			session.read_until(b'@@READY@@', 10)
+			session.read_until(b'@@READY@@')
 			session.send('mssh %s ' % host)
-			assert host + ': unknown host' in plain(session.read_until(b'unknown host', 15))
+			assert host + ': unknown host' in plain(session.read_until(b'unknown host', 60))
 			session.send('\x03')
-			session.read_until(b'@@READY@@', 10)
+			session.read_until(b'@@READY@@')
 		assert b'cannot overwrite' not in session.output
 	finally:
 		session.close()
@@ -1215,7 +1215,7 @@ def test_blesh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, pre):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		# the second Ctrl-R of ble.sh's own search finds the older match
 		session.send('\x15\x12aa')
@@ -1286,7 +1286,7 @@ def test_zsh_suggests_and_right_arrow_accepts(home, zas, after):
 	session = zsh_with(env, home, zas, after)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		# zsh escapes the glob characters
 		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
 	finally:
@@ -1300,9 +1300,9 @@ def test_zsh_hands_grey_text_to_zsh_autosuggestions_loaded_later(home):
 	try:
 		# a second prompt: zsh-autosuggestions has started
 		session.send('true\r')
-		session.read_until(b'@@READY@@', 10)
+		session.read_until(b'@@READY@@')
 		session.send('mssh gp')
-		drawn = session.read_until(b'nvidia-smi', 10)
+		drawn = session.read_until(b'nvidia-smi')
 		assert 'nvidia-smi' in drawn and 'date' not in drawn
 		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
 	finally:
@@ -1354,7 +1354,7 @@ def test_zsh_marks_an_unknown_host_and_says_why(home, zas):
 	session = zsh_with(env, home, zas)
 	try:
 		session.send('mssh gpu017 ')
-		output = session.read_until('unknown host'.encode(), 10)
+		output = session.read_until('unknown host'.encode())
 		assert '⚠ gpu017: unknown host' in plain(output)
 		# the host is underlined
 		assert underlined(session, 'gpu017')
@@ -1370,14 +1370,14 @@ def test_zsh_suggests_warns_and_picks_without_compinit(home):
 	session = zsh_with(env, home, compinit='')
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		assert words(printed(session, RIGHT)) == PICKED
 		session.send('\x15mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode()))
 		session.send('\x15mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 	finally:
 		session.close()
 
@@ -1388,7 +1388,7 @@ def test_zsh_marks_a_remote_command_word_mssh_reads_as_its_own_option(home):
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh node01 df -h ')
-		output = session.read_until(b'df -h\'', 10)
+		output = session.read_until(b'df -h\'')
 		assert "⚠ -h is mssh's --help here — quote the command: 'df -h'" in plain(output)
 		assert underlined(session, '-h')
 	finally:
@@ -1404,7 +1404,7 @@ def test_zsh_warning_appears_when_the_prober_answers(home):
 		time.sleep(0.2)
 		known(env, gpu099='invalid')
 		# no key pressed: the glue asks again while the prober works
-		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode(), 10)
+		assert 'gpu099: unknown host' in session.read_until('unknown host'.encode())
 	finally:
 		session.close()
 
@@ -1416,12 +1416,12 @@ def test_zsh_warning_goes_away_when_the_host_is_fixed(home):
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh gpu017 ')
-		assert 'unknown host' in session.read_until('unknown host'.encode(), 10)
+		assert 'unknown host' in session.read_until('unknown host'.encode())
 		session.send('\x7f' * 7 + 'gpu17 ')
-		session.read_until(b'gpu17 ', 10)
+		session.read_until(b'gpu17 ')
 		# until the shell is done: the marks and the reason stay until the answer for the line as it is now
 		session.wait_idle(20, window=0.5)
-		session.read_until(b'@@never@@', 0.2)
+		session.read_for(0.2)
 		assert not [row for row in screen(session) if 'unknown host' in row]
 	finally:
 		session.close()
@@ -1453,14 +1453,14 @@ def test_zsh_underline_goes_away_when_the_host_is_fixed(home, typed, fixes, line
 	session = zsh_with(env, home)
 	try:
 		session.send(typed)
-		session.read_until('unknown host'.encode(), 10)
+		session.read_until('unknown host'.encode())
 		time.sleep(0.5)
 		for keys in fixes:
 			session.send(keys)
 			time.sleep(0.3)
 		# until the shell is done: the marks stay until the answer for the line as it is now
 		session.wait_idle(20, window=0.5)
-		session.read_until(b'@@never@@', 0.2)
+		session.read_for(0.2)
 		assert not [style for style in line_styles(session, line) if '4' in style.split(';')], screen(session)[:2]
 	finally:
 		session.close()
@@ -1473,12 +1473,12 @@ def test_zsh_accepted_grey_text_is_not_grey(home):
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.send('u')
 		time.sleep(0.5)
 		session.send(RIGHT)
 		time.sleep(0.5)
-		session.read_until(b'@@never@@', 0.2)
+		session.read_for(0.2)
 		assert not [style for style in line_styles(session, 'nvidia-smi') if '244' in style.split(';')]
 	finally:
 		session.close()
@@ -1507,10 +1507,10 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(hom
 	session = zsh_with(env, home, zas, after, extra=FAKE_MSSH)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		session.send(keys + '\r')
-		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[', 10) + session.read_until(b']@@', 10)))
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
 		assert len(ran) == 1, ran
 		line = ran[0].replace('\\', '')
 		# what was typed with the text of one answer at most, never a second one on top
@@ -1528,7 +1528,7 @@ def test_zsh_keys_arriving_together_ask_for_the_grey_text_once(home):
 	session = zsh_with(env, home, command=command)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		before = len(recorded_flags(requests).get('ghost', []))
 		session.send('\x15mssh gpu[01-16] ')
@@ -1549,7 +1549,7 @@ def test_zsh_an_accept_key_after_ctrl_c_takes_nothing(home, keys):
 	session = zsh_with(env, home, extra='nvidia-smi() {{ : > {}; }}'.format(shlex.quote(str(ran))))
 	try:
 		session.send('mssh gpu[01-16] ')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		session.send('\x03')
 		session.wait_idle(10)
@@ -1570,7 +1570,7 @@ def test_zsh_a_widget_taking_the_grey_text_twice_takes_it_once(home, widget):
 	session = zsh_with(env, home, extra="_twice() {{ {}; }}\nzle -N _twice\nbindkey '^X^T' _twice".format(widget))
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		session.send('\x18\x14')
 		session.wait_idle(10)
@@ -1589,10 +1589,10 @@ def test_zsh_grey_text_comes_back_when_keys_read_together_end_on_the_line_it_was
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		session.send(keys)
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		assert words(printed(session, RIGHT)) == ['mssh', 'gpu[01-16]', 'nvidia-smi']
 	finally:
 		session.close()
@@ -1601,7 +1601,7 @@ def test_zsh_grey_text_comes_back_when_keys_read_together_end_on_the_line_it_was
 def settled(session, quiet=1.0):
 	"""The non-empty rows of the screen once the session printed nothing more for a while."""
 	time.sleep(quiet)
-	session.read_until(b'@@never@@', 0.5)
+	session.read_for(0.5)
 	return [row.rstrip() for row in screen(session) if row.strip()]
 
 
@@ -1620,7 +1620,7 @@ def test_zsh_keys_on_a_warned_line(home, keys, below):
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh gpu017 ')
-		session.read_until('unknown host'.encode(), 10)
+		session.read_until('unknown host'.encode())
 		time.sleep(0.5)
 		session.send(keys)
 		rows = settled(session)
@@ -1753,12 +1753,12 @@ def test_zsh_marks_stay_with_zsh_syntax_highlighting(home, line, move, keys):
 	session = zsh_with(env, home, extra=zsh_syntax_highlighting())
 	try:
 		session.send(line)
-		session.read_until('unknown host'.encode(), 10)
+		session.read_until('unknown host'.encode())
 		session.send(move)
 		time.sleep(1)
 		session.send(keys)
 		time.sleep(0.5)
-		session.read_until(b'@@never@@', 0.2)
+		session.read_for(0.2)
 		assert underlined(session, 'gpu017'), screen(session)[:2]
 	finally:
 		session.close()
@@ -1769,14 +1769,14 @@ def test_zsh_grey_text_stays_grey_with_zsh_syntax_highlighting(home):
 	session = zsh_with(env, home, extra=zsh_syntax_highlighting())
 	try:
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		# Ctrl-L: a key that leaves the line as it is
 		session.send('\x0c')
 		# (not a fixed sleep: on a loaded machine the redraw takes longer. Quiet first, so a repaint that turns it white is seen)
 		session.wait_idle(10, window=0.5)
 		deadline = time.monotonic() + 10
 		while not greyed(session, 'nvidia-smi') and time.monotonic() < deadline:
-			session.read_until(b'@@never@@', 0.2)
+			session.read_for(0.2)
 		assert greyed(session, 'nvidia-smi')
 	finally:
 		session.close()
@@ -1789,7 +1789,7 @@ def test_zsh_alt_f_takes_an_escaped_word_whole(tmp_path):
 	session = zsh_with(env, home)
 	try:
 		session.send('mssh -f m')
-		session.read_until(b'file.txt', 10)
+		session.read_until(b'file.txt')
 		# not 'my\\' with a dangling backslash
 		assert printed(session, '\x1bf') == 'mssh -f my\\ file.txt'
 	finally:
@@ -1806,10 +1806,10 @@ def test_zsh_ctrl_r_opens_the_picker_and_keeps_isearch_elsewhere(home, debug):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15\x12aa\x12\r')
-		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n', 10))
+		assert re.search(r'[\r\n]aa1\r\n', session.read_until(b'aa1\r\n'))
 	finally:
 		session.close()
 	if debug == '0':
@@ -1824,9 +1824,9 @@ def test_zsh_picker_draws_again_when_the_terminal_is_resized(home):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		session.resize(24, 50)
-		session.read_until(b'type to filter', 10)
+		session.read_until(b'type to filter')
 		rows = rendered(session).lines()
 		box = rows[1:13]
 		assert rows[0].startswith('@@READY@@ mssh gpu[01-16]') and 'commands for gpu[01-16]' in box[0] and 'type to filter' in box[-1], rows
@@ -1834,7 +1834,7 @@ def test_zsh_picker_draws_again_when_the_terminal_is_resized(home):
 		session.send('\x1b')
 		assert printed(session, '') == 'mssh gpu[01-16] '
 		session.send('\x15echo "[$COLUMNS]"\r')
-		session.read_until(b'[50]', 10)
+		session.read_until(b'[50]')
 		rows = settled(session)
 		assert not [row for row in rows if 'filter' in row or '│' in row or '|' in row] and rows[-2:] == ['[50]', '@@READY@@'], rows
 	finally:
@@ -1886,7 +1886,7 @@ def test_zsh_says_the_locale_it_runs_in_in_every_request(home, zas):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'type to filter - ' in session.read_until(b'type to filter', 10)
+		assert 'type to filter - ' in session.read_until(b'type to filter')
 		session.send('\x1b')
 		assert printed(session, '') == 'mssh gpu[01-16] '
 		session.send('\x15mssh gp\t')
@@ -1917,7 +1917,7 @@ def test_fish_says_why_a_host_is_unknown_once(home, tmp_path, timeout):
 	session = fish_session(home, env, mc.render_glue('fish-keys', ENGINE))
 	try:
 		session.send('mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode()))
 		# the space was typed, and the same warning is not printed again at the next one
 		assert printed(session, 'uptime ') == 'mssh gpu017 uptime '
 		assert plain(session.output.decode('utf-8', 'replace')).count('gpu017: unknown host') == 1
@@ -1969,7 +1969,7 @@ def test_fish_ctrl_r_opens_the_picker_and_keeps_the_previous_binding(home, debug
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15')
 		assert printed(session, 'ls\x12') == 'FISHPREV'
@@ -1988,13 +1988,13 @@ def test_fish_names_the_locale_it_exports_in_every_request(home):
 	session = fish_session(home, env, mc.render_glue('fish-keys', command), pre=pre)
 	try:
 		session.send('mssh gp\t')
-		session.read_until(b'@@never@@', 1.0)
+		session.read_for(1.0)
 		session.send('x ')
-		session.read_until(b'@@never@@', 1.0)
+		session.read_for(1.0)
 		session.send('\x12')
-		assert 'type to filter' in session.read_until(b'type to filter', 10)
+		assert 'type to filter' in session.read_until(b'type to filter')
 		session.send('\x1b')
-		session.read_until(b'@@never@@', 0.5)
+		session.read_for(0.5)
 	finally:
 		session.close()
 	kinds = recorded_flags(requests)
@@ -2024,7 +2024,7 @@ def test_ctrl_r_goes_on_without_an_engine_slow_to_start(home, shell):
 		started = time.monotonic()
 		if shell == 'zsh':
 			session.send('\x12aa\r')
-			assert re.search(r'[\r\n]aa2\r\n', session.read_until(b'aa2\r\n', 10))
+			assert re.search(r'[\r\n]aa2\r\n', session.read_until(b'aa2\r\n'))
 		else:
 			session.send('\x12')
 			assert printed(session, '') == 'FISHPREV'
@@ -2067,7 +2067,7 @@ def test_a_picker_quick_enough_opens_after_its_start(home, shell):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 40)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 160)
 		assert words(printed(session, '\r')) == PICKED
 	finally:
 		session.close()
@@ -2095,12 +2095,12 @@ def paste_only_filters(session, form):
 	session.send('mssh ')
 	time.sleep(0.5)
 	session.send('\x12')
-	session.read_until(b'type to filter', 10)
+	session.read_until(b'type to filter')
 	session.send(pasted('stor\necho INJECTED\n', form))
 	assert 'stor echo INJECTED' in read_until_shown(session, 'stor echo INJECTED')
 	assert printed(session, '\x1b') == 'mssh '
 	session.send('\x12')
-	session.read_until(b'type to filter', 10)
+	session.read_until(b'type to filter')
 	session.send(pasted('stor\n', form))
 	time.sleep(0.5)
 	assert printed(session, '\r' if form == 'bracketed' else '') == 'mssh storage1 '
@@ -2178,7 +2178,7 @@ def enter_chooses(session, keys):
 	session.send('mssh ')
 	time.sleep(0.5)
 	session.send('\x12')
-	session.read_until(b'type to filter', 10)
+	session.read_until(b'type to filter')
 	session.send('stor')
 	time.sleep(0.3)
 	return printed(session, keys)
@@ -2265,7 +2265,7 @@ def screen_when(session, check, timeout=40.0):
 		rows = [row.rstrip() for row in screen(session) if row.strip()]
 		if check(rows) or time.monotonic() >= end:
 			return rows
-		session.read_until(b'@@never@@', 0.1)
+		session.read_for(0.1)
 
 
 def quiet(session, gap=0.3, timeout=5.0):
@@ -2273,7 +2273,7 @@ def quiet(session, gap=0.3, timeout=5.0):
 	end = time.monotonic() + timeout
 	while time.monotonic() < end:
 		size = len(session.output)
-		session.read_until(b'@@never@@', gap)
+		session.read_for(gap)
 		if len(session.output) == size:
 			return
 
@@ -2303,7 +2303,7 @@ def picker_shell(shell, env, home):
 def check_warned_picker(session):
 	"""Open the picker on WARNED (typed already) and check the warnings at its top."""
 	session.send('\x12')
-	session.read_until(b'type to filter', 10)
+	session.read_until(b'type to filter')
 	grid = rendered(session)
 	lines = grid.lines()
 	top = [row for row, line in enumerate(lines) if line.startswith('┌ commands for gpu017 ')]
@@ -2412,16 +2412,16 @@ def test_bash_keys_ignore_the_operators_aliases_and_functions(home, where):
 		session.send(' mssh gpu[01-16] ')
 		time.sleep(0.3)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		if editor:
 			# the mssh line editor: grey text, and why a word is marked
 			session.send('\x15mssh gp')
 			grey = '\x1b[38;5;244mu[01-16] "nvidia-smi"'
-			assert grey in session.read_until(grey.encode(), 10)
+			assert grey in session.read_until(grey.encode())
 			assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 			session.send('\x15mssh gpu017 ')
-			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode()))
 		output = plain(session.output.decode('utf-8', 'replace'))
 		assert 'not found' not in output and 'GREP_OPTIONS' not in output
 	finally:
@@ -2436,15 +2436,15 @@ def test_blesh_ignores_the_operators_aliases_and_functions(home, where):
 	try:
 		assert words(session.line_after('mssh -u r')) == ['mssh', '-u', 'root']
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		assert printed(session, RIGHT) == 'mssh gpu[01-16] "nvidia-smi"'
 		session.send('\x15mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 15))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 60))
 	finally:
 		session.close()
 
@@ -2458,15 +2458,15 @@ def test_zsh_ignores_the_operators_aliases_and_functions(home, where):
 	try:
 		assert session.line_after('mssh -u r') == 'mssh -u root '
 		session.send('mssh gp')
-		session.read_until(b'nvidia-smi', 10)
+		session.read_until(b'nvidia-smi')
 		assert words(printed(session, RIGHT)) == PICKED
 		session.send('\x15mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		assert words(printed(session, '\r')) == PICKED
 		session.send('\x15mssh gpu017 ')
-		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+		assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode()))
 	finally:
 		session.close()
 
@@ -2497,7 +2497,7 @@ def test_fish_ignores_the_operators_functions(home, where):
 		assert words(printed(session, '\x15mssh h "echo th\t')) == ['mssh', 'h', 'echo three']
 		if fish_major() >= 4:
 			session.send('\x15mssh gpu017 ')
-			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode(), 10))
+			assert '⚠ gpu017: unknown host' in plain(session.read_until('unknown host'.encode()))
 	finally:
 		session.close()
 
@@ -2510,11 +2510,11 @@ def test_bash_ctrl_c_right_after_ctrl_r_leaves_the_terminal_in_readline_s_mode(t
 	session = bash_session(home, env, glue_file(home, 'bash'))
 	try:
 		session.send('mssh x')
-		session.read_until(b'@@never@@', 0.2)
+		session.read_for(0.2)
 		session.send('\x12')
 		time.sleep(delay)
 		session.send('\x03')
-		session.read_until(b'@@never@@', 0.8)
+		session.read_for(0.8)
 		assert not termios.tcgetattr(session.fd)[3] & termios.ICANON
 	finally:
 		session.close()

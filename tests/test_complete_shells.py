@@ -62,9 +62,9 @@ def test_bash_ignores_the_heal_a_shell_of_6_38_left_in_an_exported_prompt_comman
 	session = bash_session(home, dict(env, PROMPT_COMMAND='_mssh_complete_heal;history -a'), glue_file(home, 'bash'), False)
 	try:
 		session.send('true\r')
-		session.read_until(b'@@READY@@', 5)
+		session.read_until(b'@@READY@@', 20)
 		session.send('true\r')
-		session.read_until(b'@@READY@@', 5)
+		session.read_until(b'@@READY@@', 20)
 	finally:
 		session.close()
 	assert b'command not found' not in session.output
@@ -180,10 +180,10 @@ def listed_after(session, typed):
 	start = len(session.output)
 	session.send(typed + '\t\t')
 	session.wait_idle()
-	session.read_until(b'@@never@@', 0.5)
+	session.read_for(0.5)
 	text = session.output[start:].decode('utf-8', 'replace')
 	session.send('\x15')
-	session.read_until(b'@@never@@', 0.3)
+	session.read_for(0.3)
 	return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text).split()
 
 
@@ -510,14 +510,14 @@ def completed_and_listed(session, typed, quoted=False):
 	line = session.line_after(typed)
 	# what the line print binding ends with (its newline) is not the list
 	session.wait_idle()
-	session.read_until(b'@@never@@', 0.3)
+	session.read_for(0.3)
 	start = len(session.output)
 	session.send(typed + '\t\t')
 	session.wait_idle()
-	session.read_until(b'@@never@@', 0.5)
+	session.read_for(0.5)
 	text = session.output[start:].decode('utf-8', 'replace')
 	session.send('\x15')
-	session.read_until(b'@@never@@', 0.3)
+	session.read_for(0.3)
 	# readline lists on the lines below the one it redraws (with backspaces and a bell where it redraws), and
 	# redraws the prompt and the line after the list
 	rows = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', ' ', text).split('\r\n')[1:-1]
@@ -1028,7 +1028,7 @@ def test_bash_keeps_posix_mode_after_a_tab(tmp_path):
 		session.send('mssh h ls zzp\t')
 		session.wait_idle()
 		session.send('\x15echo "posix=$(shopt -oq posix && echo on || echo off)="\r')
-		assert 'posix=on=' in session.read_until(b'posix=on=', 10)
+		assert 'posix=on=' in session.read_until(b'posix=on=')
 	finally:
 		session.close()
 
@@ -1050,7 +1050,7 @@ def test_bash_leaves_posixly_correct_as_it_was_after_a_tab(tmp_path, setting, sh
 		session.send('mssh h ls zzp\t')
 		session.wait_idle()
 		session.send('\x15echo "posix=$(shopt -oq posix && echo on || echo off)= var=$(declare -p POSIXLY_CORRECT 2>&1)="\r')
-		assert 'posix=on= var={}='.format(shown) in session.read_until(b'var=declare', 10) + session.read_until(b'"=', 10)
+		assert 'posix=on= var={}='.format(shown) in session.read_until(b'var=declare') + session.read_until(b'"=')
 	finally:
 		session.close()
 
@@ -1084,7 +1084,7 @@ def test_bash_gets_posix_mode_back_after_a_ctrl_c_cut_a_tab_short(tmp_path, sett
 		session.send('mssh h ls zzp\t')
 		session.wait_idle()
 		session.send('\x15echo "posix=$(shopt -oq posix && echo on || echo off)= var=$(declare -p POSIXLY_CORRECT 2>&1)="\r')
-		got = session.read_until(b'var=declare', 10) + session.read_until(b'"=', 10)
+		got = session.read_until(b'var=declare') + session.read_until(b'"=')
 		assert 'posix=on= var=' in got and ('declare -x' in got) == setting.startswith('export'), got
 	finally:
 		session.close()
@@ -1105,7 +1105,8 @@ def test_the_guard_turns_posix_mode_off_for_a_call_on_bash_before_5_1_only(tmp_p
 
 def test_bash_below_4_registers_nothing(tmp_path):
 	# macOS's /bin/bash is 3.2: the glue needs mapfile, local -A and ${var,,}, and printed "mapfile: command not found" four
-	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: a bash 3.2 image)
+	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: the matrix's bash3.2 image,
+	# where a newer bash fails it)
 	if subprocess.run([require_shell('bash'), '-c', '(( BASH_VERSINFO[0] < 4 ))']).returncode:
 		pytest.skip('bash is 4 or newer')
 	env, home = make_home(tmp_path, [])
@@ -2794,7 +2795,7 @@ def nocasematch(session):
 		found = re.search(rb'@@NOCASE=(on|off)@@', session.output[start:])
 		if found:
 			return found.group(1).decode()
-		session.read_until(b'@@NOCASE=', 0.1)
+		session.read_until(b'@@NOCASE=', 0.4)
 	return None
 
 
@@ -3735,7 +3736,7 @@ def test_fish_without_timeout_shows_nothing_but_the_completion(setup, tmp_path, 
 		# fish reports ended background jobs before its next prompt
 		session.send('\r')
 		session.read_until(b'@@READY@@')
-		session.read_until(b'@@never@@', 1.0)
+		session.read_for(1.0)
 		shown = session.output[start:].decode('utf-8', 'replace').lower()
 		assert [message for message in FISH_MESSAGES if message in shown] == []
 	finally:
@@ -4663,7 +4664,7 @@ def test_bash_tab_on_an_mssh_line_leaves_the_auto_logout_of_tmout(tmp_path, type
 	session = bash_session(home, env, glue_file(home, 'bash'), bash_completion=False, extra="cd '{}'; TMOUT=2".format(work))
 	try:
 		session.send(typed + '\t')
-		output = session.read_until(b'auto-logout', 8)
+		output = session.read_until(b'auto-logout', 32)
 		assert 'auto-logout' in output, output
 	finally:
 		session.close()
@@ -4676,7 +4677,7 @@ def test_bash_the_first_prompt_leaves_the_auto_logout_of_tmout(tmp_path, editor)
 	env, home = make_home(tmp_path, [])
 	session = bash_session(home, dict(env, MSSH_COMPLETE_EDITOR=editor), glue_file(home, 'bash'), bash_completion=False, extra='TMOUT=2')
 	try:
-		output = session.read_until(b'auto-logout', 8)
+		output = session.read_until(b'auto-logout', 32)
 		assert 'auto-logout' in output, output
 	finally:
 		session.close()
@@ -4696,7 +4697,7 @@ def test_bash_a_slow_engine_ends_tab_quietly(tmp_path, extra):
 		extra="cd '{}'; {}".format(work, extra))
 	try:
 		session.send('mssh zzp\t')
-		output = session.read_until(b'zzplain', 5)
+		output = session.read_until(b'zzplain', 20)
 		assert 'zzplain' in output and 'Alarm' not in output and 'Terminated' not in output, output
 	finally:
 		session.close()
@@ -4711,7 +4712,7 @@ def test_bash_tab_sends_the_shell_s_history_to_the_engine(tmp_path):
 	engine.chmod(0o755)
 	session = bash_session(home, env, glue_file(home, 'bash', [str(engine)]), bash_completion=False)
 	try:
-		session.send("echo zz-from-history\n"); session.read_until(b"@@READY@@", 3)
+		session.send("echo zz-from-history\n"); session.read_until(b"@@READY@@", 12)
 		session.send('mssh x\t')
 		for _ in range(40):
 			time.sleep(0.05)

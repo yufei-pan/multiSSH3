@@ -61,7 +61,7 @@ def test_blesh_suggests_our_candidates_while_typing(setup):
 			session.send(char)
 			time.sleep(0.1)
 		# Right takes what is shown: the grey text comes after the warnings query, seconds after the last key on a busy machine
-		assert 'ia-smi' in session.read_until(b'ia-smi', 20)
+		assert 'ia-smi' in session.read_until(b'ia-smi', 80)
 		assert session.line_after('', keys='\x1b[C') == 'mssh gpu[01-16] "nvidia-smi" '
 	finally:
 		session.close()

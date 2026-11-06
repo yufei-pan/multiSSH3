@@ -94,7 +94,7 @@ def line_after(session, keys, wait=1.0):
 	session.send(keys)
 	time.sleep(wait)
 	session.send(session.print_key)
-	text = session.read_until(b']@@', 10)
+	text = session.read_until(b']@@')
 	start = text.rfind('@@LINE[')
 	end = text.find(']@@', start)
 	session.send('\x15')
@@ -121,21 +121,21 @@ def test_zsh_works_whatever_options_the_operator_set(tmp_path, option):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
 		session.send('\x12')
-		assert 'commands for gpu[01-16]' in session.read_until(b'commands for', 10)
+		assert 'commands for gpu[01-16]' in session.read_until(b'commands for')
 		picked = line_after(session, '\r')
 		assert picked is not None and [token.text for token in mc.lex(picked)] == ['mssh', 'gpu[01-16]', 'nvidia-smi']
 		if option != 'sh_glob' and zsh_version() >= (5, 3):
 			# grey text and warnings (zsh 5.3 and later; zsh's add-zle-hook-widget finds no hooks under
 			# sh_glob: see the glue)
 			session.send('mssh gp')
-			assert 'nvidia-smi' in session.read_until(b'nvidia-smi', 10)
+			assert 'nvidia-smi' in session.read_until(b'nvidia-smi')
 			session.send('\x15mssh gpu017 ')
-			assert 'unknown host' in plain(session.read_until(b'unknown host', 10))
+			assert 'unknown host' in plain(session.read_until(b'unknown host'))
 			session.send('\x15')
 		# the shell is still there, and the glue printed no error on the way (zsh names the file, eval or
 		# function; before 5.9, zsh's completion system says `_main_complete: parse error` under sh_glob)
 		session.send('print -r -- @@ALIVE@@\r')
-		assert '@@ALIVE@@\r\n' in session.read_until(b'@@ALIVE@@\r\n', 10)
+		assert '@@ALIVE@@\r\n' in session.read_until(b'@@ALIVE@@\r\n')
 		shown = plain(session.output.decode('utf-8', 'replace'))
 		for error in ('glue.zsh:', '(eval):', '_mssh', 'No such widget', 'command not found'):
 			assert error not in shown

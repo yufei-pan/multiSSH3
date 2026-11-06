@@ -168,25 +168,37 @@ class Session(object):
 		# (where in output, rows, columns) for each resize
 		self.resizes = []
 
-	def read_until(self, marker, timeout=10.0):
-		'''Read until marker (bytes) shows up after what was read so far; return the new output.'''
+	def _read(self, wait):
+		'''Add what the shell wrote within wait seconds to output; False once it ended.'''
+		ready, _, _ = select.select([self.fd], [], [], wait)
+		if not ready:
+			return True
+		try:
+			chunk = os.read(self.fd, 65536)
+		except OSError:
+			return False
+		self.output += chunk
+		return bool(chunk)
+
+	def read_until(self, marker, timeout=40.0):
+		'''Read until marker (bytes) shows up after what was read so far, for timeout seconds at most; return the new output.'''
 		start = len(self.output)
-		end = time.monotonic() + (timeout if marker == b'@@never@@' else timeout * 4)
-		while marker not in self.output[start:] and time.monotonic() < end:
-			ready, _, _ = select.select([self.fd], [], [], 0.05)
-			if ready:
-				try:
-					chunk = os.read(self.fd, 65536)
-				except OSError:
-					break
-				if not chunk:
-					break
-				self.output += chunk
+		end = time.monotonic() + timeout
+		while marker not in self.output[start:] and time.monotonic() < end and self._read(0.05):
+			pass
+		return self.output[start:].decode('utf-8', 'replace')
+
+	def read_for(self, seconds):
+		'''Read for seconds, whatever comes; return the new output.'''
+		start = len(self.output)
+		end = time.monotonic() + seconds
+		while time.monotonic() < end and self._read(0.05):
+			pass
 		return self.output[start:].decode('utf-8', 'replace')
 
 	def resize(self, rows, columns):
 		'''Change the terminal's size: the kernel sends SIGWINCH to what runs in it. Read what was drawn first.'''
-		self.read_until(b'@@never@@', 0.3)
+		self.read_for(0.3)
 		self.resizes.append((len(self.output), rows, columns))
 		fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
 
@@ -219,7 +231,7 @@ class Session(object):
 		since, seen = None, None
 		while time.monotonic() < end:
 			# what the shell writes meanwhile is read, so that it never waits on a full terminal
-			self.read_until(b'@@never@@', 0.05)
+			self.read_for(0.05)
 			now = self._busy()
 			if now is None or now[0] != 'S' or now[2] or now != seen:
 				since, seen = time.monotonic(), now
@@ -230,7 +242,7 @@ class Session(object):
 	def send(self, data):
 		os.write(self.fd, data.encode('utf-8') if isinstance(data, str) else data)
 
-	def line_after(self, typed, keys='\t', timeout=40.0, settle=None):
+	def line_after(self, typed, keys='\t', timeout=160.0, settle=None):
 		'''
 		Type typed, press keys, then return the command line as the test binding (print_key) prints it. The
 		binding waits until the shell is idle (wait_idle) when the session settles (settle overrides), or
@@ -323,10 +335,10 @@ def blesh_session(home, env, glue=None, pre='', extra=''):
 	if not (home / '.cache' / 'blesh').exists():
 		# the first start builds ble.sh's caches and says so: keep that out of the session
 		warm = Session(argv, env, cwd=home, print_key='\x14', settle=True)
-		warm.read_until(b'@@READY@@', timeout=60)
+		warm.read_until(b'@@READY@@', timeout=240)
 		warm.close()
 	session = Session(argv, env, cwd=home, print_key='\x14', settle=True)
-	session.read_until(b'@@READY@@', timeout=60)
+	session.read_until(b'@@READY@@', timeout=240)
 	return session
 
 def bash_session(home, env, glue, bash_completion=True, extra='', pre=''):
@@ -376,5 +388,5 @@ def fish_session(home, env, keys_glue, pre=''):
 	(config / 'conf.d' / 'mssh-complete.fish').write_text(keys_glue)
 	(config / 'config.fish').write_text(FISH_TEST_CONFIG.format(pre=pre))
 	session = Session([require_shell('fish'), '-i'], env, cwd=home)
-	session.read_until(b'@@READY@@', timeout=20)
+	session.read_until(b'@@READY@@', timeout=80)
 	return session
