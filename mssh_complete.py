@@ -8479,10 +8479,10 @@ switch "$FISH_VERSION"
 						else
 							set cmdline "$cmdline "
 						end
-						# (the line as the attached argument of the option: a word starting with a dash, mssh h -- -x, would be taken for an
-						# option of complete after a -C of its own. No command starts with a dash: nothing for it)
+						# (a word starting with a dash, mssh h -- -x, would be taken for an option of complete after the -C. No command
+						# starts with a dash: nothing for it)
 						set -l typed (string trim -l -- "$cmdline")
-						for item in (string match -q -- '-*' "$typed"; or complete "--do-complete=$typed")
+						for item in (string match -q -- '-*' "$typed"; or complete -C "$typed")
 							set -l parts (string split -m 1 \t -- $item)
 							string match -qr -- $blank $parts[1]; and continue
 							# a function of this shell's own is no command on the remote host, as in the bash glue
