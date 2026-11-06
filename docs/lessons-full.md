@@ -89,3 +89,9 @@ entries go last, in the same commit as the change:
 - Why we had to change: `mssh h cat zza<TAB>` went in as `zzamp\&b`, quoted for this shell alone, and the remote shell read `cat zzamp&b`; `mssh -p zza<TAB>` offered a file name at a password.
 - Original design was wrong because: "fall back to the shell's default" assumed the word was this shell's. Only the engine knows a remote command's word from a local one, and it is the part that did not answer.
 - Lesson: a fallback that runs when the source of truth is silent must be right without it: list the few cases it can tell for itself, and give nothing for the rest. The glues keep one list of words (`FILE_OPTION_WORDS`), held to mssh's parser by a test, not a second reading of the line.
+
+## 2026-11-06 multiSSH3: a directory in a quote keeps its / in the list
+- Changed: bash lists a directory beside other names in a quote with its `/`. `_mssh_complete_unmark`, which took the `/` off, is gone.
+- Why we had to change: a mutant showed nothing but one test on bash 4.2 noticed the function; the mark it undid is read only for one candidate, so all it changed was the list.
+- Original design was wrong because: the mark and the `/` were treated as one thing, so undoing the mark for several names took the `/` too, and a list in a quote differed from the same list outside it.
+- Lesson: when a step exists to undo another, ask what reads the result; if nothing does, take the step away instead of testing it.

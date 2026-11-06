@@ -1392,6 +1392,7 @@ Run `mssh --completion install` again (bash, ble.sh, zsh and fish): the fixes be
 - Fix (zsh): a double-quoted word holding an expansion stays as typed in any mssh command, not only on a line that starts with an mssh name: after an alias (`alias m=mssh`, `m h "ls $PWD/zzp<TAB>` gave `m h ls\ /the/directory/zzp`), `sudo`, `time`, `command`, `noglob`, `&&`, `;`, `(` or `FOO=1`. It goes by the command the cursor is in: `mssh h a; ls "$PWD/zz<TAB>` is left to zsh. After `sudo -u root mssh`, whose `root` the glue takes for a command, it behaves as in 6.43.
 - Fix (zsh): TAB goes on into a directory completed in a double-quoted word holding an expansion: `mssh h "ls $PWD/zzd<TAB>` for a directory `zzd x`, then `in<TAB>`, gave nothing. The same in `mssh h ls "$PWD/zzd` and `mssh h "echo $USER; ls zzd`.
 - Fix (zsh, with zsh-autosuggestions in its default asynchronous mode): keys arriving together no longer take the grey text of the line before them: at `mssh gp`, `x` Right Enter ran `gpxu[01-16] nvidia-smi`. On mssh lines the grey text goes while more keys are waiting. Off mssh lines the plugin behaves as it does alone.
+- Change (bash): a list of names in a quote shows directories with their `/`, as a list outside a quote does.
 - Fix (zsh, fish 3.3): a file name after an option's `=` completes: `mssh --file=zzs<TAB>` and, in zsh, `mssh --file="$PWD/zzs<TAB>` offered nothing.
 
 ## Upgrading to 6.43 from 6.42
