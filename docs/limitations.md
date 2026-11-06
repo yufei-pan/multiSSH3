@@ -667,3 +667,14 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   name that needs quoting together.
 - Revisit when: someone hits it.
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### pip 9 cannot upgrade from or uninstall 6.43 and earlier
+- Kind: known limitation
+- What the operator sees: upgrading from multiSSH3 6.43 or earlier with pip 9, the pip of EL7 and EL8 (`pip3 --version`), fails with
+  `configparser.DuplicateOptionError: ... option 'multissh3' in section 'console_scripts' already exists`, and so does
+  `pip3 uninstall multiSSH3` for those releases; the installed release keeps working. `pip3 install -U pip` once (`--user` for a user
+  install), then the upgrade works; from 6.44 on, pip 9 upgrades and uninstalls as anywhere.
+- Why: pip 9 parses the installed release's `entry_points.txt` with a parser that folds case, and `multiSSH3` and `multissh3` collide there;
+  nothing in a new release can change the old release's metadata (6.44 ships `multiSSH3` as a script file).
+- Revisit when: EL's stock pip stops being 9, or never.
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
