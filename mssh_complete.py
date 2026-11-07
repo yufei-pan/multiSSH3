@@ -7577,7 +7577,7 @@ _mssh_complete_compadd() {
 	local -a _mssh_complete_opts _mssh_complete_bare _mssh_complete_in _mssh_complete_out _mssh_complete_changed _mssh_complete_dirs
 	local -a _mssh_complete_shown _mssh_complete_kept _mssh_complete_parts _mssh_complete_typed
 	local _mssh_complete_arg _mssh_complete_letter _mssh_complete_name _mssh_complete_value _mssh_complete_prefix= _mssh_complete_word
-	local _mssh_complete_flags _mssh_complete_plainflags _mssh_complete_inq
+	local _mssh_complete_flags _mssh_complete_plainflags _mssh_complete_inq _mssh_complete_moved
 	local -i _mssh_complete_at=1 _mssh_complete_char _mssh_complete_quoted=0 _mssh_complete_arrays=0 _mssh_complete_filter=0
 	local -i _mssh_complete_plain=0 _mssh_complete_file=0 _mssh_complete_shown_at=0 _mssh_complete_hidden_at=0 _mssh_complete_index
 	local -i _mssh_complete_hidden_bare=0 _mssh_complete_rc=1 _mssh_complete_keys=0 _mssh_complete_suffixed=0 _mssh_complete_listing=0 _mssh_complete_atcommand=0
@@ -7643,9 +7643,13 @@ _mssh_complete_compadd() {
 	done
 	# (a remote option's value in a double quote, sort --output="zz: read off the option, which the command's completion moved to
 	# IPREFIX, it goes in that quote, as a word of the double quote that zsh keeps no quote for. A filter compares with the word as zsh
-	# reads it, the remote shell's word quoted for no quote, as with none: the directory typed zzd\\&x/ was no zzd&x)
-	if (( ! _mssh_complete_filter )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX == *"$_mssh_complete_lead" ]]; then
-		IPREFIX+=\"
+	# reads it, the remote shell's word quoted for no quote, as with none: the directory typed zzd\\&x/ was no zzd&x. The completion
+	# may have moved part of the value too, ps --format="pid,us its pid,: the quote goes before that part, which is written for it,
+	# or the history names beside, which have it, kept only --format= of the line. Not where the quote is there already, mssh's own
+	# --file=")
+	if (( ! _mssh_complete_filter )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX == *"$_mssh_complete_lead"* && $IPREFIX != *"$_mssh_complete_lead"\"* ]]; then
+		_mssh_complete_moved=${IPREFIX##*"$_mssh_complete_lead"}
+		IPREFIX=${IPREFIX%"$_mssh_complete_moved"}\"${${(qqq)${(Q)_mssh_complete_moved}}[2,-2]}
 		_mssh_complete_dq=1
 		_mssh_complete_open=\"
 		_mssh_complete_at_equals=1

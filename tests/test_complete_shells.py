@@ -1441,6 +1441,8 @@ def test_zsh_inside_backticks_a_name_that_reads_as_in_a_dollar_paren_is_offered(
 @pytest.mark.parametrize('typed, history, expected', [
 	('`mssh h cat zz', ['"cat zzamp\\\\&b"', '"cat zzgood"'], '`mssh h cat zzgood '),
 	('`mssh h cat zz', ['"cat \'zzs$v\'"', '"cat zzgood"'], '`mssh h cat zzgood '),
+	# (a $ zsh writes \$, which the second reading takes: zzh\$HOME went in, and the remote shell got this machine's home)
+	('`mssh h cat zzh', ["'cat zzh$HOME'", '"cat zzhgood"'], '`mssh h cat zzhgood '),
 	('`mssh h "cat zz', ['"cat zzamp\\\\&b"', '"cat zzgood"'], '`mssh h "cat zzgood" '),
 	# (what was typed is not the name's: the $PWD is read by this shell, as the operator wrote it)
 	('`mssh h "ls $PWD/zz', ['\'ls $PWD/zzhist\''], '`mssh h "ls $PWD/zzhist" '),
@@ -1611,6 +1613,30 @@ def test_zsh_mssh_s_own_option_takes_names_of_the_engine_in_a_quote_once(tmp_pat
 def test_zsh_a_history_name_is_not_offered_with_the_cursor_inside_the_quoted_value(tmp_path):
 	line, _ = review_line(tmp_path, 'zsh', 'mssh h sort --output="zzx', history=HISTORY_OUTPUT, pre='mssh() { :; }', keys='\x1b[D\t')
 	assert line == 'mssh h sort --output="zzx', line
+
+
+@pytest.mark.parametrize('typed, history', [
+	('mssh h ps --format="pid,us', ["'ps --format=pid,user'"]), ('mssh h ps --sort="pid,-us', ["'ps --sort=pid,-uszz'"]),
+	('mssh h df --output="source,ta', ["'df --output=source,tazz'"]), ('mssh h git log --format="%h,%', ["'git log --format=%h,%anzz'"]),
+	('`mssh h ps --format="pid,us', ["'ps --format=pid,user'"]), ('$(mssh h ps --format="pid,us', ["'ps --format=pid,user'"]),
+	# (the items taken are written for the quote: zsh holds them written for none, a\ b, zz\&b)
+	('mssh h ps --format="pid,a b,us', ["'ps --format=pid,a b,user'"]), ('mssh h ps --format="pid,zz&b,us', ["'ps --format=pid,zz&b,user'"]),
+])
+def test_zsh_a_history_name_beside_a_list_value_after_a_quote_at_an_equals_sign_loses_nothing_typed(tmp_path, typed, history):
+	# the command's completion takes the list's items before the last into IPREFIX (pid,), and its own names went in without the quote
+	# beside history's, which had it: zsh put in only what both start with, mssh h ps --format=
+	line, _ = review_line(tmp_path, 'zsh', typed, history=history, pre='mssh() { :; }')
+	assert line.startswith(typed), line
+
+
+@pytest.mark.parametrize('typed, dirs, expected, remote', [
+	('mssh h cat sub/zzr', ['sub'], 'mssh h cat sub/zzremote ', ['cat', 'sub/zzremote']),
+	('mssh h cat ~/.zzr', [], 'mssh h cat \\~/.zzremote ', ['cat', REMOTE_HOME + '/.zzremote']),
+])
+def test_zsh_a_history_name_holding_a_slash_is_offered_when_the_command_offers_nothing(tmp_path, typed, dirs, expected, remote):
+	# in a word holding a /, history's names wait for the command's completion, and go in when it has no name
+	line, got = review_line(tmp_path, 'zsh', typed, dirs=dirs, history=['"cat {}"'.format(expected.split()[-1].replace('\\', ''))], pre='mssh() { :; }')
+	assert line == expected and got == remote, (line, got)
 
 
 # the lines TAB must not cut back: {} is the word, which starts with a directory or not; what goes in the history for it
