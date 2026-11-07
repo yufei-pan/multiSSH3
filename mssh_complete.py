@@ -7419,15 +7419,15 @@ _mssh() {
 		_mssh_complete_in_word names
 		# mssh's own words wait for what the completions add: they are whole words, a name of _files stands behind its directory, and
 		# zsh puts in what all share, so those two side by side cut the line back to where they start alike: mssh h cat ~/.zz became
-		# mssh h cat . With such a name beside them, in a word holding a /, mssh's words stay out. In a function: zsh puts back the
-		# word as it was for what comes below
+		# mssh h cat . With such a name beside them, in a word holding a / (in a quoted command, anywhere in the quote: the line lost the
+		# quote), mssh's words stay out. In a function: zsh puts back the word as it was for what comes below
 		if (( ${#_mssh_complete_texts} )); then
 			() {
 				if (( _mssh_complete_delegating )) && [[ -n $_mssh_complete_lead ]]; then
 					IPREFIX=$_mssh_complete_lead\"
 					PREFIX=$_mssh_complete_value
 				fi
-				(( compstate[nmatches] > _mssh_complete_matches )) && [[ ${PREFIX##*[[:space:]]} == */* ]] && return
+				(( compstate[nmatches] > _mssh_complete_matches )) && [[ $PREFIX == */* ]] && return
 				_mssh_complete_next_compadd -V mssh -l -d _mssh_complete_listed "${_mssh_complete_textopts[@]}" -- "${_mssh_complete_texts[@]}"
 			}
 		fi

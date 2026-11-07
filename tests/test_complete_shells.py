@@ -1416,6 +1416,21 @@ def test_zsh_inside_backticks_a_history_name_that_needs_quoting_is_left_out(tmp_
 	assert line == expected, line
 
 
+def test_zsh_inside_backticks_the_list_shows_the_names_it_offers(tmp_path):
+	# (a name left out goes from the list's texts too, or the words beside them show the wrong text)
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t"cat {}"'.format(name) for name in ('zzgood2', 'zzgood1', 'zzamp\\\\&b')])
+	build_index(env)
+	session = zsh_session(home, env, glue_file(home, 'zsh'), pre='mssh() { :; }')
+	try:
+		session.send('`mssh h cat zz\t')
+		session.wait_idle(40)
+		session.send('\t')
+		shown = session.read_for(2.0)
+		assert 'zzgood' in shown and 'zzamp' not in shown, shown
+	finally:
+		session.close()
+
+
 def walk_script(home, lines):
 	'''A script calling the glue's walk on each of lines, the text before the cursor: yes or no for each.'''
 	with open(glue_file(home, 'zsh'), encoding='utf-8') as glue:
@@ -1518,6 +1533,20 @@ def test_zsh_the_same_name_from_history_and_the_command_s_completion_goes_in_who
 	assert line in ('mssh h sort --output="zzplain" ', 'mssh h sort --output="zzplain'), line
 
 
+@pytest.mark.parametrize('typed, history', [('mssh h "ls /etc zz', '"ls /etc zzhist"'), ("mssh h 'ls /etc zz", '"ls /etc zzhist"'), ('mssh h "ls /etc -l zz', '"ls /etc -l zzhist"')])
+def test_zsh_a_directory_in_an_earlier_word_of_a_quoted_command_keeps_the_quote(tmp_path, typed, history):
+	# whole commands of history beside a local name: the quote went (mssh h ls /etc zz), and the command with it. The local name stays
+	line, _ = review_line(tmp_path, 'zsh', typed, history=[history], files=['zzplain'], pre='mssh() { :; }')
+	assert line.startswith(typed + 'plain'), line
+
+
+@pytest.mark.parametrize('typed, expected', [('mssh h "fakecmd zzp', 'mssh h "fakecmd zzplain'), ('mssh h "fakecmd $PWD/zzp', 'mssh h "fakecmd $PWD/zzplain" ')])
+def test_zsh_what_a_command_s_completion_does_not_offer_falls_to_file_names_of_the_word_in_the_quote(tmp_path, typed, expected):
+	# (the default runs in the word the command's completion had, not in the whole quote)
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], pre='mssh() { :; }')
+	assert line == expected, line
+
+
 def test_zsh_a_name_holding_whitespace_is_left_out_after_a_quote_at_an_equals_sign(tmp_path):
 	# mssh runs a word holding whitespace as a command of its own, in any quote: sort, then --output=zz sfile. It went in as
 	# --output=zz\\ sfile, the same two commands
@@ -1540,6 +1569,7 @@ def test_zsh_a_history_name_is_not_offered_with_the_cursor_inside_the_quoted_val
 GRID_LINES = [
 	('mssh h cat {}', '"cat {}"'), ('mssh h vi {}', '"vi {}"'), ('mssh h "cat {}', '"cat {}"'), ("mssh h 'cat {}", '"cat {}"'), ('mssh h cat "{}', '"cat {}"'),
 	('mssh h sort --output={}', '"sort --output={}"'), ('mssh h sort --output="{}', '"sort --output={}"'), ('mssh h "sort --output={}', '"sort --output={}"'),
+	('mssh h "ls /etc {}', '"ls /etc {}"'), ("mssh h 'ls /etc {}", '"ls /etc {}"'), ('mssh h "echo $USER; cat {}', '\'echo $USER; cat {}\''), ('mssh h "ls $PWD {}', '\'ls $PWD {}\''),
 	('`mssh h cat {}', '"cat {}"'), ('`mssh h "cat {}', '"cat {}"'), ('`mssh h sort --output="{}', '"sort --output={}"'), ('$(mssh h cat {}', '"cat {}"'), ('$(mssh h sort --output="{}', '"sort --output={}"'),
 ]
 GRID_DIRS = ['', 'sub/', './', '$PWD/', '$HOME/', '${HOME}/', '~/', '/']
