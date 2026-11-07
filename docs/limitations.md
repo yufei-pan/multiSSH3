@@ -689,3 +689,10 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: zsh reads the text in backticks once more than in `$( )`, so `zzs\\\$v` reached the remote shell as `zzs\$v`, one level short, and the remote shell read `$v`. Writing each word with the extra level goes in `_mssh_complete_compadd` and in `_mssh`'s text loop, for each quote a word can be in.
 - Revisit when: 6.46.
 - Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: beside a local name, a word holding a `/` gets no history names
+- Kind: deferred (6.46)
+- What the operator sees: in zsh, when TAB completes a word holding a `/` (or any word of a quoted command holding one) and local file names match, mssh's history and host names are not offered beside them: `mssh h cat ~/.zz<TAB>` offers the local `~/.zzrc`, not a remote-only `~/.zzremote` from history. With no local match, history names are offered as before.
+- Why: 6.44 added history names whole beside `_files`, which adds names behind the directory prefix, so zsh found no common start and TAB cut the typed word (`mssh h cat ~/.zz<TAB>` became `mssh h cat `). Leaving them out keeps what was typed. Bringing them back means splitting each history name at its last `/` and adding it with `-p`, as `_files` does.
+- Revisit when: 6.46.
+- Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
