@@ -7416,21 +7416,13 @@ _mssh() {
 		functions[compadd]=$functions[_mssh_complete_compadd]
 	fi
 	{
+		# mssh's own words go in before the completions' names, as zsh puts in what all share only with them first (after them, in a
+		# quoted command mssh h "ls --co became mssh h ls --co); in a word holding a / (in a quoted command, anywhere in the quote) after
+		# them, and only when they added nothing: a name of _files stands behind its directory, and a whole word beside it cut the line
+		# back (mssh h cat ~/.zz became mssh h cat )
+		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts first
 		_mssh_complete_in_word names
-		# mssh's own words wait for what the completions add: they are whole words, a name of _files stands behind its directory, and
-		# zsh puts in what all share, so those two side by side cut the line back to where they start alike: mssh h cat ~/.zz became
-		# mssh h cat . With such a name beside them, in a word holding a / (in a quoted command, anywhere in the quote: the line lost the
-		# quote), mssh's words stay out. In a function: zsh puts back the word as it was for what comes below
-		if (( ${#_mssh_complete_texts} )); then
-			() {
-				if (( _mssh_complete_delegating )) && [[ -n $_mssh_complete_lead ]]; then
-					IPREFIX=$_mssh_complete_lead\"
-					PREFIX=$_mssh_complete_value
-				fi
-				(( compstate[nmatches] > _mssh_complete_matches )) && [[ $PREFIX == */* ]] && return
-				_mssh_complete_next_compadd -V mssh -l -d _mssh_complete_listed "${_mssh_complete_textopts[@]}" -- "${_mssh_complete_texts[@]}"
-			}
-		fi
+		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts after
 		# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
 		# -o default), unless the engine said there is nothing to offer here (nodefault: a password)
 		(( compstate[nmatches] > _mssh_complete_matches || _mssh_complete_nodefault )) || _mssh_complete_in_word default "$@"
@@ -7445,6 +7437,21 @@ _mssh() {
 		fi
 	}
 	return 0
+}
+
+_mssh_complete_add_texts() {
+	# mssh's own words of _mssh, in the word they are for (zsh puts back the word as it was when this returns); $1 first: unless the
+	# word holds a /; after: when nothing was added, theirs either (so in a word holding a /)
+	if (( _mssh_complete_delegating )) && [[ -n $_mssh_complete_lead ]]; then
+		IPREFIX=$_mssh_complete_lead\"
+		PREFIX=$_mssh_complete_value
+	fi
+	if [[ $1 == first ]]; then
+		[[ $PREFIX == */* ]] && return
+	else
+		(( compstate[nmatches] == _mssh_complete_matches )) || return
+	fi
+	_mssh_complete_next_compadd -V mssh -l -d _mssh_complete_listed "${_mssh_complete_textopts[@]}" -- "${_mssh_complete_texts[@]}"
 }
 
 _mssh_complete_in_word() {

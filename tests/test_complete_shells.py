@@ -1606,6 +1606,36 @@ def test_zsh_tab_never_takes_back_what_was_typed(tmp_path, shape, history, direc
 		session.close()
 
 
+# and an option word: {c} the command, {w} the word; history holds the command with whole options
+OPTION_GRID_LINES = ['mssh h {c} {w}', 'mssh h "{c} {w}', "mssh h '{c} {w}", 'mssh h "{c} -r {w}', 'mssh h "echo a; {c} {w}', "mssh h 'echo a; {c} {w}",
+	'mssh h "{c} $PWD {w}', '`mssh h "{c} {w}', '$(mssh h "{c} {w}']
+# (for each command: its options in history, and each word typed with what all its names start with, the option's and history's)
+OPTION_GRID_WORDS = {'ls': (['--color=auto', '-lah'], [('-', '-'), ('--co', '--co'), ('--col', '--color')]), 'sort': (['--output=x'], [('--o', '--output')])}
+
+
+@pytest.mark.parametrize('command', sorted(OPTION_GRID_WORDS))
+@pytest.mark.parametrize('shape', OPTION_GRID_LINES)
+def test_zsh_tab_never_takes_back_what_was_typed_in_an_option_word(tmp_path, shape, command):
+	# beside a command's own option names (_arguments) mssh's history words went in after them, and zsh put in a shorter common start:
+	# mssh h "ls -<TAB> gave mssh h "ls , mssh h "ls --co<TAB> mssh h ls --co, the quote gone (after a ; the rest then ran here), and
+	# mssh h ls --col<TAB> stayed as typed
+	options, words = OPTION_GRID_WORDS[command]
+	remote = shape.split('mssh h ', 1)[1].lstrip('"\'')
+	env, home = make_home(tmp_path, ["1790000000\t/x/multiSSH3.py\t-su\th\t'" + remote.format(c=command, w=option) + "'" for option in options])
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	# (ls has more options than a screen holds: listed without asking)
+	session = zsh_session(home, env, glue_file(home, 'zsh'), pre='mssh() { :; }', extra="cd '{}'\nLISTMAX=100000".format(work))
+	try:
+		for word, start in words:
+			typed = shape.format(c=command, w=word)
+			line = session.line_after(typed)
+			assert line is not None and line.startswith(shape.format(c=command, w=start)), (typed, line)
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('prefix', ['mssh h tar --directory=', 'mssh h sort --output=', 'mssh h grep --file=', 'mssh h git --git-dir=', 'mssh h cp --target-directory=',
 	'sudo mssh h tar --directory='])
 def test_zsh_a_quote_opened_after_a_remote_option_s_equals_sign_does_not_lose_what_was_typed(tmp_path, prefix):
