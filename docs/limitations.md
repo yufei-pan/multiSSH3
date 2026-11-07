@@ -689,3 +689,10 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: zsh completes inside backticks with the backtick as the open quote, and reading the walk's rest of the line from there gives `ls\ \$PWD/zzplain`, the literal `$PWD`, which is worse than the value; it needs the completion to be written for that quote.
 - Revisit when: 6.45.
 - Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
+
+### A history name is not offered after a quote at a remote option's equals sign
+- Kind: deferred (6.45)
+- What the operator sees: with `sort --output=zzhist.txt` in history, `mssh h sort --output="zz<TAB>` stays as typed, as does `mssh h -- --output="zz`; 6.43 gave `--output=zzhist.txt ` with the quote lost. No wrong line.
+- Why: the engine now gets the word with its quote and answers with the value alone, which does not match the word zsh is completing.
+- Revisit when: 6.45.
+- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
