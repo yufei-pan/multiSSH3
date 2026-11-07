@@ -288,6 +288,11 @@ def _version_from(command, env=None):
 	return result.returncode, result.stdout.decode('utf-8', 'replace'), taken
 
 
+def test_the_versions_this_release_ships():
+	import multiSSH3
+	assert (multiSSH3.version, mc.version) == ('6.45', '0.18')
+
+
 VERSION_LINE = 'mssh-complete {} (protocol {})\n'.format(mc.version, mc.PROTOCOL)
 
 
