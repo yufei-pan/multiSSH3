@@ -7372,11 +7372,12 @@ _mssh() {
 		[[ $options[$_mssh_complete_name] == $_mssh_complete_compsys_options[$_mssh_complete_name] ]] ||
 			options[$_mssh_complete_name]=$_mssh_complete_compsys_options[$_mssh_complete_name]
 	done
-	# (inside backticks, a word this glue cannot write for them: see _mssh_complete_too_quoted)
+	# (inside backticks, a word this glue cannot write for them: see _mssh_complete_too_quoted. zsh writes a \, a ` and a $ with a
+	# backslash, which the second reading takes)
 	if (( _mssh_complete_ticked )); then
 		for (( _mssh_complete_offset = $#_mssh_complete_texts; _mssh_complete_offset >= 1; _mssh_complete_offset-- )); do
 			_mssh_complete_item=${_mssh_complete_texts[_mssh_complete_offset]#"$PREFIX"}
-			if [[ $_mssh_complete_item == *[\\\$\`\"\']* ]]; then
+			if [[ $_mssh_complete_item == *[\\\$\`]* ]]; then
 				_mssh_complete_texts[_mssh_complete_offset]=()
 				_mssh_complete_listed[_mssh_complete_offset]=()
 			fi
@@ -7404,7 +7405,6 @@ _mssh() {
 		PREFIX=$_mssh_complete_was_pre
 		_mssh_complete_dq=0
 		_mssh_complete_open=
-		_mssh_complete_qcommand=0
 		_mssh_complete_remoting=1
 	fi
 	# while the remote command's completion runs, and the file names of a word in the double quote that zsh keeps no quote for
@@ -7800,8 +7800,9 @@ _mssh_complete_compadd() {
 _mssh_complete_too_quoted() {
 	# whether $1 is a name left out inside backticks (_mssh_complete_ticked of _mssh): one that goes in with a quoting character. This
 	# shell reads the text in backticks once more than in $( ), so \\\$ reaches the remote shell as a bare $. The words are not written
-	# for that: see docs/limitations.md
-	[[ $1 == *[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#[:space:]]* || $1 == '~'* ]]
+	# for that: see docs/limitations.md. That reading takes a backslash before \, ` and $ alone, so a name holding whitespace (in a quote;
+	# typed as words it is left out, as mssh would run it as a command of its own) or starting with ~ reads as in $( ), and stays
+	[[ $1 == *[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#]* ]]
 }
 
 _mssh_complete_next_compadd() {

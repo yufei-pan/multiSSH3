@@ -1390,7 +1390,7 @@ def test_zsh_a_word_of_a_command_inside_backticks_completes_as_inside_a_dollar_p
 	assert line == opener + expected, line
 
 
-@pytest.mark.parametrize('name', ['zzs$v', 'zzamp&b', 'zzb`t', 'zzc\\d', 'zzq"x', "zzt'q", 'zzw x', 'zz(p', 'zz*g'])
+@pytest.mark.parametrize('name', ['zzs$v', 'zzamp&b', 'zzb`t', 'zzc\\d', 'zzq"x', "zzt'q", 'zz(p', 'zz*g'])
 @pytest.mark.parametrize('typed', ['mssh h cat zz', 'mssh h "cat zz', 'mssh h cat "zz', "mssh h 'cat zz", 'mssh h "ls $PWD/zz', 'mssh h sort --output="zz'])
 def test_zsh_inside_backticks_a_name_that_needs_quoting_is_left_out(tmp_path, typed, name):
 	# this shell reads the text in backticks once more than in $( ), and the name reached the remote shell one level short: zzs\\\$v
@@ -1401,7 +1401,41 @@ def test_zsh_inside_backticks_a_name_that_needs_quoting_is_left_out(tmp_path, ty
 	assert line.rstrip('" ').rstrip("'") == '`' + typed + 'good', line
 	# $( ) is read once: the name is offered there
 	line, _ = review_line(tmp_path / 'two', 'zsh', '$(' + typed, files=[name], pre='mssh() { :; }')
-	assert line != '$(' + typed or ' ' in name, line
+	assert line != '$(' + typed, line
+
+
+def substituted_remote(line, cwd):
+	'''The words the remote shell gets for line, an mssh command in a backtick or a $( left open: the line closed and run by zsh in cwd,
+	with mssh printing its arguments, which sh then reads as the remote shell does (HOME at REMOTE_HOME). None when zsh cannot read it.'''
+	closing = '`' if line.startswith('`') else ')'
+	for close in ('', '"', "'"):
+		output = subprocess.run([require_shell('zsh'), '-fc', 'mssh() { printf "%s\\0" "$@" }; eval "x=$1" 2>/dev/null || exit 3; print -rn -- "$x"', 'zsh',
+			line + close + closing], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, cwd=str(cwd))
+		if output.returncode == 0:
+			words = output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
+			remote = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(words[1:])],
+				stdout=subprocess.PIPE, timeout=30, env=dict(os.environ, HOME=REMOTE_HOME), cwd='/')
+			return remote.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
+	return None
+
+
+@pytest.mark.parametrize('typed, files, history, remote', [
+	# a name holding whitespace in a quoted command, and one starting with ~: their backslashes are none the second reading takes
+	('mssh h "cat zz', ['zzw x'], [], ['cat', 'zzw x']),
+	("mssh h 'cat zz", ['zzw x'], [], ['cat', 'zzw x']),
+	('mssh h "cat \\~zz', ['~zzt'], [], ['cat', '~zzt']),
+	# (and from history, a name holding a quote: zsh writes it \\" or \\', which it reads as in $( ) too)
+	('mssh h "cat zz', [], ['\'cat zz"q x"\''], ['cat', 'zzq x']),
+	('mssh h "zz', [], ['"zzcmd \'q x\'"'], ['zzcmd', 'q x']),
+	("mssh h 'zz", [], ['\'zzcmd "q x"\''], ['zzcmd', 'q x']),
+	("mssh h 'cat zz", [], ['"cat zz\'t y\'"'], ['cat', 'zzt y']),
+	('mssh h cat zz', [], ['\'cat zz"qa"\''], ['cat', 'zzqa']),
+	('mssh h cat zz', [], ['"cat zz\'ta\'"'], ['cat', 'zzta']),
+])
+@pytest.mark.parametrize('opener', ['`', '$('], ids=['backtick', 'dollar-paren'])
+def test_zsh_inside_backticks_a_name_that_reads_as_in_a_dollar_paren_is_offered(tmp_path, opener, typed, files, history, remote):
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, files=files, history=history, pre='mssh() { :; }')
+	assert line != opener + typed and substituted_remote(line, tmp_path / 'work') == remote, line
 
 
 @pytest.mark.parametrize('typed, history, expected', [
