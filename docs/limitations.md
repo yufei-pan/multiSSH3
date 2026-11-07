@@ -682,3 +682,10 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: pip writes a plain `#!<python>` line into a script file and a `/bin/sh` wrapper only for an entry point. A launcher that delegates to the lowercase twin overwrites it on a case-insensitive disk under uv. One that execs `mcmd` or `mssh` works, but prints that name for `-V`, breaks `python3 $(which multiCMD)`, and TSVZ has no such sibling.
 - Revisit when: someone hits it.
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### zsh: inside backticks, a name that needs quoting is left out
+- Kind: deferred (6.46)
+- What the operator sees: in zsh, inside backticks, TAB offers no name that would go in with a quoting character, from local files or from history: `` `mssh h cat zz<TAB> `` leaves out `zzs$v`, `zzamp&b`, ``zzb`t``, `zzc\d`, `zzq"x` and `zz x`. `$( )` offers them all.
+- Why: zsh reads the text in backticks once more than in `$( )`, so `zzs\\\$v` reached the remote shell as `zzs\$v`, one level short, and the remote shell read `$v`. Writing each word with the extra level goes in `_mssh_complete_compadd` and in `_mssh`'s text loop, for each quote a word can be in.
+- Revisit when: 6.46.
+- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
