@@ -343,8 +343,11 @@ def test_the_first_query_stops_waiting_when_the_build_fails(home, monkeypatch):
 
 
 def test_first_query_builds_the_index(home, monkeypatch):
-	# (the detached rebuild logs why it failed: this failed once in a loaded matrix run and passed alone, with no cause found; the
-	# message names it the next time)
+	# the first build is about 0.25 s of CPU (compiling mssh_complete and multiSSH3: no bytecode in the matrix), and the 2 s the
+	# picker and the editor wait for it is no bound on a starved machine: there this got None at 2 s, and the build wrote the index a
+	# moment later (it failed so once, in a matrix run with the host's CPU at 100%). What is checked is that the first query starts
+	# the build and takes its index, so a wide budget: the wait ends as soon as the index is there. The message says why, if not
+	monkeypatch.setattr(mc, 'FIRST_BUILD_BUDGET', 60.0)
 	monkeypatch.setenv('MSSH_COMPLETE_DEBUG', '1')
 	directory = mc.cache_dir()
 	began = time.monotonic()

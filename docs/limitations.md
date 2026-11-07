@@ -717,8 +717,10 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### The centos7 test image patches ble.sh's conditional-sync
 - Kind: deferred
-- What the operator sees: nothing; the test matrix's centos7 image (bash 4.2) runs a ble.sh whose `conditional-sync` sends its own
+- What the operator sees: nothing from mssh; the test matrix's centos7 image (bash 4.2) runs a ble.sh whose `conditional-sync` sends its own
   shell a SIGCHLD before each `kill -0` (`tests/shells/Dockerfile.centos7`, a `sed` whose `grep` fails the build if the line moves).
+  The hang is in ble.sh's own `conditional-sync`, so an EL7 user of ble.sh can hit it without mssh too: a TAB now and then waits
+  for the next key, which cancels it.
 - Why: on bash 4.2 a timed read can lose a job's SIGCHLD, so the job stays a zombie, `kill -0` keeps finding it, and ble.sh waited for
   the next key, which cancelled TAB: 1 in 100 to 1000 of the no-answer tests' TABs failed. The same line is proposed upstream.
 - Revisit when: the ble.sh pin moves to a release with the fix: drop the `sed` and its `grep`.
