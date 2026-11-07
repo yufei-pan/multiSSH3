@@ -342,10 +342,15 @@ def test_the_first_query_stops_waiting_when_the_build_fails(home, monkeypatch):
 	runs[0].join()
 
 
-def test_first_query_builds_the_index(home):
+def test_first_query_builds_the_index(home, monkeypatch):
+	# (the detached rebuild logs why it failed: this failed once in a loaded matrix run and passed alone, with no cause found; the
+	# message names it the next time)
+	monkeypatch.setenv('MSSH_COMPLETE_DEBUG', '1')
 	directory = mc.cache_dir()
+	began = time.monotonic()
 	index, tail = mc.load_for_query(directory, time.time())
-	assert index is not None and tail == []
+	waited = time.monotonic() - began
+	assert index is not None and tail == [], (waited, mc.rebuild_failed(directory), _log(home) if os.path.exists(os.path.join(directory, 'complete.log')) else None)
 	assert not mc.rebuild_failed(directory)
 
 
