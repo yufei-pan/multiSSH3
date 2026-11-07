@@ -1387,6 +1387,14 @@ __DEBUG_MODE = False
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
 
+## Upgrading to 6.45 from 6.44
+
+Run `mssh --completion install` again (zsh): the fixes below are in the new glue. What you may notice:
+
+- Fix (zsh): a double-quoted word holding an expansion stays as typed in a command that starts inside backticks, as it does inside `$(`: `` `mssh h "ls $PWD/zzp<TAB> `` gave `` `mssh h ls\ /the/directory/zzp ``, the quote gone and the value expanded, and now gives `` `mssh h "ls $PWD/zzplain" ``. Also after `echo` or `x=`, with closed backticks or a closed `$( )` on the line, and in `mssh h ls "$PWD/zzp` and `mssh --file="$PWD/zzp`.
+- Change (zsh): every word of a command inside backticks now reaches the engine as itself: zsh gives the backtick as the word's open quote, and the engine got it in front of the word. `` `mssh h ls zzp<TAB> `` now gets its space after the name, and mssh's own words (hosts, options, history) are offered there as they are outside backticks.
+- Fix (zsh): a name from history is offered after a quote at a remote option's equals sign, and keeps the quote: with `sort --output=zzhist.txt` in history, `mssh h sort --output="zz<TAB>` stayed as typed and now gives `mssh h sort --output="zzhist.txt" `. Also `mssh h -- --output="zz`. When the command's own completion has names there too, all of them are offered, and what goes in has no quote, as the command's names alone always had: `mssh h sort --output=zz`.
+
 ## Upgrading to 6.44 from 6.43
 
 Run `mssh --completion install` again (bash, ble.sh, zsh and fish): the fixes below are in the new glue. What you may notice:

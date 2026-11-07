@@ -1313,6 +1313,13 @@ ANOTHER_START = [
 	('mssh $(cat hosts) "ls $PWD/zzp', ''), ('sudo mssh $(cat hosts) "ls $PWD/zzp', ''), ('mssh -u $(whoami) h "ls $PWD/zzp', ''), ('mssh h$(echo 1) "ls $PWD/zzp', ''),
 	('mssh h $(date) "$PWD/zzp', ''), ('mssh $((1+2)) "ls $PWD/zzp', ''), ('mssh $(a | b) "ls $PWD/zzp', ''), ('mssh $(a $(b)) "ls $PWD/zzp', ''),
 	('mssh -f $(ls) h /tmp "$PWD/zzp', ''), ('mssh $(cat hosts) ls "$PWD/zzp', ''), ('x=$(hostname) mssh h "ls $PWD/zzp', ''),
+	# and a backtick still open starts one, closed ones before it or a closed $( ) after it or not
+	('`mssh h "ls $PWD/zzp', ''), ('`mssh h ls "$PWD/zzp', ''), ('echo `mssh h "ls $PWD/zzp', ''), ('x=`mssh h "ls $PWD/zzp', ''), ('echo "`mssh h "ls $PWD/zzp', ''),
+	('echo `a` `mssh h "ls $PWD/zzp', ''), ('echo `a`b`mssh h "ls $PWD/zzp', ''), ('`cd /; mssh h "ls $PWD/zzp', ''), ('`sudo mssh h "ls $PWD/zzp', ''),
+	('`mssh $(cat hosts) "ls $PWD/zzp', ''), ('$(`mssh h "ls $PWD/zzp', ''), ('`echo $(mssh h "ls $PWD/zzp', ''), ('`m3 h "ls $PWD/zzp', "alias m3='sudo -E mssh'"),
+	# closed backticks are a word of the command they are in, as a closed $( ) is
+	('mssh `cat hosts` "ls $PWD/zzp', ''), ('sudo mssh `cat hosts` "ls $PWD/zzp', ''), ('mssh h`echo 1` "ls $PWD/zzp', ''), ('mssh `a` `b` "ls $PWD/zzp', ''),
+	('mssh `cat hosts` ls "$PWD/zzp', ''), ('x=`hostname` mssh h "ls $PWD/zzp', ''),
 ]
 
 
@@ -1326,6 +1333,9 @@ def test_zsh_a_double_quoted_expansion_stays_as_typed_wherever_the_mssh_command_
 
 @pytest.mark.parametrize('typed, extra', [('echo $(mssh h a) "ls $PWD/zzp', ''), ('ls "$PWD/zzp', ''), ('mssh h a; ls "$PWD/zzp', ''), ('mssh h a | cat "$PWD/zzp', ''), ('noglob ls "$PWD/zzp', ''), ('m "$PWD/zzp', 'alias m=ls'),
 	('mssh="$PWD/zzp', ''), ('"$PWD/mssh', ''),
+	# an open backtick starts the command after it, closed ones hold theirs, and an escaped or single-quoted one starts nothing
+	('`ls "$PWD/zzp', ''), ('`mssh h a; ls "$PWD/zzp', ''), ('echo `mssh h a` "ls $PWD/zzp', ''), ('echo `mssh h a`; ls "$PWD/zzp', ''), ('echo \\`mssh h "ls $PWD/zzp', ''),
+	("'a`b' \"$PWD/zzp", ''),
 	# every separator ends mssh's command (the walk starts after the last one)
 	('mssh h a & ls "$PWD/zzp', ''), ('mssh h a && ls "$PWD/zzp', ''), ('mssh h a || ls "$PWD/zzp', ''), ('mssh h a |& ls "$PWD/zzp', ''),
 	('mssh h a &! ls "$PWD/zzp', ''), ('mssh h a &| ls "$PWD/zzp', ''), ('mssh h a; { ls "$PWD/zzp', ''), ('mssh h a; ( ls "$PWD/zzp', ''),
@@ -1354,6 +1364,29 @@ def test_zsh_a_double_quoted_expansion_where_zsh_runs_no_completion_function_sta
 	# _mssh: the word is not expanded (the walk takes these for mssh's too) and not completed
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], pre='mssh() { :; }')
 	assert line == typed, line
+
+
+@pytest.mark.parametrize('opener', ['`', '$('], ids=['backtick', 'dollar-paren'])
+@pytest.mark.parametrize('typed, expected, kwargs', [
+	('mssh h "ls $PWD/zzd', 'mssh h "ls $PWD/zzdir/', dict(dirs=['zzdir'])),
+	('mssh h "ls $PWD/zza', 'mssh h "ls $PWD/zzamp\\\\&b" ', dict(files=['zzamp&b'])),
+	('mssh h "ls $PWD/zzb', 'mssh h "ls $PWD/zzb\\\\\\`t" ', dict(files=['zzb`t'])),
+	('mssh h "echo $USER; cat zzp', 'mssh h "echo $USER; cat zzplain" ', dict(files=['zzplain'])),
+	('mssh h "cat $HOME/zzh', 'mssh h "cat $HOME/zzhplain" ', {}),
+	('mssh h "fakecmd $PWD al', 'mssh h "fakecmd $PWD alpha" ', {}),
+	('mssh --file="$PWD/zzp', 'mssh --file="$PWD/zzplain" ', dict(files=['zzplain'])),
+	('mssh -f "$PWD/zzpl', 'mssh -f "$PWD/zzplain" ', dict(files=['zzplain'])),
+	# a word of no quote of its own: the engine got it with the backtick in front, and the name went in with no space
+	('mssh h ls zzp', 'mssh h ls zzplain ', dict(files=['zzplain'])),
+	('mssh h cat zza', 'mssh h cat zzamp\\\\\\&b ', dict(files=['zzamp&b'])),
+	# (mssh's own words too: an option and a command from history, which the engine could not read there)
+	('mssh --quie', 'mssh --quiet ', {}),
+	('mssh h nvi', 'mssh h nvidia-smi ', dict(history=['"nvidia-smi"'])),
+])
+def test_zsh_a_word_of_a_command_inside_backticks_completes_as_inside_a_dollar_paren(tmp_path, opener, typed, expected, kwargs):
+	# zsh gives the backtick as the open quote of whatever word is inside it, and read so the expansion went in as ls\\ \\$PWD/zzplain
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+	assert line == opener + expected, line
 
 
 def test_zsh_a_newline_ends_mssh_s_command_for_the_walk(setup):
@@ -1387,6 +1420,56 @@ def test_zsh_a_quoted_word_right_of_the_cursor_after_mssh_s_name_stays_as_it_is(
 def test_zsh_a_quote_opened_after_a_remote_option_s_equals_sign_is_left_as_typed(tmp_path, typed, files, dirs):
 	line, _ = review_line(tmp_path, 'zsh', typed, files=files, dirs=dirs, pre='mssh() { :; }')
 	assert line == typed, line
+
+
+HISTORY_OUTPUT = ['"sort --output=zzhist.txt"']
+
+
+@pytest.mark.parametrize('typed, expected, history, files, remote', [
+	('mssh h sort --output="zz', 'mssh h sort --output="zzhist.txt" ', HISTORY_OUTPUT, [], ['sort', '--output=zzhist.txt']),
+	('mssh h sort --output="zzh', 'mssh h sort --output="zzhist.txt" ', HISTORY_OUTPUT, ['zzplain'], ['sort', '--output=zzhist.txt']),
+	('mssh h -- --output="zz', 'mssh h -- --output="zzhist.txt" ', ['-- --output=zzhist.txt'], [], ['--', '--output=zzhist.txt']),
+	('sudo mssh h sort --output="zz', 'sudo mssh h sort --output="zzhist.txt" ', HISTORY_OUTPUT, [], None),
+	('`mssh h sort --output="zz', '`mssh h sort --output="zzhist.txt" ', HISTORY_OUTPUT, [], None),
+	('$(mssh h sort --output="zz', '$(mssh h sort --output="zzhist.txt" ', HISTORY_OUTPUT, [], None),
+	# (written for the quote, and the remote shell's word: the history's \\& is the remote shell's)
+	('mssh h sort --output="zz', 'mssh h sort --output="zzamp\\\\&b.txt" ', ['"sort --output=zzamp\\\\&b.txt"'], [], ['sort', '--output=zzamp&b.txt']),
+	# the closed forms: no quote, and a closed one (read as the word it is)
+	('mssh h sort --output=zz', 'mssh h sort --output=zzhist.txt ', HISTORY_OUTPUT, [], ['sort', '--output=zzhist.txt']),
+	('mssh h sort --output="zz"', 'mssh h sort --output=zzhist.txt ', HISTORY_OUTPUT, [], ['sort', '--output=zzhist.txt']),
+])
+def test_zsh_a_history_name_after_a_quote_at_a_remote_option_s_equals_sign_keeps_the_quote(tmp_path, typed, expected, history, files, remote):
+	# the engine gets the word with its quote and answers with the value alone: read beside the option, as the command's completion
+	# has the word, it matched nothing and the line stayed as typed
+	line, got = review_line(tmp_path, 'zsh', typed, history=history, files=files, pre='mssh() { :; }')
+	assert line == expected, line
+	assert remote is None or got == remote, got
+
+
+@pytest.mark.parametrize('history, typed, expected', [
+	# two names: only their common start goes in. In the quote one and beside it the other, the line was cut back to the option
+	(HISTORY_OUTPUT, 'mssh h sort --output="zz', 'mssh h sort --output=zz'),
+	(['"sort --output=zzamp\\\\&b.txt"'], 'mssh h sort --output="zz', 'mssh h sort --output=zz'),
+	(HISTORY_OUTPUT, '`mssh h sort --output="zz', '`mssh h sort --output=zz'),
+	# (no name of history here: the command's alone, as before)
+	(HISTORY_OUTPUT, 'mssh h sort --output="zzp', 'mssh h sort --output=zzplain '),
+	# the closed form
+	(HISTORY_OUTPUT, 'mssh h sort --output=zz', 'mssh h sort --output=zz'),
+])
+def test_zsh_a_history_name_beside_the_command_s_own_names_loses_nothing_typed(tmp_path, history, typed, expected):
+	line, _ = review_line(tmp_path, 'zsh', typed, history=history, files=['zzplain'], pre='mssh() { :; }')
+	assert line == expected, line
+
+
+def test_zsh_the_same_name_from_history_and_the_command_s_completion_goes_in_whole(tmp_path):
+	# (a space after it from zsh 5.8 on; older ones leave the two as a choice)
+	line, _ = review_line(tmp_path, 'zsh', 'mssh h sort --output="zz', history=['"sort --output=zzplain"'], files=['zzplain'], pre='mssh() { :; }')
+	assert line.rstrip() == 'mssh h sort --output=zzplain', line
+
+
+def test_zsh_a_history_name_is_not_offered_with_the_cursor_inside_the_quoted_value(tmp_path):
+	line, _ = review_line(tmp_path, 'zsh', 'mssh h sort --output="zzx', history=HISTORY_OUTPUT, pre='mssh() { :; }', keys='\x1b[D\t')
+	assert line == 'mssh h sort --output="zzx', line
 
 
 @pytest.mark.parametrize('prefix', ['mssh h tar --directory=', 'mssh h sort --output=', 'mssh h grep --file=', 'mssh h git --git-dir=', 'mssh h cp --target-directory=',
