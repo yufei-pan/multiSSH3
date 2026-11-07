@@ -1670,6 +1670,23 @@ def test_zsh_a_name_needing_quotes_after_a_remote_option_s_equals_sign_reaches_t
 	assert got == ['tar', '--file=zza&b'], got
 
 
+@pytest.mark.parametrize('typed, steps, expected, name', [
+	('mssh h tar --file="zzd', ['\t'], 'mssh h tar --file="zzd\\\\&x/zzin" ', 'zzd&x/zzin'),
+	('mssh h tar --file="zzd\\\\&x/zz', [], 'mssh h tar --file="zzd\\\\&x/zzin" ', 'zzd&x/zzin'),
+	('mssh h tar --file="$PWD/zzd', ['\t'], 'mssh h tar --file="$PWD/zzd\\\\&x/zzin" ', None),
+	('mssh h sort --output="zzd', ['\t'], 'mssh h sort --output="zzd\\\\&x/zzin" ', 'zzd&x/zzin'),
+	('mssh h tar --file="zzd', ['\t', '\t'], 'mssh h tar --file="zzd\\\\&x/sub\\\\&y/zzin" ', 'zzd&x/sub&y/zzin'),
+	('mssh h tar --file="zzd', ['\t'], 'mssh h tar --file="zzd\\\\\\$v/zzin" ', 'zzd$v/zzin'),
+])
+def test_zsh_names_inside_a_directory_after_a_quote_at_a_remote_option_s_equals_sign(tmp_path, typed, steps, expected, name):
+	# the directory goes in as the remote shell's word in the quote (zzd\\&x/), and the next TAB went on into it: zsh reads the word for no
+	# quote (zzd\\\&x/), and the names inside were matched with the directory as the quote has it. 6.44 gave --file=zzd\\\&x/zzin
+	files = [name or 'zzd&x/zzin']
+	line, got = review_line(tmp_path, 'zsh', typed, files=files, pre='mssh() { :; }', steps=steps)
+	assert line == expected, line
+	assert name is None or got == [typed.split()[2], typed.split()[3].split('=')[0] + '=' + name], got
+
+
 @pytest.mark.parametrize('typed, expected', [
 	# the command's own compset moves if=, of= and -i to IPREFIX: the directories typed went in front once more (if=if=$PWD/...)
 	('mssh h "dd if=$PWD/zzd/inner.', 'mssh h "dd if=$PWD/zzd/inner.txt" '),
