@@ -1514,7 +1514,8 @@ def test_zsh_either_name_beside_the_other_can_be_picked_after_a_quote_at_an_equa
 
 def test_zsh_the_same_name_from_history_and_the_command_s_completion_goes_in_whole(tmp_path):
 	line, _ = review_line(tmp_path, 'zsh', 'mssh h sort --output="zz', history=['"sort --output=zzplain"'], files=['zzplain'], pre='mssh() { :; }')
-	assert line == 'mssh h sort --output="zzplain" ', line
+	# (zsh before 5.8 keeps the two as a choice: the quote stays open and no space comes)
+	assert line in ('mssh h sort --output="zzplain" ', 'mssh h sort --output="zzplain'), line
 
 
 def test_zsh_a_name_holding_whitespace_is_left_out_after_a_quote_at_an_equals_sign(tmp_path):
