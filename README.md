@@ -129,7 +129,9 @@ It also installs `mssh-complete`, the shell autocomplete engine behind `mssh --c
 
 Need Python 3.6+
 
-Upgrading from multiSSH3 6.43 or earlier with pip 9, the pip of EL7 and EL8 (`pip3 --version`), fails with `configparser.DuplicateOptionError: ... option 'multissh3' in section 'console_scripts' already exists`, and so does `pip3 uninstall multiSSH3` for those releases; the installed release keeps working. Run `pip3 install -U pip` once (`--user` for a user install), then upgrade; from 6.44 on, pip 9 upgrades and uninstalls as anywhere ([limitations](docs/limitations.md#pip-9-cannot-upgrade-from-or-uninstall-643-and-earlier)).
+- With pip 9, the pip of EL7 and EL8 (`pip3 --version`), upgrading from 6.43 or earlier and `pip3 uninstall multiSSH3` of those releases stop with `configparser.DuplicateOptionError: ... option 'multissh3' in section 'console_scripts' already exists`, and nothing changes: the installed release keeps working. Run `pip3 install -U pip` once, then upgrade or uninstall ([limitations](docs/limitations.md#pip-9-cannot-upgrade-from-or-uninstall-643-and-earlier)).
+- With `--user` the same happens, except that `pip3 install --user -U multiSSH3` with no version does not stop: it installs the new release, which works, and leaves the old release's metadata behind. `pip3 list` then shows the old release after `pip3 uninstall multiSSH3`, and the next uninstall stops with that error. To avoid this, run `pip3 install --user -U pip` once first. If it has already happened, run that, run `pip3 uninstall multiSSH3` until it says multiSSH3 is not installed, and install again.
+- With pip 10 or later, in a venv whose path has a space or is too long for the kernel's `#!` line, the `multiSSH3` spelling does not start (the error varies: "bad interpreter", `import: command not found`), because pip gives a script file a plain `#!` line: use `multissh3`. With pip 9 no spelling starts in such a venv, as in 6.43. uv and system or `--user` installs are not affected ([limitations](docs/limitations.md#the-multissh3-spelling-in-a-venv-with-a-space-in-its-path)).
 
 ## Configuration
 ### Config File Chain
@@ -971,7 +973,7 @@ Option names count in full only: `--user` is not `--username` and `-c` is not `-
 
 Putting the command after `--` is no substitute for quotes: every word after the hosts is a command of its own, so `mssh web1 -- bash -c 'echo hi'` runs `bash`, `-c` and `echo hi` one after another (when each word is a single word, as in `mssh web1 -- ls -la`, mssh asks whether to join them).
 
-Below is a sample help message output from multiSSH3 6.44 @ 2026-11-05 (no config file, 120 columns; the lines after the options list the programs found on that machine)
+Below is a sample help message output from multiSSH3 6.44 @ 2026-11-06 (no config file, 120 columns; the lines after the options list the programs found on that machine)
 
 ```bash
 $ mssh -h

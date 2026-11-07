@@ -670,11 +670,15 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### pip 9 cannot upgrade from or uninstall 6.43 and earlier
 - Kind: known limitation
-- What the operator sees: upgrading from multiSSH3 6.43 or earlier with pip 9, the pip of EL7 and EL8 (`pip3 --version`), fails with
-  `configparser.DuplicateOptionError: ... option 'multissh3' in section 'console_scripts' already exists`, and so does
-  `pip3 uninstall multiSSH3` for those releases; the installed release keeps working. `pip3 install -U pip` once (`--user` for a user
-  install), then the upgrade works; from 6.44 on, pip 9 upgrades and uninstalls as anywhere.
+- What the operator sees: With pip 9, the pip of EL7 and EL8 (`pip3 --version`), upgrading from 6.43 or earlier and `pip3 uninstall multiSSH3` of those releases stop with `configparser.DuplicateOptionError: ... option 'multissh3' in section 'console_scripts' already exists`, and nothing changes: the installed release keeps working. Run `pip3 install -U pip` once, then upgrade or uninstall. With `--user` the same happens, except that `pip3 install --user -U multiSSH3` with no version does not stop: it installs the new release, which works, and leaves the old release's metadata behind. `pip3 list` then shows the old release after `pip3 uninstall multiSSH3`, and the next uninstall stops with that error. To avoid this, run `pip3 install --user -U pip` once first. If it has already happened, run that, run `pip3 uninstall multiSSH3` until it says multiSSH3 is not installed, and install again.
 - Why: pip 9 parses the installed release's `entry_points.txt` with a parser that folds case, and `multiSSH3` and `multissh3` collide there;
   nothing in a new release can change the old release's metadata (6.44 ships `multiSSH3` as a script file).
 - Revisit when: EL's stock pip stops being 9, or never.
+- Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
+
+### The `multiSSH3` spelling in a venv with a space in its path
+- Kind: known limitation
+- What the operator sees: With pip 10 or later, in a venv whose path has a space or is too long for the kernel's `#!` line, the `multiSSH3` spelling does not start (the error varies: "bad interpreter", `import: command not found`), because pip gives a script file a plain `#!` line: use `multissh3`. With pip 9 no spelling starts in such a venv, as in 6.43. uv and system or `--user` installs are not affected.
+- Why: pip writes a plain `#!<python>` line into a script file and a `/bin/sh` wrapper only for an entry point. A launcher that delegates to the lowercase twin overwrites it on a case-insensitive disk under uv. One that execs `mcmd` or `mssh` works, but prints that name for `-V`, breaks `python3 $(which multiCMD)`, and TSVZ has no such sibling.
+- Revisit when: someone hits it.
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
