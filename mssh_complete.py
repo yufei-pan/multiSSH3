@@ -7371,7 +7371,6 @@ _mssh() {
 		_mssh_complete_dq=0
 		_mssh_complete_lead=
 		_mssh_complete_open=$compstate[quote]
-		_mssh_complete_textopts=()
 	fi
 	# the completion functions below run in those options again: under zsh's defaults _arguments misreads
 	# its specs, and a glob in _files that matches nothing aborts the completion
@@ -7781,28 +7780,32 @@ _mssh_complete_in_mssh() {
 	# the command, whatever runs it (sudo -u root, nice -n 5, timeout 5, xargs, env -u X, repeat 2, a redirection, FOO=(a b)),
 	# so echo mssh "$PWD/zz is read as mssh's too: the cost of not keeping a list of what can run a command
 	emulate -L zsh
-	# (a $( opens a command of its own, as a separator does: zsh reads the rest of the line as one word)
-	local _mssh_complete_line=${LBUFFER//\$\(/ ; }
+	local _mssh_complete_line=$LBUFFER _mssh_complete_word
 	local -a _mssh_complete_words
-	_mssh_complete_words=("${(@z)_mssh_complete_line}")
-	local _mssh_complete_word
-	local -i _mssh_complete_at=$#_mssh_complete_words _mssh_complete_rounds=0 _mssh_complete_tail=0
+	local -i _mssh_complete_at _mssh_complete_rounds=0 _mssh_complete_tail=0
 	[[ $LBUFFER == *[[:space:]] ]] && _mssh_complete_tail=1
-	# (zsh's lexer gives &! as &|)
-	while (( _mssh_complete_at > 0 )); do
-		[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|';;'|';&'|';|') ]] && break
-		(( _mssh_complete_at-- ))
-	done
-	while (( ++_mssh_complete_at < $#_mssh_complete_words + _mssh_complete_tail )); do
-		_mssh_complete_word=${(Q)_mssh_complete_words[_mssh_complete_at]}
-		[[ ${_mssh_complete_word:t} == (mssh|mssh3|multissh|multissh3|multiSSH3) ]] && return 0
-		if (( ${+aliases[$_mssh_complete_word]} && ++_mssh_complete_rounds < 10 )); then
-			# (not forever: an alias of a word of its own, or of each other)
-			_mssh_complete_words[_mssh_complete_at]=("${(@z)aliases[$_mssh_complete_word]}")
+	while true; do
+		_mssh_complete_words=("${(@z)_mssh_complete_line}")
+		_mssh_complete_at=$#_mssh_complete_words
+		# (zsh's lexer gives &! as &|)
+		while (( _mssh_complete_at > 0 )); do
+			[[ $_mssh_complete_words[_mssh_complete_at] == (';'|'&'|'&&'|'||'|'|'|'|&'|'&|'|';;'|';&'|';|') ]] && break
 			(( _mssh_complete_at-- ))
-		fi
+		done
+		while (( ++_mssh_complete_at < $#_mssh_complete_words + _mssh_complete_tail )); do
+			_mssh_complete_word=${(Q)_mssh_complete_words[_mssh_complete_at]}
+			[[ ${_mssh_complete_word:t} == (mssh|mssh3|multissh|multissh3|multiSSH3) ]] && return 0
+			if (( ${+aliases[$_mssh_complete_word]} && ++_mssh_complete_rounds < 10 )); then
+				# (not forever: an alias of a word of its own, or of each other)
+				_mssh_complete_words[_mssh_complete_at]=("${(@z)aliases[$_mssh_complete_word]}")
+				(( _mssh_complete_at-- ))
+			fi
+		done
+		# (a $( still open: zsh reads the rest of the line as one word, and the cursor's command starts inside it. A closed one is
+		# a word of the command it is in)
+		[[ $_mssh_complete_words[-1] == *\$\(* ]] || return 1
+		_mssh_complete_line=${_mssh_complete_words[-1]#*\$\(}
 	done
-	return 1
 }
 
 (( $+functions[compdef] )) && compdef _mssh mssh mssh3 multissh multissh3 multiSSH3

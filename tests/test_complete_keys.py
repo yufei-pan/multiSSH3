@@ -1542,11 +1542,13 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(hom
 
 @pytest.mark.parametrize('after, sync', [(False, False), (True, False), (False, True)],
 	ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after', 'zsh-autosuggestions-synchronous'])
-@pytest.mark.parametrize('line, extra', [
-	('sudo mssh gp', 'sudo() { "$@"; }'), ('FOO=1 mssh gp', ''), ('m gp', 'alias m=mssh'), ('m gp', "alias m='noglob mssh'"),
-	('time mssh gp', ''), ('true && mssh gp', ''),
+@pytest.mark.parametrize('line, extra, args', [
+	('sudo mssh gp', 'sudo() { "$@"; }', 'gpx'), ('FOO=1 mssh gp', '', 'gpx'), ('m gp', 'alias m=mssh', 'gpx'), ('m gp', "alias m='noglob mssh'", 'gpx'),
+	('time mssh gp', '', 'gpx'), ('true && mssh gp', '', 'gpx'),
+	# (a $( that is closed is a word of mssh's command)
+	('mssh $(echo h) gp', '', 'h gpx'),
 ])
-def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_any_mssh_command(home, line, extra, after, sync):
+def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_any_mssh_command(home, line, extra, args, after, sync):
 	require_zsh_5_3()
 	# the hook asked whether the line is an mssh line by its first word: at `sudo mssh gp`, an alias of mssh or after FOO=1, the grey
 	# text of the line before stayed for a Right among the keys, and gpxu[01-16] nvidia-smi ran
@@ -1560,7 +1562,7 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_
 		session.wait_idle(10)
 		session.send('x' + RIGHT + '\r')
 		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
-		assert len(ran) == 1 and ran[0].replace('\\', '') == 'gpx', ran
+		assert len(ran) == 1 and ran[0].replace('\\', '') == args, ran
 	finally:
 		session.close()
 

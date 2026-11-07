@@ -1309,6 +1309,10 @@ ANOTHER_START = [
 	('m6 mssh h "ls $PWD/zzp', "alias m6=''"), ('m7 h "ls $PWD/zzp', "alias m7='time sudo -E command mssh --quiet'"),
 	# a { or a ( among the arguments is an argument: the quoted word is still mssh's
 	('mssh h echo { "$PWD/zzp', ''),
+	# a $( that is closed is a word of the command it is in; only one still open starts a command of its own
+	('mssh $(cat hosts) "ls $PWD/zzp', ''), ('sudo mssh $(cat hosts) "ls $PWD/zzp', ''), ('mssh -u $(whoami) h "ls $PWD/zzp', ''), ('mssh h$(echo 1) "ls $PWD/zzp', ''),
+	('mssh h $(date) "$PWD/zzp', ''), ('mssh $((1+2)) "ls $PWD/zzp', ''), ('mssh $(a | b) "ls $PWD/zzp', ''), ('mssh $(a $(b)) "ls $PWD/zzp', ''),
+	('mssh -f $(ls) h /tmp "$PWD/zzp', ''), ('mssh $(cat hosts) ls "$PWD/zzp', ''), ('x=$(hostname) mssh h "ls $PWD/zzp', ''),
 ]
 
 
@@ -1320,7 +1324,7 @@ def test_zsh_a_double_quoted_expansion_stays_as_typed_wherever_the_mssh_command_
 	assert line == typed + 'lain" '
 
 
-@pytest.mark.parametrize('typed, extra', [('ls "$PWD/zzp', ''), ('mssh h a; ls "$PWD/zzp', ''), ('mssh h a | cat "$PWD/zzp', ''), ('noglob ls "$PWD/zzp', ''), ('m "$PWD/zzp', 'alias m=ls'),
+@pytest.mark.parametrize('typed, extra', [('echo $(mssh h a) "ls $PWD/zzp', ''), ('ls "$PWD/zzp', ''), ('mssh h a; ls "$PWD/zzp', ''), ('mssh h a | cat "$PWD/zzp', ''), ('noglob ls "$PWD/zzp', ''), ('m "$PWD/zzp', 'alias m=ls'),
 	('mssh="$PWD/zzp', ''), ('"$PWD/mssh', ''),
 	# every separator ends mssh's command (the walk starts after the last one)
 	('mssh h a & ls "$PWD/zzp', ''), ('mssh h a && ls "$PWD/zzp', ''), ('mssh h a || ls "$PWD/zzp', ''), ('mssh h a |& ls "$PWD/zzp', ''),
@@ -1350,6 +1354,19 @@ def test_zsh_a_double_quoted_expansion_where_zsh_runs_no_completion_function_sta
 	# _mssh: the word is not expanded (the walk takes these for mssh's too) and not completed
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], pre='mssh() { :; }')
 	assert line == typed, line
+
+
+def test_zsh_a_newline_ends_mssh_s_command_for_the_walk(setup):
+	# the walk is _mssh_complete_in_mssh on LBUFFER: the text before a newline is another command (one in a quote is no end)
+	require_shell('zsh')
+	env, home = setup
+	with open(glue_file(home, 'zsh'), encoding='utf-8') as glue:
+		function = re.search(r'^_mssh_complete_in_mssh\(\) \{.*?^\}\n', glue.read(), re.S | re.M).group(0).replace("'\\''", "'")
+	lines = ['mssh h a\\nls "$PWD/zz', 'echo hi\\nmssh h "ls $PWD/zz', 'mssh h a\\n\\nls "$PWD/zz', 'mssh h "a\\nls $PWD/zz']
+	script = home / 'walk.zsh'
+	script.write_text(function + 'one() { LBUFFER=$1; _mssh_complete_in_mssh && print yes || print no }\n' + ''.join("one $'{}'\n".format(line.replace("'", "\\'")) for line in lines))
+	result = subprocess.run([require_shell('zsh'), '-f', str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=30)
+	assert result.stdout.split() == ['no', 'yes', 'no', 'yes'], result.stdout
 
 
 @pytest.mark.parametrize('typed', ['mssh "echo $HOME"', 'sudo mssh "echo $HOME"', 'FOO=1 mssh "echo $HOME"'])
@@ -1396,6 +1413,14 @@ def test_zsh_mssh_s_own_option_keeps_the_quote_opened_after_its_equals_sign(tmp_
 	# the quote goes with the option (the lead of the word): without it the completion took the quote out (--file=$PWD/zzplain)
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'])
 	assert line == expected, line
+
+
+@pytest.mark.parametrize('typed', ['mssh h tar --file="zza', 'mssh h tar --file=zza'])
+def test_zsh_a_name_needing_quotes_after_a_remote_option_s_equals_sign_reaches_the_remote_shell_as_named(tmp_path, typed):
+	# with or without the quote opened after the =, the command's own completion quotes for the remote shell (zza\\\&b)
+	line, got = review_line(tmp_path, 'zsh', typed, files=['zza&b'], pre='mssh() { :; }')
+	assert line == 'mssh h tar --file=zza\\\\\\&b ', line
+	assert got == ['tar', '--file=zza&b'], got
 
 
 @pytest.mark.parametrize('typed, expected', [
