@@ -90,7 +90,6 @@ def test_no_two_commands_differ_only_in_case(egg_info):
 	entry_points = (egg_info[0] / "entry_points.txt").read_text(encoding="utf-8")
 	names = [line.split("=")[0].strip() for line in entry_points.splitlines() if "=" in line]
 	assert sorted(names) == ["mssh", "mssh-complete", "mssh3", "multissh", "multissh3"]
-	assert len({name.casefold() for name in names}) == len(names)
 	# the mixed-case command ships in the sdist as a script, so the six spellings stay six commands
 	assert "scripts/multiSSH3" in sdist_files(egg_info)
 	assert (PACKAGE_ROOT / "scripts" / "multiSSH3").read_text(encoding="utf-8").startswith("#!")
