@@ -1416,19 +1416,33 @@ def test_zsh_inside_backticks_a_history_name_that_needs_quoting_is_left_out(tmp_
 	assert line == expected, line
 
 
-def test_zsh_inside_backticks_the_list_shows_the_names_it_offers(tmp_path):
-	# (a name left out goes from the list's texts too, or the words beside them show the wrong text)
-	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t"cat {}"'.format(name) for name in ('zzgood2', 'zzgood1', 'zzamp\\\\&b')])
+@pytest.mark.parametrize('names, tabs', [(('zzgood2', 'zzgood1', 'zzamp\\\\&b'), 2), (('zzgood', 'zzhgood', 'zzamp\\\\&b'), 1)], ids=['second-tab', 'first-tab'])
+def test_zsh_inside_backticks_the_list_shows_the_names_it_offers(tmp_path, names, tabs):
+	# (a name left out goes from the list's texts too, or the words beside them show the wrong text: the list on the first TAB, of
+	# names that share no more than what was typed, showed zzamp\\&b)
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t"cat {}"'.format(name) for name in names])
 	build_index(env)
 	session = zsh_session(home, env, glue_file(home, 'zsh'), pre='mssh() { :; }')
 	try:
-		session.send('`mssh h cat zz\t')
+		session.send('`mssh h cat zz')
 		session.wait_idle(40)
-		session.send('\t')
-		shown = session.read_for(2.0)
+		for _ in range(tabs):
+			start = len(session.output)
+			session.send('\t')
+			session.wait_idle(40)
+		session.read_for(0.5)
+		shown = session.output[start:].decode('utf-8', 'replace')
 		assert 'zzgood' in shown and 'zzamp' not in shown, shown
 	finally:
 		session.close()
+
+
+@pytest.mark.parametrize('files, expected', [(['zzs$v', 'zzgood'], '`mssh h cat zzgood `'), (['zzs$v'], '`mssh h cat zz`')])
+def test_zsh_inside_backticks_counts_the_backticks_before_the_cursor(tmp_path, files, expected):
+	# the cursor before the closing backtick: the command is inside them. Counted on the whole line they were closed, and zzs\\\$v went in,
+	# which reaches the remote shell as zzs$v
+	line, _ = review_line(tmp_path, 'zsh', '`mssh h cat zz`', files=files, pre='mssh() { :; }', keys='\x02\t')
+	assert line == expected, line
 
 
 def walk_script(home, lines):
