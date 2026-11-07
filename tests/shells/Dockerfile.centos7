@@ -13,6 +13,12 @@ ENV LANG=en_US.UTF-8
 ADD --checksum=sha256:7a2445f138e7f099dd5dee749391a8b045646d1b8a605975885be5b34b6b5f7e \
     https://github.com/akinomyoga/ble.sh/releases/download/nightly/ble-nightly-20260908%2Bd81fd54.tar.xz /tmp/blesh.tar.xz
 RUN mkdir -p /opt/blesh && tar -xJf /tmp/blesh.tar.xz -C /opt/blesh --strip-components=1 && rm /tmp/blesh.tar.xz
+# ble.sh's conditional-sync polls kill -0 between timed reads, and bash 4.2's timed read can lose the job's SIGCHLD (its SIGALRM
+# handler longjmps out of bash's SIGCHLD handler): the job stays a zombie, kill -0 still finds it, and TAB waited for the next key,
+# which cancelled it (1 in 100 to 1000 of the no-answer tests' TABs). The one-line fix proposed upstream: a SIGCHLD to itself
+# before kill -0 has bash reap what it missed. Until the pin has it; grep fails the build if the line moved
+RUN sed -i 's/\[\[ ! \$__ble_pid \]\] || builtin kill -0 "\$__ble_pid" &>\/dev\/null/[[ ! $__ble_pid ]] || { builtin kill -CHLD "$BASHPID"; builtin kill -0 "$__ble_pid"; } \&>\/dev\/null/' /opt/blesh/ble.sh \
+ && grep -q 'builtin kill -CHLD "\$BASHPID"; builtin kill -0' /opt/blesh/ble.sh
 ENV MSSH_TEST_BLESH=/opt/blesh/ble.sh
 # run_matrix.sh runs as uid 65534, which is no user here (nobody is 99 on EL7): getpass.getuser() raised, and the whole suite failed by the hundreds
 RUN echo 'matrix:x:65534:65534::/tmp:/sbin/nologin' >> /etc/passwd && echo 'matrix:x:65534:' >> /etc/group
