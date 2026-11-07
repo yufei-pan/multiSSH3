@@ -685,14 +685,41 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### zsh: inside backticks, a name that needs quoting is left out
 - Kind: deferred (6.46)
-- What the operator sees: in zsh, inside backticks, TAB offers no name that would go in with a quoting character, from local files or from history: `` `mssh h cat zz<TAB> `` leaves out `zzs$v`, `zzamp&b`, ``zzb`t``, `zzc\d`, `zzq"x` and `zz x`. `$( )` offers them all.
-- Why: zsh reads the text in backticks once more than in `$( )`, so `zzs\\\$v` reached the remote shell as `zzs\$v`, one level short, and the remote shell read `$v`. Writing each word with the extra level goes in `_mssh_complete_compadd` and in `_mssh`'s text loop, for each quote a word can be in.
+- What the operator sees: in zsh, inside backticks, TAB offers no name of a remote command's that would go in with a quoting
+  character: `` `mssh h cat zz<TAB> `` leaves out the local `zzs$v`, `zzamp&b`, ``zzb`t``, `zzc\d` and `zzq"x`, and a name from
+  history holding `\`, `$` or a backtick. `$( )` offers them all. A name holding whitespace (in a quoted command) or starting with `~`,
+  and a history name holding a quote, go in as in `$( )`. Two cases differ:
+  - mssh's own file options typed bare get zsh's own names, one level short: `` `mssh -f zz<TAB> `` gives `` `mssh -f zzs\$v ``, which
+    this shell reads inside backticks as `zzs$v`, so mssh gets `-f zzs`. Stock zsh does the same for any command (`` `cat zz<TAB> ``).
+  - The count of backticks takes a quoted one too: `` mssh h echo '`' zz<TAB> `` is read as inside backticks and leaves out `zzs$v`, which
+    6.44 offered. Today that only leaves names out.
+- Why: zsh reads the text in backticks once more than in `$( )`, taking a backslash before `\`, a backtick and `$`, so `zzs\\\$v`
+  reached the remote shell as `zzs\$v`, one level short, and the remote shell read `$v`. Writing each word with the extra level goes
+  in `_mssh_complete_compadd` and in `_mssh`'s text loop, for each quote a word can be in; mssh's own file options need that compadd
+  put in place inside backticks too (today it is only for a remote command's words), and the count must skip quoted backticks before
+  any word gets the extra level, or a line holding `` '`' `` would get it wrongly.
 - Revisit when: 6.46.
-- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked.
+- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked; the two cases 2026-11-07.
 
-### zsh: beside a local name, a word holding a `/` gets no history names
+### zsh: beside the command's own names, a word holding a `/` gets no history names
 - Kind: deferred (6.46)
-- What the operator sees: in zsh, when TAB completes a word holding a `/` (or any word of a quoted command holding one) and local file names match, mssh's history and host names are not offered beside them: `mssh h cat ~/.zz<TAB>` offers the local `~/.zzrc`, not a remote-only `~/.zzremote` from history. With no local match, history names are offered as before.
-- Why: 6.44 added history names whole beside `_files`, which adds names behind the directory prefix, so zsh found no common start and TAB cut the typed word (`mssh h cat ~/.zz<TAB>` became `mssh h cat `). Leaving them out keeps what was typed. Bringing them back means splitting each history name at its last `/` and adding it with `-p`, as `_files` does.
+- What the operator sees: in zsh, when TAB completes a word holding a `/` (or any word of a quoted command holding one) and the command's
+  completion offers names (local files, its own options), mssh's history and host names are not offered beside them:
+  `mssh h cat ~/.zz<TAB>` offers the local `~/.zzrc`, not a remote-only `~/.zzremote` from history, and `mssh h "ls /etc --col<TAB>`
+  offers `ls`'s `--color=`, not `--colzz` from history. When the completion offers nothing, history names are offered as before.
+- Why: 6.44 added history names whole beside `_files`, which adds names behind the directory prefix, so zsh found no common start and
+  TAB cut the typed word (`mssh h cat ~/.zz<TAB>` became `mssh h cat `). In such a word history names go after the completion, and only
+  when it gave nothing; elsewhere they go first, as in 6.44: after a command's option names they made zsh put in a shorter common start
+  (`mssh h "ls --co<TAB>` became `mssh h ls --co`, the quote gone). Bringing them back means splitting each history name at its last `/`
+  and adding it with `-p`, as `_files` does.
 - Revisit when: 6.46.
+- Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
+
+### The centos7 test image patches ble.sh's conditional-sync
+- Kind: deferred
+- What the operator sees: nothing; the test matrix's centos7 image (bash 4.2) runs a ble.sh whose `conditional-sync` sends its own
+  shell a SIGCHLD before each `kill -0` (`tests/shells/Dockerfile.centos7`, a `sed` whose `grep` fails the build if the line moves).
+- Why: on bash 4.2 a timed read can lose a job's SIGCHLD, so the job stays a zombie, `kill -0` keeps finding it, and ble.sh waited for
+  the next key, which cancelled TAB: 1 in 100 to 1000 of the no-answer tests' TABs failed. The same line is proposed upstream.
+- Revisit when: the ble.sh pin moves to a release with the fix: drop the `sed` and its `grep`.
 - Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
