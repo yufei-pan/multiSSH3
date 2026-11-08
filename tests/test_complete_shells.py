@@ -1576,6 +1576,9 @@ def test_zsh_the_walk_ends_on_any_backtick_and_reads_the_open_one(setup):
 	env, home = setup
 	lines = {'': 'no', '`': 'no', '``': 'no', '```': 'no', 'ls': 'no', '`ls': 'no', '`a` `': 'no', '\\`': 'no', '\\\\': 'no', '`\\': 'no', '`$(': 'no', '$(`': 'no',
 		'`mssh ': 'yes', '`a` `mssh ': 'yes', '`a\\`b `mssh ': 'no', '`mssh a\\`b ': 'yes', '`\\mssh ': 'yes', '$(`mssh ': 'yes', '`$(mssh ': 'yes',
+		# (a backslash takes one character, a run's first: the character that counts after it still counts; $ and a quote after a run is a
+		# single quote, where a backslash is none)
+		'\\a`mssh ': 'yes', "$x'\\'`mssh ": 'yes',
 		# (a backtick in single quotes is none, in a double quote one)
 		# (inside backticks zsh closes them at the next backtick, in any quote: `a '` is closed, and the ' after it opens a quote)
 		"`a '`' mssh ": 'no', "`a $'\\'`' mssh ": 'no', '"`mssh ': 'yes', "`mssh '": 'yes', "'`mssh ": 'no'}
@@ -1794,6 +1797,13 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_wh
 	if opener:
 		got = substituted_remote(line, tmp_path / 'work')
 	assert (line, got) == (opener + expected, remote)
+
+
+def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_with_no_history_is_completed(tmp_path):
+	# (with no history name beside them the command's names go in, as in 6.45; the quote is lost, as in 6.45 and stock zsh:
+	# docs/limitations.md)
+	line, _ = review_line(tmp_path, 'zsh', 'mssh h make CFLAGS="-ggd', pre='mssh() { :; }')
+	assert line == 'mssh h make CFLAGS=-ggdb', line
 
 
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)

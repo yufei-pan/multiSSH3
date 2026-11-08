@@ -728,6 +728,16 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   Inside backticks, find where the split value's `\!` gets the extra backslash (not looked into yet) and write it once.
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
+### zsh: a value the command splits after a quote at an `=` loses the quote
+- Kind: deferred (6.47)
+- What the operator sees: in zsh, `mssh h make CFLAGS="-ggd<TAB>` gives `mssh h make CFLAGS=-ggdb`: the typed `"` is gone, so a `"`
+  typed later to close it opens a new quote. The same after `--` (`mssh h -- make CFLAGS="-O`), there with a history name too. 6.45 and stock zsh's `make` do the
+  same. With a history name for the value (`make CFLAGS=-O2` in history) 6.46 keeps the quote: `CFLAGS="-O2" `.
+- Why: the command's completion (`_gcc` for make's `CFLAGS`) takes the quote off with `compset -q` and puts its names in without it.
+- Revisit when: 6.47: in `_mssh_complete_compadd`, put such names in with the lead and the quote typed (`-p`), as mssh's own words are,
+  so the line keeps them.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
+
 ### zsh: no names inside a directory holding `$` or a backtick in a quoted command
 - Kind: deferred (6.47)
 - What the operator sees: in zsh, with a directory `zzd$x` (or ``zzd`x``) holding `zzin`, `mssh h "cat zzd<TAB>` gives `"cat zzd\\\$x/`
