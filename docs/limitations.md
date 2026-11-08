@@ -683,47 +683,40 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: someone hits it.
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
 
-### zsh: inside backticks, a name that needs quoting is left out
-- Kind: deferred (6.46)
-- What the operator sees: in zsh, inside backticks, TAB offers no name of a remote command's that would go in with a quoting
-  character: `` `mssh h cat zz<TAB> `` leaves out the local `zzs$v`, `zzamp&b`, ``zzb`t``, `zzc\d` and `zzq"x`, and a name from
-  history holding `\`, `$` or a backtick. `$( )` offers them all. A name holding whitespace (in a quoted command) or starting with `~`,
-  and a history name holding a quote, go in as in `$( )`. Two cases differ:
-  - mssh's own file options typed bare get zsh's own names, one level short: `` `mssh -f zz<TAB> `` gives `` `mssh -f zzs\$v ``, which
-    this shell reads inside backticks as `zzs$v`, so mssh gets `-f zzs`. Stock zsh does the same for any command (`` `cat zz<TAB> ``).
-  - The count of backticks takes a quoted one too: `` mssh h echo '`' zz<TAB> `` is read as inside backticks and leaves out `zzs$v`, which
-    6.44 offered. Today that only leaves names out.
-- Why: zsh reads the text in backticks once more than in `$( )`, taking a backslash before `\`, a backtick and `$`, so `zzs\\\$v`
-  reached the remote shell as `zzs\$v`, one level short, and the remote shell read `$v`. Writing each word with the extra level goes
-  in `_mssh_complete_compadd` and in `_mssh`'s text loop, for each quote a word can be in; mssh's own file options need that compadd
-  put in place inside backticks too (today it is only for a remote command's words), and the count must skip quoted backticks before
-  any word gets the extra level, or a line holding `` '`' `` would get it wrongly.
-- Revisit when: 6.46.
-- Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked; the two cases 2026-11-07.
+### zsh: beside the command's own names, a history name in a quoted command's word holding a `/` is left out
+- Kind: deferred (6.47)
+- What the operator sees: in zsh, in a quoted command (`mssh h "cat ~/.zz<TAB>`, `mssh h 'ls /etc --col<TAB>`), a double-quoted word
+  holding an expansion (`mssh h "ls $PWD/zz<TAB>`) or after a quote at an `=` (`mssh h sort --output="sub/zz<TAB>`), when the word holds
+  a `/` and the command's completion offers names, mssh's history names are not offered beside them; when it offers nothing they are,
+  as in 6.45. Typed as words, in a quoted argument and after an unquoted `=` (`mssh h cat ~/.zz`, `cat "sub/zz`, `sort --output=sub/zz`)
+  6.46 offers them beside the command's names.
+- Why: 6.46 puts history names in behind the directory typed (`-p`), as `_files` does; where the command's completion reads another
+  word than mssh's (`compset -q` of a quoted command, `--output=` moved off the word) zsh then cut the line back (`mssh h "/.zzr`), so
+  those cases keep 6.45's rule.
+- Revisit when: 6.47: add history names from inside `_mssh_complete_compadd`, in the call that adds the command's file names, with
+  that call's IPREFIX, PREFIX and `-p`, each history name less the part of mssh's word those stand for.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
-### zsh: a quote after a plain name's `=` is dropped
-- Kind: deferred (6.46)
-- What the operator sees: in zsh, `mssh h dd if="zz<TAB>` completes to `mssh h dd if=zzfile`, the typed quote gone (`make VAR="..."`
-  the same). The remote words are unchanged. The same happens in 6.44 and in stock zsh. 6.45 keeps the quote after a remote option's
-  `=` (`--format="pid,us`), but a word that does not start with `-` is outside that rule.
-- Why: the quote-at-`=` lead is recognised only for words that start with `-`. Found in round 3 of 6.45's review; the version's other
-  fixes are ready, and this changes no remote word.
-- Revisit when: 6.46: take the lead for any word whose text before the `=` is a plain name (`if=`, `VAR=`), with tests for `dd` and `make`.
-- Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
+### zsh: inside backticks, TAB does not go on into a changed directory in a quoted command or after a quote at an `=`
+- Kind: deferred (6.47)
+- What the operator sees: in zsh, inside backticks, with a directory `zzd&x` holding `zzin`, `` `mssh h "cat zzd<TAB> `` gives
+  `` `mssh h "cat zzd\\\\&x/ `` (right), and a second `zz<TAB>` offers nothing. The same in a double-quoted word holding an expansion
+  (`` `mssh h "ls $PWD/zzd ``) and after a quote at an `=` (`` `mssh h dd if="zzd ``). Typed as words, in a single-quoted command, in a
+  quoted argument and for mssh's own file options TAB goes on into it. A directory that needs no quoting is not affected.
+- Why: the text in backticks is read once more before the quoted command is split into words; `compset -q` splits it unread, at
+  the `&` of `zzd\\\\&x`. Reading it once more before `compset -q` would rewrite the words typed before the one at the cursor.
+- Revisit when: 6.47: read the quoted command once more for `compset -q` and put the words typed before the cursor's back in IPREFIX
+  as typed.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
-### zsh: beside the command's own names, a word holding a `/` gets no history names
-- Kind: deferred (6.46)
-- What the operator sees: in zsh, when TAB completes a word holding a `/` (or any word of a quoted command holding one) and the command's
-  completion offers names (local files, its own options), mssh's history and host names are not offered beside them:
-  `mssh h cat ~/.zz<TAB>` offers the local `~/.zzrc`, not a remote-only `~/.zzremote` from history, and `mssh h "ls /etc --col<TAB>`
-  offers `ls`'s `--color=`, not `--colzz` from history. When the completion offers nothing, history names are offered as before.
-- Why: 6.44 added history names whole beside `_files`, which adds names behind the directory prefix, so zsh found no common start and
-  TAB cut the typed word (`mssh h cat ~/.zz<TAB>` became `mssh h cat `). In such a word history names go after the completion, and only
-  when it gave nothing; elsewhere they go first, as in 6.44: after a command's option names they made zsh put in a shorter common start
-  (`mssh h "ls --co<TAB>` became `mssh h ls --co`, the quote gone). Bringing them back means splitting each history name at its last `/`
-  and adding it with `-p`, as `_files` does.
-- Revisit when: 6.46.
-- Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
+### zsh: inside `$( )`, with bang_hist on, a name holding `!` in a double quote reaches mssh as `\!`
+- Kind: deferred (6.47)
+- What the operator sees: in zsh with `bang_hist` on (the default), inside `$(`, `$(mssh -f "zz<TAB>` for a file `zz!x` gives
+  `$(mssh -f "zz\!x"`, and mssh gets `-f zz\!x`, a file that is not there; `$(mssh h "cat zz<TAB>` gives a remote `cat zz\!x`. On the
+  line itself and inside backticks the name reaches mssh as `zz!x`. Found in 6.46's tests through Enter; 6.45 does the same.
+- Why: zsh writes the `!` of a double-quoted word `\!` for its history, and inside `$(` the history does not take that backslash off.
+- Revisit when: 6.47: inside `$(` with bang_hist on, write a double-quoted `!` without the backslash where the history leaves it.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### The centos7 test image patches ble.sh's conditional-sync
 - Kind: deferred
