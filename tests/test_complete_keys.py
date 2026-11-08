@@ -2142,6 +2142,9 @@ def test_ctrl_c_while_the_picker_starts_keeps_the_line(home, shell):
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
+		# (fish's space runs __mssh_complete_check: on a loaded host Ctrl-C, a signal, not a key in turn, came before fish had read
+		# the line, and took the typed rest with it)
+		session.wait_idle()
 		started = time.monotonic()
 		session.send('\x12')
 		time.sleep(0.3)
