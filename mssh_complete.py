@@ -7644,12 +7644,14 @@ _mssh_complete_compadd() {
 	# (a remote option's value in a double quote, sort --output="zz: read off the option, which the command's completion moved to
 	# IPREFIX, it goes in that quote, as a word of the double quote that zsh keeps no quote for. A filter compares with the word as zsh
 	# reads it, the remote shell's word quoted for no quote, as with none: the directory typed zzd\\&x/ was no zzd&x. The completion
-	# may have moved part of the value too, ps --format="pid,us its pid,: the quote goes before that part, which is written for it,
+	# may have moved part of the value too, ps --format="pid,us its pid,: the quote goes before that part, which is written for it
+	# (zsh holds it written for no quote: the backslashes a double quote needs no more go, taken in pairs, so \\ stays and a\ b is a b;
+	# an expansion stays as typed, $HOME this shell's, as without TAB),
 	# or the history names beside, which have it, kept only --format= of the line. Not where the quote is there already, mssh's own
 	# --file=")
 	if (( ! _mssh_complete_filter )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX == *"$_mssh_complete_lead"* && $IPREFIX != *"$_mssh_complete_lead"\"* ]]; then
 		_mssh_complete_moved=${IPREFIX##*"$_mssh_complete_lead"}
-		IPREFIX=${IPREFIX%"$_mssh_complete_moved"}\"${${(qqq)${(Q)_mssh_complete_moved}}[2,-2]}
+		IPREFIX=${IPREFIX%"$_mssh_complete_moved"}\"${_mssh_complete_moved//(#m)\\?/${${MATCH[2]:#[\\\$\`\"\!]}:-$MATCH}}
 		_mssh_complete_dq=1
 		_mssh_complete_open=\"
 		_mssh_complete_at_equals=1

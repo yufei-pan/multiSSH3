@@ -14,7 +14,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
-	debug_log_size, fish_complete, fish_session, hold_lock, make_home, require_shell, with_debug_log, without_command, zsh_session)
+	debug_log_size, fish_complete, fish_session, hold_lock, make_home, require_shell, with_debug_log, without_command, zsh_session, zsh_version)
 
 HISTORY = [
 	'1790000000\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"',
@@ -1615,18 +1615,40 @@ def test_zsh_a_history_name_is_not_offered_with_the_cursor_inside_the_quoted_val
 	assert line == 'mssh h sort --output="zzx', line
 
 
-@pytest.mark.parametrize('typed, history', [
-	('mssh h ps --format="pid,us', ["'ps --format=pid,user'"]), ('mssh h ps --sort="pid,-us', ["'ps --sort=pid,-uszz'"]),
-	('mssh h df --output="source,ta', ["'df --output=source,tazz'"]), ('mssh h git log --format="%h,%', ["'git log --format=%h,%anzz'"]),
-	('`mssh h ps --format="pid,us', ["'ps --format=pid,user'"]), ('$(mssh h ps --format="pid,us', ["'ps --format=pid,user'"]),
-	# (the items taken are written for the quote: zsh holds them written for none, a\ b, zz\&b)
-	('mssh h ps --format="pid,a b,us', ["'ps --format=pid,a b,user'"]), ('mssh h ps --format="pid,zz&b,us', ["'ps --format=pid,zz&b,user'"]),
-])
-def test_zsh_a_history_name_beside_a_list_value_after_a_quote_at_an_equals_sign_loses_nothing_typed(tmp_path, typed, history):
+# typed, history, then the line and the remote words where zsh's _ps splits the list (from 5.1; 5.0.2's does not, and history's
+# name goes in whole); {home} is this machine's HOME
+LIST_VALUES = [
+	('mssh h ps --format="pid,ppi', [], 'mssh h ps --format="pid,ppid,', ['ps', '--format=pid,ppid,'], 'mssh h ps --format="pid,ppi', ['ps', '--format=pid,ppi']),
+	('mssh h ps --format="pid,ppi', ["'ps --format=pid,ppidzz'"], 'mssh h ps --format="pid,ppid', ['ps', '--format=pid,ppid'],
+		'mssh h ps --format="pid,ppidzz" ', ['ps', '--format=pid,ppidzz']),
+	('mssh h ps --sort="pid,-ppi', ["'ps --sort=pid,-ppidzz'"], 'mssh h ps --sort="pid,-ppid', ['ps', '--sort=pid,-ppid'],
+		'mssh h ps --sort="pid,-ppidzz" ', ['ps', '--sort=pid,-ppidzz']),
+	# (the items taken are written for the quote: zsh holds them written for none, a\ b, zz\&b; a \\ stays one)
+	('mssh h ps --format="pid,a b,ppi', [], 'mssh h ps --format="pid,a b,ppid,', ['ps', '--format=pid,a', 'b,ppid,'], 'mssh h ps --format="pid,a b,ppi',
+		['ps', '--format=pid,a', 'b,ppi']),
+	('mssh h ps --format="pid,a\\\\b,ppi', [], 'mssh h ps --format="pid,a\\\\b,ppid,', ['ps', '--format=pid,ab,ppid,'],
+		'mssh h ps --format="pid,a\\\\b,ppi', ['ps', '--format=pid,ab,ppi']),
+	# and an expansion stays this shell's, as without TAB: \$HOME gave the remote host's, \$(echo x) ran echo on every host
+	('mssh h ps --format="pid,$HOME,ppi', [], 'mssh h ps --format="pid,$HOME,ppid,', ['ps', '--format=pid,{home},ppid,'], 'mssh h ps --format="pid,$HOME,ppi',
+		['ps', '--format=pid,{home},ppi']),
+	('mssh h ps --format="pid,$(echo x),ppi', [], 'mssh h ps --format="pid,$(echo x),ppid,', ['ps', '--format=pid,x,ppid,'],
+		'mssh h ps --format="pid,$(echo x),ppi', ['ps', '--format=pid,x,ppi']),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, history, split_line, split_remote, whole_line, whole_remote', LIST_VALUES, ids=[case[0] + ('-history' if case[1] else '') for case in LIST_VALUES])
+def test_zsh_a_list_value_after_a_quote_at_an_equals_sign_keeps_what_was_typed(tmp_path, opener, typed, history, split_line, split_remote, whole_line, whole_remote):
 	# the command's completion takes the list's items before the last into IPREFIX (pid,), and its own names went in without the quote
-	# beside history's, which had it: zsh put in only what both start with, mssh h ps --format=
-	line, _ = review_line(tmp_path, 'zsh', typed, history=history, pre='mssh() { :; }')
-	assert line.startswith(typed), line
+	# beside history's, which had it: zsh put in only what both start with, mssh h ps --format= (6.44 dropped the quote)
+	line, got = review_line(tmp_path, 'zsh', opener + typed, history=history, pre='mssh() { :; }')
+	split = zsh_version() > (5, 0)
+	expected, remote = (split_line, split_remote) if split else (whole_line, whole_remote)
+	home = str(tmp_path / 'home')
+	if opener:
+		# (the line run by this shell, as the remote shell gets it: its own HOME is the test's)
+		got, home = substituted_remote(line, tmp_path / 'work'), os.environ['HOME']
+	assert line == opener + expected and got == [word.replace('{home}', home) for word in remote], (line, got)
 
 
 @pytest.mark.parametrize('typed, dirs, expected, remote', [
