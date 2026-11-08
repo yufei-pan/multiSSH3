@@ -7590,6 +7590,8 @@ _mssh_complete_typed_dirs() {
 	[[ $PREFIX == "$1"* ]] && return 0
 	(( ${_mssh_complete_ticked:-0} )) || return 1
 	emulate -L zsh
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
 	setopt extended_glob
 	local -a _mssh_complete_given _mssh_complete_typed
 	local _mssh_complete_one _mssh_complete_remote
@@ -7649,6 +7651,8 @@ _mssh_complete_compadd() {
 		return
 	fi
 	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
 	local -i _mssh_complete_dq=${_mssh_complete_dq:-0} _mssh_complete_ticked=${_mssh_complete_ticked:-0}
 	local _mssh_complete_open=${_mssh_complete_open-}
 	local -a _mssh_complete_opts _mssh_complete_bare _mssh_complete_in _mssh_complete_out _mssh_complete_changed _mssh_complete_dirs
@@ -7983,6 +7987,8 @@ _mssh_complete_tick_open() {
 	# characters that count only, split out at once: a character at a time it took 1.8 s on a 10000-character line on 5.0.2, now 1 ms,
 	# and 0.1 s for one of 5000 quotes
 	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
 	local _mssh_complete_quote= _mssh_complete_outer= _mssh_complete_nul=$'\0'
 	local -a _mssh_complete_parts
 	local -i _mssh_complete_at _mssh_complete_open=0

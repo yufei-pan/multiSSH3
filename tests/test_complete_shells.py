@@ -1840,6 +1840,39 @@ def test_zsh_the_line_after_tab_for_shapes_the_review_found(tmp_path, typed, kwa
 	assert line == expected, line
 
 
+# lines whose TAB runs the glue's patterns that set MATCH and match ((#m), (#b)): mssh's and others, on the line, in $( and backticks
+LEAK_LINES = ['echo "a" `b` c', 'echo "$HOME" `ls zz', 'mssh h cat zzd\\\\\\&x/zz', '`mssh h cat zzd\\\\\\&x/zz', '$(mssh h cat zzs',
+	'mssh h "ls $PWD/zz\\"x', '`mssh h "ls $PWD/zzd\\\\&x/zz', 'mssh h make CFLAGS="-O', '`mssh h sort --output="zz', '$(mssh h dd if="zz']
+
+
+def test_zsh_tab_leaves_no_match_variables_in_the_shell(tmp_path):
+	# (stock zsh leaves none; set shows them, and echo $M<TAB> offered them)
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t' + h for h in ['"make CFLAGS=-O2"', '"sort --output=zzhist"']])
+	build_index(env)
+	work = tmp_path / 'work'
+	for name in ('zzs$v', 'zzd&x/zzin', 'zzlocal'):
+		(work / name).parent.mkdir(parents=True, exist_ok=True)
+		(work / name).write_text('')
+	session = zsh_session(home, env, glue_file(home, 'zsh'), pre='mssh() { :; }', extra="cd '{}'".format(work))
+	show = 'print -r -- {}:${{(j:,:)${{(ok)parameters[(I)(MATCH|MBEGIN|MEND|match|mbegin|mend)]}}}}:; unset MATCH MBEGIN MEND match mbegin mend\r'
+	try:
+		leaks = {}
+		for typed in LEAK_LINES:
+			session.send(typed + '\t')
+			session.wait_idle()
+			session.send('\x03')
+			session.wait_idle()
+			start = len(session.output)
+			session.send(show.format('LEAK'))
+			session.wait_idle()
+			session.read_for(0.3)
+			found = re.findall(r'LEAK:([^:\r\n]*):', session.output[start:].decode('utf-8', 'replace'))
+			leaks[typed] = found[-1] if found else None
+	finally:
+		session.close()
+	assert leaks == dict.fromkeys(LEAK_LINES, ''), leaks
+
+
 # inside backticks, where the line differs: a name that needs quoting gets the level the backticks read
 TICKED_PLAIN_NAME_VALUES = {'mssh h dd if="zza': ('mssh h dd if="zzamp' + '\\' * 3 + '&b" ', ['dd', 'if=zzamp&b'])}
 
