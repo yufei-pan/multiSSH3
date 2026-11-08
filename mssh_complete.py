@@ -7277,9 +7277,7 @@ _mssh() {
 	# (after the = of an option too: mssh --file="$PWD/zz, the option its own part of the line)
 	# (inside backticks zsh gives the backtick as the open quote, also for a word of no quote of its own: it is the command's, not the word's)
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
-	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_names_seen=0
-	# (IPREFIX and PREFIX of the first call of _mssh_complete_compadd adding names: the word they are in, _mssh_complete_add_texts)
-	local _mssh_complete_names_at=
+	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7438,9 +7436,8 @@ _mssh_complete_add_texts() {
 	# blank goes in as _files puts in its names, that text as typed in front (-p), the rest written for the quote open, -Q, and its
 	# matcher (with no matcher beside the one of _files zsh cut the line back too), so zsh finds what they and the command's names
 	# start with alike (whole beside a name of _files, which stands behind its directory, they shared nothing, and TAB cut the line
-	# back: mssh h cat ~/.zz became mssh h cat ). That only where the completions' names are for the same word (IPREFIX and PREFIX
-	# as _mssh_complete_compadd saw them), not in a quoted command (compset -q), a double quote zsh keeps no quote for
-	# (_mssh_complete_dq) or after a quote at an =: there zsh cut the line back again. The other words, and every word there, go in whole when nothing was added. Inside backticks each word gets the level
+	# back: mssh h cat ~/.zz became mssh h cat ). Not in a quoted command (the completion reads the word in it: compset -q), a double
+	# quote zsh keeps no quote for (_mssh_complete_dq) or after a quote at an =: there zsh cut the line back again. The other words, and every word there, go in whole when nothing was added. Inside backticks each word gets the level
 	# they read (_mssh_complete_tick): the rest of a word zsh writes before it does, a word of -Q (the double quote's of
 	# _mssh_complete_dq, the rest written here) as it goes in
 	if (( _mssh_complete_delegating )) && [[ -n $_mssh_complete_lead ]]; then
@@ -7456,13 +7453,10 @@ _mssh_complete_add_texts() {
 		_mssh_complete_whole=("${_mssh_complete_texts[@]}")
 	else
 		[[ $PREFIX == */* ]] || return 0
-		if (( _mssh_complete_delegating )); then
-			(( _mssh_complete_names_seen && ! _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ $_mssh_complete_names_at == "$IPREFIX$PREFIX" && -z $_mssh_complete_lead ]] && _mssh_complete_split=1
-		else
-			[[ $PREFIX != -*=* ]] && _mssh_complete_split=1
-		fi
-		# (with nothing beside them nothing is cut back: the directory typed stays as typed there too, a ~/ this shell's, as without TAB)
-		(( compstate[nmatches] == _mssh_complete_matches && ! _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ -z $_mssh_complete_lead ]] && _mssh_complete_split=1
+		# (mssh's own file option after its =: the completion reads the name alone, compset -P of _mssh_complete_in_word; with nothing
+		# beside them nothing is cut back, and the directory typed stays as typed there too, a ~/ this shell's, as without TAB)
+		(( ! _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ -z $_mssh_complete_lead ]] &&
+			[[ _mssh_complete_delegating -eq 1 || $PREFIX != -*=* || compstate[nmatches] -eq _mssh_complete_matches ]] && _mssh_complete_split=1
 		# (a word zsh writes itself is the name, which starts with the text typed as this shell reads it; one of -Q with it as typed)
 		_mssh_complete_read=$_mssh_complete_head
 		(( _mssh_complete_dq )) || _mssh_complete_read=${(Q)_mssh_complete_head}
@@ -7735,11 +7729,6 @@ _mssh_complete_compadd() {
 	# an expansion stays as typed, $HOME this shell's, as without TAB),
 	# or the history names beside, which have it, kept only --format= of the line. Not where the quote is there already, mssh's own
 	# --file=")
-	# (where the names of this call start, for _mssh_complete_add_texts: the first call adding any)
-	if (( ! _mssh_complete_filter && ! _mssh_complete_plain && ! ${_mssh_complete_names_seen:-1} )); then
-		_mssh_complete_names_seen=1
-		_mssh_complete_names_at=$IPREFIX$PREFIX
-	fi
 	if (( ! _mssh_complete_filter )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX == *"$_mssh_complete_lead"* && $IPREFIX != *"$_mssh_complete_lead"\"* ]]; then
 		_mssh_complete_moved=${IPREFIX##*"$_mssh_complete_lead"}
 		IPREFIX=${IPREFIX%"$_mssh_complete_moved"}\"${_mssh_complete_moved//(#m)\\?/${${MATCH[2]:#[\\\$\`\"\!]}:-$MATCH}}
