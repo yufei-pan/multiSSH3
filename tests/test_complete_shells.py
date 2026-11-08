@@ -1390,33 +1390,99 @@ def test_zsh_a_word_of_a_command_inside_backticks_completes_as_inside_a_dollar_p
 	assert line == opener + expected, line
 
 
-@pytest.mark.parametrize('name', ['zzs$v', 'zzamp&b', 'zzb`t', 'zzc\\d', 'zzq"x', "zzt'q", 'zz(p', 'zz*g'])
-@pytest.mark.parametrize('typed', ['mssh h cat zz', 'mssh h "cat zz', 'mssh h cat "zz', "mssh h 'cat zz", 'mssh h "ls $PWD/zz', 'mssh h sort --output="zz'])
-def test_zsh_inside_backticks_a_name_that_needs_quoting_is_left_out(tmp_path, typed, name):
-	# this shell reads the text in backticks once more than in $( ), and the name reached the remote shell one level short: zzs\\\$v
-	# ran as zzs$v, the remote shell's $v. Left out, the other name stays; the proper level is deferred (docs/limitations.md)
+TICKED_NAMES = ['zzs$v', 'zzamp&b', 'zzb`t', 'zzc\\d', 'zzq"x', "zzt'q", 'zz(p', 'zz*g']
+
+
+@pytest.mark.parametrize('name', TICKED_NAMES)
+@pytest.mark.parametrize('typed, command', [
+	('mssh h cat zz', ['cat']), ('mssh h "cat zz', ['cat']), ('mssh h cat "zz', ['cat']), ("mssh h 'cat zz", ['cat']), ('mssh h "ls $PWD/zz', ['ls', '{work}/']),
+	('mssh h sort --output="zz', ['sort', '--output=']), ('mssh h dd if="zz', ['dd', 'if=']),
+])
+def test_zsh_inside_backticks_a_name_that_needs_quoting_reaches_the_remote_shell_as_named(tmp_path, typed, command, name):
+	# this shell reads the text in backticks once more than in $( ): zzs\\\$v reached the remote shell as zzs$v, the remote shell's $v,
+	# and 6.45 left such names out. Each word now gets that level, and the remote shell gets what $( ) gives it
 	(tmp_path / 'one').mkdir()
 	(tmp_path / 'two').mkdir()
-	line, _ = review_line(tmp_path / 'one', 'zsh', '`' + typed, files=[name, 'zzgood'], pre='mssh() { :; }')
-	assert line.rstrip('" ').rstrip("'") == '`' + typed + 'good', line
-	# $( ) is read once: the name is offered there
+	work = str(tmp_path / 'one' / 'work')
+	remote = command[:-1] + [command[-1].replace('{work}', work) + name] if command[-1].endswith(('/', '=')) else command + [name]
+	line, _ = review_line(tmp_path / 'one', 'zsh', '`' + typed, files=[name], pre='mssh() { :; }')
+	assert line != '`' + typed and substituted_remote(line, tmp_path / 'one' / 'work') == remote, line
 	line, _ = review_line(tmp_path / 'two', 'zsh', '$(' + typed, files=[name], pre='mssh() { :; }')
-	assert line != '$(' + typed, line
+	assert substituted_remote(line, tmp_path / 'two' / 'work') == [word.replace(work, str(tmp_path / 'two' / 'work')) for word in remote], line
 
 
-def substituted_remote(line, cwd):
-	'''The words the remote shell gets for line, an mssh command in a backtick or a $( left open: the line closed and run by zsh in cwd,
-	with mssh printing its arguments, which sh then reads as the remote shell does (HOME at REMOTE_HOME). None when zsh cannot read it.'''
+# (the names each of these got one level short in 6.45; zsh wrote the others for the backticks already)
+@pytest.mark.parametrize('typed, name', [(typed, name) for typed in ('mssh -f zz', 'mssh --file=zz') for name in ('zzs$v', 'zzb`t', 'zzc\\d')] +
+	[('mssh -f "zz', 'zzs$v'), ('mssh -f "zz', 'zzb`t'), ("mssh -f 'zz", 'zzb`t')] + [('mssh --file="zz', name) for name in TICKED_NAMES])
+def test_zsh_inside_backticks_mssh_s_own_file_option_gets_the_name(tmp_path, typed, name):
+	# mssh's own file options got zsh's own names, one level short: `mssh -f zz<TAB> gave `mssh -f zzs\\$v, and mssh got -f zzs
+	line, _ = review_line(tmp_path, 'zsh', '`' + typed, files=[name], pre='mssh() { :; }')
+	option = typed.split()[1].rstrip('"\'z').rstrip('=')
+	assert substituted_words(line, tmp_path / 'work') == ([option, name] if option == '-f' else [option + '=' + name]), line
+
+
+# typed, what review_line gets, the line after TAB (all inside a backtick), and whose words those are: the remote shell's or mssh's
+TICKED_LINES = [
+	('mssh h cat zz', {'files': ['zzs$v']}, 'mssh h cat zzs\\\\\\\\\\\\\\$v ', 'remote', ['cat', 'zzs$v']),
+	('mssh h cat zz', {'files': ['zzc\\d']}, 'mssh h cat zzc\\\\\\\\\\\\\\d ', 'remote', ['cat', 'zzc\\d']),
+	('mssh h cat zz', {'files': ['zzb`t']}, 'mssh h cat zzb\\\\\\\\\\\\\\`t ', 'remote', ['cat', 'zzb`t']),
+	('mssh h cat zz', {'files': ['zzamp&b']}, 'mssh h cat zzamp\\\\\\\\\\&b ', 'remote', ['cat', 'zzamp&b']),
+	('mssh h "cat zz', {'files': ['zzs$v']}, 'mssh h "cat zzs\\\\\\\\\\\\\\$v', 'remote', ['cat', 'zzs$v']),
+	('mssh h "cat zz', {'files': ['zzq"x']}, 'mssh h "cat zzq\\\\\\\\\\"x', 'remote', ['cat', 'zzq"x']),
+	('mssh h cat "zz', {'files': ['zzs$v']}, 'mssh h cat "zzs\\\\\\\\\\\\\\$v" ', 'remote', ['cat', 'zzs$v']),
+	("mssh h 'cat zz", {'files': ['zzs$v']}, "mssh h 'cat zzs\\\\\\$v", 'remote', ['cat', 'zzs$v']),
+	("mssh h 'cat zz", {'files': ["zzt'q"]}, "mssh h 'cat zzt\\'\\''q", 'remote', ['cat', "zzt'q"]),
+	('mssh h "ls $PWD/zz', {'files': ['zzs$v']}, 'mssh h "ls $PWD/zzs\\\\\\\\\\\\\\$v" ', 'remote', ['ls', '{work}/zzs$v']),
+	('mssh h sort --output="zz', {'files': ['zzs$v']}, 'mssh h sort --output="zzs\\\\\\\\\\\\\\$v" ', 'remote', ['sort', '--output=zzs$v']),
+	('mssh h dd if="zz', {'files': ['zzc\\d']}, 'mssh h dd if="zzc\\\\\\\\\\\\\\d" ', 'remote', ['dd', 'if=zzc\\d']),
+	('mssh -f zz', {'files': ['zzs$v']}, 'mssh -f zzs\\\\\\$v ', 'mssh', ['-f', 'zzs$v']),
+	('mssh --file=zz', {'files': ['zzc\\d']}, 'mssh --file=zzc\\\\\\d ', 'mssh', ['--file=zzc\\d']),
+	('mssh -f "zz', {'files': ['zzb`t']}, 'mssh -f "zzb\\\\\\`t" ', 'mssh', ['-f', 'zzb`t']),
+	('mssh h "cat \\~zz', {'files': ['~zzt']}, 'mssh h "cat \\\\~zzt', 'remote', ['cat', '~zzt']),
+	('mssh h cat zza', {'history': ['"cat zzamp\\\\&b"']}, 'mssh h cat zzamp\\\\\\\\\\&b ', 'remote', ['cat', 'zzamp&b']),
+	('mssh h cat zzh', {'history': ["'cat zzh$HOME'"]}, 'mssh h cat zzh\\\\\\$HOME ', 'remote', ['cat', 'zzh/zzremote-home']),
+	('mssh h "cat zza', {'history': ['"cat zzamp\\\\&b"']}, 'mssh h "cat zzamp\\\\\\\\&b" ', 'remote', ['cat', 'zzamp&b']),
+	('mssh h "ls $PWD/zzs', {'history': ["'ls $PWD/zzs\\\\$v'"]}, 'mssh h "ls $PWD/zzs\\\\\\\\\\\\\\\\\\\\\\$v" ', 'remote', ['ls', '{work}/zzs\\']),
+	("mssh h 'zzc", {'history': ["'zzcmd \\\\$v'"]}, "mssh h 'zzcmd \\\\\\\\\\$v' ", 'remote', ['zzcmd', '\\']),
+	('mssh h cat zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h cat zzd\\\\\\\\\\&x/zzin ', 'remote', ['cat', 'zzd&x/zzin']),
+	('mssh h cat zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, 'mssh h cat zzd\\\\\\\\\\\\\\$x/zzin ', 'remote', ['cat', 'zzd$x/zzin']),
+	("mssh h 'cat zzd", {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, "mssh h 'cat zzd\\\\\\$x/zzin", 'remote', ['cat', 'zzd$x/zzin']),
+	('mssh h cat "zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h cat "zzd\\\\\\\\&x/zzin" ', 'remote', ['cat', 'zzd&x/zzin']),
+	('mssh -f zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, 'mssh -f zzd\\\\\\$x/zzin ', 'mssh', ['-f', 'zzd$x/zzin']),
+	('mssh h "ls $PWD/zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, 'mssh h "ls $PWD/zzd\\\\\\\\\\\\\\$x/zzin" ', 'remote', ['ls', '{work}/zzd$x/zzin']),
+	('mssh h dd if="zza', {'files': ['zzamp&b']}, 'mssh h dd if="zzamp\\\\\\&b" ', 'remote', ['dd', 'if=zzamp&b']),
+]
+
+
+@pytest.mark.parametrize('typed, kwargs, expected, whose, words', TICKED_LINES)
+def test_zsh_inside_backticks_a_word_is_written_once_more_for_them(tmp_path, typed, kwargs, expected, whose, words):
+	# (the same words as in $( ), where the line is read once: each line here was checked against it)
+	line, _ = review_line(tmp_path, 'zsh', '`' + typed, pre='mssh() { :; }', **kwargs)
+	got = substituted_remote(line, tmp_path / 'work') if whose == 'remote' else substituted_words(line, tmp_path / 'work')
+	assert (line, got) == ('`' + expected, [word.replace('{work}', str(tmp_path / 'work')) for word in words])
+
+
+def substituted_words(line, cwd):
+	'''The words mssh gets for line, an mssh command in a backtick or a $( left open: the line closed and run by zsh in cwd, with mssh
+	printing its arguments. None when zsh cannot read it.'''
 	closing = '`' if line.startswith('`') else ')'
 	for close in ('', '"', "'"):
 		output = subprocess.run([require_shell('zsh'), '-fc', 'mssh() { printf "%s\\0" "$@" }; eval "x=$1" 2>/dev/null || exit 3; print -rn -- "$x"', 'zsh',
 			line + close + closing], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, cwd=str(cwd))
 		if output.returncode == 0:
-			words = output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
-			remote = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(words[1:])],
-				stdout=subprocess.PIPE, timeout=30, env=dict(os.environ, HOME=REMOTE_HOME), cwd='/')
-			return remote.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
+			return output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 	return None
+
+
+def substituted_remote(line, cwd):
+	'''The words the remote shell gets for line, an mssh command in a backtick or a $( left open: mssh's words (substituted_words),
+	which sh then reads as the remote shell does (HOME at REMOTE_HOME). None when zsh cannot read it.'''
+	words = substituted_words(line, cwd)
+	if words is None:
+		return None
+	remote = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(words[1:])],
+		stdout=subprocess.PIPE, timeout=30, env=dict(os.environ, HOME=REMOTE_HOME), cwd='/')
+	return remote.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 
 
 @pytest.mark.parametrize('typed, files, history, remote', [
@@ -1438,24 +1504,15 @@ def test_zsh_inside_backticks_a_name_that_reads_as_in_a_dollar_paren_is_offered(
 	assert line != opener + typed and substituted_remote(line, tmp_path / 'work') == remote, line
 
 
-@pytest.mark.parametrize('typed, history, expected', [
-	('`mssh h cat zz', ['"cat zzamp\\\\&b"', '"cat zzgood"'], '`mssh h cat zzgood '),
-	('`mssh h cat zz', ['"cat \'zzs$v\'"', '"cat zzgood"'], '`mssh h cat zzgood '),
-	# (a $ zsh writes \$, which the second reading takes: zzh\$HOME went in, and the remote shell got this machine's home)
-	('`mssh h cat zzh', ["'cat zzh$HOME'", '"cat zzhgood"'], '`mssh h cat zzhgood '),
-	('`mssh h "cat zz', ['"cat zzamp\\\\&b"', '"cat zzgood"'], '`mssh h "cat zzgood" '),
+def test_zsh_inside_backticks_a_history_name_keeps_the_expansion_typed(tmp_path):
 	# (what was typed is not the name's: the $PWD is read by this shell, as the operator wrote it)
-	('`mssh h "ls $PWD/zz', ['\'ls $PWD/zzhist\''], '`mssh h "ls $PWD/zzhist" '),
-])
-def test_zsh_inside_backticks_a_history_name_that_needs_quoting_is_left_out(tmp_path, typed, history, expected):
-	line, _ = review_line(tmp_path, 'zsh', typed, history=history, pre='mssh() { :; }')
-	assert line == expected, line
+	line, _ = review_line(tmp_path, 'zsh', '`mssh h "ls $PWD/zz', history=['\'ls $PWD/zzhist\''], pre='mssh() { :; }')
+	assert line == '`mssh h "ls $PWD/zzhist" ', line
 
 
-@pytest.mark.parametrize('names, tabs', [(('zzgood2', 'zzgood1', 'zzamp\\\\&b'), 2), (('zzgood', 'zzhgood', 'zzamp\\\\&b'), 1)], ids=['second-tab', 'first-tab'])
+@pytest.mark.parametrize('names, tabs', [(('zzgood2', 'zzgood1', 'zzgoodamp\\\\&b'), 2), (('zzgood', 'zzhgood', 'zzamp\\\\&b'), 1)], ids=['second-tab', 'first-tab'])
 def test_zsh_inside_backticks_the_list_shows_the_names_it_offers(tmp_path, names, tabs):
-	# (a name left out goes from the list's texts too, or the words beside them show the wrong text: the list on the first TAB, of
-	# names that share no more than what was typed, showed zzamp\\&b)
+	# (every name is listed, as in $( ): 6.45 left a name that needs quoting out of the words and the list)
 	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t"cat {}"'.format(name) for name in names])
 	build_index(env)
 	session = zsh_session(home, env, glue_file(home, 'zsh'), pre='mssh() { :; }')
@@ -1468,17 +1525,25 @@ def test_zsh_inside_backticks_the_list_shows_the_names_it_offers(tmp_path, names
 			session.wait_idle(40)
 		session.read_for(0.5)
 		shown = session.output[start:].decode('utf-8', 'replace')
-		assert 'zzgood' in shown and 'zzamp' not in shown, shown
+		assert 'zzgood' in shown and 'amp' in shown, shown
 	finally:
 		session.close()
 
 
-@pytest.mark.parametrize('files, expected', [(['zzs$v', 'zzgood'], '`mssh h cat zzgood `'), (['zzs$v'], '`mssh h cat zz`')])
-def test_zsh_inside_backticks_counts_the_backticks_before_the_cursor(tmp_path, files, expected):
+def test_zsh_inside_backticks_counts_the_backticks_before_the_cursor(tmp_path):
 	# the cursor before the closing backtick: the command is inside them. Counted on the whole line they were closed, and zzs\\\$v went in,
 	# which reaches the remote shell as zzs$v
-	line, _ = review_line(tmp_path, 'zsh', '`mssh h cat zz`', files=files, pre='mssh() { :; }', keys='\x02\t')
-	assert line == expected, line
+	line, _ = review_line(tmp_path, 'zsh', '`mssh h cat zz`', files=['zzs$v'], pre='mssh() { :; }', keys='\x02\t')
+	assert line == '`mssh h cat zzs' + '\\' * 7 + '$v `', line
+	assert substituted_remote(line[:-1], tmp_path / 'work') == ['cat', 'zzs$v'], line
+
+
+@pytest.mark.parametrize('typed', ["mssh h echo '`' zz", "mssh h echo $'`' zz", "mssh h echo $'\\'`' zz", "mssh h echo '`' \\` zz"])
+def test_zsh_a_quoted_or_escaped_backtick_opens_nothing(tmp_path, typed):
+	# a backtick in single quotes (or $'...', or escaped) counted, and the line was read as inside backticks: zzs$v was left out
+	# (written as outside backticks: the remote shell gets zzs$v)
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzs$v'], pre='mssh() { :; }')
+	assert line == typed + 's\\\\\\$v ', line
 
 
 def walk_script(home, lines):
@@ -1496,7 +1561,9 @@ def test_zsh_the_walk_ends_on_any_backtick_and_reads_the_open_one(setup):
 	require_shell('zsh')
 	env, home = setup
 	lines = {'': 'no', '`': 'no', '``': 'no', '```': 'no', 'ls': 'no', '`ls': 'no', '`a` `': 'no', '\\`': 'no', '\\\\': 'no', '`\\': 'no', '`$(': 'no', '$(`': 'no',
-		'`mssh ': 'yes', '`a` `mssh ': 'yes', '`a\\`b `mssh ': 'no', '`mssh a\\`b ': 'yes', '`\\mssh ': 'yes', '$(`mssh ': 'yes', '`$(mssh ': 'yes'}
+		'`mssh ': 'yes', '`a` `mssh ': 'yes', '`a\\`b `mssh ': 'no', '`mssh a\\`b ': 'yes', '`\\mssh ': 'yes', '$(`mssh ': 'yes', '`$(mssh ': 'yes',
+		# (a backtick in single quotes is none, in a double quote one; inside backticks the quotes start anew)
+		"`a '`' mssh ": 'yes', "`a $'\\'`' mssh ": 'yes', '"`mssh ': 'yes', "`mssh '": 'yes', "'`mssh ": 'no'}
 	result = subprocess.run([require_shell('zsh'), '-f', str(walk_script(home, list(lines)))], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=30)
 	assert [(line, answer) for line, answer in zip(lines, result.stdout.split()) if lines[line] != answer] == [] and len(result.stdout.split()) == len(lines), result.stdout
 
@@ -1689,8 +1756,8 @@ def test_zsh_a_quote_after_a_plain_name_s_equals_sign_stays(tmp_path, opener, ty
 	assert (line, got) == (opener + expected, remote)
 
 
-# inside backticks, where the line differs: a name that needs quoting is left out (docs/limitations.md)
-TICKED_PLAIN_NAME_VALUES = {'mssh h dd if="zza': ('mssh h dd if="zza', ['dd', 'if=zza'])}
+# inside backticks, where the line differs: a name that needs quoting gets the level the backticks read
+TICKED_PLAIN_NAME_VALUES = {'mssh h dd if="zza': ('mssh h dd if="zzamp' + '\\' * 3 + '&b" ', ['dd', 'if=zzamp&b'])}
 
 
 @pytest.mark.parametrize('typed, dirs, expected, remote', [
