@@ -1538,7 +1538,7 @@ def test_zsh_inside_backticks_counts_the_backticks_before_the_cursor(tmp_path):
 	assert substituted_remote(line[:-1], tmp_path / 'work') == ['cat', 'zzs$v'], line
 
 
-@pytest.mark.parametrize('typed', ["mssh h echo '`' zz", "mssh h echo $'`' zz", "mssh h echo $'\\'`' zz", "mssh h echo '`' \\` zz"])
+@pytest.mark.parametrize('typed', ["mssh h echo '`' zz", "mssh h echo $'`' zz", "mssh h echo $'\\'`' zz", "mssh h echo '`' \\` zz", "mssh h echo 'a`b' zz"])
 def test_zsh_a_quoted_or_escaped_backtick_opens_nothing(tmp_path, typed):
 	# a backtick in single quotes (or $'...', or escaped) counted, and the line was read as inside backticks: zzs$v was left out
 	# (written as outside backticks: the remote shell gets zzs$v)
