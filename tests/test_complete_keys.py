@@ -2118,6 +2118,9 @@ def test_ctrl_r_goes_on_without_an_engine_slow_to_start(home, shell):
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
+		# (under heavy load fish's space check after typing can still be running, and Ctrl-R waits for it;
+		# start the clock once the shell is idle, so the test times the engine's start, not that check)
+		session.wait_idle()
 		started = time.monotonic()
 		if shell == 'zsh':
 			session.send('\x12aa\r')
