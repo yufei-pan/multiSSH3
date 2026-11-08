@@ -7277,7 +7277,7 @@ _mssh() {
 	# (after the = of an option too: mssh --file="$PWD/zz, the option its own part of the line)
 	# (inside backticks zsh gives the backtick as the open quote, also for a word of no quote of its own: it is the command's, not the word's)
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
-	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0
+	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches]
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7411,6 +7411,8 @@ _mssh() {
 		# mssh's own words go in before the completions' names (after them, in a quoted command mssh h "ls --co became mssh h ls --co),
 		# in a word holding a / behind the directory typed (_mssh_complete_add_texts)
 		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts first
+		# (how many names there are with mssh's own words in: _mssh_complete_compadd leaves out a split value's beside them)
+		_mssh_complete_texts_in=$compstate[nmatches]
 		_mssh_complete_in_word names
 		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts after
 		# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
@@ -7735,6 +7737,13 @@ _mssh_complete_compadd() {
 		_mssh_complete_dq=1
 		_mssh_complete_open=\"
 		_mssh_complete_at_equals=1
+	fi
+	# (a value after a quote at an = that the command's completion split into words of its own, compset -q as _gcc does for
+	# make CFLAGS="-O: its names reach here without the lead and the quote, and beside mssh's own words, which have them, zsh cut the
+	# line back to CFLAGS=. Beside those words they are left out; with none they go in as in 6.45)
+	if (( ! _mssh_complete_filter && ! _mssh_complete_plain && ${_mssh_complete_texts_in:-0} > ${_mssh_complete_matches:-0} )) &&
+		[[ -n ${_mssh_complete_lead-} && $IPREFIX != *"$_mssh_complete_lead"* ]]; then
+		return 1
 	fi
 	(( _mssh_complete_dq )) && _mssh_complete_closing_opts=(-S '" ')
 	# (in a quoted command's double quote zsh writes a word of -Q for that quote still: a \ is doubled, and the word is raw)

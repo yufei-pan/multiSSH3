@@ -1756,6 +1756,58 @@ def test_zsh_a_quote_after_a_plain_name_s_equals_sign_stays(tmp_path, opener, ty
 	assert (line, got) == (opener + expected, remote)
 
 
+# typed, the history entry, then the line after TAB and the remote words: a value after a quote at an = that the command's
+# completion splits into words of its own (_gcc for make's CFLAGS: compset -q)
+SPLIT_VALUES = [
+	('mssh h make CFLAGS="-O', '"make CFLAGS=-O2"', 'mssh h make CFLAGS="-O2" ', ['make', 'CFLAGS=-O2']),
+	('mssh h make CXXFLAGS="-O', '"make CXXFLAGS=-O2"', 'mssh h make CXXFLAGS="-O2" ', ['make', 'CXXFLAGS=-O2']),
+	('mssh h make LDFLAGS="-', '"make LDFLAGS=-lm"', 'mssh h make LDFLAGS="-lm" ', ['make', 'LDFLAGS=-lm']),
+	('mssh h make CPPFLAGS="-', '"make CPPFLAGS=-DX"', 'mssh h make CPPFLAGS="-DX" ', ['make', 'CPPFLAGS=-DX']),
+	('mssh h make CFLAGS="-g', '"make CFLAGS=-ggdb"', 'mssh h make CFLAGS="-ggdb" ', ['make', 'CFLAGS=-ggdb']),
+	('mssh h export CFLAGS="-O', '"export CFLAGS=-O2"', 'mssh h export CFLAGS="-O2" ', ['export', 'CFLAGS=-O2']),
+	('mssh h sudo make CFLAGS="-O', '"sudo make CFLAGS=-O2"', 'mssh h sudo make CFLAGS="-O2" ', ['sudo', 'make', 'CFLAGS=-O2']),
+	('mssh h make -j4 CFLAGS="-O', '"make -j4 CFLAGS=-O2"', 'mssh h make -j4 CFLAGS="-O2" ', ['make', '-j4', 'CFLAGS=-O2']),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, history, expected, remote', SPLIT_VALUES)
+def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_what_was_typed(tmp_path, opener, typed, history, expected, remote):
+	# the command's names came without the lead and the quote beside mssh's own words, which had them, and TAB cut the line back to
+	# make CFLAGS= (6.46 before this fix). Beside history's names they are left out
+	line, got = review_line(tmp_path, 'zsh', opener + typed, history=[history], pre='mssh() { :; }')
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	assert (line, got) == (opener + expected, remote)
+
+
+# typed, what review_line gets, then the line after TAB (or after the keys of steps)
+SHAPES_PINNED = [
+	# (a history name behind a typed $HOME/ or ~/ keeps the text typed: 6.45 wrote \$HOME and \~, the remote host's)
+	('mssh --file=$HOME/.zz', {'history': ["1790000000\t/x/multiSSH3.py\t'--file=$HOME/.zzhist'\th\tls"]}, 'mssh --file=$HOME/.zzhist '),
+	('mssh --file=~/.zz', {'history': ['1790000000\t/x/multiSSH3.py\t--file=~/.zzhist\th\tls']}, 'mssh --file=~/.zzhist '),
+	# (a typed directory written for the remote shell: history's name beside the local one, and the next letter picks it)
+	('mssh h cat zz\\\\\\&d/zz', {'dirs': ['zz&d'], 'files': ['zz&d/zzlocal'], 'history': ['"cat zz\\\\&d/zzremote"']}, 'mssh h cat zz\\\\\\&d/zz'),
+	('mssh h cat zz\\\\\\&d/zz', {'dirs': ['zz&d'], 'files': ['zz&d/zzlocal'], 'history': ['"cat zz\\\\&d/zzremote"'], 'steps': ['r\t']}, 'mssh h cat zz\\\\\\&d/zzremote '),
+	# (a ! in a single quote, from history)
+	("mssh -f 'sub/zz", {'dirs': ['sub'], 'history': ["1790000000\t/x/multiSSH3.py\t-f 'sub/zz!x'\th\tls"]}, "mssh -f 'sub/zz!x' "),
+	# (a word whose text before the = is no plain name is outside the quote-at-= lead: the line is not cut back)
+	('mssh h cat sub/b="zz', {'files': ['sub/b=zzfile'], 'history': ['"cat sub/b=zzhist"']}, 'mssh h cat sub/b=zz'),
+	('mssh h cat a-b="zz', {'files': ['a-b=zzfile'], 'history': ['"cat a-b=zzhist"']}, 'mssh h cat a-b=zz'),
+	('mssh h cat 1x="zz', {'files': ['1x=zzfile'], 'history': ['"cat 1x=zzhist"']}, 'mssh h cat 1x=zz'),
+	('mssh h cat x.y="zz', {'files': ['x.y=zzfile'], 'history': ['"cat x.y=zzhist"']}, 'mssh h cat x.y=zz'),
+	# (inside backticks, after a quote at an =, TAB does not go on into a changed directory: docs/limitations.md)
+	('`mssh h dd if="zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\&x/zz'),
+	('`mssh h dd if="zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\\\\\\\\\$x/zz'),
+]
+
+
+@pytest.mark.parametrize('typed, kwargs, expected', SHAPES_PINNED)
+def test_zsh_the_line_after_tab_for_shapes_the_review_found(tmp_path, typed, kwargs, expected):
+	line, _ = review_line(tmp_path, 'zsh', typed, pre='mssh() { :; }', **kwargs)
+	assert line == expected, line
+
+
 # inside backticks, where the line differs: a name that needs quoting gets the level the backticks read
 TICKED_PLAIN_NAME_VALUES = {'mssh h dd if="zza': ('mssh h dd if="zzamp' + '\\' * 3 + '&b" ', ['dd', 'if=zzamp&b'])}
 
