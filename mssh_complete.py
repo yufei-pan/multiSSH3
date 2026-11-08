@@ -7737,9 +7737,9 @@ _mssh_complete_compadd() {
 	fi
 	# (a value after a quote at an = that the command's completion split into words of its own, compset -q as _gcc does for
 	# make CFLAGS="-O: its names reach here without the lead and the quote, and beside mssh's own words, which have them, zsh cut the
-	# line back to CFLAGS=. Beside those words they are left out; with none they go in as in 6.45)
-	if (( ! _mssh_complete_filter && ! _mssh_complete_plain && ${_mssh_complete_texts_in:-0} > ${_mssh_complete_matches:-0} )) &&
-		[[ -n ${_mssh_complete_lead-} && $IPREFIX != *"$_mssh_complete_lead"* ]]; then
+	# line back to CFLAGS=. Beside those words they are left out; with none they go in as in 6.45. A call that filters or stores
+	# adds nothing; what it stores goes in through another call, which comes here. With no lead *""* matches any IPREFIX)
+	if (( ${_mssh_complete_texts_in:-0} > ${_mssh_complete_matches:-0} )) && [[ $IPREFIX != *"${_mssh_complete_lead-}"* ]]; then
 		return 1
 	fi
 	(( _mssh_complete_dq )) && _mssh_complete_closing_opts=(-S '" ')
