@@ -701,6 +701,16 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: 6.46.
 - Noted: 2026-11-06, the user's standing rule that deferrals are noted, not asked; the two cases 2026-11-07.
 
+### zsh: a quote after a plain name's `=` is dropped
+- Kind: deferred (6.46)
+- What the operator sees: in zsh, `mssh h dd if="zz<TAB>` completes to `mssh h dd if=zzfile`, the typed quote gone (`make VAR="..."`
+  the same). The remote words are unchanged. The same happens in 6.44 and in stock zsh. 6.45 keeps the quote after a remote option's
+  `=` (`--format="pid,us`), but a word that does not start with `-` is outside that rule.
+- Why: the quote-at-`=` lead is recognised only for words that start with `-`. Found in round 3 of 6.45's review; the version's other
+  fixes are ready, and this changes no remote word.
+- Revisit when: 6.46: take the lead for any word whose text before the `=` is a plain name (`if=`, `VAR=`), with tests for `dd` and `make`.
+- Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
+
 ### zsh: beside the command's own names, a word holding a `/` gets no history names
 - Kind: deferred (6.46)
 - What the operator sees: in zsh, when TAB completes a word holding a `/` (or any word of a quoted command holding one) and the command's
