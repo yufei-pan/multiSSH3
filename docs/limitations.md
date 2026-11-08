@@ -732,6 +732,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   The hang is in ble.sh's own `conditional-sync`, so an EL7 user of ble.sh can hit it without mssh too: a TAB now and then waits
   for the next key, which cancels it.
 - Why: on bash 4.2 a timed read can lose a job's SIGCHLD, so the job stays a zombie, `kill -0` keeps finding it, and ble.sh waited for
-  the next key, which cancelled TAB: 1 in 100 to 1000 of the no-answer tests' TABs failed. The same line is proposed upstream.
+  the next key, which cancelled TAB: 1 in 100 to 1000 of the no-answer tests' TABs failed. The same line is drafted as a report to ble.sh, not posted yet.
 - Revisit when: the ble.sh pin moves to a release with the fix: drop the `sed` and its `grep`.
 - Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
