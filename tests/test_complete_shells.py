@@ -1546,6 +1546,20 @@ def test_zsh_a_quoted_or_escaped_backtick_opens_nothing(tmp_path, typed):
 	assert line == typed + 's\\\\\\$v ', line
 
 
+# typed, then the line after TAB: a quote closed before a backtick, or one opened inside closed backticks, ends where zsh ends it
+QUOTES_AROUND_BACKTICKS = [
+	('mssh h echo "a" \'`\' zz', 'mssh h echo "a" \'`\' zzs\\\\\\$v '),
+	("echo $'a' `mssh h cat zz", "echo $'a' `mssh h cat zzs\\\\\\\\\\\\\\$v "),
+	('echo "`a` \'`mssh h cat zz', 'echo "`a` \'`mssh h cat zzs\\\\\\\\\\\\\\$v '),
+]
+
+
+@pytest.mark.parametrize('typed, expected', QUOTES_AROUND_BACKTICKS)
+def test_zsh_the_backtick_count_closes_each_quote_where_zsh_does(tmp_path, typed, expected):
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzs$v'], pre='mssh() { :; }')
+	assert line == expected, line
+
+
 def walk_script(home, lines):
 	'''A script calling the glue's walk on each of lines, the text before the cursor: yes or no for each.'''
 	with open(glue_file(home, 'zsh'), encoding='utf-8') as glue:
@@ -1562,8 +1576,9 @@ def test_zsh_the_walk_ends_on_any_backtick_and_reads_the_open_one(setup):
 	env, home = setup
 	lines = {'': 'no', '`': 'no', '``': 'no', '```': 'no', 'ls': 'no', '`ls': 'no', '`a` `': 'no', '\\`': 'no', '\\\\': 'no', '`\\': 'no', '`$(': 'no', '$(`': 'no',
 		'`mssh ': 'yes', '`a` `mssh ': 'yes', '`a\\`b `mssh ': 'no', '`mssh a\\`b ': 'yes', '`\\mssh ': 'yes', '$(`mssh ': 'yes', '`$(mssh ': 'yes',
-		# (a backtick in single quotes is none, in a double quote one; inside backticks the quotes start anew)
-		"`a '`' mssh ": 'yes', "`a $'\\'`' mssh ": 'yes', '"`mssh ': 'yes', "`mssh '": 'yes', "'`mssh ": 'no'}
+		# (a backtick in single quotes is none, in a double quote one)
+		# (inside backticks zsh closes them at the next backtick, in any quote: `a '` is closed, and the ' after it opens a quote)
+		"`a '`' mssh ": 'no', "`a $'\\'`' mssh ": 'no', '"`mssh ': 'yes', "`mssh '": 'yes', "'`mssh ": 'no'}
 	result = subprocess.run([require_shell('zsh'), '-f', str(walk_script(home, list(lines)))], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=30)
 	assert [(line, answer) for line, answer in zip(lines, result.stdout.split()) if lines[line] != answer] == [] and len(result.stdout.split()) == len(lines), result.stdout
 
