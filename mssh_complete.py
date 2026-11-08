@@ -7469,8 +7469,6 @@ _mssh_complete_add_texts() {
 				if (( ! _mssh_complete_dq )); then
 					_mssh_complete_quote_in "$_mssh_complete_text"
 					_mssh_complete_text=$_mssh_complete_inq
-					# (a ! this shell's history would read, as zsh writes it)
-					[[ $_mssh_complete_open != \' && ${_mssh_complete_compsys_options[banghist]-} == on ]] && _mssh_complete_text=${_mssh_complete_text//\!/\\!}
 				fi
 				(( _mssh_complete_ticked )) && _mssh_complete_tick written "$_mssh_complete_text" && _mssh_complete_text=$_mssh_complete_word
 				_mssh_complete_shown=("$_mssh_complete_listed[_mssh_complete_at]")
