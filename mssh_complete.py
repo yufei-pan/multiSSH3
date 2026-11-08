@@ -7482,7 +7482,7 @@ _mssh_complete_add_texts() {
 	fi
 	if (( _mssh_complete_ticked )); then
 		for (( _mssh_complete_at = 1; _mssh_complete_at <= $#_mssh_complete_whole; _mssh_complete_at++ )); do
-			(( _mssh_complete_dq )) && _mssh_complete_tick written "$_mssh_complete_whole[_mssh_complete_at]" || _mssh_complete_tick raw "$_mssh_complete_whole[_mssh_complete_at]"
+			(( _mssh_complete_dq || $#_mssh_complete_textopts )) && _mssh_complete_tick written "$_mssh_complete_whole[_mssh_complete_at]" || _mssh_complete_tick raw "$_mssh_complete_whole[_mssh_complete_at]"
 			_mssh_complete_whole[_mssh_complete_at]=$_mssh_complete_word
 		done
 	fi

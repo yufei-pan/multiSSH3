@@ -1551,6 +1551,8 @@ QUOTES_AROUND_BACKTICKS = [
 	('mssh h echo "a" \'`\' zz', 'mssh h echo "a" \'`\' zzs\\\\\\$v '),
 	("echo $'a' `mssh h cat zz", "echo $'a' `mssh h cat zzs\\\\\\\\\\\\\\$v "),
 	('echo "`a` \'`mssh h cat zz', 'echo "`a` \'`mssh h cat zzs\\\\\\\\\\\\\\$v '),
+	# (an escaped backtick in a double quote opens nothing)
+	('mssh h echo "use \\`date\\`" zz', 'mssh h echo "use \\`date\\`" zzs\\\\\\$v '),
 ]
 
 
@@ -1824,6 +1826,11 @@ SHAPES_PINNED = [
 	# (inside backticks, after a quote at an =, TAB does not go on into a changed directory: docs/limitations.md)
 	('`mssh h dd if="zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\&x/zz'),
 	('`mssh h dd if="zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\\\\\\\\\$x/zz'),
+	# (inside backticks, after a quote at an = or in a double quote, with bang_hist on: a history name's ! as zsh writes it, \!, once)
+	('`mssh h sort --output="zz', {'history': ['"sort --output=zz!x"']}, '`mssh h sort --output="zz\\!x" '),
+	('`mssh h cat "zz', {'history': ['"cat zz!x"']}, '`mssh h cat "zz\\!x" '),
+	# (inside backticks, a single-quoted directory holding a backslash: written as it is, with its /)
+	("`mssh -f 'zz", {'dirs': ['zzc\\d']}, "`mssh -f 'zzc\\d/"),
 ]
 
 
