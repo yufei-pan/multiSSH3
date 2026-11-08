@@ -1628,6 +1628,12 @@ LIST_VALUES = [
 		['ps', '--format=pid,a', 'b,ppi']),
 	('mssh h ps --format="pid,a\\\\b,ppi', [], 'mssh h ps --format="pid,a\\\\b,ppid,', ['ps', '--format=pid,ab,ppid,'],
 		'mssh h ps --format="pid,a\\\\b,ppi', ['ps', '--format=pid,ab,ppi']),
+	# (and a \$, \" or \` keeps its backslash: the line is read the same, the quote stays one, and no substitution opens. The remote
+	# words are those the typed line gives without TAB; None where it gives a bare quote or backtick, which dash and bash read differently)
+	('mssh h ps --format="pid,a\\$b,ppi', [], 'mssh h ps --format="pid,a\\$b,ppid,', ['ps', '--format=pid,a,ppid,'],
+		'mssh h ps --format="pid,a\\$b,ppi', ['ps', '--format=pid,a,ppi']),
+	('mssh h ps --format="pid,a\\"b,ppi', [], 'mssh h ps --format="pid,a\\"b,ppid,', None, 'mssh h ps --format="pid,a\\"b,ppi', None),
+	('mssh h ps --format="pid,a\\`b,ppi', [], 'mssh h ps --format="pid,a\\`b,ppid,', None, 'mssh h ps --format="pid,a\\`b,ppi', None),
 	# and an expansion stays this shell's, as without TAB: \$HOME gave the remote host's, \$(echo x) ran echo on every host
 	('mssh h ps --format="pid,$HOME,ppi', [], 'mssh h ps --format="pid,$HOME,ppid,', ['ps', '--format=pid,{home},ppid,'], 'mssh h ps --format="pid,$HOME,ppi',
 		['ps', '--format=pid,{home},ppi']),
@@ -1648,7 +1654,9 @@ def test_zsh_a_list_value_after_a_quote_at_an_equals_sign_keeps_what_was_typed(t
 	if opener:
 		# (the line run by this shell, as the remote shell gets it: its own HOME is the test's)
 		got, home = substituted_remote(line, tmp_path / 'work'), os.environ['HOME']
-	assert line == opener + expected and got == [word.replace('{home}', home) for word in remote], (line, got)
+	assert line == opener + expected, line
+	if remote is not None:
+		assert got == [word.replace('{home}', home) for word in remote], (line, got)
 
 
 @pytest.mark.parametrize('typed, dirs, expected, remote', [
