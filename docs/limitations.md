@@ -690,19 +690,25 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   a `/` and the command's completion offers names, mssh's history names are not offered beside them; when it offers nothing they are,
   as in 6.45. Typed as words, in a quoted argument and after an unquoted `=` (`mssh h cat ~/.zz`, `cat "sub/zz`, `sort --output=sub/zz`)
   6.46 offers them beside the command's names.
+  Inside backticks, in a typed directory holding backslashes (`` `mssh h cat zzd\\\\\&x/zz ``), history names are never offered: with a
+  local name beside them it goes in alone, with none nothing is offered.
 - Why: 6.46 puts history names in behind the directory typed (`-p`), as `_files` does; where the command's completion reads another
   word than mssh's (`compset -q` of a quoted command, `--output=` moved off the word) zsh then cut the line back (`mssh h "/.zzr`), so
-  those cases keep 6.45's rule.
+  those cases keep 6.45's rule. Inside backticks the typed head is compared with the history names before the extra reading
+  backticks get, so one holding a backslash matches none.
 - Revisit when: 6.47: add history names from inside `_mssh_complete_compadd`, in the call that adds the command's file names, with
   that call's IPREFIX, PREFIX and `-p`, each history name less the part of mssh's word those stand for.
+  Inside backticks: read the head in `_mssh_complete_add_texts` through `_mssh_complete_tick_read`, as `_mssh_complete_in_word` reads
+  PREFIX, before `(Q)`.
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: inside backticks, TAB does not go on into a changed directory in a quoted command or after a quote at an `=`
 - Kind: deferred (6.47)
 - What the operator sees: in zsh, inside backticks, with a directory `zzd&x` holding `zzin`, `` `mssh h "cat zzd<TAB> `` gives
   `` `mssh h "cat zzd\\\\&x/ `` (right), and a second `zz<TAB>` offers nothing. The same in a double-quoted word holding an expansion
-  (`` `mssh h "ls $PWD/zzd ``) and after a quote at an `=` (`` `mssh h dd if="zzd ``). Typed as words, in a single-quoted command, in a
-  quoted argument and for mssh's own file options TAB goes on into it. A directory that needs no quoting is not affected.
+  (`` `mssh h "ls $PWD/zzd ``) and after a quote at an `=` (`` `mssh h dd if="zzd ``, `` `mssh --file="zzd `` for `zzd$x`). Typed as
+  words, in a single-quoted command, in a quoted argument and for mssh's own file options typed bare (`` `mssh -f zzd ``) TAB goes on
+  into it. A directory that needs no quoting is not affected.
 - Why: the text in backticks is read once more before the quoted command is split into words; `compset -q` splits it unread, at
   the `&` of `zzd\\\\&x`. Reading it once more before `compset -q` would rewrite the words typed before the one at the cursor.
 - Revisit when: 6.47: read the quoted command once more for `compset -q` and put the words typed before the cursor's back in IPREFIX
@@ -716,6 +722,26 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   line itself and inside backticks the name reaches mssh as `zz!x`. Found in 6.46's tests through Enter; 6.45 does the same.
 - Why: zsh writes the `!` of a double-quoted word `\!` for its history, and inside `$(` the history does not take that backslash off.
 - Revisit when: 6.47: inside `$(` with bang_hist on, write a double-quoted `!` without the backslash where the history leaves it.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: no names inside a directory holding `$` or a backtick in a quoted command
+- Kind: deferred (6.47)
+- What the operator sees: in zsh, with a directory `zzd$x` (or ``zzd`x``) holding `zzin`, `mssh h "cat zzd<TAB>` gives `"cat zzd\\\$x/`
+  (right), and a second `zz<TAB>` offers nothing, on the line and in `$(`. As in 6.45. Typed as words or in a quoted argument TAB goes on.
+- Why: after `compset -q` the completion reads the directory as `zzd\$x`, written for the remote shell, which names no directory here.
+- Revisit when: 6.47: in a quoted command, read each directory of the word the way `_mssh_complete_typed_dirs` matches them (written for
+  this shell or for the remote shell) before the completion looks in it, and put the typed text back in front, as inside backticks.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: `dd`'s completion turns a typed `~` after `if=` into this machine's home
+- Kind: deferred (6.47)
+- What the operator sees: in zsh, `mssh h dd if="~/zz<TAB>` puts this machine's home path where the `~` was typed. Inside the quote the
+  typed `~` is a literal `~`, which the remote shell gets as it is (a file named `~` there), so TAB deletes it and can change the remote
+  word. The same unquoted (`mssh h dd if=~/zz`), where this shell does not expand the `~` either. Stock zsh does it for
+  `dd` itself (`dd if="~/zz<TAB>`, 5.9 and 5.0.2), and 6.45 did it too, dropping the quote; `sort --output="~/zz<TAB>` keeps the `~`.
+- Why: zsh's completion of `dd` (`_dd`) writes back the directory it expanded.
+- Revisit when: 6.47: keep the typed directories of a value after an `=` in front (`_mssh_complete_dq_parts`), as for a double-quoted
+  word, so `_dd` reads the expanded directory and the line keeps the `~`.
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### The centos7 test image patches ble.sh's conditional-sync

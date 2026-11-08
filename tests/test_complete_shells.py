@@ -1907,7 +1907,8 @@ def test_zsh_tab_never_takes_back_what_was_typed(tmp_path, shape, history, direc
 		for stem in ('zzb', 'zzh', 'zzl', 'zzs', 'zzn'):
 			typed = shape.format(directory + stem)
 			line = session.line_after(typed)
-			# (a history word's $PWD or ~ is the remote shell's, so it goes in with a backslash: what was typed is there)
+			# (a history word that goes in whole has its $PWD or ~ the remote shell's, with a backslash; one that goes in behind the directory
+			# typed keeps that text as typed: what was typed is there either way)
 			assert line is not None and line.replace('\\', '').startswith(typed), (typed, line)
 	finally:
 		session.close()
