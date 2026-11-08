@@ -719,23 +719,34 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Kind: deferred (6.47)
 - What the operator sees: in zsh with `bang_hist` on (the default), inside `$(`, `$(mssh -f "zz<TAB>` for a file `zz!x` gives
   `$(mssh -f "zz\!x"`, and mssh gets `-f zz\!x`, a file that is not there; `$(mssh h "cat zz<TAB>` gives a remote `cat zz\!x`. On the
-  line itself and inside backticks the name reaches mssh as `zz!x`. Found in 6.46's tests through Enter; 6.45 does the same.
-  Inside backticks, a history value after a quote at an `=` that the command's completion splits (`` `mssh h make CFLAGS="-O<TAB> ``
-  with `make CFLAGS=-O2!x` in history) reaches mssh as `CFLAGS=-O2\!x`, where the line typed in full gives `CFLAGS=-O2!x`; the remote
-  shell gets `CFLAGS=-O2!x` either way. 6.45 gave `CFLAGS=-O` there (the value not completed).
+  line itself and inside backticks the name reaches mssh as `zz!x`. Found in 6.46's tests through Enter; 6.45 does the same for these.
+  A history value after a quote at an `=` (`$(mssh h dd if="zz<TAB>` with `dd if=zz!x` in history) is new in 6.46: it now keeps the
+  quote, `if="zz\!x"`, and mssh gets `if=zz\!x` (the remote shell `if=zz!x`); 6.45 dropped the quote, `if=zz\!x`, and mssh got
+  `if=zz!x`.
 - Why: zsh writes the `!` of a double-quoted word `\!` for its history, and inside `$(` the history does not take that backslash off.
 - Revisit when: 6.47: inside `$(` with bang_hist on, write a double-quoted `!` without the backslash where the history leaves it.
-  Inside backticks, find where the split value's `\!` gets the extra backslash (not looked into yet) and write it once.
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: a value the command splits after a quote at an `=` loses the quote
 - Kind: deferred (6.47)
 - What the operator sees: in zsh, `mssh h make CFLAGS="-ggd<TAB>` gives `mssh h make CFLAGS=-ggdb`: the typed `"` is gone, so a `"`
-  typed later to close it opens a new quote. The same after `--` (`mssh h -- make CFLAGS="-O`), there with a history name too. 6.45 and stock zsh's `make` do the
-  same. With a history name for the value (`make CFLAGS=-O2` in history) 6.46 keeps the quote: `CFLAGS="-O2" `.
+  typed later to close it opens a new quote. The same after `--` (`mssh h -- make CFLAGS="-O`). 6.45 and stock zsh's `make` do the
+  same. With a history name for the value (`make CFLAGS=-O2` in history) 6.46 keeps the quote: `CFLAGS="-O2" `, after `--` too. Not
+  for a value holding a `/` with a local name beside it (`CFLAGS="-Isub/zz` with a directory `sub/zzlocal`): there the history name
+  is not offered and the line becomes `CFLAGS=-Isub/zzlocal/`, as in 6.45 (the history-names entry above).
 - Why: the command's completion (`_gcc` for make's `CFLAGS`) takes the quote off with `compset -q` and puts its names in without it.
 - Revisit when: 6.47: in `_mssh_complete_compadd`, put such names in with the lead and the quote typed (`-p`), as mssh's own words are,
   so the line keeps them.
+- Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: in a double-quoted command holding `\"`, TAB puts the name after the typed word
+- Kind: deferred (6.47)
+- What the operator sees: in zsh, `mssh h "grep \"a b\" zz<TAB>` with a file `zzfile` gives `mssh h "grep \"a b\" zzfilezz`: the
+  name goes in after what was typed instead of completing it (`sub/zz` gives `sub/zzfilezz`). A single-quoted command is fine. 6.45
+  does the same, on 5.9 and 5.0.2.
+- Why: zsh's own `compset -q` does it: `_zzq() { compset -q; _files }` gives `zzq "cat \"\" zzfilezz` in stock zsh 5.9 and 5.0.2.
+- Revisit when: 6.47: one workaround in `_mssh`'s quoted-command path (split the command's words itself when it holds `\"`), and
+  the upstream report to zsh-workers, drafted, not posted (posting needs the user's OK).
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: no names inside a directory holding `$` or a backtick in a quoted command
