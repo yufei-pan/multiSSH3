@@ -724,7 +724,9 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   quote, `if="zz\!x"`, and mssh gets `if=zz\!x` (the remote shell `if=zz!x`); 6.45 dropped the quote, `if=zz\!x`, and mssh got
   `if=zz!x`.
 - Why: zsh writes the `!` of a double-quoted word `\!` for its history, and inside `$(` the history does not take that backslash off.
-- Revisit when: 6.47: inside `$(` with bang_hist on, write a double-quoted `!` without the backslash where the history leaves it.
+- Revisit when: 6.47: detect the open `$(` and write the `!` outside the double quote (`"zz"\!"x"`) or in single quotes: inside
+  `$(` with bang_hist on, `"zz!x"` is an event not found and `"zz\!x"` keeps the backslash; only `zz\!x` unquoted, `"zz"\!"x"` and
+  `'zz!x'` give `zz!x` (Enter, 5.9 and 5.0.2). Check then how a later TAB reads that spelling.
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: a value the command splits after a quote at an `=` loses the quote
