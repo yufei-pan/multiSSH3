@@ -1762,12 +1762,47 @@ TICKED_PLAIN_NAME_VALUES = {'mssh h dd if="zza': ('mssh h dd if="zzamp' + '\\' *
 
 @pytest.mark.parametrize('typed, dirs, expected, remote', [
 	('mssh h cat sub/zzr', ['sub'], 'mssh h cat sub/zzremote ', ['cat', 'sub/zzremote']),
-	('mssh h cat ~/.zzr', [], 'mssh h cat \\~/.zzremote ', ['cat', REMOTE_HOME + '/.zzremote']),
+	# (the ~/ typed stays as typed, this shell's home, as without TAB: 6.45 wrote \~/, the remote host's)
+	('mssh h cat ~/.zzr', [], 'mssh h cat ~/.zzremote ', ['cat', '{home}/.zzremote']),
 ])
 def test_zsh_a_history_name_holding_a_slash_is_offered_when_the_command_offers_nothing(tmp_path, typed, dirs, expected, remote):
 	# in a word holding a /, history's names wait for the command's completion, and go in when it has no name
 	line, got = review_line(tmp_path, 'zsh', typed, dirs=dirs, history=['"cat {}"'.format(expected.split()[-1].replace('\\', ''))], pre='mssh() { :; }')
-	assert line == expected and got == remote, (line, got)
+	assert (line, got) == (expected, [word.replace('{home}', str(tmp_path / 'home')) for word in remote])
+
+
+# typed, the local names, history, the keys after the first TAB, then the line and the remote words (None: not read)
+SLASH_HISTORY = [
+	# beside a local name: what both start with, not the line cut back (6.45 offered the local name alone: mssh h cat sub/zzlocal)
+	('mssh h cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], [], 'mssh h cat sub/zz', None),
+	('mssh h cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], ['r\t'], 'mssh h cat sub/zzremote ', ['cat', 'sub/zzremote']),
+	('mssh h cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], ['l\t'], 'mssh h cat sub/zzlocal ', ['cat', 'sub/zzlocal']),
+	('mssh h vi sub/zz', dict(files=['sub/zzlocal']), ['"vi sub/zzremote"'], ['r\t'], 'mssh h vi sub/zzremote ', ['vi', 'sub/zzremote']),
+	('mssh h cat /etc/os-', {}, ['"cat /etc/os-zzremote"'], ['z\t'], 'mssh h cat /etc/os-zzremote ', ['cat', '/etc/os-zzremote']),
+	('mssh h cat "sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], ['r\t'], 'mssh h cat "sub/zzremote" ', ['cat', 'sub/zzremote']),
+	('mssh h sort --output=sub/zz', dict(files=['sub/zzlocal']), ['"sort --output=sub/zzremote"'], ['r\t'], 'mssh h sort --output=sub/zzremote ',
+		['sort', '--output=sub/zzremote']),
+	# (written for the remote shell, as a name of _files)
+	('mssh h cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzamp\\\\&b"'], ['a\t'], 'mssh h cat sub/zzamp' + '\\' * 3 + '&b ', ['cat', 'sub/zzamp&b']),
+	('mssh h cat ~/.zz', dict(home_files=['.zzrc']), ['"cat ~/.zzremote"'], [], 'mssh h cat ~/.zzr', None),
+	('mssh h cat ~/.zz', dict(home_files=['.zzrc']), ['"cat ~/.zzremote"'], ['e\t'], 'mssh h cat ~/.zzremote ', ['cat', '{home}/.zzremote']),
+	('mssh h cat ~/.zz', dict(home_files=['.zzrc']), ['"cat ~/.zzremote"'], ['c\t'], 'mssh h cat ~/.zzrc ', ['cat', '{home}/.zzrc']),
+]
+
+
+# (a ~ on the line alone: in a command substitution the remote words would hold the HOME the line is read with)
+@pytest.mark.parametrize('opener, typed, files, history, steps, expected, remote', [(opener,) + case for case in SLASH_HISTORY for opener in ('', '$(', '`')
+	if not opener or '~' not in case[0]])
+def test_zsh_a_history_name_holding_a_slash_stands_beside_the_command_s_names(tmp_path, opener, typed, files, history, steps, expected, remote):
+	# 6.45 left history's names out once the command's completion offered one in a word holding a /: whole beside a name of _files
+	# they cut the line back. They go in behind the directory typed, as _files puts in its names
+	line, got = review_line(tmp_path, 'zsh', opener + typed, history=history, steps=steps, pre='mssh() { :; }', **files)
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	if '`' in opener and 'amp' in expected:
+		expected = expected.replace('\\' * 3, '\\' * 5)
+	assert line == opener + expected, line
+	assert remote is None or got == [word.replace('{home}', str(tmp_path / 'home')) for word in remote], got
 
 
 # the lines TAB must not cut back: {} is the word, which starts with a directory or not; what goes in the history for it
