@@ -7979,49 +7979,32 @@ _mssh_complete_tab_key() {
 _mssh_complete_tick_open() {
 	# whether $1 leaves a backtick open, and the text after it into _mssh_complete_line of the caller, read as zsh reads the line: a
 	# backslash takes the next character (\` opens nothing), a backtick in single quotes ('`', $'`') is no backtick, and one in a double
-	# quote is. Inside backticks only a backslash and the next backtick count: zsh closes them there in any quote. The walk goes from one
-	# character that counts to the next (the search of the subscript): a line of 10000 characters took 2.4 s a step at a time on 5.0.2
-	emulate -L zsh
-	local _mssh_complete_text=$1 _mssh_complete_quote= _mssh_complete_outer= _mssh_complete_find
-	local -i _mssh_complete_at=1 _mssh_complete_open=0
-	while true; do
-		# (the quote open: s single, c $'...', which a backslash escapes in, d double; inside backticks none)
-		if (( _mssh_complete_open )); then
-			_mssh_complete_find='[\\`]'
-		else
-			case $_mssh_complete_quote in
-				(s) _mssh_complete_find="[']" ;;
-				(c) _mssh_complete_find="[\\\\']" ;;
-				(d) _mssh_complete_find='[\\"`]' ;;
-				(*) _mssh_complete_find="[\\\\\"'\`\$]" ;;
-			esac
-		fi
-		# (past the end it gives the length + 1; on an empty text 0, which would start again from the front)
-		(( _mssh_complete_at <= $#_mssh_complete_text )) || break
-		_mssh_complete_at=${_mssh_complete_text[(ib:_mssh_complete_at:)${~_mssh_complete_find}]}
-		(( _mssh_complete_at <= $#_mssh_complete_text )) || break
-		case $_mssh_complete_quote$_mssh_complete_text[_mssh_complete_at] in
-			(\\*|?\\) (( _mssh_complete_at++ )) ;;
-			(?\') _mssh_complete_quote= ;;
-			(d\") _mssh_complete_quote= ;;
+	# quote is. Inside backticks only a backslash and the next backtick count: zsh closes them there in any quote. The walk goes over the
+	# characters that count only, split out at once: a character at a time it took 1.8 s on a 10000-character line on 5.0.2, now 1 ms,
+	# and 0.1 s for one of 5000 quotes
+	emulate -L zsh; setopt extended_glob
+	local _mssh_complete_quote= _mssh_complete_outer= _mssh_complete_nul=$'\0'
+	local -a _mssh_complete_parts
+	local -i _mssh_complete_at _mssh_complete_open=0
+	[[ $1 == *\`* ]] || return 1
+	# (the runs between them at the odd places, maybe empty, and the characters that count at the even ones)
+	_mssh_complete_parts=("${(@ps:\0:)${1//(#m)[\\\"\'\`\$]/$_mssh_complete_nul$MATCH$_mssh_complete_nul}}")
+	for (( _mssh_complete_at = 2; _mssh_complete_at <= $#_mssh_complete_parts; _mssh_complete_at += 2 )); do
+		# (the quote open: s single, c $'...', which a backslash escapes in, d double, o inside backticks. A backslash takes the
+		# character after it, which counts only with no run between)
+		case $_mssh_complete_quote$_mssh_complete_parts[_mssh_complete_at] in
+			(s\'|c\'|d\") _mssh_complete_quote= ;;
+			(\\|[cdo]\\) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] && (( _mssh_complete_at += 2 )) ;;
 			(\") _mssh_complete_quote=d ;;
 			(\') _mssh_complete_quote=s ;;
-			(\$) [[ $_mssh_complete_text[_mssh_complete_at+1] == \' ]] && _mssh_complete_quote=c && (( _mssh_complete_at++ )) ;;
-			(*\`)
-				if (( _mssh_complete_open )); then
-					_mssh_complete_open=0
-					_mssh_complete_quote=$_mssh_complete_outer
-				else
-					_mssh_complete_open=$_mssh_complete_at
-					_mssh_complete_outer=$_mssh_complete_quote
-					_mssh_complete_quote=
-				fi
-				;;
+			(\$) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] && $_mssh_complete_parts[_mssh_complete_at+2] == \' ]] &&
+				_mssh_complete_quote=c && (( _mssh_complete_at += 2 )) ;;
+			(o\`) _mssh_complete_open=0; _mssh_complete_quote=$_mssh_complete_outer ;;
+			(\`|d\`) _mssh_complete_open=$_mssh_complete_at; _mssh_complete_outer=$_mssh_complete_quote; _mssh_complete_quote=o ;;
 		esac
-		(( _mssh_complete_at++ ))
 	done
 	(( _mssh_complete_open )) || return 1
-	_mssh_complete_line=${_mssh_complete_text[_mssh_complete_open+1,-1]}
+	_mssh_complete_line=${(j::)_mssh_complete_parts[_mssh_complete_open+1,-1]}
 }
 
 _mssh_complete_in_mssh() {
