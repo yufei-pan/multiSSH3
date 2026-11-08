@@ -7281,8 +7281,10 @@ _mssh() {
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_too_quoted)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
-	if [[ $_mssh_complete_word == -*=\"* ]]; then
-		_mssh_complete_lead=${_mssh_complete_word%%=*}=
+	# (a quote at the = of an option, --format="pid, or of a plain name, dd if="zz, make VAR="x)
+	_mssh_complete_name=${_mssh_complete_word%%=*}
+	if [[ $_mssh_complete_word == *=\"* && ( $_mssh_complete_name == -* || $_mssh_complete_name == [[:alpha:]_]* && $_mssh_complete_name != *[^[:alnum:]_]* ) ]]; then
+		_mssh_complete_lead=$_mssh_complete_name=
 		_mssh_complete_word=${_mssh_complete_word#*=}
 	fi
 	if [[ -z $_mssh_complete_open && $_mssh_complete_word == \"* && ${${_mssh_complete_word//\\?/}//[^\"]/} == \" ]]; then

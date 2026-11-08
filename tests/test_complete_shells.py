@@ -1659,6 +1659,40 @@ def test_zsh_a_list_value_after_a_quote_at_an_equals_sign_keeps_what_was_typed(t
 		assert got == [word.replace('{home}', home) for word in remote], (line, got)
 
 
+# typed, files, dirs, history, then the line after TAB and the remote words
+PLAIN_NAME_VALUES = [
+	('mssh h dd if="zz', ['zzfile'], [], [], 'mssh h dd if="zzfile" ', ['dd', 'if=zzfile']),
+	('mssh h make VAR="zz', ['zzfile'], [], [], 'mssh h make VAR="zzfile" ', ['make', 'VAR=zzfile']),
+	('mssh h dd of="zz', ['zzfile'], [], [], 'mssh h dd of="zzfile" ', ['dd', 'of=zzfile']),
+	# (two names: their common start, the quote kept; it went: mssh h dd if=zz)
+	('mssh h dd if="zz', ['zzfile', 'zzother'], [], [], 'mssh h dd if="zz', ['dd', 'if=zz']),
+	('mssh h make VAR="zz', ['zzfile', 'zzother'], [], [], 'mssh h make VAR="zz', ['make', 'VAR=zz']),
+	# (a name from history, written for the quote)
+	('mssh h dd if="zz', [], [], ['"dd if=zzhist"'], 'mssh h dd if="zzhist" ', ['dd', 'if=zzhist']),
+	('mssh h make VAR="zz', [], [], ['"make VAR=zzhist"'], 'mssh h make VAR="zzhist" ', ['make', 'VAR=zzhist']),
+	# (a name needing quoting for the remote shell: written for the quote)
+	('mssh h dd if="zza', ['zzamp&b'], [], [], 'mssh h dd if="zzamp\\\\&b" ', ['dd', 'if=zzamp&b']),
+	# (the closed form stays as it was)
+	('mssh h dd if=zz', ['zzfile'], [], [], 'mssh h dd if=zzfile ', ['dd', 'if=zzfile']),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, files, dirs, history, expected, remote', PLAIN_NAME_VALUES)
+def test_zsh_a_quote_after_a_plain_name_s_equals_sign_stays(tmp_path, opener, typed, files, dirs, history, expected, remote):
+	# the quote-at-= lead was taken for words starting with - alone: mssh h dd if="zz gave mssh h dd if=zzfile, the quote gone
+	line, got = review_line(tmp_path, 'zsh', opener + typed, files=files, dirs=dirs, history=history, pre='mssh() { :; }')
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	if opener == '`' and typed in TICKED_PLAIN_NAME_VALUES:
+		expected, remote = TICKED_PLAIN_NAME_VALUES[typed]
+	assert (line, got) == (opener + expected, remote)
+
+
+# inside backticks, where the line differs: a name that needs quoting is left out (docs/limitations.md)
+TICKED_PLAIN_NAME_VALUES = {'mssh h dd if="zza': ('mssh h dd if="zza', ['dd', 'if=zza'])}
+
+
 @pytest.mark.parametrize('typed, dirs, expected, remote', [
 	('mssh h cat sub/zzr', ['sub'], 'mssh h cat sub/zzremote ', ['cat', 'sub/zzremote']),
 	('mssh h cat ~/.zzr', [], 'mssh h cat \\~/.zzremote ', ['cat', REMOTE_HOME + '/.zzremote']),
