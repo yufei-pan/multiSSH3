@@ -720,8 +720,12 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - What the operator sees: in zsh with `bang_hist` on (the default), inside `$(`, `$(mssh -f "zz<TAB>` for a file `zz!x` gives
   `$(mssh -f "zz\!x"`, and mssh gets `-f zz\!x`, a file that is not there; `$(mssh h "cat zz<TAB>` gives a remote `cat zz\!x`. On the
   line itself and inside backticks the name reaches mssh as `zz!x`. Found in 6.46's tests through Enter; 6.45 does the same.
+  Inside backticks, a history value after a quote at an `=` that the command's completion splits (`` `mssh h make CFLAGS="-O<TAB> ``
+  with `make CFLAGS=-O2!x` in history) reaches mssh as `CFLAGS=-O2\!x`, where the line typed in full gives `CFLAGS=-O2!x`; the remote
+  shell gets `CFLAGS=-O2!x` either way. 6.45 gave `CFLAGS=-O` there (the value not completed).
 - Why: zsh writes the `!` of a double-quoted word `\!` for its history, and inside `$(` the history does not take that backslash off.
 - Revisit when: 6.47: inside `$(` with bang_hist on, write a double-quoted `!` without the backslash where the history leaves it.
+  Inside backticks, find where the split value's `\!` gets the extra backslash (not looked into yet) and write it once.
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: no names inside a directory holding `$` or a backtick in a quoted command
