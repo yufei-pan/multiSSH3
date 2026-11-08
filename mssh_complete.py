@@ -7596,7 +7596,6 @@ _mssh_complete_typed_dirs() {
 	local -i _mssh_complete_at
 	_mssh_complete_given=("${(@s:/:)1}")
 	_mssh_complete_typed=("${(@s:/:)PREFIX}")
-	(( $#_mssh_complete_typed >= $#_mssh_complete_given )) || return 1
 	for (( _mssh_complete_at = 1; _mssh_complete_at < $#_mssh_complete_given; _mssh_complete_at++ )); do
 		_mssh_complete_one=${(Q)_mssh_complete_given[_mssh_complete_at]}
 		_mssh_complete_remote=${_mssh_complete_one//(#m)[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#]/\\$MATCH}
