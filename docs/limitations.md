@@ -748,7 +748,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   does the same, on 5.9 and 5.0.2.
 - Why: zsh's own `compset -q` does it: `_zzq() { compset -q; _files }` gives `zzq "cat \"\" zzfilezz` in stock zsh 5.9 and 5.0.2.
 - Revisit when: 6.47: one workaround in `_mssh`'s quoted-command path (split the command's words itself when it holds `\"`), and
-  the upstream report to zsh-workers, drafted, not posted (posting needs the user's OK).
+  the upstream report to zsh-workers (drafted; the user sends it from their own address).
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: no names inside a directory holding `$` or a backtick in a quoted command
@@ -778,6 +778,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   The hang is in ble.sh's own `conditional-sync`, so an EL7 user of ble.sh can hit it without mssh too: a TAB now and then waits
   for the next key, which cancels it.
 - Why: on bash 4.2 a timed read can lose a job's SIGCHLD, so the job stays a zombie, `kill -0` keeps finding it, and ble.sh waited for
-  the next key, which cancelled TAB: 1 in 100 to 1000 of the no-answer tests' TABs failed. The same line is drafted as a report to ble.sh, not posted yet.
+  the next key, which cancelled TAB: 1 in 100 to 1000 of the no-answer tests' TABs failed. Not reported to ble.sh yet (its other `conditional-sync` report, a `timeout=` that expires early, is akinomyoga/ble.sh#745).
 - Revisit when: the ble.sh pin moves to a release with the fix: drop the `sed` and its `grep`.
 - Noted: 2026-11-07, the user's standing rule that deferrals are noted, not asked.
