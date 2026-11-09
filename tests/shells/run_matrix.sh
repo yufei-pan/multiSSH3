@@ -38,11 +38,11 @@ for name in "${images[@]}"; do
 		docker build -q -t "mssh-shell-test-$name" -f "$here/Dockerfile.$name" "$here" >/dev/null
 		start=$SECONDS
 		# the repository is read-only inside: no bytecode; HOME is a fresh directory, which holds pytest's cache for the rerun. Each
-		# run is capped (memory, no swap, pids) and runs as nobody, so a runaway test stays inside its own container.
+		# run is capped (memory, with swap as Docker allows it: swap off let the host kill a VM on 2026-11-07; pids) and runs as nobody, so a runaway test stays inside its own container.
 		# The rerun (pytest --lf) runs what the cache lists as failed; the ids the run left failed after it are the ones that fail alone,
 		# the others passed only on the rerun (the ids come from the cache, whole: the FAILED lines cut them at a " - ")
 		status=0
-		docker run --rm --init --memory=8g --memory-swap=8g --pids-limit=4096 --user 65534:65534 \
+		docker run --rm --init --memory=8g --pids-limit=4096 --user 65534:65534 \
 			-v "$repo":/repo:ro -w /repo -e MSSH_REQUIRE_SHELLS="${required[-1]}" -e PYTHONDONTWRITEBYTECODE=1 \
 			-e MSSH_MATRIX_TESTS="$tests" -e MSSH_MATRIX_JOBS_RUN="$jobs" \
 			"mssh-shell-test-$name" sh -c 'export HOME=$(mktemp -d); python3 -V

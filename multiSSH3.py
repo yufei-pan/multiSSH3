@@ -42,10 +42,10 @@ from itertools import count, product
 from pprint import pformat
 
 
-version = '6.44'
+version = '6.46'
 VERSION = version
 __version__ = version
-COMMIT_DATE = '2026-11-06'
+COMMIT_DATE = '2026-11-08'
 
 # no current-directory entry: a cloned repo or unpacked archive could set a setting or a program path
 # (e.g. _sshPath), use --config_file to load one

@@ -1567,6 +1567,21 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_
 		session.close()
 
 
+@pytest.mark.parametrize('line', ['`mssh gp', 'echo `mssh gp', '`mssh h \\`a\\` gp', '`\\mssh gp'])
+def test_zsh_keys_arriving_together_do_not_take_grey_text_inside_backticks(home, line):
+	require_zsh_5_3()
+	# the hook's walk reads an open backtick: an escaped one before the cursor hid it, and a Right among the keys took the older line's text
+	env, home = home
+	session = zsh_with(env, home, True, False, shell_history=line + 'u[01-16] nvidia-smi\n', extra=FAKE_MSSH)
+	try:
+		session.send(line)
+		session.read_until(b'nvidia-smi')
+		session.wait_idle(10)
+		assert printed(session, 'x' + RIGHT, wait=1.0) == line + 'x'
+	finally:
+		session.close()
+
+
 @pytest.mark.parametrize('after', [False, True], ids=['zsh-autosuggestions', 'zsh-autosuggestions-loaded-after'])
 def test_zsh_keys_arriving_together_leave_the_grey_text_of_other_commands_to_zsh_autosuggestions(home, after):
 	require_zsh_5_3()
@@ -2103,6 +2118,9 @@ def test_ctrl_r_goes_on_without_an_engine_slow_to_start(home, shell):
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
+		# (under heavy load fish's space check after typing can still be running, and Ctrl-R waits for it;
+		# start the clock once the shell is idle, so the test times the engine's start, not that check)
+		session.wait_idle()
 		started = time.monotonic()
 		if shell == 'zsh':
 			session.send('\x12aa\r')
@@ -2127,6 +2145,9 @@ def test_ctrl_c_while_the_picker_starts_keeps_the_line(home, shell):
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.5)
+		# (fish's space runs __mssh_complete_check: on a loaded host Ctrl-C, a signal, not a key in turn, came before fish had read
+		# the line, and took the typed rest with it)
+		session.wait_idle()
 		started = time.monotonic()
 		session.send('\x12')
 		time.sleep(0.3)
