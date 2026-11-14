@@ -25,13 +25,12 @@ Open work lives here and nowhere else (RULES, "Long work: the progress file"). E
 - **The mssh TUI that imports the completion engine in-process.** State: not started; no spec or plan. Where: SP2 built `Terminal`, `Picker` and `LineEditor` in mssh_complete.py "so the future TUI can embed them"; multiSSH3TUI.py is the old prototype, unchanged since 6.01. From: the SP1 spec's "Roadmap (decided)".
 
 ### Upstream reports the user picked (not code in this repo)
-- **Reports and replies still waiting.** State: paused on the upstream maintainers, and on the user's OK for the ssh-copy-id one. Where: ble.sh #745 (the `timeout=` report; open, our reply of 2026-11-09 is the last comment); zsh-autosuggestions #861 (open, no reply); the zsh-workers report on the `\"` entry (the main session's notes say the user sent it 2026-11-10; docs/limitations.md still says "drafted"); the ssh-copy-id HUP report (drafted, not posted: docs/limitations.md "An interrupted `--copy_id -p`..."); the bash 4.2 SIGCHLD `conditional-sync` report for ble.sh (not drafted: docs/limitations.md "The centos7 test image patches ble.sh's conditional-sync"; drop the `sed` in tests/shells/Dockerfile.centos7 when the ble.sh pin moves to a fix). From: "KL + draft report (Recommended)" 2026-11-04; "Drop, record, draft upstream (Recommended)" 2026-10-24.
+- **Reports and replies still waiting.** State: paused on the upstream maintainers, and on the user's OK for the ssh-copy-id one. Where: ble.sh #745 (the `timeout=` report; open, our reply of 2026-11-09 is the last comment); zsh-autosuggestions #861 (open, no reply); the zsh-workers report on the `\"` entry (the main session's notes say the user sent it 2026-11-10; docs/limitations.md still says "drafted"); the ssh-copy-id HUP report (drafted in PR #1; given to the user to file on OpenSSH's bugzilla, 2026-11-14, "Give me the text to file"; when it is filed, docs/limitations.md "An interrupted `--copy_id -p`..." says so); the bash 4.2 SIGCHLD `conditional-sync` report for ble.sh (not drafted: docs/limitations.md "The centos7 test image patches ble.sh's conditional-sync"; drop the `sed` in tests/shells/Dockerfile.centos7 when the ble.sh pin moves to a fix). From: "KL + draft report (Recommended)" 2026-11-04; "Drop, record, draft upstream (Recommended)" 2026-10-24.
 
 ### Standing rows
 - **Deferred work** is in `docs/limitations.md` (entries of kind "deferred"); each names when it is revisited. Today: the seven "deferred (6.47)" entries (row above), the three design-pass entries (rows above), and the centos7 image's ble.sh patch (last row above).
 
 ## Questions waiting for the user
-- Post the drafted ssh-copy-id HUP report upstream? (docs/limitations.md says "drafted, not posted".)
 - Report the bash 4.2 `conditional-sync` SIGCHLD loss to ble.sh, or leave the centos7 `sed` for good?
 
 ## Closed
