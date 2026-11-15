@@ -7297,10 +7297,10 @@ _mssh() {
 	else
 		_mssh_complete_lead=
 	fi
-	# (with bang_hist on, a ! that goes in a double quote goes in outside it: _mssh_complete_banged. Not when the text typed holds one:
-	# zsh writes such a word again from its quote on, as it reads it)
+	# (inside $( ) with bang_hist on, a ! that goes in a double quote goes in outside it: _mssh_complete_banged. Not when the text typed
+	# holds one: zsh writes such a word again from its quote on, as it reads it)
 	local -i _mssh_complete_bang=0
-	[[ $_mssh_complete_compsys_options[banghist] == on && $PREFIX != *\!* ]] && _mssh_complete_bang=1
+	[[ $_mssh_complete_compsys_options[banghist] == on && $PREFIX != *\!* ]] && _mssh_complete_paren_open "$LBUFFER" && _mssh_complete_bang=1
 	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} $_mssh_complete_lead${_mssh_complete_open}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
 	_mssh_complete_read_locale
@@ -8082,6 +8082,48 @@ _mssh_complete_tick_open() {
 	_mssh_complete_line=${(j::)_mssh_complete_parts[_mssh_complete_open+1,-1]}
 }
 
+_mssh_complete_paren_open() {
+	# whether the outermost substitution still open at the end of $1 is a $( ), <( ) or >( ), read as zsh reads the line
+	# (_mssh_complete_tick_open): zsh reads the text in it again when it runs, with no history then, and a double quote's \! keeps its
+	# backslash there. Backticks around it are read with the line, \! and all. A ( ) inside counts only to find the close (a case
+	# pattern's ) closes it too: the line is then read as one with none open)
+	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
+	local _mssh_complete_quote= _mssh_complete_nul=$'\0' _mssh_complete_one
+	local -a _mssh_complete_parts _mssh_complete_stack
+	local -i _mssh_complete_at
+	[[ $1 == *[\$\<\>]\(* ]] || return 1
+	# (the runs between them at the odd places, maybe empty, and the characters that count at the even ones)
+	_mssh_complete_parts=("${(@ps:\0:)${1//(#m)[\\\"\'\`\$\<\>\(\)]/$_mssh_complete_nul$MATCH$_mssh_complete_nul}}")
+	for (( _mssh_complete_at = 2; _mssh_complete_at <= $#_mssh_complete_parts; _mssh_complete_at += 2 )); do
+		_mssh_complete_one=$_mssh_complete_parts[_mssh_complete_at]
+		# (the quote open as in _mssh_complete_tick_open; each opener on the stack keeps the quote it was opened in)
+		case $_mssh_complete_quote$_mssh_complete_one in
+			(s\'|c\'|d\") _mssh_complete_quote= ;;
+			(\\|[cdo]\\) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] && (( _mssh_complete_at += 2 )) ;;
+			(\") _mssh_complete_quote=d ;;
+			(\') _mssh_complete_quote=s ;;
+			(\`|d\`) _mssh_complete_stack+=(\`$_mssh_complete_quote); _mssh_complete_quote=o ;;
+			(o\`) _mssh_complete_quote=${_mssh_complete_stack[-1][2,-1]}; _mssh_complete_stack[-1]=() ;;
+			([\$\<\>]|d\$)
+				[[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] || continue
+				if [[ $_mssh_complete_parts[_mssh_complete_at+2] == \( ]]; then
+					_mssh_complete_stack+=(p$_mssh_complete_quote)
+					_mssh_complete_quote=
+					(( _mssh_complete_at += 2 ))
+				elif [[ $_mssh_complete_quote$_mssh_complete_one == \$ && $_mssh_complete_parts[_mssh_complete_at+2] == \' ]]; then
+					_mssh_complete_quote=c
+					(( _mssh_complete_at += 2 ))
+				fi
+				;;
+			(\() _mssh_complete_stack+=('(') ;;
+			(\)) (( $#_mssh_complete_stack )) && _mssh_complete_quote=${_mssh_complete_stack[-1][2,-1]} && _mssh_complete_stack[-1]=() ;;
+		esac
+	done
+	[[ $_mssh_complete_stack[1] == p* ]]
+}
+
 _mssh_complete_in_mssh() {
 	# whether the cursor is in the arguments of an mssh command, wherever that starts on the line, read as zsh reads it: from the
 	# last separator on, every word before the one at the cursor (a word before the cursor and a blank, the word touching it), with
@@ -8110,12 +8152,12 @@ _mssh_complete_in_mssh() {
 				(( _mssh_complete_at-- ))
 			fi
 		done
-		# (a $( still open: zsh reads the rest of the line as one word, and the cursor's command starts inside it. A closed one is
-		# a word of the command it is in)
+		# (a $( still open, or a <( or >( : zsh reads the rest of the line as one word, and the cursor's command starts inside it. A
+		# closed one is a word of the command it is in)
 		# and a backtick still open: the command after the last one
 		_mssh_complete_tick_open "$_mssh_complete_words[-1]" && continue
-		[[ $_mssh_complete_words[-1] == *\$\(* ]] || return 1
-		_mssh_complete_line=${_mssh_complete_words[-1]#*\$\(}
+		[[ $_mssh_complete_words[-1] == *[\$\<\>]\(* ]] || return 1
+		_mssh_complete_line=${_mssh_complete_words[-1]#*[\$\<\>]\(}
 	done
 }
 

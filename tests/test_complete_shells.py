@@ -1303,6 +1303,8 @@ ANOTHER_START = [
 	('ionice -c3 mssh h "ls $PWD/zzp', ''),
 	('repeat 2 mssh h "ls $PWD/zzp', ''), ('> /dev/null mssh h "ls $PWD/zzp', ''),
 	('2>&1 mssh h "ls $PWD/zzp', ''), ('$(mssh h "ls $PWD/zzp', ''), ('x=$(mssh h "ls $PWD/zzp', ''),
+	# (and a <( or >( still open, as a $( : 6.46 expanded the word there)
+	('cat <(mssh h "ls $PWD/zzp', ''), ('tee >(mssh h "ls $PWD/zzp', ''), ('diff <(echo) <(mssh h "ls $PWD/zzp', ''),
 	('cd /; mssh h "ls $PWD/zzp', ''), ('true &! mssh h "ls $PWD/zzp', ''), ('true |& mssh h "ls $PWD/zzp', ''),
 	# the words of an alias are the line's words, all of them
 	('m3 h "ls $PWD/zzp', "alias m3='sudo -E mssh'"), ('m5 h "ls $PWD/zzp', "alias m5='(mssh'"),
@@ -2208,6 +2210,85 @@ def test_zsh_a_name_with_an_exclamation_mark_in_a_double_quote_with_an_expansion
 		assert output.stdout.decode().endswith('/zzt!r'), (last, text)
 	finally:
 		session.close()
+
+
+def zsh_enter(tmp_path, typed, close, files=(), history=(), extra=''):
+	'''TAB at the end of typed, then close and Enter, in a new zsh in a directory holding files, with mssh's history (for the host
+	h) and mssh a function printing its arguments: (the line after TAB, mssh's arguments, whether zsh said "event not found").'''
+	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
+	build_index(env)
+	work = tmp_path / 'work'
+	work.mkdir()
+	for name in files:
+		(work / name).parent.mkdir(parents=True, exist_ok=True)
+		(work / name).write_text('')
+	session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'\n{}\nmssh() {{ printf 'GOT<%s>' \"$@\"; }}".format(work, extra))
+	try:
+		line = session.line_after(typed, settle=True)
+		session.send(typed + '\t')
+		session.wait_idle()
+		start = len(session.output)
+		session.send(close + '\r')
+		session.wait_idle()
+		session.read_for(0.3)
+		text = session.output[start:].decode('utf-8', 'replace')
+	finally:
+		session.close()
+	return line, re.findall(r'GOT<([^>\r\n]*)>', text), 'event not found' in text
+
+
+# typed after the opener, the files here, mssh's history, and whose word is checked: mssh's own (its last argument) or the remote
+# shell's (the last word it reads of mssh's command)
+BANG_NAMES = [
+	('mssh -f "zz', ['zz!x'], [], 'mssh'),
+	('mssh -f "$PWD/zz', ['zz!x'], [], 'mssh'),
+	('mssh h cat "zz', ['zz!x'], [], 'remote'),
+	('mssh h ls "$PWD/zz', ['zz!x'], [], 'remote'),
+	('mssh h "ls $PWD/zz', ['zz!x'], [], 'remote'),
+	('mssh h dd if="zz', ['zz!x'], [], 'remote'),
+	('mssh h cat "zz', [], ['"cat zz!x"'], 'remote'),
+	('mssh h "cat zz', [], ['"cat zz!x"'], 'remote'),
+	('mssh h dd if="zz', [], ['"dd if=zz!x"'], 'remote'),
+	('mssh h sort --output="zz', [], ['"sort --output=zz!x"'], 'remote'),
+]
+# where the command starts, and what closes it after TAB
+BANG_OPENERS = [('', ''), ('print -r -- $(', ')'), ('cat <(', ')'), ('print -r -- `', '`'), ('print -r -- $(print -r -- `', '`)')]
+
+
+@pytest.mark.parametrize('opener, closer', BANG_OPENERS, ids=['line', 'dollar-paren', 'process', 'backtick', 'backtick-in-dollar-paren'])
+@pytest.mark.parametrize('typed, files, history, whose', BANG_NAMES, ids=['{}-{}'.format(case[0], 'history' if case[2] else 'file') for case in BANG_NAMES])
+def test_zsh_a_name_holding_an_exclamation_mark_in_a_double_quote_reaches_mssh_as_named_inside_a_dollar_paren(tmp_path, opener, closer, typed, files,
+		history, whose):
+	# zsh writes the ! of a double-quoted word \! (bang_hist), and inside $( ) and <( ) that backslash stays: $(mssh -f "zz\!x" gave
+	# mssh -f zz\!x, a file that is not there, and $(mssh h cat "zz\\\!x" the remote shell zz\!x. A plain ! there is a history event
+	line, got, event = zsh_enter(tmp_path, opener + typed, closer, files=files, history=history)
+	assert not event and got, (line, got)
+	word = got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
+	assert word.endswith('zz!x'), (line, got)
+
+
+@pytest.mark.parametrize('typed, files, history, whose', BANG_NAMES[:3] + BANG_NAMES[6:7])
+def test_zsh_a_name_holding_an_exclamation_mark_inside_a_dollar_paren_with_bang_hist_off(tmp_path, typed, files, history, whose):
+	# (with no history expansion zsh writes a plain !, which reads as one inside $( ) too)
+	line, got, event = zsh_enter(tmp_path, 'print -r -- $(' + typed, ')', files=files, history=history, extra='setopt no_bang_hist')
+	assert not event and got, (line, got)
+	word = got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
+	assert word.endswith('zz!x'), (line, got)
+
+
+def test_zsh_the_paren_walk_finds_the_outermost_substitution_open(tmp_path):
+	# (_mssh_complete_paren_open: a $( ), <( ) or >( ) still open outermost; backticks around one read it with the line)
+	cases = {
+		'print $(mssh -f "zz': 0, 'print "$(mssh h "cat zz': 0, 'cat <(mssh h zz': 0, 'tee >(mssh h zz': 0, 'print $(echo `mssh -f "zz': 0,
+		'print $(echo) $(mssh -f "zz': 0, 'print $(echo "a)b" $(mssh -f "zz': 0, 'print $( (cd /; mssh -f "zz': 0, 'print $(mssh h "cat `pwd`/zz': 0,
+		'mssh -f "zz': 1, 'mssh h "cat $(pwd)/zz': 1, 'print `mssh -f "zz': 1, 'print `echo $(mssh -f "zz': 1, 'print $(echo); mssh -f "zz': 1,
+		"echo '$(' mssh -f \"zz": 1, 'echo \\$( mssh -f "zz': 1, "echo $'\\'$(' mssh -f \"zz": 1, 'x=$(( 1 + 2 )) mssh -f "zz': 1,
+		'print "`" $(mssh -f "zz': 1,
+	}
+	glue = glue_file(tmp_path, 'zsh')
+	script = 'source {}; for line; do _mssh_complete_paren_open "$line"; print -rn -- $?; done'.format(shlex.quote(str(glue)))
+	output = subprocess.run([require_shell('zsh'), '-fc', script, 'zsh'] + list(cases), stdout=subprocess.PIPE, timeout=30).stdout.decode()
+	assert dict(zip(cases, map(int, output))) == cases
 
 
 @pytest.mark.parametrize('typed, files, expected', [
