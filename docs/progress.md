@@ -44,7 +44,7 @@ The user's rulings on how the cas repos are worked, one line each; a line change
 - macOS (2026-11-11): tests run on the user's own always-on Mac, as a standard user made for them, never with sudo.
 
 ## Questions waiting for the user
-- Report the bash 4.2 `conditional-sync` SIGCHLD loss to ble.sh, or leave the centos7 `sed` for good?
+- **Report the bash 4.2 SIGCHLD loss in ble.sh's `conditional-sync` upstream?** (written in full 2026-11-15) On bash 4.2 (EL7) a timed read can lose a job's SIGCHLD, so a ble.sh TAB now and then waits for the next key, which cancels it, with or without mssh; the centos7 test image patches it with a `sed` (docs/limitations.md, "The centos7 test image patches ble.sh's conditional-sync"). (a) Draft the report; the user posts it or says to post it (recommended: as their picks on upstream bugs, "Drop, record, draft upstream (Recommended)" 2026-10-24 and "KL + draft report (Recommended)" 2026-11-04; the ble.sh maintainer answers, as on #745). (b) Leave the `sed` for good, as a known limitation of the test image. Waits on it: nothing. Words it would drop: none.
 
 ## Closed
 - Autocomplete SP1 (engine, knowledge index, TAB for bash, zsh and fish, install, replay): done in 6.28, merge e566014.
