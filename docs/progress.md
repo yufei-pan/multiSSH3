@@ -9,6 +9,7 @@ Open work lives here and nowhere else (RULES, "Long work: the progress file"). E
 ## Open work
 
 ### mssh 6.47 (no written plan: scope is the "deferred (6.47)" entries in docs/limitations.md and the "planned next" lines of the v6.46 GitHub release)
+- **Building (started 2026-11-14):** branch feat/647 (worktree mssh-647); the rows of this section are in the build.
 - **6.47: the seven zsh entries marked "Kind: deferred (6.47)" in docs/limitations.md** (one `### zsh: ...` heading each, each with its own "Revisit when: 6.47: ..." plan). State: not started. Where: no 6.47 branch or worktree; main is 89be29f, the same commit as tag v6.46 on origin, and has no commit after 2026-11-08. Order from the v6.46 release notes: first the `$(` with `bang_hist` case (write the `!` outside the double quote), then the split value's lost quote after `=`. The `\"` entry also names a workaround in `_mssh`'s quoted-command path, and that report was sent by the user on 2026-11-10 ("I have send the zsh email"); the entry says so. After release: README "Upgrading to 6.47", bump the `multissh3==` pin in cas-toolbox/pyproject.toml (now 6.46) in the next Monday roll-up. From: the main session's plan; the user's deferral rule (Standing decisions, 2026-11-05).
 
 ### mssh glue: Ctrl-C and timed reads, a design pass (no written plan: no spec, branch or notes in the repo beyond the three entries)
