@@ -654,7 +654,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   From zsh 5.3 on, 6.44 drops the grey text while keys are waiting.
 - Why: the plugin's `_zsh_autosuggest_modify` gives the old grey text back while keys are waiting (`$PENDING > 0 || $KEYS_QUEUED_COUNT > 0`),
   before it checks the text against what was typed. The glue drops the text in a `line-pre-redraw` hook, which zsh has from 5.3 only.
-- Revisit when: the plugin changes (it does the same alone with its own text).
+- Revisit when: the plugin changes (it does the same alone with its own text); reported upstream as zsh-autosuggestions #862 (2026-11-06).
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
 
 ### Tab past its limit: a remote option that mssh has too gets a name quoted for this shell
@@ -748,7 +748,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   does the same, on 5.9 and 5.0.2.
 - Why: zsh's own `compset -q` does it: `_zzq() { compset -q; _files }` gives `zzq "cat \"\" zzfilezz` in stock zsh 5.9 and 5.0.2.
 - Revisit when: 6.47: one workaround in `_mssh`'s quoted-command path (split the command's words itself when it holds `\"`), and
-  the upstream report to zsh-workers (drafted; the user sends it from their own address).
+  the upstream report to zsh-workers (sent by the user, 2026-11-10).
 - Noted: 2026-11-08, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: no names inside a directory holding `$` or a backtick in a quoted command
