@@ -2414,8 +2414,8 @@ def test_zsh_a_name_with_an_exclamation_mark_in_a_double_quote_with_an_expansion
 
 def zsh_enter(tmp_path, typed, close, files=(), history=(), extra='', steps=()):
 	'''TAB at the end of typed, then close and Enter, in a new zsh in a directory holding files, with mssh's history (for the host
-	h) and mssh a function printing its arguments: (the line after TAB, mssh's arguments, whether zsh said "event not found"). steps: keys
-	typed after TAB, each followed by the shell going idle.'''
+	h) and mssh a function printing its arguments: (the line Enter ran: the line after TAB and the keys of steps, then close; mssh's
+	arguments; whether zsh said "event not found"). steps: keys typed after TAB, each followed by the shell going idle.'''
 	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
 	build_index(env)
 	work = tmp_path / 'work'
@@ -2425,12 +2425,15 @@ def zsh_enter(tmp_path, typed, close, files=(), history=(), extra='', steps=()):
 		(work / name).write_text('')
 	session = zsh_session(home, env, glue_file(home, 'zsh'), extra="cd '{}'\n{}\nmssh() {{ printf 'GOT<%s>' \"$@\"; }}".format(work, extra))
 	try:
-		line = session.line_after(typed, settle=True)
 		session.send(typed + '\t')
 		session.wait_idle()
 		for keys in steps:
 			session.send(keys)
 			session.wait_idle()
+		session.send(session.print_key)
+		shown = session.read_until(b']@@')
+		begin = shown.rfind('@@LINE[')
+		line = shown[begin + 7:shown.find(']@@', begin)] + close if begin >= 0 else None
 		start = len(session.output)
 		session.send(close + '\r')
 		session.wait_idle()
@@ -2441,34 +2444,35 @@ def zsh_enter(tmp_path, typed, close, files=(), history=(), extra='', steps=()):
 	return line, re.findall(r'GOT<([^>\r\n]*)>', text), 'event not found' in text
 
 
-# typed after the opener, the files here, mssh's history, whose word is checked (mssh's own, its last argument, or the remote
-# shell's, the last word it reads of mssh's command), that word exactly ({work} is the directory the shell is in) and what closes the
-# quote TAB leaves open (none where it closes it)
+# typed after the opener, the files here, mssh's history, whose words are checked (mssh's own arguments after the opener's, or the
+# words the remote shell reads of mssh's command, the host left out), those words exactly ({work} is the directory the shell is in) and
+# what closes the quote TAB leaves open (none where it closes it)
 BANG_NAMES = [
-	('mssh -f "zz', ['zz!x'], [], 'mssh', 'zz!x', ''),
-	('mssh -f "$PWD/zz', ['zz!x'], [], 'mssh', '{work}/zz!x', ''),
-	('mssh h cat "zz', ['zz!x'], [], 'remote', 'zz!x', ''),
-	('mssh h ls "$PWD/zz', ['zz!x'], [], 'remote', '{work}/zz!x', ''),
-	('mssh h "ls $PWD/zz', ['zz!x'], [], 'remote', '{work}/zz!x', ''),
-	('mssh h dd if="zz', ['zz!x'], [], 'remote', 'if=zz!x', ''),
-	('mssh h cat "zz', [], ['"cat zz!x"'], 'remote', 'zz!x', ''),
-	('mssh h "cat zz', [], ['"cat zz!x"'], 'remote', 'zz!x', ''),
-	('mssh h dd if="zz', [], ['"dd if=zz!x"'], 'remote', 'if=zz!x', ''),
-	('mssh h sort --output="zz', [], ['"sort --output=zz!x"'], 'remote', '--output=zz!x', ''),
+	('mssh -f "zz', ['zz!x'], [], 'mssh', ['-f', 'zz!x'], ''),
+	('mssh -f "$PWD/zz', ['zz!x'], [], 'mssh', ['-f', '{work}/zz!x'], ''),
+	('mssh h cat "zz', ['zz!x'], [], 'remote', ['cat', 'zz!x'], ''),
+	('mssh h ls "$PWD/zz', ['zz!x'], [], 'remote', ['ls', '{work}/zz!x'], ''),
+	('mssh h "ls $PWD/zz', ['zz!x'], [], 'remote', ['ls', '{work}/zz!x'], ''),
+	('mssh h dd if="zz', ['zz!x'], [], 'remote', ['dd', 'if=zz!x'], ''),
+	('mssh h cat "zz', [], ['"cat zz!x"'], 'remote', ['cat', 'zz!x'], ''),
+	('mssh h "cat zz', [], ['"cat zz!x"'], 'remote', ['cat', 'zz!x'], ''),
+	('mssh h dd if="zz', [], ['"dd if=zz!x"'], 'remote', ['dd', 'if=zz!x'], ''),
+	('mssh h sort --output="zz', [], ['"sort --output=zz!x"'], 'remote', ['sort', '--output=zz!x'], ''),
 	# (a name holding a quote and a !: the quote stopped (Q) reading zz'\!x, and the remote shell got zz'\\!x)
-	('mssh h "cat zz', ['zz\'!x'], [], 'remote', "zz'!x", '"'),
-	('mssh h "cat zz', ['zz"!x'], [], 'remote', 'zz"!x', '"'),
-	('mssh h "cat zz', ["zz'x!y z"], [], 'remote', "zz'x!y z", '"'),
-	('mssh h "cat zz', ['zz\\!x'], [], 'remote', 'zz\\!x', '"'),
-	('mssh h "cat zz', ['zz\'"!x'], [], 'remote', 'zz\'"!x', '"'),
+	('mssh h "cat zz', ['zz\'!x'], [], 'remote', ['cat', "zz'!x"], '"'),
+	('mssh h "cat zz', ['zz"!x'], [], 'remote', ['cat', 'zz"!x'], '"'),
+	('mssh h "cat zz', ["zz'x!y z"], [], 'remote', ['cat', "zz'x!y z"], '"'),
+	('mssh h "cat zz', ['zz\\!x'], [], 'remote', ['cat', 'zz\\!x'], '"'),
+	('mssh h "cat zz', ['zz\'"!x'], [], 'remote', ['cat', 'zz\'"!x'], '"'),
 ]
 # where the command starts, and what closes it after TAB
 BANG_OPENERS = [('', ''), ('print -r -- $(', ')'), ('cat <(', ')'), ('print -r -- `', '`'), ('print -r -- $(print -r -- `', '`)')]
 
 
-def bang_word(got, whose):
-	'''The word of a command mssh got that a bang test checks.'''
-	return got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
+def bang_words(got, whose):
+	'''The words of a command mssh got that a bang test checks, as BANG_NAMES gives them: mssh's own arguments, or the remote shell's words
+	for mssh's command (after the host).'''
+	return got if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))
 
 
 @pytest.mark.parametrize('opener, closer', BANG_OPENERS, ids=['line', 'dollar-paren', 'process', 'backtick', 'backtick-in-dollar-paren'])
@@ -2479,7 +2483,7 @@ def test_zsh_a_name_holding_an_exclamation_mark_in_a_double_quote_reaches_mssh_a
 	# mssh -f zz\!x, a file that is not there, and $(mssh h cat "zz\\\!x" the remote shell zz\!x. A plain ! there is a history event
 	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history)
 	assert not event and got, (line, got)
-	assert bang_word(got, whose) == expected.format(work=tmp_path / 'work'), (line, got)
+	assert bang_words(got, whose) == [word.replace('{work}', str(tmp_path / 'work')) for word in expected], (line, got)
 
 
 @pytest.mark.parametrize('typed, files, history, whose, expected, quote', BANG_NAMES[:3] + BANG_NAMES[6:7])
@@ -2487,11 +2491,12 @@ def test_zsh_a_name_holding_an_exclamation_mark_inside_a_dollar_paren_with_bang_
 	# (with no history expansion zsh writes a plain !, which reads as one inside $( ) too)
 	line, got, event = zsh_enter(tmp_path, 'print -r -- $(' + typed, quote + ')', files=files, history=history, extra='setopt no_bang_hist')
 	assert not event and got, (line, got)
-	assert bang_word(got, whose) == expected.format(work=tmp_path / 'work'), (line, got)
+	assert bang_words(got, whose) == [word.replace('{work}', str(tmp_path / 'work')) for word in expected], (line, got)
 
 
 # a \! typed earlier in a double-quoted command stays as typed (bang_hist on, zsh 5.5.1 and later give PREFIX with it read as !; the glue put the
-# words before the cursor's back from it, and Enter said "event not found" or ran a history command): typed, the files, the history,
+# words before the cursor's back from it, so TAB turned the \! into a bare !, a history event: Enter ran nothing on the line and said "event not
+# found" inside $( )): typed, the files, the history,
 # keys after TAB, what closes the quote (none where TAB closes it), and the command mssh gets on the line, in $( ) and in backticks (None: not read)
 EARLIER_BANG = [
 	('mssh h "echo a\\!b zz', ['zzplain'], [], [], '"', 'echo a!b zzplain', 'echo a\\!b zzplain', 'echo a!b zzplain'),
@@ -2506,12 +2511,17 @@ EARLIER_BANG = [
 
 @pytest.mark.parametrize('opener, closer, index', [('', '', 5), ('print -r -- $(', ')', 6), ('print -r -- `', '`', 7)], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('case', EARLIER_BANG, ids=[case[0] + ' ' + ('history' if case[2] else '-' + '-'.join(case[3]).strip()) for case in EARLIER_BANG])
-def test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab(tmp_path, opener, closer, index, case):
+def test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab(request, tmp_path, opener, closer, index, case):
 	typed, files, history, steps, quote = case[:5]
 	if case[index] is None:
 		pytest.skip('the backticks expand the $0 of the awk command')
+	# zsh 5.0.2 (the centos7 image) keeps the backslash in PREFIX. The three rows it fails are deferrals of 6.48 (limitations); strict, so that a fix
+	# shows. No image has a zsh from 5.1 to 5.4, so where that behaviour ends is not known: the gate is the version, not the behaviour
 	if zsh_version() <= (5, 0) and (history or steps and opener.endswith('$(')):
-		pytest.skip('zsh 5.0.2 keeps the backslash in PREFIX: history names (which have the !) are not matched to what was typed, and a later TAB inside $( ) writes the name with its backslash, as in 6.46')
+		request.applymarker(pytest.mark.xfail(strict=True, reason=(
+			'zsh 5.0.2: after a \\! typed earlier, no history name is offered (limitations: zsh 5.0.2, no history names after a \\! typed earlier)' if history else
+			'zsh 5.0.2: inside $( ), a later TAB writes the name with its backslash, as in 6.46 (limitations: inside $( ), a name holding !, from the second TAB)' if 'zzs' in typed else
+			'zsh 5.0.2: inside $( ), a second TAB into a directory holding a ! finds nothing (limitations: zsh 5.0.2, no second TAB into a directory holding a !)')))
 	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history, steps=steps)
 	assert not event and got == ['h', case[index]], (line, got)
 
@@ -2573,8 +2583,8 @@ TICKED_INTO_DIRECTORY = [
 @pytest.mark.parametrize('typed, whose', TICKED_INTO_DIRECTORY)
 def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_path, typed, whose, dirname):
 	# the text inside backticks is read once more before the double quote: the second TAB read zzd\\\&x/ by the double quote alone, split
-	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing (6.46, but for mssh's own --file= and, with a $PWD, a
-	# directory holding a $)
+	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing (6.46 too, but for a directory holding a $ after
+	# mssh's own --file=" and one holding an & or a blank after $PWD/, where it went on)
 	if ' x' in dirname and whose == 'remote' and '="' in typed:
 		# (a value after a quote at an = holding whitespace is not offered: mssh would split it. Nothing goes in, and what was typed stays)
 		line, _ = review_line(tmp_path, 'zsh', '`' + typed, dirs=[dirname], files=[dirname + '/zzin'], steps=['zz\t'], pre='mssh() { :; }')
@@ -2600,17 +2610,19 @@ def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_
 	('mssh h "dd of=~/zzho', {'home_files': ['zzhome']}, 'mssh h "dd of=~/zzhome', ['dd', 'of=~/zzhome']),
 	('mssh h "dd if=~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h "dd if=~/zzd\\\\&x/zzin', ['dd', 'if=~/zzd&x/zzin']),
 ])
-def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(tmp_path, opener, typed, kwargs, expected, remote):
+def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(request, tmp_path, opener, typed, kwargs, expected, remote):
 	# dd's completion expands the ~ and writes the path back: TAB put this machine's home where ~ was typed (in a quote the remote
-	# shell then got that path)
+	# shell then got that path). The remote words are the test harness's sh's: the remote shell reads a ~ after an = as it does (bash
+	# expands it, dash and zsh do not)
 	if opener == '`' and 'if="~/zzd' in typed:
-		pytest.skip('inside backticks nothing is offered for the second TAB: a deferral of 6.48 (limitations)')
-	line, _ = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+		request.applymarker(pytest.mark.xfail(strict=True, reason='inside backticks nothing is offered for the second TAB: a deferral of 6.48 (limitations)'))
+	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+	if opener:
+		# (inside backticks the line is written once more for them: the words the remote shell gets are the same)
+		got = substituted_remote(line + ('"' if typed.count('"') % 2 and not expected.endswith(' ') else ''), tmp_path / 'work')
 	if opener != '`':
 		assert line == opener + expected, line
-	else:
-		# (inside backticks the line is written once more for them: the words the remote shell gets are the same)
-		assert substituted_remote(line + ('"' if typed.count('"') % 2 and not expected.endswith(' ') else ''), tmp_path / 'work') == remote, line
+	assert got == remote, line
 
 
 # typed, the local names, history, the keys after the first TAB, then the line and the remote words (None: not read)
