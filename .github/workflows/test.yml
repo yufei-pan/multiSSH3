@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12", "3.14"]
+        python-version: ["3.9", "3.11", "3.12", "3.14"]
     # the autocomplete tests skip a shell that is missing, unless MSSH_REQUIRE_SHELLS names it
     env:
       MSSH_REQUIRE_SHELLS: bash,zsh,fish

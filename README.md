@@ -974,7 +974,7 @@ Option names count in full only: `--user` is not `--username` and `-c` is not `-
 
 Putting the command after `--` is no substitute for quotes: every word after the hosts is a command of its own, so `mssh web1 -- bash -c 'echo hi'` runs `bash`, `-c` and `echo hi` one after another (when each word is a single word, as in `mssh web1 -- ls -la`, mssh asks whether to join them).
 
-Below is a sample help message output from multiSSH3 6.46 @ 2026-11-07 (no config file, 120 columns; the lines after the options list the programs found on that machine)
+Below is a sample help message output from multiSSH3 6.47 @ 2026-11-16 (no config file, 120 columns; the lines after the options list the programs found on that machine)
 
 ```bash
 $ mssh -h
@@ -1388,17 +1388,29 @@ __DEBUG_MODE = False
 
 > `__DEBUG_MODE` is used to control whether to print host thread execution debug information to its stderr.
 
+## Upgrading to 6.47 from 6.46
+
+Run `mssh --completion install` again (zsh): the fixes below are in the new glue. What you may notice:
+
+- Fix (zsh): inside `$( )`, `<( )` and `>( )`, with `bang_hist` on, a name holding `!` in a double quote goes in with the `!` outside the quote, `"zz"\!"x"`: `$(mssh -f "zz<TAB>` gave mssh `zz\!x`, a file that is not there. On the line and inside backticks the spelling is as before. A second TAB on such a word writes it as zsh does, `"zz\!x"`, as 6.46 did.
+- Change (zsh): a double-quoted command is split into words by the glue, not by zsh's `compset -q`, which read its backslashes wrong: `mssh h "grep \"a b\" zz<TAB>` gave `zzfilezz` and now gives `zzfile`, and TAB goes on into a directory written for the remote shell (`zzd$x`, ``zzd`x``, `zzd&x`). The quote stays open after a name, as before.
+- Fix (zsh): inside backticks, TAB goes on into such a directory in a quoted command, a double-quoted word holding an expansion and after a quote at an `=` (`` `mssh h dd if="zzd<TAB>zz<TAB> ``).
+- Fix (zsh): a value the command splits after a quote at an `=` keeps the quote: `mssh h make CFLAGS="-ggd<TAB>` gave `CFLAGS=-ggdb` and now gives `CFLAGS="-ggdb`, the quote left open for more flags.
+- Fix (zsh): a `~/` typed after `dd`'s `=` stays as typed: `mssh h dd if="~/zz<TAB>` put this machine's home there.
+- Fix (zsh): beside the command's file names, mssh's history names are offered in a quoted command's word holding a `/`, a double-quoted word holding an expansion, and after a quote at an `=` (`mssh h "cat sub/zz<TAB>` with `cat sub/zzremote` in history). Not yet beside names that are no file names, or inside backticks in a directory typed with backslashes ([limitations](docs/limitations.md#zsh-in-a-quoted-word-holding-a--no-history-name-beside-a-commands-names-that-are-no-file-names)).
+- Fix (zsh): in a command inside an open `<(` or `>(`, a double-quoted word holding an expansion is completed, not expanded, as inside `$(`.
+
 ## Upgrading to 6.46 from 6.45
 
 Run `mssh --completion install` again (zsh): the fixes below are in the new glue. What you may notice:
 
 - Fix (zsh): a quote after a plain name's `=` stays, as after a remote option's: `mssh h dd if="zz<TAB>` gave `if=zzfile ` and now gives `if="zzfile" `, `make VAR="zz<TAB>` the same; beside another name TAB no longer takes the quote back (`if="zz` stayed `if=zz`).
-- Fix (zsh): inside backticks, a name that needs quoting is offered again, written for the extra reading backticks get: with a file `zzs$v`, `` `mssh h cat zz<TAB> `` gives `` `mssh h cat zzs\\\\\\\$v ``, and the remote shell gets `cat zzs$v`, as in `$( )`. Also in quoted commands and arguments, after `--output="` and `if="`, history names, and mssh's own file options: `` `mssh -f zz<TAB> `` gave `zzs\$v`, so mssh got `-f zzs`, and now gives `zzs\\\$v`. TAB goes on into such a directory (`` `mssh h cat zzd<TAB>zz<TAB> `` for `zzd&x/zzin`), except in a quoted command, a double-quoted word holding an expansion, or after a quote at an `=` ([limitations](docs/limitations.md#zsh-inside-backticks-tab-does-not-go-on-into-a-changed-directory-in-a-quoted-command-or-after-a-quote-at-an-)).
+- Fix (zsh): inside backticks, a name that needs quoting is offered again, written for the extra reading backticks get: with a file `zzs$v`, `` `mssh h cat zz<TAB> `` gives `` `mssh h cat zzs\\\\\\\$v ``, and the remote shell gets `cat zzs$v`, as in `$( )`. Also in quoted commands and arguments, after `--output="` and `if="`, history names, and mssh's own file options: `` `mssh -f zz<TAB> `` gave `zzs\$v`, so mssh got `-f zzs`, and now gives `zzs\\\$v`. TAB goes on into such a directory (`` `mssh h cat zzd<TAB>zz<TAB> `` for `zzd&x/zzin`), except in a quoted command, a double-quoted word holding an expansion, or after a quote at an `=` (fixed in 6.47).
 - Fix (zsh): a backtick in single quotes, `$'...'` or after a backslash no longer counts as an open one: `` mssh h echo '`' zz<TAB> `` offers `zzs$v` again, as 6.44 did.
-- Fix (zsh): in a word holding a `/`, mssh's history names are offered beside the command's own names: with `sub/zzlocal` here and `cat sub/zzremote` in history, `mssh h cat sub/zz<TAB>` stays as typed, and `r<TAB>` gives `sub/zzremote`. Also in `cat "sub/zz`, `sort --output=sub/zz` and `~/.zz`. Not yet in a quoted command, a double-quoted word holding an expansion or after a quote at an `=`, where they are offered when the command offers nothing, as in 6.45 ([limitations](docs/limitations.md#zsh-beside-the-commands-own-names-a-history-name-in-a-quoted-commands-word-holding-a--is-left-out)).
-- Known (zsh, deferred to 6.47): inside `$(`, with `bang_hist` on (zsh's default), a double-quoted name holding `!` reaches mssh as `\!`: `$(mssh -f "zz<TAB>` for a file `zz!x` gives mssh `-f zz\!x`. On the line and inside backticks it reaches mssh as `zz!x`. 6.45 does the same, except after a quote at an `=` (`$(mssh h dd if="zz<TAB>`), where 6.45 dropped the quote and mssh got `if=zz!x` ([limitations](docs/limitations.md#zsh-inside---with-bang_hist-on-a-name-holding--in-a-double-quote-reaches-mssh-as-)).
-- Known (zsh, deferred to 6.47): a value that the command's completion splits after a quote at an `=` loses the quote, as in 6.45: `mssh h make CFLAGS="-ggd<TAB>` gives `CFLAGS=-ggdb`. With a history name for it the quote stays, except for a value holding a `/` with a local name beside it ([limitations](docs/limitations.md#zsh-a-value-the-command-splits-after-a-quote-at-an--loses-the-quote)).
-- Known (zsh, deferred to 6.47): in a double-quoted command holding `\"`, TAB puts the name after the typed word: `mssh h "grep \"a b\" zz<TAB>` gives `zzfilezz`, as in 6.45 and zsh's own `compset -q` ([limitations](docs/limitations.md#zsh-in-a-double-quoted-command-holding--tab-puts-the-name-after-the-typed-word)).
+- Fix (zsh): in a word holding a `/`, mssh's history names are offered beside the command's own names: with `sub/zzlocal` here and `cat sub/zzremote` in history, `mssh h cat sub/zz<TAB>` stays as typed, and `r<TAB>` gives `sub/zzremote`. Also in `cat "sub/zz`, `sort --output=sub/zz` and `~/.zz`. Not yet in a quoted command, a double-quoted word holding an expansion or after a quote at an `=`, where they are offered when the command offers nothing, as in 6.45 (6.47 offers them there beside file names).
+- Known (zsh, deferred to 6.47): inside `$(`, with `bang_hist` on (zsh's default), a double-quoted name holding `!` reaches mssh as `\!`: `$(mssh -f "zz<TAB>` for a file `zz!x` gives mssh `-f zz\!x`. On the line and inside backticks it reaches mssh as `zz!x`. 6.45 does the same, except after a quote at an `=` (`$(mssh h dd if="zz<TAB>`), where 6.45 dropped the quote and mssh got `if=zz!x` (fixed in 6.47).
+- Known (zsh, deferred to 6.47): a value that the command's completion splits after a quote at an `=` loses the quote, as in 6.45: `mssh h make CFLAGS="-ggd<TAB>` gives `CFLAGS=-ggdb`. With a history name for it the quote stays, except for a value holding a `/` with a local name beside it (fixed in 6.47).
+- Known (zsh, deferred to 6.47): in a double-quoted command holding `\"`, TAB puts the name after the typed word: `mssh h "grep \"a b\" zz<TAB>` gives `zzfilezz`, as in 6.45 and zsh's own `compset -q` (fixed in 6.47).
 - Fix (zsh): TAB no longer leaves `MATCH`, `MBEGIN` and `MEND` set in the shell, as stock zsh leaves none: they showed in `set` and as names `echo $M<TAB>` offered. 6.45 left them after TAB on some mssh lines.
 - Change (zsh): a `~/` typed before a history name stays as typed, this shell's home, as the line gives without TAB: `mssh h cat ~/.zzr<TAB>` with `cat ~/.zzremote` in history gave `\~/.zzremote`, the remote host's home, and now gives `~/.zzremote`.
 
