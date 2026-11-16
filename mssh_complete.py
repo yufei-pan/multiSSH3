@@ -7278,6 +7278,8 @@ _mssh() {
 	# (inside backticks zsh gives the backtick as the open quote, also for a word of no quote of its own: it is the command's, not the word's)
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
 	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches] _mssh_complete_qkept=0
+	local -i _mssh_complete_texts_beside=0
+	local _mssh_complete_texts_typed=
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7390,6 +7392,7 @@ _mssh() {
 	fi
 	# (mssh's own words go in as the double quote has them, as zsh does where it keeps the quote and this goes in with -Q: the
 	# part typed (PREFIX) as it was, its $PWD this shell's, and the rest quoted: a history word's " or $HOME is the remote command's)
+	_mssh_complete_texts_typed=$PREFIX
 	if (( _mssh_complete_dq )); then
 		for (( _mssh_complete_offset = 1; _mssh_complete_offset <= $#_mssh_complete_texts; _mssh_complete_offset++ )); do
 			_mssh_complete_item=$_mssh_complete_texts[_mssh_complete_offset]
@@ -8051,6 +8054,25 @@ _mssh_complete_compadd() {
 	fi
 	(( $#_mssh_complete_changed )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" "${_mssh_complete_closing_opts[@]}" - "${_mssh_complete_changed[@]}" && _mssh_complete_rc=0
 	(( $#_mssh_complete_dirs )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" -S / - "${_mssh_complete_dirs[@]}" && _mssh_complete_rc=0
+	# mssh's history names beside the command's file names, in a word holding a / where the glue split a double quote or zsh keeps
+	# none (_mssh_complete_dq: a quoted command, a double-quoted word holding an expansion, after a quote at an =) or after compset -q
+	# (a single-quoted command): in the call that adds those names, once a TAB, with its IPREFIX, PREFIX and -p, each less the text
+	# typed up to its last / or blank, which those stand for (whole beside them zsh cut the line back: mssh h "/.zzr). They are written
+	# for the quote already (_mssh), or after compset -q the remote shell's text, which zsh writes for the quote
+	if (( _mssh_complete_file && ! _mssh_complete_filter && ! ${_mssh_complete_texts_beside-1} && ( _mssh_complete_dq || ${_mssh_complete_qcommand:-0} ) )) &&
+		[[ ${_mssh_complete_texts_typed-} == */* ]]; then
+		_mssh_complete_texts_beside=1
+		local _mssh_complete_head=${(M)_mssh_complete_texts_typed##*[/[:blank:]]}
+		local -a _mssh_complete_beside _mssh_complete_beside_shown
+		for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_texts; _mssh_complete_index++ )); do
+			[[ $_mssh_complete_texts[_mssh_complete_index] == "$_mssh_complete_head"?* ]] || continue
+			_mssh_complete_word=${_mssh_complete_texts[_mssh_complete_index]#"$_mssh_complete_head"}
+			(( _mssh_complete_ticked )) && _mssh_complete_tick written "$_mssh_complete_word"
+			_mssh_complete_beside+=("$_mssh_complete_word")
+			_mssh_complete_beside_shown+=("$_mssh_complete_listed[_mssh_complete_index]")
+		done
+		(( $#_mssh_complete_beside )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" -Q "${_mssh_complete_closing_opts[@]}" -l -d _mssh_complete_beside_shown - "${_mssh_complete_beside[@]}" && _mssh_complete_rc=0
+	fi
 	return $_mssh_complete_rc
 }
 

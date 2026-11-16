@@ -1675,9 +1675,14 @@ def test_zsh_the_same_name_from_history_and_the_command_s_completion_goes_in_who
 
 @pytest.mark.parametrize('typed, history', [('mssh h "ls /etc zz', '"ls /etc zzhist"'), ("mssh h 'ls /etc zz", '"ls /etc zzhist"'), ('mssh h "ls /etc -l zz', '"ls /etc -l zzhist"')])
 def test_zsh_a_directory_in_an_earlier_word_of_a_quoted_command_keeps_the_quote(tmp_path, typed, history):
-	# whole commands of history beside a local name: the quote went (mssh h ls /etc zz), and the command with it. The local name stays
+	# whole commands of history beside a local name: the quote went (mssh h ls /etc zz), and the command with it. 6.46 left history's
+	# name out; from 6.47 it stands beside the local name, behind the words typed: what both start with, the quote kept, and the next
+	# letter picks either
 	line, _ = review_line(tmp_path, 'zsh', typed, history=[history], files=['zzplain'], pre='mssh() { :; }')
-	assert line.startswith(typed + 'plain'), line
+	assert line == typed, line
+	(tmp_path / 'next').mkdir()
+	line, _ = review_line(tmp_path / 'next', 'zsh', typed, history=[history], files=['zzplain'], steps=['h\t'], pre='mssh() { :; }')
+	assert line.startswith(typed + 'hist'), line
 
 
 @pytest.mark.parametrize('typed, expected', [('mssh h "fakecmd zzp', 'mssh h "fakecmd zzplain'), ('mssh h "fakecmd $PWD/zzp', 'mssh h "fakecmd $PWD/zzplain" ')])
@@ -2367,6 +2372,32 @@ def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(tmp_path, opene
 		pytest.skip('inside backticks the directory is written once more: the other test of backticks')
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
 	assert line == opener + expected, line
+
+
+# typed, the local names, history, the keys after the first TAB, then the line and the remote words (None: not read)
+QUOTED_SLASH_HISTORY = [
+	('mssh h "cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], [], 'mssh h "cat sub/zz', None),
+	('mssh h "cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], ['r\t'], 'mssh h "cat sub/zzremote" ', ['cat', 'sub/zzremote']),
+	('mssh h "cat sub/zz', dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], ['l\t'], 'mssh h "cat sub/zzlocal', ['cat', 'sub/zzlocal']),
+	("mssh h 'cat sub/zz", dict(files=['sub/zzlocal']), ['"cat sub/zzremote"'], ['r\t'], "mssh h 'cat sub/zzremote' ", ['cat', 'sub/zzremote']),
+	('mssh h "ls $PWD/zz', dict(files=['zzlocal']), ["'ls $PWD/zzremote'"], ['r\t'], 'mssh h "ls $PWD/zzremote" ', None),
+	('mssh h sort --output="sub/zz', dict(files=['sub/zzlocal']), ['"sort --output=sub/zzremote"'], ['r\t'], 'mssh h sort --output="sub/zzremote" ',
+		['sort', '--output=sub/zzremote']),
+	('mssh h "cat ~/.zz', dict(home_files=['.zzrc']), ['"cat ~/.zzremote"'], [], 'mssh h "cat ~/.zzr', None),
+	('mssh h "cat ~/.zz', dict(home_files=['.zzrc']), ['"cat ~/.zzremote"'], ['e\t'], 'mssh h "cat ~/.zzremote" ', ['cat', REMOTE_HOME + '/.zzremote']),
+]
+
+
+@pytest.mark.parametrize('opener, typed, files, history, steps, expected, remote', [(opener,) + case for case in QUOTED_SLASH_HISTORY
+	for opener in ('', '$(') if not opener or '~' not in case[0] and '$PWD' not in case[0]])
+def test_zsh_a_history_name_holding_a_slash_stands_beside_the_command_s_names_in_a_quote(tmp_path, opener, typed, files, history, steps, expected, remote):
+	# in a quoted command, a double-quoted word holding an expansion and after a quote at an =, 6.46 left history's names out once the
+	# command's completion offered one in a word holding a /: they go in that call, behind the text typed, as the command's names do
+	line, got = review_line(tmp_path, 'zsh', opener + typed, history=history, steps=steps, pre='mssh() { :; }', **files)
+	if opener:
+		got = substituted_remote(line + ('' if line.endswith(' ') else '"'), tmp_path / 'work')
+	assert line == opener + expected, line
+	assert remote is None or got == remote, got
 
 
 def test_zsh_the_paren_walk_finds_the_outermost_substitution_open(tmp_path):
