@@ -1804,11 +1804,26 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_wh
 	assert (line, got) == (opener + expected, remote)
 
 
-def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_with_no_history_is_completed(tmp_path):
-	# (with no history name beside them the command's names go in, as in 6.45; the quote is lost, as in 6.45 and stock zsh:
-	# docs/limitations.md)
-	line, _ = review_line(tmp_path, 'zsh', 'mssh h make CFLAGS="-ggd', pre='mssh() { :; }')
-	assert line == 'mssh h make CFLAGS=-ggdb', line
+# typed, the directories here, then the line after TAB and the remote words
+SPLIT_VALUES_NO_HISTORY = [
+	('mssh h make CFLAGS="-ggd', [], 'mssh h make CFLAGS="-ggdb', ['make', 'CFLAGS=-ggdb']),
+	('mssh h -- make CFLAGS="-ggd', [], 'mssh h -- make CFLAGS="-ggdb', ['--', 'make', 'CFLAGS=-ggdb']),
+	('mssh h make CFLAGS="-Wall -ggd', [], 'mssh h make CFLAGS="-Wall -ggdb', ['make', 'CFLAGS=-Wall', '-ggdb']),
+	('mssh h make CFLAGS="-Isub/zz', ['sub/zzlocal'], 'mssh h make CFLAGS="-Isub/zzlocal/', ['make', 'CFLAGS=-Isub/zzlocal/']),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, dirs, expected, remote', SPLIT_VALUES_NO_HISTORY)
+def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_with_no_history_keeps_the_quote(tmp_path, opener, typed, dirs, expected, remote):
+	# with no history name beside them the command's names go in, in the quote typed, which stays open as in a quoted command: the
+	# value may go on. 6.46 lost the quote, as stock zsh does (make CFLAGS=-ggdb), and a " typed to close it opened one
+	line, got = review_line(tmp_path, 'zsh', opener + typed, dirs=dirs, pre='mssh() { :; }')
+	if opener:
+		got = substituted_remote(line + '"', tmp_path / 'work')
+	else:
+		got = remote_shell_args(' '.join(local_words('zsh', line)[2:]))
+	assert (line, got) == (opener + expected, remote)
 
 
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)

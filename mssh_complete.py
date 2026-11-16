@@ -7269,7 +7269,7 @@ _mssh() {
 	local -F _mssh_complete_end
 	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0 _mssh_complete_qcommand=0 _mssh_complete_inquote=0
 	local -i _mssh_complete_dcword _mssh_complete_offset _mssh_complete_matches=$compstate[nmatches] _mssh_complete_remoting=0
-	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_textopts _mssh_complete_dq_parts
+	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_textopts _mssh_complete_dq_parts _mssh_complete_split
 	# a double-quoted word holding an expansion: zsh keeps no quote for it (compstate[quote] empty, PREFIX the whole text with
 	# its spaces backslashed), and what goes in replaces the word from its opening quote. The word is read from the line as
 	# typed: the quote goes in IPREFIX, so it stays there, and every word goes in as in an open quote
@@ -7432,6 +7432,7 @@ _mssh() {
 		# (how many names there are with mssh's own words in: _mssh_complete_compadd leaves out a split value's beside them)
 		_mssh_complete_texts_in=$compstate[nmatches]
 		_mssh_complete_in_word names
+		(( $#_mssh_complete_split )) && _mssh_complete_add_split
 		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts after
 		# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
 		# -o default), unless the engine said there is nothing to offer here (nodefault: a password)
@@ -7518,6 +7519,22 @@ _mssh_complete_add_texts() {
 		(( $#_mssh_complete_bwords )) && _mssh_complete_next_compadd -V mssh -l -d _mssh_complete_bshown -Q -- "${_mssh_complete_bwords[@]}"
 	fi
 	_mssh_complete_next_compadd -V mssh -l -d _mssh_complete_whole_shown "${_mssh_complete_textopts[@]}" -- "${_mssh_complete_whole[@]}"
+}
+
+_mssh_complete_add_split() {
+	# the names of a value the command split after a quote at an = (_mssh_complete_split, from _mssh_complete_compadd), in that quote: the
+	# lead, the quote and the words typed before the one at the cursor as typed, then the names written for the quote. The quote stays open
+	# after them, as in a quoted command: the value may go on
+	local _mssh_complete_open=\" _mssh_complete_inq _mssh_complete_head=${(M)_mssh_complete_value##*[[:blank:]]}
+	local -a _mssh_complete_written
+	local _mssh_complete_name
+	IPREFIX=$_mssh_complete_lead\"$_mssh_complete_head
+	PREFIX=${_mssh_complete_value#"$_mssh_complete_head"}
+	for _mssh_complete_name in "${_mssh_complete_split[@]}"; do
+		_mssh_complete_quote_in "$_mssh_complete_name"
+		_mssh_complete_written+=("$_mssh_complete_inq")
+	done
+	_mssh_complete_next_compadd -Q -S '' -d _mssh_complete_split -- "${_mssh_complete_written[@]}"
 }
 
 _mssh_complete_in_word() {
@@ -7834,6 +7851,20 @@ _mssh_complete_compadd() {
 		done
 	else
 		_mssh_complete_in=("${(@)argv[_mssh_complete_at,-1]}")
+	fi
+	# (a value after a quote at an = that the command's completion split into words of its own, with no history name beside: zsh wrote
+	# its names after the lead with the quote gone, CFLAGS=-ggdb, and the words typed before them for no quote. Each name goes to _mssh
+	# whole, the part of its word the completion moved in front, and a directory with its /: _mssh puts them in the quote typed)
+	if (( ! _mssh_complete_filter && ${+_mssh_complete_split} )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX != *"$_mssh_complete_lead"* ]]; then
+		_mssh_complete_value=
+		(( _mssh_complete_hidden_at )) && _mssh_complete_value=${(Q)_mssh_complete_opts[_mssh_complete_hidden_at]}
+		for _mssh_complete_word in "${_mssh_complete_in[@]}"; do
+			(( _mssh_complete_quoted )) && _mssh_complete_word=${(Q)_mssh_complete_word}
+			_mssh_complete_name=${(Q)IPREFIX}$_mssh_complete_value$_mssh_complete_word
+			(( _mssh_complete_file )) && [[ -d $_mssh_complete_prefix$_mssh_complete_word ]] && _mssh_complete_name+=/
+			_mssh_complete_split+=("$_mssh_complete_name")
+		done
+		return 1
 	fi
 	# directories read from the double quote (_mssh_complete_dq_parts of _mssh) and left as they are: their text as typed goes in front,
 	# for this call (zsh puts both back when this function returns). -p must start the word, which holds them as read: written for the
