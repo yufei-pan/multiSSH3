@@ -860,13 +860,14 @@ REMOTE_HOME = '/zzremote-home'
 
 
 def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=(), home_dirs=(), steps=(), executables=(),
-		bash_completion=False, engine=ENGINE, history=(), keys='\t', pre=''):
+		bash_completion=False, engine=ENGINE, history=(), keys='\t', pre='', terminal=None):
 	"""The line after TAB at the end of typed (then the keys of each of steps, the last one's line), and the words the remote
 	shell gets for it (the line read by this shell, its open quote closed, then mssh's command read by sh with HOME at
 	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash, ble, zsh; bash and ble.sh with
 	bash-completion loaded when bash_completion) in a directory holding files, dirs and executables, and HOME holding
 	zzhplain, home_files and home_dirs; extra runs after the glue; engine: the glue's engine command; history: commands of
-	mssh's history (for the host h; one holding a tab is a line of the history file); keys: the key pressed after typed (TAB); pre runs before the glue."""
+	mssh's history (for the host h; one holding a tab is a line of the history file); keys: the key pressed after typed (TAB); pre runs before the glue;
+	terminal: a list that gets what the shell wrote to the terminal from the first key on (an error printed over the prompt shows only there)."""
 	# (a history entry holding a tab is a whole line of the history file)
 	env, home = make_home(tmp_path, [command if '\t' in command else '1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
 	build_index(env)
@@ -891,6 +892,7 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 		session = blesh_session(home, env, ble.glue_file(home, engine), pre=pre, extra="cd '{}'; {}".format(work, extra))
 	else:
 		session = bash_session(home, env, glue_file(home, 'bash', engine), bash_completion=bash_completion, pre=pre, extra="cd '{}'; {}".format(work, extra))
+	start = len(session.output)
 	try:
 		if steps:
 			session.send(typed + '\t')
@@ -902,6 +904,8 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 		else:
 			line = session.line_after(typed, keys=keys)
 	finally:
+		if terminal is not None:
+			terminal.append(session.output[start:].decode('utf-8', 'replace'))
 		session.close()
 	local = local_words('zsh' if shell == 'zsh' else 'bash', line, home) if line else None
 	output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(local[2:])],
@@ -1515,6 +1519,23 @@ def test_zsh_a_named_directory_typed_in_a_double_quoted_command_stays_as_typed_a
 		assert line == opener + expected, line
 	if remote is not None:
 		assert got == remote, (line, got)
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed', ['mssh h "ls ~zznosuchuser/zz', 'mssh h "ls ~zznosuchuser/'], ids=['name', 'directory'])
+def test_zsh_a_user_of_the_hosts_typed_as_a_home_in_a_double_quoted_command_stays_as_typed_and_prints_no_error(tmp_path, opener, typed):
+	# ~deploy/ of an account the hosts have and this machine has not: zsh reads the unknown name as an error (nomatch, its default), which
+	# aborted the completion and was printed over the prompt ("no such user or named directory"); 6.46 offered nothing and said nothing.
+	# The line cannot show it, so the terminal's output is read
+	terminal = []
+	line, got = review_line(tmp_path, 'zsh', opener + typed, files=['zzplain'], pre='mssh() { :; }', terminal=terminal)
+	assert typed in terminal[0], terminal
+	assert 'no such user' not in terminal[0], terminal
+	assert line == opener + typed, line
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	if opener != '`':
+		assert got == ['ls', typed.rsplit(' ', 1)[1]], (line, got)
 
 
 @pytest.mark.parametrize('name', ['zzs$v', 'zzq"x', 'zzb`t', 'zzc\\d'])

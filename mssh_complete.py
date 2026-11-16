@@ -7660,9 +7660,10 @@ _mssh_complete_in_word() {
 					PREFIX=${PREFIX%%=*}=\$HOME${PREFIX#*=\~}
 				elif [[ $_mssh_complete_item == \~[^/]##/* ]]; then
 					# (and a ~name/, ~+/ or a named directory as a parameter holding its directory, as the $HOME/ above: the completion
-					# expands it, and the directories typed go back in front of each name, so ~alice/ stays as typed. A name that is none stays)
+					# expands it, and the directories typed go back in front of each name, so ~alice/ stays as typed. A name that is none stays:
+					# a user of the hosts, not of this machine, which zsh's nomatch makes an error that aborts the completion)
 					_mssh_complete_item=${PREFIX%%/*}
-					_mssh_complete_tilde=${~_mssh_complete_item}
+					() { setopt local_options no_nomatch; _mssh_complete_tilde=${~_mssh_complete_item} }
 					[[ $_mssh_complete_tilde == "$_mssh_complete_item" ]] || PREFIX=\$_mssh_complete_tilde${PREFIX#"$_mssh_complete_item"}
 				fi
 			fi
