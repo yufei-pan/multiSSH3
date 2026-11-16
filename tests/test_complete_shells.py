@@ -2508,20 +2508,31 @@ def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_
 
 
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
-@pytest.mark.parametrize('typed, kwargs, expected', [
-	('mssh h dd if="~/zzho', {'home_files': ['zzhome']}, 'mssh h dd if="~/zzhome" '),
-	('mssh h dd if=~/zzho', {'home_files': ['zzhome']}, 'mssh h dd if=~/zzhome '),
-	('mssh h dd if="~/zz', {'home_files': ['zzhome']}, 'mssh h dd if="~/zzh'),
-	('mssh h dd if="~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h dd if="~/zzd\\\\&x/zzin" '),
-	('mssh h dd of=~/zzho', {'home_files': ['zzhome']}, 'mssh h dd of=~/zzhome '),
+@pytest.mark.parametrize('typed, kwargs, expected, remote', [
+	('mssh h dd if="~/zzho', {'home_files': ['zzhome']}, 'mssh h dd if="~/zzhome" ', ['dd', 'if=~/zzhome']),
+	('mssh h dd if=~/zzho', {'home_files': ['zzhome']}, 'mssh h dd if=~/zzhome ', ['dd', 'if=~/zzhome']),
+	('mssh h dd if="~/zz', {'home_files': ['zzhome']}, 'mssh h dd if="~/zzh', ['dd', 'if=~/zzh']),
+	('mssh h dd if="~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h dd if="~/zzd\\\\&x/zzin" ',
+		['dd', 'if=~/zzd&x/zzin']),
+	('mssh h dd of=~/zzho', {'home_files': ['zzhome']}, 'mssh h dd of=~/zzhome ', ['dd', 'of=~/zzhome']),
+	# (a directory after dd's if=~/: its word and the text TAB wrote went in twice inside backticks, if=~/if=~/zzin)
+	('mssh h dd if=~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h dd if=~/zzd\\\\\\&x/zzin ', ['dd', 'if=~/zzd&x/zzin']),
+	# (in a quoted command too: its completion put this machine's home into what the remote shell runs)
+	('mssh h "dd if=~/zzho', {'home_files': ['zzhome']}, 'mssh h "dd if=~/zzhome', ['dd', 'if=~/zzhome']),
+	('mssh h "dd of=~/zzho', {'home_files': ['zzhome']}, 'mssh h "dd of=~/zzhome', ['dd', 'of=~/zzhome']),
+	('mssh h "dd if=~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h "dd if=~/zzd\\\\&x/zzin', ['dd', 'if=~/zzd&x/zzin']),
 ])
-def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(tmp_path, opener, typed, kwargs, expected):
+def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(tmp_path, opener, typed, kwargs, expected, remote):
 	# dd's completion expands the ~ and writes the path back: TAB put this machine's home where ~ was typed (in a quote the remote
 	# shell then got that path)
-	if opener == '`' and 'zzd' in typed:
-		pytest.skip('inside backticks the directory is written once more: the other test of backticks')
+	if opener == '`' and 'if="~/zzd' in typed:
+		pytest.skip('inside backticks nothing is offered for the second TAB: a deferral of 6.48 (limitations)')
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
-	assert line == opener + expected, line
+	if opener != '`':
+		assert line == opener + expected, line
+	else:
+		# (inside backticks the line is written once more for them: the words the remote shell gets are the same)
+		assert substituted_remote(line + ('"' if typed.count('"') % 2 and not expected.endswith(' ') else ''), tmp_path / 'work') == remote, line
 
 
 # typed, the local names, history, the keys after the first TAB, then the line and the remote words (None: not read)

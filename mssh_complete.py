@@ -7645,10 +7645,16 @@ _mssh_complete_in_word() {
 			# (where zsh keeps the double quote, the completion reads the word as written for that quote)
 			# (a ~/ at its start as $HOME/, which the completion expands in a double quote too: this machine's home, as compset -q gave it)
 			if (( _mssh_complete_qkept )); then
+				# (a ~ typed as \~ is none: only the word as read decides)
+				_mssh_complete_item=$PREFIX
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
-				if [[ $PREFIX == \~/* ]]; then
+				if [[ $_mssh_complete_item == \~/* ]]; then
 					PREFIX=\$HOME${PREFIX#\~}
-				elif [[ $PREFIX == \~[^/]##/* ]]; then
+				elif [[ $_mssh_complete_item == *=\~/* && ${_mssh_complete_item%%=*} != *[/[:space:]]* ]]; then
+					# (and one after the = of dd's if=, as the line has it: the command's completion expands it, and writes this machine's home
+					# into the remote command)
+					PREFIX=${PREFIX%%=*}=\$HOME${PREFIX#*=\~}
+				elif [[ $_mssh_complete_item == \~[^/]##/* ]]; then
 					# (and a ~name/, ~+/ or a named directory as a parameter holding its directory, as the $HOME/ above: the completion
 					# expands it, and the directories typed go back in front of each name, so ~alice/ stays as typed. A name that is none stays)
 					_mssh_complete_item=${PREFIX%%/*}
@@ -7997,8 +8003,9 @@ _mssh_complete_compadd() {
 	if (( _mssh_complete_hidden_at && $#_mssh_complete_dq_parts )) && [[ -n $_mssh_complete_opts[_mssh_complete_hidden_at] ]] &&
 		_mssh_complete_typed_dirs "$_mssh_complete_opts[_mssh_complete_hidden_at]"; then
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
-		# (less what the command's own compset has moved to IPREFIX since: dd's if=, ssh's -i)
-		_mssh_complete_item=${(j:/:)_mssh_complete_dq_parts[1,$#_mssh_complete_parts-1]}
+		# (less what the command's own compset has moved to IPREFIX since: dd's if=, ssh's -i. The directories of -p are the last ones typed:
+		# the ones before are in IPREFIX, dd's if=~/ with them, which a ~ restored there made twice)
+		_mssh_complete_item=${(j:/:)_mssh_complete_dq_parts[-$#_mssh_complete_parts,-2]}
 		IPREFIX+=${_mssh_complete_item#"${IPREFIX[_mssh_complete_dq_ipre+1,-1]}"}/
 		PREFIX=${(j:/:)${(@s:/:)PREFIX}[$#_mssh_complete_parts,-1]}
 		_mssh_complete_opts[_mssh_complete_hidden_at]=
