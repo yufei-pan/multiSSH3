@@ -7654,6 +7654,10 @@ _mssh_complete_in_word() {
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
 				if [[ $_mssh_complete_item == \~/* ]]; then
 					PREFIX=\$HOME${PREFIX#\~}
+				elif [[ $_mssh_complete_item == *=\\\~/* && ${_mssh_complete_item%%=*} != *[/[:space:]]* ]]; then
+					# (a \~ after the = of dd's if= is none, as at the start: the word keeps its backslash, where the (Q) above dropped it and
+					# the completion would expand the ~ into this machine's home, which the remote command then gets)
+					PREFIX=${PREFIX%%=*}=\\\~${PREFIX#*=\~}
 				elif [[ $_mssh_complete_item == *=\~/* && ${_mssh_complete_item%%=*} != *[/[:space:]]* ]]; then
 					# (and one after the = of dd's if=, as the line has it: the command's completion expands it, and writes this machine's home
 					# into the remote command)

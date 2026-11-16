@@ -739,13 +739,13 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: 6.48, with the other backticks work above.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
-### zsh: a `\$` typed in a directory of a quoted command, and a `\~` after dd's `=`
+### zsh: a `\$` typed in a directory of a quoted command
 - Kind: deferred (6.48)
 - What the operator sees: in zsh, in a quoted command, `mssh h "cat zzd\$x/zz<TAB>` completes inside the directory `zzd$x` and writes names
   that the remote shell reads without the `$x` (the `\$` is the double quote's, so the remote shell expands `$x`: `cat zzd/zzl`); 6.46
-  offered nothing. And `mssh h "dd if=\~/zz<TAB>` puts this machine's home where `\~` was typed (6.46 offered nothing).
-- Why: the glue reads the typed word as the double quote does, which strips the `\` before `$` and leaves a `~` that dd's completion expands.
-- Revisit when: 6.48: keep the typed `\$` as written for the remote shell, and the `\~` after an `=`, in the word handed on.
+  offered nothing.
+- Why: the glue reads the typed word as the double quote does, which strips the `\` before `$`.
+- Revisit when: 6.48: keep the typed `\$` as written for the remote shell in the word handed on.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: a quote opened inside a double-quoted word holding an expansion
