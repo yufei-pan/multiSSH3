@@ -1515,6 +1515,16 @@ def test_zsh_a_named_directory_typed_in_a_double_quoted_command_stays_as_typed_a
 		assert got == remote, (line, got)
 
 
+@pytest.mark.parametrize('name', ['zzs$v', 'zzq"x', 'zzb`t', 'zzc\\d'])
+@pytest.mark.parametrize('names, steps', [(1, ['\t']), (2, ['1\t'])], ids=['second-tab', 'second-step'])
+def test_zsh_inside_backticks_a_later_tab_on_a_name_written_for_a_double_quoted_command_keeps_the_name(tmp_path, name, names, steps):
+	# the second TAB read the word it had written once less than the names it adds: PREFIX was written for the double quote but not
+	# for the backticks, so no name matched, and the \ of what was typed stood alone: the remote shell got zzs and read $v itself
+	files = [name] if names == 1 else [name + '1', name + '2']
+	line, _ = review_line(tmp_path, 'zsh', '`mssh h "cat ' + name[:3], files=files, steps=steps, pre='mssh() { :; }')
+	assert substituted_remote(line, tmp_path / 'work') == ['cat', files[0]], line
+
+
 def substituted_words(line, cwd):
 	'''The words mssh gets for line, an mssh command in a backtick or a $( left open: the line closed and run by zsh in cwd, with mssh
 	printing its arguments. None when zsh cannot read it.'''

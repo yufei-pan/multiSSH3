@@ -7962,6 +7962,13 @@ _mssh_complete_compadd() {
 	if (( ${_mssh_complete_qkept:-0} && ! _mssh_complete_filter )) && [[ -n $PREFIX && $PREFIX != */* ]]; then
 		_mssh_complete_quote_in "${(q)${(Q)PREFIX}}"
 		PREFIX=$_mssh_complete_inq
+		# (inside backticks written once more, as the names go in: a later TAB on zzs\$v matched no name, and the \\ of its names stood alone)
+		if (( _mssh_complete_ticked )); then
+			_mssh_complete_value=$PREFIX
+			PREFIX=
+			_mssh_complete_tick written "$_mssh_complete_value"
+			PREFIX=$_mssh_complete_word
+		fi
 	fi
 	(( _mssh_complete_shown_at )) && _mssh_complete_shown=("${(@P)_mssh_complete_opts[_mssh_complete_shown_at]}")
 	for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_in; _mssh_complete_index++ )); do
