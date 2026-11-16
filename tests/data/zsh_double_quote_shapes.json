@@ -1,7 +1,7 @@
 {
 "notes": {
 	"backticks-fewer": "inside backticks a name goes in with one backslash fewer than in 6.46: the same words for the remote shell",
-	"bang": "a ! in a name: on the line TAB writes \\\\! where 6.46 wrote \\\\\\! (the Enter tests check the word mssh gets); inside $( ) 6.46 gave the remote shell the name with a literal backslash (zz\\!x) and 6.47 gives zz!x, the ! outside the quote (\"\\!\"); inside backticks the same fix, with two backslashes fewer on the line",
+	"bang": "a ! in a name: on the line TAB writes \\\\! where 6.46 wrote \\\\\\! (the Enter tests check the word mssh gets); inside $( ) 6.46 gave the remote shell the name with a literal backslash (zz\\!x) and 6.47 gives zz!x, the ! outside the quote (\"\\!\"); inside backticks the words are the same at Enter (the harness's own reading of the line differs), with two backslashes fewer on the line",
 	"dollar-home": "inside backticks the \\$ of \\$HOME is read by them: 6.46 offered this machine's home names, which is what that shell expands there; 6.47 offers none (nothing wrong goes in)",
 	"typed-backslashes": "a backslash typed in a directory stays as typed on the line and in $( ); 6.46 wrote it again, one more (the same words for the remote shell)",
 	"ticked-directory": "inside backticks TAB goes on into a directory written for them (6.46 stopped before it)",
