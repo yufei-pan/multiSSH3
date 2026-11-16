@@ -2293,9 +2293,10 @@ def test_zsh_a_name_with_an_exclamation_mark_in_a_double_quote_with_an_expansion
 		session.close()
 
 
-def zsh_enter(tmp_path, typed, close, files=(), history=(), extra=''):
+def zsh_enter(tmp_path, typed, close, files=(), history=(), extra='', steps=()):
 	'''TAB at the end of typed, then close and Enter, in a new zsh in a directory holding files, with mssh's history (for the host
-	h) and mssh a function printing its arguments: (the line after TAB, mssh's arguments, whether zsh said "event not found").'''
+	h) and mssh a function printing its arguments: (the line after TAB, mssh's arguments, whether zsh said "event not found"). steps: keys
+	typed after TAB, each followed by the shell going idle.'''
 	env, home = make_home(tmp_path, ['1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
 	build_index(env)
 	work = tmp_path / 'work'
@@ -2308,6 +2309,9 @@ def zsh_enter(tmp_path, typed, close, files=(), history=(), extra=''):
 		line = session.line_after(typed, settle=True)
 		session.send(typed + '\t')
 		session.wait_idle()
+		for keys in steps:
+			session.send(keys)
+			session.wait_idle()
 		start = len(session.output)
 		session.send(close + '\r')
 		session.wait_idle()
@@ -2365,6 +2369,30 @@ def test_zsh_a_name_holding_an_exclamation_mark_inside_a_dollar_paren_with_bang_
 	line, got, event = zsh_enter(tmp_path, 'print -r -- $(' + typed, quote + ')', files=files, history=history, extra='setopt no_bang_hist')
 	assert not event and got, (line, got)
 	assert bang_word(got, whose) == expected.format(work=tmp_path / 'work'), (line, got)
+
+
+# a \! typed earlier in a double-quoted command stays as typed (bang_hist on, zsh 5.5.1 and later give PREFIX with it read as !; the glue put the
+# words before the cursor's back from it, and Enter said "event not found" or ran a history command): typed, the files, the history,
+# keys after TAB, what closes the quote (none where TAB closes it), and the command mssh gets on the line, in $( ) and in backticks (None: not read)
+EARLIER_BANG = [
+	('mssh h "echo a\\!b zz', ['zzplain'], [], [], '"', 'echo a!b zzplain', 'echo a\\!b zzplain', 'echo a!b zzplain'),
+	('mssh h "sed -n \'/x/\\!p\' zz', ['zzplain'], [], [], '"', "sed -n '/x/!p' zzplain", "sed -n '/x/\\!p' zzplain", "sed -n '/x/\\!p' zzplain"),
+	('mssh h "awk \'\\!seen[\\$0]++\' zz', ['zzplain'], [], [], '"', "awk '!seen[$0]++' zzplain", "awk '\\!seen[$0]++' zzplain", None),
+	('mssh h "echo a\\!b zz', [], ['"echo a!b zzhist"'], [], '', 'echo a!b zzhist', 'echo a\\!b zzhist', 'echo a!b zzhist'),
+	# (a name TAB wrote, then the next word; a directory TAB wrote, then a name in it)
+	('mssh h "cat zzs', ['zzs!x', 'zzother'], [], [' zzo\t'], '"', 'cat zzs\\!x zzother', 'cat zzs\\!x zzother', 'cat zzs\\!x zzother'),
+	('mssh h "cat zzd', ['zzd!x/zzin'], [], ['zz\t'], '"', 'cat zzd\\!x/zzin', 'cat zzd\\!x/zzin', 'cat zzd\\!x/zzin'),
+]
+
+
+@pytest.mark.parametrize('opener, closer, index', [('', '', 5), ('print -r -- $(', ')', 6), ('print -r -- `', '`', 7)], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('case', EARLIER_BANG, ids=[case[0] + ' ' + ('history' if case[2] else '-' + '-'.join(case[3]).strip()) for case in EARLIER_BANG])
+def test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab(tmp_path, opener, closer, index, case):
+	typed, files, history, steps, quote = case[:5]
+	if case[index] is None:
+		pytest.skip('the backticks expand the $0 of the awk command')
+	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history, steps=steps)
+	assert not event and got == ['h', case[index]], (line, got)
 
 
 @pytest.mark.parametrize('opener, closer', BANG_OPENERS[:2], ids=['line', 'dollar-paren'])

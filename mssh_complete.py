@@ -7279,7 +7279,7 @@ _mssh() {
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
 	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches] _mssh_complete_qkept=0
 	local -i _mssh_complete_texts_beside=0
-	local _mssh_complete_texts_typed= _mssh_complete_tilde=
+	local _mssh_complete_texts_typed= _mssh_complete_texts_read= _mssh_complete_tilde=
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7386,6 +7386,7 @@ _mssh() {
 	# the completion reads the word as written for it, and the quote stays open after a name, as compset -q left it. Not with the
 	# cursor inside the word. Not when the command's own word at the cursor is inside a quote it opened (mssh h "cat 'zz, "cat \"zz,
 	# "echo \`cat zz): that stays with compset -q, which reads that quote
+	_mssh_complete_texts_read=$PREFIX
 	if (( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ $_mssh_complete_open == \" && -z $SUFFIX ]]; then
 		_mssh_complete_read=$PREFIX
 		(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
@@ -7394,6 +7395,14 @@ _mssh() {
 			_mssh_complete_dq=1
 			_mssh_complete_qkept=1
 			_mssh_complete_textopts=(-Q -S '" ')
+			# (with bang_hist on zsh gives PREFIX with each \! read as !, zsh 5.5.1 and later: the words before the one at the cursor go back
+			# into the line from it, so they are taken from the line as typed, and the engine's words are compared with PREFIX as it read it.
+			# A \! typed stays; the bang fix inside $( ) does not wait for a text with none)
+			# (only where backslashes are the one difference: a word that closes and reopens the quote, "zz"\!"x, zsh writes again itself)
+			if [[ $_mssh_complete_compsys_options[banghist] == on && $_mssh_complete_word == \"* && ${${_mssh_complete_word#\"}//\\/} == "${PREFIX//\\/}" ]]; then
+				PREFIX=${_mssh_complete_word#\"}
+				(( _mssh_complete_bang )) || ! _mssh_complete_paren_open "$LBUFFER" || _mssh_complete_bang=1
+			fi
 		fi
 	fi
 	# (mssh's own words go in as the double quote has them, as zsh does where it keeps the quote and this goes in with -Q: the
@@ -7403,9 +7412,9 @@ _mssh() {
 		for (( _mssh_complete_offset = 1; _mssh_complete_offset <= $#_mssh_complete_texts; _mssh_complete_offset++ )); do
 			_mssh_complete_item=$_mssh_complete_texts[_mssh_complete_offset]
 			_mssh_complete_name=
-			if [[ $_mssh_complete_item == "$PREFIX"* ]]; then
+			if [[ $_mssh_complete_item == "$_mssh_complete_texts_read"* ]]; then
 				_mssh_complete_name=$PREFIX
-				_mssh_complete_item=${_mssh_complete_item[$#PREFIX+1,-1]}
+				_mssh_complete_item=${_mssh_complete_item[$#_mssh_complete_texts_read+1,-1]}
 			fi
 			_mssh_complete_quote_in "$_mssh_complete_item"
 			_mssh_complete_texts[_mssh_complete_offset]=$_mssh_complete_name$_mssh_complete_inq
