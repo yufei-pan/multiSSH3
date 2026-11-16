@@ -2520,7 +2520,7 @@ def test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab(r
 	if zsh_version() <= (5, 0) and (history or steps and opener.endswith('$(')):
 		request.applymarker(pytest.mark.xfail(strict=True, reason=(
 			'zsh 5.0.2: after a \\! typed earlier, no history name is offered (limitations: zsh 5.0.2, no history names after a \\! typed earlier)' if history else
-			'zsh 5.0.2: inside $( ), a later TAB writes the name with its backslash, as in 6.46 (limitations: inside $( ), a name holding !, from the second TAB)' if 'zzs' in typed else
+			'zsh 5.0.2: inside $( ), a TAB in a later word writes the name again with an extra backslash, as in 6.46 (limitations: inside $( ), a name holding !, after more is typed behind it)' if 'zzs' in typed else
 			'zsh 5.0.2: inside $( ), a second TAB into a directory holding a ! finds nothing (limitations: zsh 5.0.2, no second TAB into a directory holding a !)')))
 	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history, steps=steps)
 	assert not event and got == ['h', case[index]], (line, got)

@@ -372,8 +372,9 @@ each entry).
   otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
   the remote shell would read `a` and `b/...`), and one typed bare in a quoted command (`mssh h "cat a&b/zz<TAB>`). bash
   replaces such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`),
-  the names inside it complete. A directory completed by TAB goes on completing, from 6.47 in a double-quoted command
-  too, except one whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
+  the names inside it complete. A directory completed by TAB goes on completing; in a double-quoted command (`"ls zzd<TAB>`,
+  then `in<TAB>`) it gave nothing for a directory whose name holds `$`, a backtick, `"`, `\` or `!`, and from 6.47 only for one
+  whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
   to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
 - Revisit when: an operator types such directories in zsh and misses the names.
@@ -700,7 +701,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Kind: deferred (6.48)
 - What the operator sees: in zsh, in a word whose typed directory holds backslashes the way TAB writes them, mssh's history names are
   not offered beside the local ones. Inside backticks, with three backslashes (`` `mssh h cat zzd\\\&x/zz<TAB> `` for `zzd&x`) the local
-  names go in alone, and with none nothing is offered; with one typed backslash (`` `mssh h cat zzd\&x/zz ``) the history names go in alone.
+  names go in alone, and with one typed backslash (`` `mssh h cat zzd\&x/zz ``) or none nothing is offered, local or history.
   In a quoted command, with the two backslashes TAB writes (`mssh h "cat zzd\\&x/zz<TAB>`), the local names go in alone. On the line and in
   `$( )` they are offered, with the spelling TAB writes there (three backslashes outside a quote).
 - Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it (6.46's
@@ -719,16 +720,37 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: 6.48: give the history name's directory the same suffix, or add it after the directory's call.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
-### zsh: inside `$( )`, a name holding `!` reaches mssh with a backslash from the second TAB, or an ambiguous first one
+### zsh: inside `$( )`, a name holding `!` reaches mssh with a backslash after more is typed behind it
 - Kind: deferred (6.48)
 - What the operator sees: in zsh with `bang_hist` on, inside `$( )`, `<( )` or `>( )`, the first TAB on a name holding `!` goes in right
-  (`"zz"\!"x"`, which mssh gets as `zz!x`). A later TAB on the written word, and a first TAB with several names (`zz!x` and `zz!y`), write it as
-  zsh does, `"zz\!x"`: mssh gets `zz\!x` (a remote command's word `zz\\!x`, which the remote shell reads as `zz\!x`). As in 6.46.
+  (`"zz"\!"x"`, which mssh gets as `zz!x`), also with several names (`zz!x` and `zz!y` give `"zz"\!"`; 6.46 wrote `"zz\!"`). A letter typed behind that
+  and a TAB (`"zz"\!"` then `x<TAB>`) write the name as zsh does, `"zz\!x"`: mssh gets `zz\!x` (a remote command's word `zz\\!x`, which the
+  remote shell reads as `zz\!x`). As in 6.46. In a quoted command (`"cat zz`) the second TAB is right. On zsh 5.0.2 a TAB in a later word writes
+  such a name again with an extra backslash (`$(mssh h "cat zzs<TAB> zzo<TAB>` for `zzs!x` and `zzother`).
 - Why: zsh writes the word again from its quote on, `\!` for each `!`, and keeps the backslash inside `$( )`; the glue cannot hand zsh text
   that has the `"\!"` spelling for a later TAB.
 - Revisit when: 6.48: give zsh PREFIX and the words in the `zz"\!"x` spelling with `-Q`; in stock zsh 5.9 that makes the later TAB right
   (`$(zi "zz<TAB>y<TAB>` gives `"zz"\!"y" `). Its rough edges: with the cursor right after the reopened quote (`"zz"\!"<TAB>`) zsh adds a stray
   `"` or puts the closing quote after the space, and zsh 5.0.2 leaves the quote open.
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
+
+### zsh 5.0.2: after a `\!` typed earlier in a double-quoted command, no history names
+- Kind: deferred (6.48)
+- What the operator sees: in zsh 5.0.2 (EL7), with `bang_hist` on, `mssh h "echo a\!b zz<TAB>` with `echo a!b zzhist` in history offers
+  nothing from history: the line stays as typed (6.46 the same), or takes the local names alone. zsh 5.5.1 and later offer the history name.
+- Why: 5.0.2 keeps the backslash in PREFIX (`a\!b`), so the words before the cursor, which the glue takes back from it, differ from the history
+  names' (`a!b`); not traced further.
+- Revisit when: 6.48: read the earlier words from PREFIX as 5.0.2 gives them, on the centos7 image (the strict xfail in
+  `test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab` shows when it works).
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
+
+### zsh 5.0.2: inside `$( )`, a second TAB into a directory holding `!` finds nothing
+- Kind: deferred (6.48)
+- What the operator sees: in zsh 5.0.2 (EL7), `$(mssh h "cat zzd<TAB>zz<TAB>` with a directory `zzd!x`: the first TAB goes into the directory
+  (`zzd"\!"x/`), the second finds no name, and mssh gets `cat zzd\!x/zz`, which the remote shell reads as `zzd!x/zz` (6.46: `zzd\\!x/zz`, one more
+  backslash). zsh 5.5.1 and later complete it.
+- Why: not traced; 5.0.2 keeps the backslash in PREFIX (the entry above), which the second TAB's match against the directory's name probably meets.
+- Revisit when: 6.48, with the entry above.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: inside backticks, no second TAB into a directory after `dd if="~/`
