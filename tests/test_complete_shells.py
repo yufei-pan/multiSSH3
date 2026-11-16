@@ -1443,7 +1443,8 @@ TICKED_LINES = [
 	('mssh h "cat \\~zz', {'files': ['~zzt']}, 'mssh h "cat \\\\~zzt', 'remote', ['cat', '~zzt']),
 	('mssh h cat zza', {'history': ['"cat zzamp\\\\&b"']}, 'mssh h cat zzamp\\\\\\\\\\&b ', 'remote', ['cat', 'zzamp&b']),
 	('mssh h cat zzh', {'history': ["'cat zzh$HOME'"]}, 'mssh h cat zzh\\\\\\$HOME ', 'remote', ['cat', 'zzh/zzremote-home']),
-	('mssh h "cat zza', {'history': ['"cat zzamp\\\\&b"']}, 'mssh h "cat zzamp\\\\\\\\&b" ', 'remote', ['cat', 'zzamp&b']),
+	# (a history word in a quoted command goes in written for the double quote, then for the backticks: 6.46 wrote \\\\&, the same words)
+	('mssh h "cat zza', {'history': ['"cat zzamp\\\\&b"']}, 'mssh h "cat zzamp\\\\\\&b" ', 'remote', ['cat', 'zzamp&b']),
 	('mssh h "ls $PWD/zzs', {'history': ["'ls $PWD/zzs\\\\$v'"]}, 'mssh h "ls $PWD/zzs\\\\\\\\\\\\\\\\\\\\\\$v" ', 'remote', ['ls', '{work}/zzs\\']),
 	("mssh h 'zzc", {'history': ["'zzcmd \\\\$v'"]}, "mssh h 'zzcmd \\\\\\\\\\$v' ", 'remote', ['zzcmd', '\\']),
 	('mssh h cat zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h cat zzd\\\\\\\\\\&x/zzin ', 'remote', ['cat', 'zzd&x/zzin']),
@@ -1825,9 +1826,9 @@ SHAPES_PINNED = [
 	('mssh h cat a-b="zz', {'files': ['a-b=zzfile'], 'history': ['"cat a-b=zzhist"']}, 'mssh h cat a-b=zz'),
 	('mssh h cat 1x="zz', {'files': ['1x=zzfile'], 'history': ['"cat 1x=zzhist"']}, 'mssh h cat 1x=zz'),
 	('mssh h cat x.y="zz', {'files': ['x.y=zzfile'], 'history': ['"cat x.y=zzhist"']}, 'mssh h cat x.y=zz'),
-	# (inside backticks, after a quote at an =, TAB does not go on into a changed directory: docs/limitations.md)
-	('`mssh h dd if="zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\&x/zz'),
-	('`mssh h dd if="zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\\\\\\\\\$x/zz'),
+	# (inside backticks, after a quote at an =, TAB goes on into a changed directory: 6.46 offered nothing there)
+	('`mssh h dd if="zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\&x/zzin" '),
+	('`mssh h dd if="zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, '`mssh h dd if="zzd\\\\\\\\\\\\\\$x/zzin" '),
 	# (inside backticks, after a quote at an = or in a double quote, with bang_hist on: a history name's ! as zsh writes it, \!, once)
 	('`mssh h sort --output="zz', {'history': ['"sort --output=zz!x"']}, '`mssh h sort --output="zz\\!x" '),
 	('`mssh h cat "zz', {'history': ['"cat zz!x"']}, '`mssh h cat "zz\\!x" '),
@@ -2274,6 +2275,66 @@ def test_zsh_a_name_holding_an_exclamation_mark_inside_a_dollar_paren_with_bang_
 	assert not event and got, (line, got)
 	word = got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
 	assert word.endswith('zz!x'), (line, got)
+
+
+@pytest.mark.parametrize('opener, closer', BANG_OPENERS[:2], ids=['line', 'dollar-paren'])
+def test_zsh_a_name_holding_an_exclamation_mark_in_a_double_quoted_command_reaches_the_remote_shell_as_named(tmp_path, opener, closer):
+	# (the command's own words: compset -q wrote them for the quote itself, \\\!, which inside $( ) gave the remote shell zz\!x)
+	line, got, event = zsh_enter(tmp_path, opener + 'mssh h "cat zz', '"' + closer, files=['zz!x'])
+	assert not event and got and remote_shell_args(' '.join(got[1:])) == ['cat', 'zz!x'], (line, got)
+
+
+# typed, what review_line gets, the line after TAB (after the keys of steps), and the remote words; {home} is this machine's HOME
+OWN_SPLIT_LINES = [
+	# (after a \" zsh's compset -q put the name after the word typed: zzfilezz)
+	('mssh h "grep \\"a b\\" zz', {'files': ['zzfile']}, 'mssh h "grep \\"a b\\" zzfile', ['grep', 'a b', 'zzfile']),
+	('mssh h "grep \\"a b\\" sub/zz', {'files': ['sub/zzfile']}, 'mssh h "grep \\"a b\\" sub/zzfile', ['grep', 'a b', 'sub/zzfile']),
+	('mssh h "grep \\"a\\" zz', {'files': ['zzfile', 'zzfoo']}, 'mssh h "grep \\"a\\" zzf', ['grep', 'a', 'zzf']),
+	('mssh h "echo \\"x\\"; cat zz', {'files': ['zzfile']}, 'mssh h "echo \\"x\\"; cat zzfile', None),
+	# (and in a directory TAB wrote for the remote shell, holding a $ or a backtick, it offered nothing)
+	('mssh h "cat zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat zzd\\\\\\$x/zzin', ['cat', 'zzd$x/zzin']),
+	('mssh h "cat zzd', {'dirs': ['zzd`x'], 'files': ['zzd`x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat zzd\\\\\\`x/zzin', ['cat', 'zzd`x/zzin']),
+	('mssh h "cat zzd', {'dirs': ['zzd&x'], 'files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat zzd\\\\&x/zzin', ['cat', 'zzd&x/zzin']),
+	('mssh h "cat zzd', {'dirs': ['zzd x'], 'files': ['zzd x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat zzd\\\\ x/zzin', ['cat', 'zzd x/zzin']),
+	# (what compset -q gave stays: the quote open after a name, a ~/ this machine's home, a \~ typed for the remote shell)
+	('mssh h "cat zzp', {'files': ['zzplain']}, 'mssh h "cat zzplain', ['cat', 'zzplain']),
+	('mssh h "cat ~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat ~/zzd\\\\&x/zzin',
+		['cat', REMOTE_HOME + '/zzd&x/zzin']),
+	('mssh h "cat \\~zz', {'files': ['~zzt']}, 'mssh h "cat \\\\~zzt', ['cat', '~zzt']),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, kwargs, expected, remote', OWN_SPLIT_LINES)
+def test_zsh_a_double_quoted_command_is_split_into_words_by_the_glue(tmp_path, opener, typed, kwargs, expected, remote):
+	# zsh's compset -q reads the backslashes of a double quote wrong; the glue splits such a command itself, as it does one holding an
+	# expansion, and keeps zsh's quote. Inside backticks the line is written once more for them: the remote words are checked there
+	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	if opener != '`':
+		assert line == opener + expected, line
+	if remote is not None:
+		assert got == remote, (line, got)
+
+
+# typed after a backtick, the directory, and whose words are checked: the remote shell's, or mssh's own (its last argument)
+TICKED_INTO_DIRECTORY = [
+	('mssh h "cat zzd', 'remote'), ('mssh h "ls $PWD/zzd', 'remote'), ('mssh h dd if="zzd', 'remote'), ('mssh h sort --output="zzd', 'remote'),
+	('mssh --file="zzd', 'mssh'),
+]
+
+
+@pytest.mark.parametrize('dirname', ['zzd&x', 'zzd$x', 'zzd x'])
+@pytest.mark.parametrize('typed, whose', TICKED_INTO_DIRECTORY)
+def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_path, typed, whose, dirname):
+	# the text inside backticks is read once more before the double quote: the second TAB read zzd\\\&x/ by the double quote alone, split
+	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing (6.46)
+	if ' x' in dirname and whose == 'remote' and '="' in typed:
+		pytest.skip('a value after a quote at an = holding whitespace is not offered: mssh would split it')
+	line, _ = review_line(tmp_path, 'zsh', '`' + typed, dirs=[dirname], files=[dirname + '/zzin'], steps=['zz\t'], pre='mssh() { :; }')
+	got = substituted_remote(line, tmp_path / 'work') if whose == 'remote' else substituted_words(line, tmp_path / 'work')
+	assert got and got[-1].endswith(dirname + '/zzin'), (line, got)
 
 
 def test_zsh_the_paren_walk_finds_the_outermost_substitution_open(tmp_path):
