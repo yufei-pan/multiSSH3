@@ -743,7 +743,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Kind: deferred (6.48)
 - What the operator sees: in zsh, in a quoted command, `mssh h "cat zzd\$x/zz<TAB>` completes inside the directory `zzd$x` and writes names
   that the remote shell reads without the `$x` (the `\$` is the double quote's, so the remote shell expands `$x`: `cat zzd/zzl`); 6.46
-  offered nothing.
+  offered nothing. Inside backticks the spelling TAB writes for it (`` `mssh h "cat zzd\\\$x/zz<TAB> ``) gives the remote shell `cat zzd/zzin`
+  (`cat zzd/zz` in 6.46).
 - Why: the glue reads the typed word as the double quote does, which strips the `\` before `$`.
 - Revisit when: 6.48: keep the typed `\$` as written for the remote shell in the word handed on.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
