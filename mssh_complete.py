@@ -7646,29 +7646,36 @@ _mssh_complete_in_word() {
 			(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
 			_mssh_complete_dq_read "$_mssh_complete_read"
 			PREFIX=$_mssh_complete_read
-			# (where zsh keeps the double quote, the completion reads the word as written for that quote)
-			# (a ~/ at its start as $HOME/, which the completion expands in a double quote too: this machine's home, as compset -q gave it)
+			# (where zsh keeps the double quote, the completion reads the word as written for that quote: the remote shell's word, written as a
+			# name. Two rules for what the remote shell would read in it otherwise)
 			if (( _mssh_complete_qkept )); then
-				# (a ~ typed as \~ is none: only the word as read decides)
+				# (1. what the remote shell expands and this machine cannot: a $, a backtick, a brace, a parenthesis, and a pattern character
+				# unless the completion matches patterns itself (glob_complete), left in the directories typed once the escaped characters are
+				# taken off. The names of another directory would go in, so nothing is offered, as for a directory typed bare (limitations,
+				# "a directory the remote shell would read otherwise"). A < or > is no part of a word here: the split ends it there)
 				_mssh_complete_item=$PREFIX
+				if [[ $PREFIX == */* ]]; then
+					_mssh_complete_read=${${PREFIX%/*}//\\?}
+					[[ $_mssh_complete_read == *[\$\`\{\(\)]* || -z $compstate[pattern_match] && $_mssh_complete_read == *[\*\?\[]* ]] && return 0
+				fi
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
-				if [[ $_mssh_complete_item == \~/* ]]; then
-					PREFIX=\$HOME${PREFIX#\~}
-				elif [[ $_mssh_complete_item == *=\\\~/* && ${_mssh_complete_item%%=*} != *[/[:space:]]* ]]; then
-					# (a \~ after the = of dd's if= is none, as at the start: the word keeps its backslash, where the (Q) above dropped it and
-					# the completion would expand the ~ into this machine's home, which the remote command then gets)
-					PREFIX=${PREFIX%%=*}=\\\~${PREFIX#*=\~}
-				elif [[ $_mssh_complete_item == *=\~/* && ${_mssh_complete_item%%=*} != *[/[:space:]]* ]]; then
-					# (and one after the = of dd's if=, as the line has it: the command's completion expands it, and writes this machine's home
-					# into the remote command)
-					PREFIX=${PREFIX%%=*}=\$HOME${PREFIX#*=\~}
-				elif [[ $_mssh_complete_item == \~[^/]##/* ]]; then
-					# (and a ~name/, ~+/ or a named directory as a parameter holding its directory, as the $HOME/ above: the completion
-					# expands it, and the directories typed go back in front of each name, so ~alice/ stays as typed. A name that is none stays:
-					# a user of the hosts, not of this machine, which zsh's nomatch makes an error that aborts the completion)
-					_mssh_complete_item=${PREFIX%%/*}
-					() { setopt local_options no_nomatch; _mssh_complete_tilde=${~_mssh_complete_item} }
-					[[ $_mssh_complete_tilde == "$_mssh_complete_item" ]] || PREFIX=\$_mssh_complete_tilde${PREFIX#"$_mssh_complete_item"}
+				# (2. the ~ that both shells expand, where a file name starts: at the word's start, after the = of an option or a value, after a
+				# one-letter option. zsh's completion reads no ~ in a double quote, so a ~/, ~name/, ~+/ or a named directory goes as a parameter
+				# holding its directory, which it does expand, and the directories typed go back in front of each name (~alice/ stays as typed).
+				# A name that is none stays: a user of the hosts, not of this machine, which zsh's nomatch makes an error that aborts the
+				# completion. A ~ that the remote shell reads as written (\~, '~') is a name at the word's start, which zsh reads so there;
+				# after an = nothing is offered: dd's completion (_tilde_files) expands a ~ in any quote, and would write this machine's home
+				# into the remote command)
+				local -a match mbegin mend
+				if [[ $PREFIX == (#b)(|[^=/[:space:]]##=|-[[:alpha:]])(\~[^/]#)(|/*) ]]; then
+					if [[ $_mssh_complete_item == "$match[1]$match[2]"* ]]; then
+						if [[ -n $match[3] ]]; then
+							() { setopt local_options no_nomatch; _mssh_complete_tilde=${~match[2]} }
+							[[ $_mssh_complete_tilde == "$match[2]" ]] || PREFIX=$match[1]\$_mssh_complete_tilde${PREFIX#"$match[1]$match[2]"}
+						fi
+					elif [[ $match[1] == *= ]]; then
+						return 0
+					fi
 				fi
 			fi
 		fi
