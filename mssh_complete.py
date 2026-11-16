@@ -7594,8 +7594,9 @@ _mssh_complete_in_word() {
 		PREFIX=$_mssh_complete_read
 	elif (( _mssh_complete_ticked )) && [[ -n $_mssh_complete_lead && $_mssh_complete_word == \"*/* && ${_mssh_complete_word%/*} == *\\* ]]; then
 		# (after a quote at an =: a remote command's value zsh holds read by the double quote alone, written for no quote; mssh's own,
-		# as typed. Both read from the text typed, once more, then by the double quote; the remote command's written for no quote again,
-		# as zsh holds it in $( ). The directories typed go back in front, after the lead and the quote)
+		# as typed. The text typed is read once more, for backticks, by both; a remote command's value then by the double quote, and
+		# written for no quote again, as zsh holds it in $( ); mssh's own option's is left as read by the backticks, which the
+		# completion of its file names takes. The directories typed go back in front, after the lead and the quote)
 		_mssh_complete_dq_parts=("${(@s:/:)${_mssh_complete_word#\"}}")
 		_mssh_complete_tick_read "${_mssh_complete_word#\"}"
 		if (( _mssh_complete_delegating )); then
