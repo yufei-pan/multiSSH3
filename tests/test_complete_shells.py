@@ -1970,14 +1970,25 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_th
 
 # the double-quoted commands of tests/data/zsh_double_quote_shapes.json, the line after TAB in the line, in $( ) and in backticks, and the words
 # the remote shell gets: each as 6.46 had it but where a row says why not (its note, in the file's "notes"). The glue splits such a
-# command itself since 6.47, where zsh's compset -q had split it before; what compset -q did for a shape, the split has to do too. The file
-# was made by running the shapes in 6.46 and in 6.47, and the rows that differ are the ones that carry a note
+# command itself since 6.47, where zsh's compset -q had split it before; what compset -q did for a shape, the split has to do too.
+# A row is what the glue gave when the shape was added; 6.46's own line and words for every row are in zsh_double_quote_shapes_6.46.json,
+# which tests/zsh_shapes_probe.py made by running the shapes in a v6.46 checkout (the same script, in the checkout under test, gives the rows)
 QUOTED_SHAPES = json.loads((Path(__file__).parent / 'data' / 'zsh_double_quote_shapes.json').read_text(encoding='utf-8'))
+SHAPES_6_46 = json.loads((Path(__file__).parent / 'data' / 'zsh_double_quote_shapes_6.46.json').read_text(encoding='utf-8'))
 
 
-def test_zsh_every_difference_from_6_46_in_the_double_quoted_shapes_has_a_note():
-	rows = [row for case in QUOTED_SHAPES['cases'] for row in case['rows'].values() if 'note' in row]
-	assert rows and all(row['note'] in QUOTED_SHAPES['notes'] for row in rows)
+def test_zsh_a_double_quoted_shape_row_has_a_note_exactly_when_it_differs_from_the_6_46_baseline_file():
+	# the file's rows against the baseline file, no shell involved: a row that differs from 6.46 (its line, or its words where it pins them) has
+	# a note that the file defines, a row that does not has none (the time rows pin no words and have a note: the time), and every note is used
+	assert {(case['id'], opener) for case in QUOTED_SHAPES['cases'] for opener in case['rows']} == {(case_id, opener) for case_id, rows in SHAPES_6_46.items() for opener in rows}
+	used = set()
+	for case in QUOTED_SHAPES['cases']:
+		for opener, row in case['rows'].items():
+			base = SHAPES_6_46[case['id']][opener]
+			differs = row['line'] != base['line'] or (row['remote'] is not None and row['remote'] != base['remote'])
+			assert differs == (row.get('note') not in (None, 'time')), (case['id'], opener, row, base)
+			used.update([row['note']] if 'note' in row else [])
+	assert used == set(QUOTED_SHAPES['notes'])
 
 
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
