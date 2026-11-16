@@ -370,13 +370,15 @@ each entry).
 - Kind: known limitation
 - What the operator sees: in zsh, nothing is offered inside a directory typed so that the remote shell would read it
   otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
-  the remote shell would read `a` and `b/...`), and one typed bare in a quoted command (`mssh h "cat a&b/zz<TAB>`). bash
-  replaces such a directory with the remote shell's word. Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`),
-  the names inside it complete. A directory completed by TAB goes on completing; in a double-quoted command (`"ls zzd<TAB>`,
-  then `in<TAB>`) it gave nothing for a directory whose name holds `$`, a backtick, `"`, `\` or `!`, and from 6.47 only for one
-  whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
+  the remote shell would read `a` and `b/...`), and, in a quoted command, one typed bare (`mssh h "cat a&b/zz<TAB>`) or
+  holding an expansion the remote shell makes (`mssh h "cat zzd\$x/zz<TAB>`, where the remote shell reads the variable `x`;
+  also a backtick, a brace, a parenthesis or, unless `glob_complete` is set, a pattern character). bash replaces such a directory with the remote shell's word.
+  Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`, `"cat zzd\\\$x/`), the names inside it complete. A directory
+  completed by TAB goes on completing, except one whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
-  to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line.
+  to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line. (In a double-quoted command, `"ls zzd<TAB>`
+  and then `in<TAB>` gave nothing in 6.46 for a directory whose name holds `$`, a backtick, `"`, `\` or `!`; from 6.47 only for one
+  whose name holds a `\`.)
 - Revisit when: an operator types such directories in zsh and misses the names.
 - Approved: 2026-11-03, the user chose "Accept (Recommended)"; the quoted command added the same day, "Extend the Accept
   (Recommended)".
@@ -687,10 +689,10 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Kind: deferred (6.48)
 - What the operator sees: in zsh, in a quoted command, a double-quoted word holding an expansion or after a quote at an `=`, when the
   word (or, in a quoted command, any word before it) holds a `/` and the command's completion offers names that are no file names,
-  mssh's history names are not offered beside them: `mssh h 'ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
-  Beside file names they are offered (6.47), but not beside a directory the command's completion gives with an option's text:
-  `mssh h make CFLAGS="-Isub/zz<TAB>` with a directory `sub/zzlocal` and `make CFLAGS=-Isub/zzhist` in history gives `-Isub/zzlocal/` alone.
-  When the command offers nothing they go in, as before.
+  mssh's history names are not offered beside them: `mssh h "ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
+  Beside file names they are offered (6.47), but not beside a directory the command's completion gives with an option's text, quoted or
+  not (as in 6.46): `mssh h make CFLAGS="-Isub/zz<TAB>` and `CFLAGS=-Isub/zz<TAB>` with a directory `sub/zzlocal` and `make CFLAGS=-Isub/zzhist`
+  in history give `-Isub/zzlocal/` alone. When the command offers nothing they go in, as before.
 - Why: 6.47 puts them in the call that adds the command's file names, with its IPREFIX, PREFIX and `-p`. Put in the first call of any
   kind whose PREFIX they start with, they made zsh drop the quote (`mssh h ls /etc --col`), so 6.47 keeps them to file names.
 - Revisit when: 6.48: find which call took the quote (one with `-P`, `-S` or a description), and add history names in a call of their
@@ -703,7 +705,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   not offered beside the local ones. Inside backticks, with three backslashes (`` `mssh h cat zzd\\\&x/zz<TAB> `` for `zzd&x`) the local
   names go in alone, and with one typed backslash (`` `mssh h cat zzd\&x/zz ``) or none nothing is offered, local or history.
   In a quoted command, with the two backslashes TAB writes (`mssh h "cat zzd\\&x/zz<TAB>`), the local names go in alone. On the line and in
-  `$( )` they are offered, with the spelling TAB writes there (three backslashes outside a quote).
+  `$( )` they are offered, with the spelling TAB writes there (three backslashes outside a quote), for a history entry whose command is a
+  quoted argument (`mssh h "cat zzd\\&x/zzremote"`); one typed as words (`cat zzd\&x/zzremote`) is not.
 - Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it (6.46's
   entry blamed the glue's compare of the head; the engine returns none); in a quoted command the head typed and the names' head read
   differ in the backslashes.
@@ -723,10 +726,12 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 ### zsh: inside `$( )`, a name holding `!` reaches mssh with a backslash after more is typed behind it
 - Kind: deferred (6.48)
 - What the operator sees: in zsh with `bang_hist` on, inside `$( )`, `<( )` or `>( )`, the first TAB on a name holding `!` goes in right
-  (`"zz"\!"x"`, which mssh gets as `zz!x`), also with several names (`zz!x` and `zz!y` give `"zz"\!"`; 6.46 wrote `"zz\!"`). A letter typed behind that
-  and a TAB (`"zz"\!"` then `x<TAB>`) write the name as zsh does, `"zz\!x"`: mssh gets `zz\!x` (a remote command's word `zz\\!x`, which the
-  remote shell reads as `zz\!x`). As in 6.46. In a quoted command (`"cat zz`) the second TAB is right. On zsh 5.0.2 a TAB in a later word writes
-  such a name again with an extra backslash (`$(mssh h "cat zzs<TAB> zzo<TAB>` for `zzs!x` and `zzother`).
+  (`"zz"\!"x"`): mssh gets `zz!x` for its own file option (`$(mssh -f "zz<TAB>`), and the remote shell reads `zz!x` for a remote command's word
+  (`$(mssh h cat "zz<TAB>`, `"cat zz`; the argument mssh gets holds `zz\!x`, which the remote shell reads that way). Also with several names
+  (`zz!x` and `zz!y` give `"zz"\!"`; 6.46 wrote `"zz\!`). A letter typed behind that and a TAB (`"zz"\!"` then `x<TAB>`) write the name as
+  zsh does, `"zz\!x"`: mssh gets `zz\!x` (a remote command's word `zz\\!x`, which the remote shell reads as `zz\!x`). As in 6.46. In a quoted
+  command (`"cat zz`) the second TAB is right. On zsh 5.0.2 a TAB in a later word writes such a name again with an extra backslash
+  (`$(mssh h "cat zzs<TAB> zzo<TAB>` for `zzs!x` and `zzother`).
 - Why: zsh writes the word again from its quote on, `\!` for each `!`, and keeps the backslash inside `$( )`; the glue cannot hand zsh text
   that has the `"\!"` spelling for a later TAB.
 - Revisit when: 6.48: give zsh PREFIX and the words in the `zz"\!"x` spelling with `-Q`; in stock zsh 5.9 that makes the later TAB right
@@ -747,8 +752,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 ### zsh 5.0.2: inside `$( )`, a second TAB into a directory holding `!` finds nothing
 - Kind: deferred (6.48)
 - What the operator sees: in zsh 5.0.2 (EL7), `$(mssh h "cat zzd<TAB>zz<TAB>` with a directory `zzd!x`: the first TAB goes into the directory
-  (`zzd"\!"x/`), the second finds no name, and mssh gets `cat zzd\!x/zz`, which the remote shell reads as `zzd!x/zz` (6.46: `zzd\\!x/zz`, one more
-  backslash). zsh 5.5.1 and later complete it.
+  (`zzd"\!"x/`), the second finds no name, and mssh gets `cat zzd\!x/zz`, which the remote shell reads as `zzd!x/zz` (6.46: `zzd\\!x/zz`, which the
+  remote shell reads as `zzd\!x/zz`). zsh 5.5.1 and later complete it.
 - Why: not traced; 5.0.2 keeps the backslash in PREFIX (the entry above), which the second TAB's match against the directory's name probably meets.
 - Revisit when: 6.48, with the entry above.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
@@ -759,16 +764,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   no quote after the `=` (`if=~/zzd`) and on the line it goes on into the directory. As in 6.46.
 - Why: not traced yet; the same keys go on with the quote left out, and on the line and in `$( )`.
 - Revisit when: 6.48, with the other backticks work above.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: a `\$` typed in a directory of a quoted command
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, in a quoted command, `mssh h "cat zzd\$x/zz<TAB>` completes inside the directory `zzd$x` and writes names
-  that the remote shell reads without the `$x` (the `\$` is the double quote's, so the remote shell expands `$x`: `cat zzd/zzl`); 6.46
-  offered nothing. Inside backticks the spelling TAB writes for it (`` `mssh h "cat zzd\\\$x/zz<TAB> ``) gives the remote shell `cat zzd/zzin`
-  (`cat zzd/zz` in 6.46).
-- Why: the glue reads the typed word as the double quote does, which strips the `\` before `$`.
-- Revisit when: 6.48: keep the typed `\$` as written for the remote shell in the word handed on.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: a quote opened inside a double-quoted word holding an expansion
