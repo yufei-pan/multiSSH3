@@ -7975,6 +7975,9 @@ _mssh_complete_compadd() {
 		_mssh_complete_word=$_mssh_complete_in[_mssh_complete_index]
 		_mssh_complete_name=$_mssh_complete_word
 		(( _mssh_complete_quoted )) && _mssh_complete_name=${(Q)_mssh_complete_word}
+		# (where zsh keeps the double quote the word is written for it, \!, \", \$ and \` read as the quote reads them: (Q) stops at a ' that
+		# is not closed, and zz'\!x went in as zz'\\\!x)
+		(( _mssh_complete_quoted && ${_mssh_complete_qkept:-0} )) && _mssh_complete_name=${_mssh_complete_word//(#m)\\[\\\!\$\`\"]/${MATCH[2]}}
 		# (a word of -Q for the double quote zsh keeps, as _files writes them: its ! outside the quote)
 		if (( _mssh_complete_banging && _mssh_complete_quoted && ! _mssh_complete_dq )) && [[ $_mssh_complete_word == *\!* ]]; then
 			_mssh_complete_inq=$_mssh_complete_word

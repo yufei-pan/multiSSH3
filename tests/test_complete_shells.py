@@ -2318,43 +2318,53 @@ def zsh_enter(tmp_path, typed, close, files=(), history=(), extra=''):
 	return line, re.findall(r'GOT<([^>\r\n]*)>', text), 'event not found' in text
 
 
-# typed after the opener, the files here, mssh's history, and whose word is checked: mssh's own (its last argument) or the remote
-# shell's (the last word it reads of mssh's command)
+# typed after the opener, the files here, mssh's history, whose word is checked (mssh's own, its last argument, or the remote
+# shell's, the last word it reads of mssh's command), that word exactly ({work} is the directory the shell is in) and what closes the
+# quote TAB leaves open (none where it closes it)
 BANG_NAMES = [
-	('mssh -f "zz', ['zz!x'], [], 'mssh'),
-	('mssh -f "$PWD/zz', ['zz!x'], [], 'mssh'),
-	('mssh h cat "zz', ['zz!x'], [], 'remote'),
-	('mssh h ls "$PWD/zz', ['zz!x'], [], 'remote'),
-	('mssh h "ls $PWD/zz', ['zz!x'], [], 'remote'),
-	('mssh h dd if="zz', ['zz!x'], [], 'remote'),
-	('mssh h cat "zz', [], ['"cat zz!x"'], 'remote'),
-	('mssh h "cat zz', [], ['"cat zz!x"'], 'remote'),
-	('mssh h dd if="zz', [], ['"dd if=zz!x"'], 'remote'),
-	('mssh h sort --output="zz', [], ['"sort --output=zz!x"'], 'remote'),
+	('mssh -f "zz', ['zz!x'], [], 'mssh', 'zz!x', ''),
+	('mssh -f "$PWD/zz', ['zz!x'], [], 'mssh', '{work}/zz!x', ''),
+	('mssh h cat "zz', ['zz!x'], [], 'remote', 'zz!x', ''),
+	('mssh h ls "$PWD/zz', ['zz!x'], [], 'remote', '{work}/zz!x', ''),
+	('mssh h "ls $PWD/zz', ['zz!x'], [], 'remote', '{work}/zz!x', ''),
+	('mssh h dd if="zz', ['zz!x'], [], 'remote', 'if=zz!x', ''),
+	('mssh h cat "zz', [], ['"cat zz!x"'], 'remote', 'zz!x', ''),
+	('mssh h "cat zz', [], ['"cat zz!x"'], 'remote', 'zz!x', ''),
+	('mssh h dd if="zz', [], ['"dd if=zz!x"'], 'remote', 'if=zz!x', ''),
+	('mssh h sort --output="zz', [], ['"sort --output=zz!x"'], 'remote', '--output=zz!x', ''),
+	# (a name holding a quote and a !: the quote stopped (Q) reading zz'\!x, and the remote shell got zz'\\!x)
+	('mssh h "cat zz', ['zz\'!x'], [], 'remote', "zz'!x", '"'),
+	('mssh h "cat zz', ['zz"!x'], [], 'remote', 'zz"!x', '"'),
+	('mssh h "cat zz', ["zz'x!y z"], [], 'remote', "zz'x!y z", '"'),
+	('mssh h "cat zz', ['zz\\!x'], [], 'remote', 'zz\\!x', '"'),
+	('mssh h "cat zz', ['zz\'"!x'], [], 'remote', 'zz\'"!x', '"'),
 ]
 # where the command starts, and what closes it after TAB
 BANG_OPENERS = [('', ''), ('print -r -- $(', ')'), ('cat <(', ')'), ('print -r -- `', '`'), ('print -r -- $(print -r -- `', '`)')]
 
 
+def bang_word(got, whose):
+	'''The word of a command mssh got that a bang test checks.'''
+	return got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
+
+
 @pytest.mark.parametrize('opener, closer', BANG_OPENERS, ids=['line', 'dollar-paren', 'process', 'backtick', 'backtick-in-dollar-paren'])
-@pytest.mark.parametrize('typed, files, history, whose', BANG_NAMES, ids=['{}-{}'.format(case[0], 'history' if case[2] else 'file') for case in BANG_NAMES])
+@pytest.mark.parametrize('typed, files, history, whose, expected, quote', BANG_NAMES, ids=['{}-{}'.format(case[0], 'history' if case[2] else case[1][0] if case[1] else 'file') for case in BANG_NAMES])
 def test_zsh_a_name_holding_an_exclamation_mark_in_a_double_quote_reaches_mssh_as_named_inside_a_dollar_paren(tmp_path, opener, closer, typed, files,
-		history, whose):
+		history, whose, expected, quote):
 	# zsh writes the ! of a double-quoted word \! (bang_hist), and inside $( ) and <( ) that backslash stays: $(mssh -f "zz\!x" gave
 	# mssh -f zz\!x, a file that is not there, and $(mssh h cat "zz\\\!x" the remote shell zz\!x. A plain ! there is a history event
-	line, got, event = zsh_enter(tmp_path, opener + typed, closer, files=files, history=history)
+	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history)
 	assert not event and got, (line, got)
-	word = got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
-	assert word.endswith('zz!x'), (line, got)
+	assert bang_word(got, whose) == expected.format(work=tmp_path / 'work'), (line, got)
 
 
-@pytest.mark.parametrize('typed, files, history, whose', BANG_NAMES[:3] + BANG_NAMES[6:7])
-def test_zsh_a_name_holding_an_exclamation_mark_inside_a_dollar_paren_with_bang_hist_off(tmp_path, typed, files, history, whose):
+@pytest.mark.parametrize('typed, files, history, whose, expected, quote', BANG_NAMES[:3] + BANG_NAMES[6:7])
+def test_zsh_a_name_holding_an_exclamation_mark_inside_a_dollar_paren_with_bang_hist_off(tmp_path, typed, files, history, whose, expected, quote):
 	# (with no history expansion zsh writes a plain !, which reads as one inside $( ) too)
-	line, got, event = zsh_enter(tmp_path, 'print -r -- $(' + typed, ')', files=files, history=history, extra='setopt no_bang_hist')
+	line, got, event = zsh_enter(tmp_path, 'print -r -- $(' + typed, quote + ')', files=files, history=history, extra='setopt no_bang_hist')
 	assert not event and got, (line, got)
-	word = got[-1] if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))[-1]
-	assert word.endswith('zz!x'), (line, got)
+	assert bang_word(got, whose) == expected.format(work=tmp_path / 'work'), (line, got)
 
 
 @pytest.mark.parametrize('opener, closer', BANG_OPENERS[:2], ids=['line', 'dollar-paren'])
