@@ -1891,6 +1891,58 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_with_no_
 	assert (line, got) == (opener + expected, remote)
 
 
+# a command's completion of the value after a quote at an =, as _gcc does it (a variable's value: compset -q, an option's matcher and
+# suffix, -I and a directory), in a function of its own: what _gcc offers differs from one zsh to the next
+SPLIT_FLAGS_FUNCTION = r"""
+_mssh_test_flags() {
+	compset -q
+	if compset -P -I; then
+		_files -/
+		return
+	fi
+	compadd -M 'L:|-{fWm}no-=-{fWm} r:|[_-]=* r:|=*' -- -Wunused-parameter -Wunused-variable -fomit-frame-pointer
+	compadd -qS= -M 'L:|-{fWm}no-=-{fWm} r:|[_-]=* r:|=*' -- -march -mtune
+}
+compdef _mssh_test_flags -value-,MSSHFLAGS,-default-
+mssh() { :; }
+"""
+SPLIT_TYPED = 'mssh h make MSSHFLAGS="'
+# the part typed after the quote, the directories here, the line after TAB (after the quote) and the word of the command the remote shell gets
+SPLIT_OPTIONS_LINES = [
+	# (the call's matcher: -Wno-unused-par is -Wunused-parameter, as the completion says; 6.47 before this fix kept the names alone, and none matched)
+	('-Wno-unused-par', [], '-Wno-unused-parameter', 'MSSHFLAGS=-Wno-unused-parameter'),
+	('-fno-omit-frame-poi', [], '-fno-omit-frame-pointer', 'MSSHFLAGS=-fno-omit-frame-pointer'),
+	# (its suffix: the = of -march=)
+	('-marc', [], '-march=', 'MSSHFLAGS=-march='),
+	# (a name written for the remote shell, as a word typed as words is: its $ and & would have been the remote shell's)
+	('-Izz', ['zz$v'], '-Izz\\\\\\$v/', 'MSSHFLAGS=-Izz$v/'),
+	('-Izz', ['zz&x'], '-Izz\\\\&x/', 'MSSHFLAGS=-Izz&x/'),
+	('-Izz', ['zz;x'], '-Izz\\\\;x/', 'MSSHFLAGS=-Izz;x/'),
+	('-Izz', ['zz|x'], '-Izz\\\\|x/', 'MSSHFLAGS=-Izz|x/'),
+	('-Izz', ['zz(x'], '-Izz\\\\(x/', 'MSSHFLAGS=-Izz(x/'),
+	('-Izz', ["zz'x"], "-Izz\\\\'x/", "MSSHFLAGS=-Izz'x/"),
+	# (a name holding a blank: mssh would split the word, so it is not offered)
+	('-Izz', ['zz x'], '-Izz', 'MSSHFLAGS=-Izz'),
+	# (two directories: what they share goes in, and the -Izz typed stays)
+	('-Izz', ['zza', 'zzb'], '-Izz', 'MSSHFLAGS=-Izz'),
+	('-Wall -Izz', ['zzd'], '-Wall -Izzd/', None),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, dirs, expected, word', SPLIT_OPTIONS_LINES)
+def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_the_command_s_matcher_and_suffix_and_the_remote_shell_s_quoting(
+		tmp_path, opener, typed, dirs, expected, word):
+	# the names went in as the remote shell reads them wrong (a $ expanded, an & and a ; started a command, a ' broke it), and the
+	# command's -M and suffix were dropped, so -Wno-unused-par matched no name and -march lost its =
+	line, _ = review_line(tmp_path, 'zsh', opener + SPLIT_TYPED + typed, dirs=dirs, pre=SPLIT_FLAGS_FUNCTION)
+	if opener != '`':
+		assert line == opener + SPLIT_TYPED + expected, line
+	if word is not None:
+		words = substituted_remote(line + '"', tmp_path / 'work') if opener else remote_shell_args(' '.join(local_words('zsh', line)[2:]))
+		assert words == ['make', word], (line, words)
+
+
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)
 SHAPES_PINNED = [
 	# (a history name behind a typed $HOME/ or ~/ keeps the text typed: 6.45 wrote \$HOME and \~, the remote host's)
