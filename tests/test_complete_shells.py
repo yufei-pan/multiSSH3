@@ -1491,7 +1491,8 @@ def test_zsh_a_quote_opened_inside_a_double_quoted_command_still_completes(tmp_p
 	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
 	if opener:
 		got = substituted_remote(line, tmp_path / 'work')
-	if opener != '`':
+	# (inside backticks a name written for them differs from the line on the line: a row that pins no remote words pins the line there too, which holds no such name)
+	if opener != '`' or remote is None:
 		assert line == opener + expected, line
 	if remote is not None:
 		assert got == remote, (line, got)
@@ -1515,7 +1516,8 @@ def test_zsh_a_named_directory_typed_in_a_double_quoted_command_stays_as_typed_a
 	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
 	if opener:
 		got = substituted_remote(line, tmp_path / 'work')
-	if opener != '`':
+	# (inside backticks a name written for them differs from the line on the line: a row that pins no remote words pins the line there too, which holds no such name)
+	if opener != '`' or remote is None:
 		assert line == opener + expected, line
 	if remote is not None:
 		assert got == remote, (line, got)
@@ -1899,7 +1901,8 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_wh
 SPLIT_VALUES_NO_HISTORY = [
 	('mssh h make CFLAGS="-ggd', [], 'mssh h make CFLAGS="-ggdb', ['make', 'CFLAGS=-ggdb']),
 	('mssh h -- make CFLAGS="-ggd', [], 'mssh h -- make CFLAGS="-ggdb', ['--', 'make', 'CFLAGS=-ggdb']),
-	# (one argument: mssh runs the words of a quoted value as commands of their own, unless the remote shell reads a blank in it: limitations)
+	# (a value holding a blank: mssh joins its commands into one only when each is a single word, so it runs `make` and the value as commands of
+	# their own (limitations, names holding whitespace in a quoted argument); the arguments mssh gets are pinned, not the remote shell's words)
 	('mssh h make CFLAGS="-Wall -ggd', [], 'mssh h make CFLAGS="-Wall -ggdb', ['make', 'CFLAGS=-Wall -ggdb']),
 	('mssh h make CFLAGS="-Isub/zz', ['sub/zzlocal'], 'mssh h make CFLAGS="-Isub/zzlocal/', ['make', 'CFLAGS=-Isub/zzlocal/']),
 ]
@@ -1948,8 +1951,8 @@ SPLIT_OPTIONS_LINES = [
 	('-Izz', ["zz'x"], "-Izz\\\\'x/", "MSSHFLAGS=-Izz'x/"),
 	# (a name holding a blank: mssh would split the word, so it is not offered)
 	('-Izz', ['zz x'], '-Izz', 'MSSHFLAGS=-Izz'),
-	# (two directories: what they share goes in, and the -Izz typed stays)
-	('-Izz', ['zza', 'zzb'], '-Izz', 'MSSHFLAGS=-Izz'),
+	# (two directories: what they share goes in)
+	('-Izz', ['zzab', 'zzac'], '-Izza', 'MSSHFLAGS=-Izza'),
 	('-Wall -Izz', ['zzd'], '-Wall -Izzd/', None),
 ]
 
@@ -1961,7 +1964,8 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_th
 	# the names went in as the remote shell reads them wrong (a $ expanded, an & and a ; started a command, a ' broke it), and the
 	# command's -M and suffix were dropped, so -Wno-unused-par matched no name and -march lost its =
 	line, _ = review_line(tmp_path, 'zsh', opener + SPLIT_TYPED + typed, dirs=dirs, pre=SPLIT_FLAGS_FUNCTION)
-	if opener != '`':
+	# (inside backticks a name written for them differs on the line: a row that pins no word pins the line there too, which holds no such name)
+	if opener != '`' or word is None:
 		assert line == opener + SPLIT_TYPED + expected, line
 	if word is not None:
 		words = substituted_remote(line + '"', tmp_path / 'work') if opener else remote_shell_args(' '.join(local_words('zsh', line)[2:]))
