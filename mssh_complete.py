@@ -7279,7 +7279,7 @@ _mssh() {
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
 	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches] _mssh_complete_qkept=0
 	local -i _mssh_complete_texts_beside=0
-	local _mssh_complete_texts_typed=
+	local _mssh_complete_texts_typed= _mssh_complete_tilde=
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7617,7 +7617,15 @@ _mssh_complete_in_word() {
 			# (a ~/ at its start as $HOME/, which the completion expands in a double quote too: this machine's home, as compset -q gave it)
 			if (( _mssh_complete_qkept )); then
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
-				[[ $PREFIX == \~/* ]] && PREFIX=\$HOME${PREFIX#\~}
+				if [[ $PREFIX == \~/* ]]; then
+					PREFIX=\$HOME${PREFIX#\~}
+				elif [[ $PREFIX == \~[^/]##/* ]]; then
+					# (and a ~name/, ~+/ or a named directory as a parameter holding its directory, as the $HOME/ above: the completion
+					# expands it, and the directories typed go back in front of each name, so ~alice/ stays as typed. A name that is none stays)
+					_mssh_complete_item=${PREFIX%%/*}
+					_mssh_complete_tilde=${~_mssh_complete_item}
+					[[ $_mssh_complete_tilde == "$_mssh_complete_item" ]] || PREFIX=\$_mssh_complete_tilde${PREFIX#"$_mssh_complete_item"}
+				fi
 			fi
 		fi
 		(( _mssh_complete_offset = CURRENT - _mssh_complete_dcword ))

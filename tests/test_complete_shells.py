@@ -1492,6 +1492,29 @@ def test_zsh_a_quote_opened_inside_a_double_quoted_command_still_completes(tmp_p
 		assert got == remote, (line, got)
 
 
+# ~name/ in a double-quoted command stays as typed and completes in that directory (a named directory, ~+/): the own split gave nothing,
+# as no quote lets the completion expand it. typed, what review_line gets, the line after TAB (after the keys of steps), the remote words
+TILDE_NAME_LINES = [
+	('mssh h "ls ~zzn/zz', {'dirs': ['zzn'], 'files': ['zzn/zzplain'], 'extra': 'hash -d zzn=$PWD/zzn'}, 'mssh h "ls ~zzn/zzplain', ['ls', '~zzn/zzplain']),
+	('mssh h "ls ~zzn/zzd', {'dirs': ['zzn/zzd x'], 'files': ['zzn/zzd x/zzin'], 'extra': 'hash -d zzn=$PWD/zzn', 'steps': ['zz\t']},
+		'mssh h "ls ~zzn/zzd\\\\ x/zzin', ['ls', '~zzn/zzd x/zzin']),
+	('mssh h "ls ~+/zz', {'files': ['zzplain']}, 'mssh h "ls ~+/zzplain', ['ls', '~+/zzplain']),
+	('mssh h "ls ~bin/zzno', {}, 'mssh h "ls ~bin/zzno', None),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, kwargs, expected, remote', TILDE_NAME_LINES)
+def test_zsh_a_named_directory_typed_in_a_double_quoted_command_stays_as_typed_and_completes(tmp_path, opener, typed, kwargs, expected, remote):
+	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	if opener != '`':
+		assert line == opener + expected, line
+	if remote is not None:
+		assert got == remote, (line, got)
+
+
 def substituted_words(line, cwd):
 	'''The words mssh gets for line, an mssh command in a backtick or a $( left open: the line closed and run by zsh in cwd, with mssh
 	printing its arguments. None when zsh cannot read it.'''
