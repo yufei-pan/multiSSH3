@@ -1465,6 +1465,33 @@ def test_zsh_inside_backticks_a_word_is_written_once_more_for_them(tmp_path, typ
 	assert (line, got) == ('`' + expected, [word.replace('{work}', str(tmp_path / 'work')) for word in words])
 
 
+# a quote the command opens inside the double quote (and a backtick): it stays with compset -q, which reads that quote; the glue's own split left
+# the word at the cursor as 'zz and found no name. typed, what review_line gets, the line after TAB, and the remote words (None: not read)
+INNER_QUOTE_LINES = [
+	('mssh h "cat \'zz', {'files': ['zzplain']}, 'mssh h "cat \'zzplain\' ', ['cat', 'zzplain']),
+	('mssh h "cat \'my f', {'files': ['my file']}, 'mssh h "cat \'my file\' ', ['cat', 'my file']),
+	('mssh h "cat \'sub/zz', {'files': ['sub/zzplain']}, 'mssh h "cat \'sub/zzplain\' ', ['cat', 'sub/zzplain']),
+	('mssh h "cd \'zz', {'dirs': ['zzd']}, 'mssh h "cd \'zzd/', None),
+	('mssh h "cat \\"zz', {'files': ['zzplain']}, 'mssh h "cat \\"zzplain\\" ', ['cat', 'zzplain']),
+	('mssh h "cat \\"my f', {'files': ['my file']}, 'mssh h "cat \\"my file\\" ', ['cat', 'my file']),
+	('mssh h "echo \\`cat zz', {'files': ['zzplain']}, 'mssh h "echo \\`cat zzplain', None),
+	# (a quote closed before the word, \" included, is the glue's)
+	('mssh h "grep \\"a b\\" zz', {'files': ['zzplain']}, 'mssh h "grep \\"a b\\" zzplain', ['grep', 'a b', 'zzplain']),
+]
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, kwargs, expected, remote', INNER_QUOTE_LINES)
+def test_zsh_a_quote_opened_inside_a_double_quoted_command_still_completes(tmp_path, opener, typed, kwargs, expected, remote):
+	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+	if opener:
+		got = substituted_remote(line, tmp_path / 'work')
+	if opener != '`':
+		assert line == opener + expected, line
+	if remote is not None:
+		assert got == remote, (line, got)
+
+
 def substituted_words(line, cwd):
 	'''The words mssh gets for line, an mssh command in a backtick or a $( left open: the line closed and run by zsh in cwd, with mssh
 	printing its arguments. None when zsh cannot read it.'''

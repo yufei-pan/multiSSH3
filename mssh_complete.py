@@ -7384,11 +7384,17 @@ _mssh() {
 	# compset -q, which reads a double quote's backslashes wrong: after a \" the name went in after the word typed (zzfilezz), a \\&
 	# split the word, and the directory of a \\\$ came back changed. zsh keeps its quote (_mssh_complete_qkept): it is not in IPREFIX,
 	# the completion reads the word as written for it, and the quote stays open after a name, as compset -q left it. Not with the
-	# cursor inside the word
+	# cursor inside the word. Not when the command's own word at the cursor is inside a quote it opened (mssh h "cat 'zz, "cat \"zz,
+	# "echo \`cat zz): that stays with compset -q, which reads that quote
 	if (( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ $_mssh_complete_open == \" && -z $SUFFIX ]]; then
-		_mssh_complete_dq=1
-		_mssh_complete_qkept=1
-		_mssh_complete_textopts=(-Q -S '" ')
+		_mssh_complete_read=$PREFIX
+		(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
+		_mssh_complete_dq_read "$_mssh_complete_read"
+		if ! _mssh_complete_inner_quote "$_mssh_complete_read"; then
+			_mssh_complete_dq=1
+			_mssh_complete_qkept=1
+			_mssh_complete_textopts=(-Q -S '" ')
+		fi
 	fi
 	# (mssh's own words go in as the double quote has them, as zsh does where it keeps the quote and this goes in with -Q: the
 	# part typed (PREFIX) as it was, its $PWD this shell's, and the rest quoted: a history word's " or $HOME is the remote command's)
@@ -7688,6 +7694,31 @@ _mssh_complete_tick_read() {
 	emulate -L zsh
 	setopt extended_glob
 	_mssh_complete_read=${1//(#b)\\([\\\`\$])/$match[1]}
+}
+
+_mssh_complete_inner_quote() {
+	# whether $1, a quoted command's text as the remote shell reads it, ends inside a quote of its own: ', ", $'...' or a backtick. A
+	# backslash takes the next character (outside single quotes); inside backticks only a backslash and the next backtick count
+	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
+	local _mssh_complete_quote= _mssh_complete_nul=$'\0'
+	local -a _mssh_complete_parts
+	local -i _mssh_complete_at
+	[[ $1 == *[\'\"\`]* ]] || return 1
+	_mssh_complete_parts=("${(@ps:\0:)${1//(#m)[\\\"\'\`\$]/$_mssh_complete_nul$MATCH$_mssh_complete_nul}}")
+	for (( _mssh_complete_at = 2; _mssh_complete_at <= $#_mssh_complete_parts; _mssh_complete_at += 2 )); do
+		case $_mssh_complete_quote$_mssh_complete_parts[_mssh_complete_at] in
+			(s\'|c\'|d\"|o\`) _mssh_complete_quote= ;;
+			(\\|[cdo]\\) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] && (( _mssh_complete_at += 2 )) ;;
+			(\") _mssh_complete_quote=d ;;
+			(\') _mssh_complete_quote=s ;;
+			(\`|d\`) _mssh_complete_quote=o ;;
+			(\$) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] && $_mssh_complete_parts[_mssh_complete_at+2] == \' ]] &&
+				_mssh_complete_quote=c && (( _mssh_complete_at += 2 )) ;;
+		esac
+	done
+	[[ -n $_mssh_complete_quote ]]
 }
 
 _mssh_complete_dq_read() {
