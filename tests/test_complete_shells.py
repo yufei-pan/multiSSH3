@@ -1499,7 +1499,8 @@ TILDE_NAME_LINES = [
 	('mssh h "ls ~zzn/zz', {'dirs': ['zzn'], 'files': ['zzn/zzplain'], 'extra': 'hash -d zzn=$PWD/zzn'}, 'mssh h "ls ~zzn/zzplain', ['ls', '~zzn/zzplain']),
 	('mssh h "ls ~zzn/zzd', {'dirs': ['zzn/zzd x'], 'files': ['zzn/zzd x/zzin'], 'extra': 'hash -d zzn=$PWD/zzn', 'steps': ['zz\t']},
 		'mssh h "ls ~zzn/zzd\\\\ x/zzin', ['ls', '~zzn/zzd x/zzin']),
-	('mssh h "ls ~+/zz', {'files': ['zzplain']}, 'mssh h "ls ~+/zzplain', ['ls', '~+/zzplain']),
+	# (the remote words of a ~+ are the harness's sh's: some expand it)
+	('mssh h "ls ~+/zz', {'files': ['zzplain']}, 'mssh h "ls ~+/zzplain', None),
 	('mssh h "ls ~bin/zzno', {}, 'mssh h "ls ~bin/zzno', None),
 ]
 
@@ -2473,6 +2474,8 @@ def test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab(t
 	typed, files, history, steps, quote = case[:5]
 	if case[index] is None:
 		pytest.skip('the backticks expand the $0 of the awk command')
+	if zsh_version() <= (5, 0) and (history or steps and opener.endswith('$(')):
+		pytest.skip('zsh 5.0.2 keeps the backslash in PREFIX: history names (which have the !) are not matched to what was typed, and a later TAB inside $( ) writes the name with its backslash, as in 6.46')
 	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history, steps=steps)
 	assert not event and got == ['h', case[index]], (line, got)
 
