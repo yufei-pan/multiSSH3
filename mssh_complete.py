@@ -7279,7 +7279,7 @@ _mssh() {
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
 	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches] _mssh_complete_qkept=0
 	local -i _mssh_complete_texts_beside=0
-	local _mssh_complete_texts_typed= _mssh_complete_texts_read= _mssh_complete_tilde=
+	local _mssh_complete_texts_typed= _mssh_complete_texts_read= _mssh_complete_tilde= _mssh_complete_typed_last=
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7617,6 +7617,7 @@ _mssh_complete_in_word() {
 			fi
 			_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
 			_mssh_complete_dq_ipre=$#IPREFIX
+			_mssh_complete_typed_last=$PREFIX
 			# (inside backticks read once more first, as above)
 			_mssh_complete_read=$PREFIX
 			(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
@@ -7971,12 +7972,14 @@ _mssh_complete_compadd() {
 	if (( ${_mssh_complete_qkept:-0} && ! _mssh_complete_filter )) && [[ -n $PREFIX && $PREFIX != */* ]]; then
 		_mssh_complete_quote_in "${(q)${(Q)PREFIX}}"
 		PREFIX=$_mssh_complete_inq
-		# (inside backticks written once more, as the names go in: a later TAB on zzs\$v matched no name, and the \\ of its names stood alone)
+		# (inside backticks, a word typed written for them already, as the names go in, is that: a later TAB on zzs\\\\\\\$v, which read
+		# zzs\$v, matched no name, and the \\ of its names stood alone. One typed otherwise, \~zz, is read as the double quote has it)
 		if (( _mssh_complete_ticked )); then
 			_mssh_complete_value=$PREFIX
 			PREFIX=
 			_mssh_complete_tick written "$_mssh_complete_value"
-			PREFIX=$_mssh_complete_word
+			PREFIX=$_mssh_complete_value
+			[[ $_mssh_complete_typed_last == "$_mssh_complete_word" ]] && PREFIX=$_mssh_complete_word
 		fi
 	fi
 	(( _mssh_complete_shown_at )) && _mssh_complete_shown=("${(@P)_mssh_complete_opts[_mssh_complete_shown_at]}")
