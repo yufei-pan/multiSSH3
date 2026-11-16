@@ -1741,9 +1741,12 @@ def test_zsh_a_directory_in_an_earlier_word_of_a_quoted_command_keeps_the_quote(
 	# letter picks either
 	line, _ = review_line(tmp_path, 'zsh', typed, history=[history], files=['zzplain'], pre='mssh() { :; }')
 	assert line == typed, line
-	(tmp_path / 'next').mkdir()
-	line, _ = review_line(tmp_path / 'next', 'zsh', typed, history=[history], files=['zzplain'], steps=['h\t'], pre='mssh() { :; }')
-	assert line.startswith(typed + 'hist'), line
+	# (history's name closes the quote it has, as 6.46 did not offer it at all; the local name leaves it open, and the command's own words stay)
+	quote = typed[len('mssh h '):len('mssh h ') + 1]
+	for more, expected in (('h\t', typed + 'hist' + quote + ' '), ('p\t', typed + 'plain')):
+		(tmp_path / more[0]).mkdir()
+		line, _ = review_line(tmp_path / more[0], 'zsh', typed, history=[history], files=['zzplain'], steps=[more], pre='mssh() { :; }')
+		assert line == expected, line
 
 
 @pytest.mark.parametrize('typed, expected', [('mssh h "fakecmd zzp', 'mssh h "fakecmd zzplain'), ('mssh h "fakecmd $PWD/zzp', 'mssh h "fakecmd $PWD/zzplain" ')])
@@ -1874,7 +1877,8 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_wh
 SPLIT_VALUES_NO_HISTORY = [
 	('mssh h make CFLAGS="-ggd', [], 'mssh h make CFLAGS="-ggdb', ['make', 'CFLAGS=-ggdb']),
 	('mssh h -- make CFLAGS="-ggd', [], 'mssh h -- make CFLAGS="-ggdb', ['--', 'make', 'CFLAGS=-ggdb']),
-	('mssh h make CFLAGS="-Wall -ggd', [], 'mssh h make CFLAGS="-Wall -ggdb', ['make', 'CFLAGS=-Wall', '-ggdb']),
+	# (one argument: mssh runs the words of a quoted value as commands of their own, unless the remote shell reads a blank in it: limitations)
+	('mssh h make CFLAGS="-Wall -ggd', [], 'mssh h make CFLAGS="-Wall -ggdb', ['make', 'CFLAGS=-Wall -ggdb']),
 	('mssh h make CFLAGS="-Isub/zz', ['sub/zzlocal'], 'mssh h make CFLAGS="-Isub/zzlocal/', ['make', 'CFLAGS=-Isub/zzlocal/']),
 ]
 
@@ -1885,10 +1889,8 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_with_no_
 	# with no history name beside them the command's names go in, in the quote typed, which stays open as in a quoted command: the
 	# value may go on. 6.46 lost the quote, as stock zsh does (make CFLAGS=-ggdb), and a " typed to close it opened one
 	line, got = review_line(tmp_path, 'zsh', opener + typed, dirs=dirs, pre='mssh() { :; }')
-	if opener:
-		got = substituted_remote(line + '"', tmp_path / 'work')
-	else:
-		got = remote_shell_args(' '.join(local_words('zsh', line)[2:]))
+	# (the arguments mssh gets after the host, the quote closed by the test: not the words the remote shell makes of them)
+	got = substituted_words(line + '"', tmp_path / 'work')[1:] if opener else local_words('zsh', line)[2:]
 	assert (line, got) == (opener + expected, remote)
 
 
@@ -2488,7 +2490,8 @@ OWN_SPLIT_LINES = [
 	('mssh h "grep \\"a b\\" zz', {'files': ['zzfile']}, 'mssh h "grep \\"a b\\" zzfile', ['grep', 'a b', 'zzfile']),
 	('mssh h "grep \\"a b\\" sub/zz', {'files': ['sub/zzfile']}, 'mssh h "grep \\"a b\\" sub/zzfile', ['grep', 'a b', 'sub/zzfile']),
 	('mssh h "grep \\"a\\" zz', {'files': ['zzfile', 'zzfoo']}, 'mssh h "grep \\"a\\" zzf', ['grep', 'a', 'zzf']),
-	('mssh h "echo \\"x\\"; cat zz', {'files': ['zzfile']}, 'mssh h "echo \\"x\\"; cat zzfile', None),
+	# (a ; in the quote is the remote shell's: mssh gets the one argument, which the remote shell would read as two commands)
+	('mssh h "echo \\"x\\"; cat zz', {'files': ['zzfile']}, 'mssh h "echo \\"x\\"; cat zzfile', ('argv', ['echo "x"; cat zzfile'])),
 	# (and in a directory TAB wrote for the remote shell, holding a $ or a backtick, it offered nothing)
 	('mssh h "cat zzd', {'dirs': ['zzd$x'], 'files': ['zzd$x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat zzd\\\\\\$x/zzin', ['cat', 'zzd$x/zzin']),
 	('mssh h "cat zzd', {'dirs': ['zzd`x'], 'files': ['zzd`x/zzin'], 'steps': ['zz\t']}, 'mssh h "cat zzd\\\\\\`x/zzin', ['cat', 'zzd`x/zzin']),
@@ -2508,7 +2511,11 @@ def test_zsh_a_double_quoted_command_is_split_into_words_by_the_glue(tmp_path, o
 	# zsh's compset -q reads the backslashes of a double quote wrong; the glue splits such a command itself, as it does one holding an
 	# expansion, and keeps zsh's quote. Inside backticks the line is written once more for them: the remote words are checked there
 	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
-	if opener:
+	if isinstance(remote, tuple):
+		# (the arguments mssh gets after the host, not the words the remote shell makes of them)
+		got = substituted_words(line, tmp_path / 'work')[1:] if opener else local_words('zsh', line)[2:]
+		remote = remote[1]
+	elif opener:
 		got = substituted_remote(line, tmp_path / 'work')
 	if opener != '`':
 		assert line == opener + expected, line
@@ -2527,9 +2534,13 @@ TICKED_INTO_DIRECTORY = [
 @pytest.mark.parametrize('typed, whose', TICKED_INTO_DIRECTORY)
 def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_path, typed, whose, dirname):
 	# the text inside backticks is read once more before the double quote: the second TAB read zzd\\\&x/ by the double quote alone, split
-	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing (6.46)
+	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing (6.46, but for mssh's own --file= and, with a $PWD, a
+	# directory holding a $)
 	if ' x' in dirname and whose == 'remote' and '="' in typed:
-		pytest.skip('a value after a quote at an = holding whitespace is not offered: mssh would split it')
+		# (a value after a quote at an = holding whitespace is not offered: mssh would split it. Nothing goes in, and what was typed stays)
+		line, _ = review_line(tmp_path, 'zsh', '`' + typed, dirs=[dirname], files=[dirname + '/zzin'], steps=['zz\t'], pre='mssh() { :; }')
+		assert line == '`' + typed + 'zz'
+		return
 	line, _ = review_line(tmp_path, 'zsh', '`' + typed, dirs=[dirname], files=[dirname + '/zzin'], steps=['zz\t'], pre='mssh() { :; }')
 	got = substituted_remote(line, tmp_path / 'work') if whose == 'remote' else substituted_words(line, tmp_path / 'work')
 	assert got and got[-1].endswith(dirname + '/zzin'), (line, got)
@@ -2577,6 +2588,7 @@ QUOTED_SLASH_HISTORY = [
 ]
 
 
+# (in $( ) the line is read by zsh when the words are taken: a ~ or a $PWD there is this machine's, which the expected words do not have)
 @pytest.mark.parametrize('opener, typed, files, history, steps, expected, remote', [(opener,) + case for case in QUOTED_SLASH_HISTORY
 	for opener in ('', '$(') if not opener or '~' not in case[0] and '$PWD' not in case[0]])
 def test_zsh_a_history_name_holding_a_slash_stands_beside_the_command_s_names_in_a_quote(tmp_path, opener, typed, files, history, steps, expected, remote):
