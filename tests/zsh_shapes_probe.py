@@ -9,6 +9,7 @@ and files: run it in a Docker image of tests/shells, as the matrix does, TREE mo
 		sh -c 'export HOME=$(mktemp -d); python3 /t/zsh_shapes_probe.py /repo /t/data/zsh_double_quote_shapes.json'
 tests/data/zsh_double_quote_shapes_6.46.json is its output for a checkout of v6.46 (the baseline the data file's notes are checked against).'''
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 tree, cases_file = Path(sys.argv[1]), sys.argv[2]
+HOME = os.environ.get('HOME', '') if len(os.environ.get('HOME', '')) > 1 else ''
 sys.path[:0] = [str(tree), str(tree / 'tests')]
 import test_complete_shells as t  # noqa: E402
 
@@ -28,7 +30,8 @@ def one(job):
 		line, remote = t.review_line(tmp, 'zsh', opener + case['typed'], pre='mssh() { :; }', extra=case.get('extra', ''), **kwargs)
 		if opener:
 			remote = t.substituted_remote(line, tmp / 'work')
-		norm = lambda text: text.replace(str(tmp), '{tmp}')
+		# (the temp directory of the run, and the HOME this process has: a mktemp directory of its own in the Docker run)
+		norm = lambda text: text.replace(str(tmp), '{tmp}').replace(HOME, '{home}') if HOME else text.replace(str(tmp), '{tmp}')
 		return case['id'], opener, {'line': norm(line), 'remote': remote and [norm(word) for word in remote]}
 	finally:
 		shutil.rmtree(str(tmp), ignore_errors=True)

@@ -1976,23 +1976,29 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_th
 # the remote shell gets: each as 6.46 had it but where a row says why not (its note, in the file's "notes"). The glue splits such a
 # command itself since 6.47, where zsh's compset -q had split it before; what compset -q did for a shape, the split has to do too.
 # A row is what the glue gave when the shape was added; 6.46's own line and words for every row are in zsh_double_quote_shapes_6.46.json,
-# which tests/zsh_shapes_probe.py made by running the shapes in a v6.46 checkout (the same script, in the checkout under test, gives the rows)
+# which tests/zsh_shapes_probe.py made by running the shapes in a v6.46 checkout (the same script, in the checkout under test, gives the rows).
+# A row that pins no words says why ("unpinned" and its rule in the file); "omitted" names the shapes left out
 QUOTED_SHAPES = json.loads((Path(__file__).parent / 'data' / 'zsh_double_quote_shapes.json').read_text(encoding='utf-8'))
 SHAPES_6_46 = json.loads((Path(__file__).parent / 'data' / 'zsh_double_quote_shapes_6.46.json').read_text(encoding='utf-8'))
 
 
 def test_zsh_a_double_quoted_shape_row_has_a_note_exactly_when_it_differs_from_the_6_46_baseline_file():
-	# the file's rows against the baseline file, no shell involved: a row that differs from 6.46 (its line, or its words where it pins them) has
-	# a note that the file defines, a row that does not has none (the time rows pin no words and have a note: the time), and every note is used
+	# the file's rows against the baseline file, no shell involved: a row that differs from 6.46 (its line, or its words where it pins them)
+	# has a note that the file defines, a row that does not has none, and every note is used. A row with no words has a rule that says why
+	# ("unpinned"), and every rule is used
 	assert {(case['id'], opener) for case in QUOTED_SHAPES['cases'] for opener in case['rows']} == {(case_id, opener) for case_id, rows in SHAPES_6_46.items() for opener in rows}
-	used = set()
+	notes, rules = set(), set()
 	for case in QUOTED_SHAPES['cases']:
 		for opener, row in case['rows'].items():
 			base = SHAPES_6_46[case['id']][opener]
 			differs = row['line'] != base['line'] or (row['remote'] is not None and row['remote'] != base['remote'])
-			assert differs == (row.get('note') not in (None, 'time')), (case['id'], opener, row, base)
-			used.update([row['note']] if 'note' in row else [])
-	assert used == set(QUOTED_SHAPES['notes'])
+			assert differs == ('note' in row), (case['id'], opener, row, base)
+			assert (row['remote'] is None) == ('unpinned' in row), (case['id'], opener, row)
+			notes.update([row['note']] if 'note' in row else [])
+			rules.update([row['unpinned']] if 'unpinned' in row else [])
+	assert notes == set(QUOTED_SHAPES['notes']) and rules == set(QUOTED_SHAPES['unpinned'])
+	# (the ids the file says it leaves out are no cases)
+	assert not set(QUOTED_SHAPES['omitted']) & {case['id'] for case in QUOTED_SHAPES['cases']}
 
 
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
@@ -2008,6 +2014,8 @@ def test_zsh_a_double_quoted_command_goes_in_as_in_6_46_but_for_the_rows_that_sa
 	assert line.replace(str(tmp_path), '{tmp}') == row['line'], row.get('note')
 	if row['remote'] is not None:
 		assert [word.replace(str(tmp_path), '{tmp}') for word in remote] == row['remote'], (line, row.get('note'))
+	elif row['unpinned'] == 'unreadable':
+		assert not remote, (line, remote)
 
 
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)
