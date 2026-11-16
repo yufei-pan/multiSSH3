@@ -2352,6 +2352,23 @@ def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_
 	assert got and got[-1].endswith(dirname + '/zzin'), (line, got)
 
 
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, kwargs, expected', [
+	('mssh h dd if="~/zzho', {'home_files': ['zzhome']}, 'mssh h dd if="~/zzhome" '),
+	('mssh h dd if=~/zzho', {'home_files': ['zzhome']}, 'mssh h dd if=~/zzhome '),
+	('mssh h dd if="~/zz', {'home_files': ['zzhome']}, 'mssh h dd if="~/zzh'),
+	('mssh h dd if="~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h dd if="~/zzd\\\\&x/zzin" '),
+	('mssh h dd of=~/zzho', {'home_files': ['zzhome']}, 'mssh h dd of=~/zzhome '),
+])
+def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(tmp_path, opener, typed, kwargs, expected):
+	# dd's completion expands the ~ and writes the path back: TAB put this machine's home where ~ was typed (in a quote the remote
+	# shell then got that path)
+	if opener == '`' and 'zzd' in typed:
+		pytest.skip('inside backticks the directory is written once more: the other test of backticks')
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
+	assert line == opener + expected, line
+
+
 def test_zsh_the_paren_walk_finds_the_outermost_substitution_open(tmp_path):
 	# (_mssh_complete_paren_open: a $( ), <( ) or >( ) still open outermost; backticks around one read it with the line)
 	cases = {

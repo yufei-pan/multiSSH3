@@ -7811,6 +7811,12 @@ _mssh_complete_compadd() {
 	# an expansion stays as typed, $HOME this shell's, as without TAB),
 	# or the history names beside, which have it, kept only --format= of the line. Not where the quote is there already, mssh's own
 	# --file=")
+	# (a ~/ typed at the start of a value after an =, quoted or not, that the command's completion expanded in front, dd if=~/zz: back as
+	# typed, as without TAB; it went in as this machine's home, and in a quote the remote shell got that path)
+	if (( ! ${_mssh_complete_dq:-0} )) && [[ ${_mssh_complete_was_ipre-}${_mssh_complete_was_pre-} == [^=]#=(\"|)\~/* && -n $HOME &&
+		$IPREFIX == [^=]#="$HOME"/* ]]; then
+		IPREFIX=${IPREFIX%%=*}=\~${IPREFIX#*=$HOME}
+	fi
 	if (( ! _mssh_complete_filter )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX == *"$_mssh_complete_lead"* && $IPREFIX != *"$_mssh_complete_lead"\"* ]]; then
 		_mssh_complete_moved=${IPREFIX##*"$_mssh_complete_lead"}
 		IPREFIX=${IPREFIX%"$_mssh_complete_moved"}\"${_mssh_complete_moved//(#m)\\?/${${MATCH[2]:#[\\\$\`\"\!]}:-$MATCH}}
