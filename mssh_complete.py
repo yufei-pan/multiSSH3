@@ -7620,6 +7620,9 @@ _mssh_complete_in_word() {
 			if (( _mssh_complete_qcommand )); then
 				_mssh_complete_fields=("${(z)_mssh_complete_read}")
 				[[ $PREFIX == *[[:space:]] ]] && _mssh_complete_fields+=('')
+				# (with interactive_comments on, a word before the one at the cursor that starts with a # begins a comment, as for compset -q, which
+				# reads the line as the shell does: nothing to offer. (z) reads a # as an ordinary character)
+				[[ $_mssh_complete_compsys_options[interactivecomments] == on && -n ${(M)_mssh_complete_fields[1,-2]:#\#*} ]] && return 0
 				words=("${_mssh_complete_fields[@]}")
 				CURRENT=$#words
 				# (where it starts as typed: the end of the text that reads as this word, not after a backslash, which \\~zz needs whole)

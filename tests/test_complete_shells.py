@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1941,6 +1942,33 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_th
 	if word is not None:
 		words = substituted_remote(line + '"', tmp_path / 'work') if opener else remote_shell_args(' '.join(local_words('zsh', line)[2:]))
 		assert words == ['make', word], (line, words)
+
+
+# the double-quoted commands of tests/data/zsh_double_quote_shapes.json, the line after TAB in the line, in $( ) and in backticks, and the words
+# the remote shell gets: each as 6.46 had it but where a row says why not (its note, in the file's "notes"). The glue splits such a
+# command itself since 6.47, where zsh's compset -q had split it before; what compset -q did for a shape, the split has to do too. The file
+# was made by running the shapes in 6.46 and in 6.47, and the rows that differ are the ones that carry a note
+QUOTED_SHAPES = json.loads((Path(__file__).parent / 'data' / 'zsh_double_quote_shapes.json').read_text(encoding='utf-8'))
+
+
+def test_zsh_every_difference_from_6_46_in_the_double_quoted_shapes_has_a_note():
+	rows = [row for case in QUOTED_SHAPES['cases'] for row in case['rows'].values() if 'note' in row]
+	assert rows and all(row['note'] in QUOTED_SHAPES['notes'] for row in rows)
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('case', QUOTED_SHAPES['cases'], ids=[case['id'] for case in QUOTED_SHAPES['cases']])
+def test_zsh_a_double_quoted_command_goes_in_as_in_6_46_but_for_the_rows_that_say_why_not(tmp_path, opener, case):
+	row = case['rows'].get(opener)
+	if row is None:
+		pytest.skip('the shape is read in the line only')
+	kwargs = {key: case[key] for key in ('files', 'dirs', 'history', 'steps', 'home_files', 'home_dirs') if key in case}
+	line, remote = review_line(tmp_path, 'zsh', opener + case['typed'], pre='mssh() { :; }', extra=case.get('extra', ''), **kwargs)
+	if opener:
+		remote = substituted_remote(line, tmp_path / 'work')
+	assert line.replace(str(tmp_path), '{tmp}') == row['line'], row.get('note')
+	if row['remote'] is not None:
+		assert [word.replace(str(tmp_path), '{tmp}') for word in remote] == row['remote'], (line, row.get('note'))
 
 
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)
