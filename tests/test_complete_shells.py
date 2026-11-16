@@ -1526,9 +1526,9 @@ def test_zsh_a_named_directory_typed_in_a_double_quoted_command_stays_as_typed_a
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed', ['mssh h "ls ~zznosuchuser/zz', 'mssh h "ls ~zznosuchuser/'], ids=['name', 'directory'])
 def test_zsh_a_user_of_the_hosts_typed_as_a_home_in_a_double_quoted_command_stays_as_typed_and_prints_no_error(tmp_path, opener, typed):
-	# ~deploy/ of an account the hosts have and this machine has not: zsh reads the unknown name as an error (nomatch, its default), which
-	# aborted the completion and was printed over the prompt ("no such user or named directory"); 6.46 offered nothing and said nothing.
-	# The line cannot show it, so the terminal's output is read
+	# ~zznosuchuser/ stands for ~deploy/, of an account the hosts have and this machine has not: zsh reads the unknown name as an error
+	# (nomatch, its default), which aborted the completion and was printed over the prompt ("no such user or named directory"); 6.46
+	# offered nothing and said nothing. The line cannot show it, so the terminal's output is read
 	terminal = []
 	line, got = review_line(tmp_path, 'zsh', opener + typed, files=['zzplain'], pre='mssh() { :; }', terminal=terminal)
 	assert typed in terminal[0], terminal
@@ -1951,8 +1951,9 @@ SPLIT_OPTIONS_LINES = [
 	('-Izz', ["zz'x"], "-Izz\\\\'x/", "MSSHFLAGS=-Izz'x/"),
 	# (a name holding a blank: mssh would split the word, so it is not offered)
 	('-Izz', ['zz x'], '-Izz', 'MSSHFLAGS=-Izz'),
-	# (two directories: what they share goes in)
+	# (two directories: what they share goes in; where they share nothing more the line stays)
 	('-Izz', ['zzab', 'zzac'], '-Izza', 'MSSHFLAGS=-Izza'),
+	('-Izz', ['zza', 'zzb'], '-Izz', 'MSSHFLAGS=-Izz'),
 	('-Wall -Izz', ['zzd'], '-Wall -Izzd/', None),
 ]
 
@@ -1975,7 +1976,7 @@ def test_zsh_a_value_the_command_splits_after_a_quote_at_an_equals_sign_keeps_th
 # the double-quoted commands of tests/data/zsh_double_quote_shapes.json, the line after TAB in the line, in $( ) and in backticks, and the words
 # the remote shell gets: each as 6.46 had it but where a row says why not (its note, in the file's "notes"). The glue splits such a
 # command itself since 6.47, where zsh's compset -q had split it before; what compset -q did for a shape, the split has to do too.
-# A row is what the glue gave when the shape was added; 6.46's own line and words for every row are in zsh_double_quote_shapes_6.46.json,
+# A row is what the glue gives at this commit; 6.46's own line and words for every row are in zsh_double_quote_shapes_6.46.json,
 # which tests/zsh_shapes_probe.py made by running the shapes in a v6.46 checkout (the same script, in the checkout under test, gives the rows).
 # A row that pins no words says why ("unpinned" and its rule in the file); "omitted" names the shapes left out
 QUOTED_SHAPES = json.loads((Path(__file__).parent / 'data' / 'zsh_double_quote_shapes.json').read_text(encoding='utf-8'))
@@ -2526,10 +2527,10 @@ def test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab(r
 	# zsh 5.0.2 (the centos7 image) keeps the backslash in PREFIX. The three rows it fails are deferrals of 6.48 (limitations); strict, so that a fix
 	# shows. No image has a zsh from 5.1 to 5.4, so where that behaviour ends is not known: the gate is the version, not the behaviour
 	if zsh_version() <= (5, 0) and (history or steps and opener.endswith('$(')):
-		request.applymarker(pytest.mark.xfail(strict=True, reason=(
-			'zsh 5.0.2: after a \\! typed earlier, no history name is offered (limitations: zsh 5.0.2, no history names after a \\! typed earlier)' if history else
-			'zsh 5.0.2: inside $( ), a TAB in a later word writes the name again with an extra backslash, as in 6.46 (limitations: inside $( ), a name holding !, after more is typed behind it)' if 'zzs' in typed else
-			'zsh 5.0.2: inside $( ), a second TAB into a directory holding a ! finds nothing (limitations: zsh 5.0.2, no second TAB into a directory holding a !)')))
+		request.applymarker(pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+			'limitations: "zsh 5.0.2: after a `\\!` typed earlier in a double-quoted command, no history names"' if history else
+			'limitations: "zsh: inside `$( )`, a name holding `!` reaches mssh with a backslash after more is typed behind it" (its zsh 5.0.2 sentence)' if 'zzs' in typed else
+			'limitations: "zsh 5.0.2: inside `$( )`, a second TAB into a directory holding `!` finds nothing"')))
 	line, got, event = zsh_enter(tmp_path, opener + typed, quote + closer, files=files, history=history, steps=steps)
 	assert not event and got == ['h', case[index]], (line, got)
 
@@ -2591,8 +2592,8 @@ TICKED_INTO_DIRECTORY = [
 @pytest.mark.parametrize('typed, whose', TICKED_INTO_DIRECTORY)
 def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_path, typed, whose, dirname):
 	# the text inside backticks is read once more before the double quote: the second TAB read zzd\\\&x/ by the double quote alone, split
-	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing (6.46 too, but for a directory holding a $ after
-	# mssh's own --file=" and one holding an & or a blank after $PWD/, where it went on)
+	# a quoted command at its &, or found no directory zzd\\&x, and offered nothing. 6.46 passed 5 of these 15: mssh's own --file=" into
+	# zzd&x and zzd x, `"ls $PWD/zzd` into zzd$x, and the two rows that expect nothing; the other 10 are 6.47's
 	if ' x' in dirname and whose == 'remote' and '="' in typed:
 		# (a value after a quote at an = holding whitespace is not offered: mssh would split it. Nothing goes in, and what was typed stays)
 		line, _ = review_line(tmp_path, 'zsh', '`' + typed, dirs=[dirname], files=[dirname + '/zzin'], steps=['zz\t'], pre='mssh() { :; }')
@@ -2617,13 +2618,15 @@ def test_zsh_inside_backticks_tab_goes_on_into_a_directory_written_for_them(tmp_
 	('mssh h "dd if=~/zzho', {'home_files': ['zzhome']}, 'mssh h "dd if=~/zzhome', ['dd', 'if=~/zzhome']),
 	('mssh h "dd of=~/zzho', {'home_files': ['zzhome']}, 'mssh h "dd of=~/zzhome', ['dd', 'of=~/zzhome']),
 	('mssh h "dd if=~/zzd', {'home_dirs': ['zzd&x'], 'home_files': ['zzd&x/zzin'], 'steps': ['zz\t']}, 'mssh h "dd if=~/zzd\\\\&x/zzin', ['dd', 'if=~/zzd&x/zzin']),
+	# (a \~ the remote shell reads as written is no ~: nothing is offered, and this machine's home is not written, as the ~ above gave it)
+	('mssh h "dd if=\\~/zzho', {'home_files': ['zzhome']}, 'mssh h "dd if=\\~/zzho', ['dd', 'if=~/zzho']),
 ])
 def test_zsh_a_tilde_typed_after_dd_s_equals_sign_stays_as_typed(request, tmp_path, opener, typed, kwargs, expected, remote):
 	# dd's completion expands the ~ and writes the path back: TAB put this machine's home where ~ was typed (in a quote the remote
-	# shell then got that path). The remote words are the test harness's sh's: the remote shell reads a ~ after an = as it does (bash
-	# expands it, dash and zsh do not)
+	# shell then got that path). The remote words are the harness's sh's, dash or bash run as sh (POSIX mode), which leave a ~ after an
+	# = as it is; a remote shell that is bash not in POSIX mode expands it, which is its own
 	if opener == '`' and 'if="~/zzd' in typed:
-		request.applymarker(pytest.mark.xfail(strict=True, reason='inside backticks nothing is offered for the second TAB: a deferral of 6.48 (limitations)'))
+		request.applymarker(pytest.mark.xfail(strict=True, raises=AssertionError, reason='limitations: "zsh: inside backticks, no second TAB into a directory after `dd if="~/`"'))
 	line, got = review_line(tmp_path, 'zsh', opener + typed, pre='mssh() { :; }', **kwargs)
 	if opener:
 		# (inside backticks the line is written once more for them: the words the remote shell gets are the same)
