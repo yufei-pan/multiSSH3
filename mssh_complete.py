@@ -7854,12 +7854,18 @@ _mssh_complete_compadd() {
 	local MATCH MBEGIN MEND
 	local -i _mssh_complete_dq=${_mssh_complete_dq:-0} _mssh_complete_ticked=${_mssh_complete_ticked:-0}
 	local _mssh_complete_open=${_mssh_complete_open-}
-	# (a compset -q of the command's own, _gcc's for make CFLAGS=, moves the text before its word to QIPREFIX, which zsh writes back as it
-	# is: where that is not the text typed, the word as read, CFLAGS=-O2 for CFLAGS=-O2\\ , nothing goes in. Only where zsh keeps the quote
-	# (_mssh_complete_qkept): there the command is given the word written as a name, its blank bare. In a word holding an expansion it
-	# is given the double quote's reading, a blank still escaped, which goes back as the same word (as in 6.46))
-	if (( ${_mssh_complete_qkept:-0} )) && [[ -n ${_mssh_complete_dq_typed-} && $QIPREFIX != "$_mssh_complete_dq_quote" &&
-		$_mssh_complete_dq_typed != "${QIPREFIX#"$_mssh_complete_dq_quote"}$IPREFIX"* ]]; then
+	# (a compset -q of the command's own, _gcc's for make CFLAGS=, _cmdstring's for sh -c: QIPREFIX has grown since the glue's split. zsh
+	# then holds two quote levels, the command's and the double quote's, and the remote shell's, which the glue stands for, lies between
+	# them: only text that reads the same at every level goes in. The text the command moved to QIPREFIX, which zsh writes back as it is,
+	# must be the text typed (CFLAGS=-O2 for a typed CFLAGS=-O2\\ is not), and a name must need no quoting (below); otherwise nothing goes
+	# in, and zsh's default file names, which would stand in for what was left out as a plain word, do not either
+	# (_mssh_complete_nodefault of _mssh). Only where zsh keeps the quote (_mssh_complete_qkept): there the command is given the word
+	# written as a name, its blank bare. In a word holding an expansion it is given the double quote's reading, a blank still escaped,
+	# which goes back as the same word, as in 6.46)
+	local -i _mssh_complete_nested=0
+	(( ${_mssh_complete_qkept:-0} )) && [[ -n ${_mssh_complete_dq_typed-} && $QIPREFIX != "$_mssh_complete_dq_quote" ]] && _mssh_complete_nested=1
+	if (( _mssh_complete_nested )) && [[ $_mssh_complete_dq_typed != "${QIPREFIX#"$_mssh_complete_dq_quote"}$IPREFIX"* ]]; then
+		_mssh_complete_nodefault=1
 		return 1
 	fi
 	local -a _mssh_complete_opts _mssh_complete_bare _mssh_complete_in _mssh_complete_out _mssh_complete_changed _mssh_complete_dirs
@@ -8097,6 +8103,12 @@ _mssh_complete_compadd() {
 		# (where zsh keeps the double quote the word is written for it, \!, \", \$ and \` read as the quote reads them: (Q) stops at a ' that
 		# is not closed, and zz'\!x went in as zz'\\\!x)
 		(( _mssh_complete_quoted && ${_mssh_complete_qkept:-0} )) && _mssh_complete_name=${_mssh_complete_word//(#m)\\[\\\!\$\`\"]/${MATCH[2]}}
+		# (in a word the command split itself, above: a name that (q) changes has a spelling for each level and went in written twice,
+		# sub/zz\\\\\\\\\\\\ x for a directory "zz x"; it is left out)
+		if (( _mssh_complete_nested && ! _mssh_complete_filter )) && [[ ${(q)_mssh_complete_name} != "$_mssh_complete_name" ]]; then
+			_mssh_complete_nodefault=1
+			continue
+		fi
 		# (a word of -Q for the double quote zsh keeps, as _files writes them: its ! outside the quote)
 		if (( _mssh_complete_banging && _mssh_complete_quoted && ! _mssh_complete_dq )) && [[ $_mssh_complete_word == *\!* ]]; then
 			_mssh_complete_inq=$_mssh_complete_word
