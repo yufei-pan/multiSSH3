@@ -7583,7 +7583,17 @@ _mssh_complete_in_word() {
 	# (a file name after an option's =: the name alone is the word)
 	(( _mssh_complete_delegating )) || [[ $PREFIX != -*=* ]] || compset -P 1 '*='
 	# (a quoted command's words are the ones inside its quote; a quoted argument is a word of the line's)
-	(( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ -n $_mssh_complete_open ]] && compset -q
+	if (( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ -n $_mssh_complete_open ]]; then
+		# (zsh's own compset -q (5.0.2 to 5.9) writes outside its memory for a double-quoted word that holds a backslash inside a quote of
+		# its own, "grep 'a\.b or "cat \"a\\b, with or without mssh, and the shell can end there (5.9: malloc(): invalid size). Nothing is
+		# offered where the text holds a backslash after such a quote, other than the one of \$, \` or \", which zsh reads. Coarser than
+		# zsh's fault: "cat 'a' b\\c 'zz is declined too)
+		if [[ $_mssh_complete_open == \" ]]; then
+			_mssh_complete_read=${${PREFIX//\\[\$\`]}//\\\"/\'}
+			[[ $_mssh_complete_read == *\'*\\* ]] && return 0
+		fi
+		compset -q
+	fi
 	# (inside backticks, a word whose directories hold a backslash is read once more first, as this shell will read the line:
 	# zzd\\\&x/ is the zzd\\&x/ of $( ), where the completion finds the directory zzd&x. The directories as typed go back in front of
 	# each name, as for a double-quoted word (_mssh_complete_dq_parts, _mssh_complete_compadd). Here, not in a function: zsh puts PREFIX
