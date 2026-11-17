@@ -7675,6 +7675,9 @@ _mssh_complete_in_word() {
 					_mssh_complete_inner_quote "${PREFIX%/*}" && return 0
 				fi
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
+				# (the command's own compset -q (gcc's, sh -c's) reads this word in the double quote, where the remote shell's \' and \" are
+				# quotes of its own: the same fault as above for a backslash after one, so the same test)
+				[[ ${${PREFIX//\\[\$\`]}//\\\"/\'} == *\'*\\* ]] && return 0
 				# (2. the ~ that zsh's completion expands where a file name starts, as it did in 6.46: at the word's start, after the = of an
 				# option or a value, after a one-letter option. Whether the remote shell expands it there is its own (bash does after a name's =,
 				# dd's if=~/, not after -I or an option's =; dash and zsh do not): it stays as typed. zsh's completion reads no ~ in a double

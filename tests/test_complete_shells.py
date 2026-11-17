@@ -2058,7 +2058,9 @@ MALLOC_FAULTS = ('free(): invalid', 'malloc(): ', 'corrupted ', 'double free', '
 	('mssh h "grep \'a\\\\.b', [], ['zzfile']),
 	('mssh h "cat \'zzd\\\\&x/zz', ['zzd&x'], ['zzd&x/zzin']),
 	('mssh h "make CFLAGS=\'-Izzd\\\\\\&x/zz', ['zzd&x/zzlocal'], []),
-], ids=['grep', 'cat', 'make'])
+	# (a C string define, the remote shell's \" before a backslash: the word the glue hands the command holds it as a quote of its own)
+	('mssh h "make CFLAGS=-DFMT=\\\\\\"%s\\\\\\\\n\\\\\\"', [], []),
+], ids=['grep', 'cat', 'make', 'define'])
 def test_zsh_a_double_quoted_command_with_a_backslash_in_a_quote_of_its_own_does_not_reach_zsh_s_compset_q(tmp_path, opener, typed, dirs, files):
 	# zsh's own compset -q (the command's completion: _grep, _gcc) writes outside its memory for a double-quoted word that holds a backslash
 	# after a quote of its own (zsh 5.9, 5.5.1 and 5.0.2, with no mssh; with 5.9 the shell can end, "malloc(): invalid size"). Whether the
