@@ -16,7 +16,7 @@
 	"time": "the remote words hold the time of the run",
 	"bang": "a name holding ! on the line: zsh's history expansion reads the words at Enter, which no harness here does; test_zsh_a_name_holding_an_exclamation_mark_in_a_double_quoted_command_reaches_the_remote_shell_as_named checks the words at Enter",
 	"local-home": "the remote words hold this machine's HOME, a directory of the run: a backtick reads the line in this shell (a \\$HOME there is this machine's)",
-	"unreadable": "the harness reads no words from the line (a redirect or a parenthesis is left in it, or a quote of the command's own is left open), which the test checks",
+	"unreadable": "the harness reads no words from the line (a redirect or a parenthesis is left in it), which the test checks",
 	"open-quote": "a quote is left open in the line: the words the harness's sh makes of it differ from one image to the next",
 	"sh-tilde": "the words hold the harness's sh's reading of a ~+ (an sh that is bash expands it, dash does not)",
 	"sh-brace": "the words hold the harness's sh's reading of a brace list (an sh that is bash expands it, dash does not)"
@@ -197,6 +197,6 @@
 {"id": "q121", "typed": "mssh h \"make CFLAGS=-Isub/zz", "dirs": ["sub/zz x"], "rows": {"": {"line": "mssh h \"make CFLAGS=-Isub/zz", "remote": ["make", "CFLAGS=-Isub/zz"], "note": "compset-q-name"}, "$(": {"line": "$(mssh h \"make CFLAGS=-Isub/zz", "remote": ["make", "CFLAGS=-Isub/zz"], "note": "compset-q-name"}, "`": {"line": "`mssh h \"make CFLAGS=-Isub/zz", "remote": ["make", "CFLAGS=-Isub/zz"], "note": "compset-q-name"}}},
 {"id": "q122", "typed": "mssh h \"make CFLAGS=-Isub/zz", "dirs": ["sub/zz'x"], "rows": {"": {"line": "mssh h \"make CFLAGS=-Isub/zz", "remote": ["make", "CFLAGS=-Isub/zz"], "note": "compset-q-name"}, "$(": {"line": "$(mssh h \"make CFLAGS=-Isub/zz", "remote": ["make", "CFLAGS=-Isub/zz"], "note": "compset-q-name"}, "`": {"line": "`mssh h \"make CFLAGS=-Isub/zz", "remote": ["make", "CFLAGS=-Isub/zz"], "note": "compset-q-name"}}},
 {"id": "q123", "typed": "mssh h \"su -c ./lzz", "files": ["lzz x"], "extra": "chmod +x 'lzz x'", "rows": {"": {"line": "mssh h \"su -c ./lzz", "remote": ["su", "-c", "./lzz"], "note": "compset-q-name"}, "$(": {"line": "$(mssh h \"su -c ./lzz", "remote": ["su", "-c", "./lzz"], "note": "compset-q-name"}, "`": {"line": "`mssh h \"su -c ./lzz", "remote": ["su", "-c", "./lzz"], "note": "compset-q-name"}}},
-{"id": "q124", "typed": "mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "dirs": ["zzd&x/zzlocal"], "rows": {"": {"line": "mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "remote": null, "unpinned": "unreadable"}, "$(": {"line": "$(mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "remote": null, "unpinned": "unreadable"}}},
-{"id": "q125", "typed": "mssh h \"grep 'a\\\\.b", "files": ["zzfile"], "rows": {"": {"line": "mssh h \"grep 'a\\\\.b", "remote": null, "unpinned": "unreadable"}}}
+{"id": "q124", "typed": "mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "dirs": ["zzd&x/zzlocal"], "rows": {"": {"line": "mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "remote": null, "unpinned": "open-quote"}, "$(": {"line": "$(mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "remote": null, "unpinned": "open-quote"}}},
+{"id": "q125", "typed": "mssh h \"grep 'a\\\\.b", "files": ["zzfile"], "rows": {"": {"line": "mssh h \"grep 'a\\\\.b", "remote": null, "unpinned": "open-quote"}}}
 ]}
