@@ -7665,9 +7665,11 @@ _mssh_complete_in_word() {
 					_mssh_complete_inner_quote "${PREFIX%/*}" && return 0
 				fi
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
-				# (2. the ~ that both shells expand, where a file name starts: at the word's start, after the = of an option or a value, after a
-				# one-letter option. zsh's completion reads no ~ in a double quote, so a ~/, ~name/, ~+/ or a named directory goes as a parameter
-				# holding its directory, which it does expand, and the directories typed go back in front of each name (~alice/ stays as typed).
+				# (2. the ~ that zsh's completion expands where a file name starts, as it did in 6.46: at the word's start, after the = of an
+				# option or a value, after a one-letter option. Whether the remote shell expands it there is its own (bash does after a name's =,
+				# dd's if=~/, not after -I or an option's =; dash and zsh do not): it stays as typed. zsh's completion reads no ~ in a double
+				# quote, so a ~/, ~name/, ~+/ or a named directory goes as a parameter holding its directory, which it does expand, and the
+				# directories typed go back in front of each name (~alice/ stays as typed).
 				# A name that is none stays: a user of the hosts, not of this machine, which zsh's nomatch makes an error that aborts the
 				# completion. A ~ that the remote shell reads as written (\~, '~') is a name at the word's start, which zsh reads so there;
 				# after an = nothing is offered: dd's completion (_tilde_files) expands a ~ in any quote, and would write this machine's home
