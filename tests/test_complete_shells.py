@@ -2043,7 +2043,7 @@ def malloc_checker():
 	if not subprocess.run(['env', 'LD_PRELOAD=libc_malloc_debug.so.0', 'true'], stderr=subprocess.PIPE, timeout=30).stderr:
 		return {'MALLOC_CHECK_': '3', 'LD_PRELOAD': 'libc_malloc_debug.so.0'}
 	try:
-		glibc = re.match(r'glibc 2\.(\d+)', os.confstr('CS_GNU_LIBC_VERSION'))
+		glibc = re.match(r'glibc 2\.(\d+)', os.confstr('CS_GNU_LIBC_VERSION') or '')
 	except (ValueError, OSError):
 		glibc = None
 	return {'MALLOC_CHECK_': '3'} if glibc and int(glibc.group(1)) < 34 else None

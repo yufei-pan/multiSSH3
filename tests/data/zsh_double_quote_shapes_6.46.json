@@ -172,5 +172,6 @@
 "q122": {"": {"line": "mssh h \"make CFLAGS=-Isub/zz\\\\\\\\\\\\'x/", "remote": ["make", "CFLAGS=-Isub/zz\\'x/"]}, "$(": {"line": "$(mssh h \"make CFLAGS=-Isub/zz\\\\\\\\\\\\'x/", "remote": ["make", "CFLAGS=-Isub/zz\\'x/"]}, "`": {"line": "`mssh h \"make CFLAGS=-Isub/zz\\\\\\\\\\\\\\\\\\\\'x/", "remote": ["make", "CFLAGS=-Isub/zz\\'x/"]}},
 "q123": {"": {"line": "mssh h \"su -c ./lzz\\\\\\\\\\\\ x", "remote": ["su", "-c", "./lzz\\ x"]}, "$(": {"line": "$(mssh h \"su -c ./lzz\\\\\\\\\\\\ x", "remote": ["su", "-c", "./lzz\\ x"]}, "`": {"line": "`mssh h \"su -c ./lzz\\\\\\\\\\\\\\\\\\\\ x", "remote": ["su", "-c", "./lzz\\ x"]}},
 "q124": {"": {"line": "mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "remote": []}, "$(": {"line": "$(mssh h \"make CFLAGS='-Izzd\\\\\\&x/zz", "remote": []}},
-"q125": {"": {"line": "mssh h \"grep 'a\\\\.b", "remote": []}}
+"q125": {"": {"line": "mssh h \"grep 'a\\\\.b", "remote": []}},
+"q126": {"": {"line": "mssh h \"sh -c ls\\\\ zzfile", "remote": ["sh", "-c", "ls zzfile"]}, "$(": {"line": "$(mssh h \"sh -c ls\\\\ zzfile", "remote": ["sh", "-c", "ls zzfile"]}, "`": {"line": "`mssh h \"sh -c ls\\\\ zzfile", "remote": ["sh", "-c", "ls zzfile"]}}
 }
