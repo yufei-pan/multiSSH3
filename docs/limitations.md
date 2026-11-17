@@ -796,7 +796,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 ### zsh: an escaped blank in a value the command splits itself gets no names
 - Kind: deferred (6.48)
 - What the operator sees: in zsh, in a double-quoted command, a value that the command's own completion splits itself (gcc's, for
-  `CFLAGS=` and `LDFLAGS=`, and the `GREP_OPTIONS=`, `GZIP=`, `XZ_OPT=` and `LESS=` values) gets no names once it holds an escaped blank:
+  `CFLAGS=`, and the `GREP_OPTIONS=`, `GZIP=` and `XZ_OPT=` values) gets no names once it holds an escaped blank:
   `mssh h "make CFLAGS=-O2\\ -ggd<TAB>` stays as typed, where 6.46 completed `-ggdb`. In a double-quoted command holding an expansion
   such a value completes as in 6.46 (a `\$` in it, or a directory after the blank, still comes out wrong there, as in 6.46).
 - Why: the glue gives the command the word as the remote shell reads it, the blank bare; the command's `compset -q` splits it there and
