@@ -15,7 +15,8 @@
 	"local-home": "the remote words hold this machine's HOME, a directory of the run: a backtick reads the line in this shell (a \\$HOME there is this machine's)",
 	"unreadable": "the harness reads no words from the line (a redirect or a parenthesis is left in it), which the test checks",
 	"open-quote": "a quote is left open in the line: the words the harness's sh makes of it differ from one image to the next",
-	"sh-tilde": "the words hold the harness's sh's reading of a ~+ (an sh that is bash expands it, dash does not)"
+	"sh-tilde": "the words hold the harness's sh's reading of a ~+ (an sh that is bash expands it, dash does not)",
+	"sh-brace": "the words hold the harness's sh's reading of a brace list (an sh that is bash expands it, dash does not)"
 },
 "omitted": {
 	"q40b": "mssh h \" with TAB and nothing else: the harness reads no line from it (None, as in 6.46)"
@@ -165,7 +166,7 @@
 {"id": "q93", "typed": "mssh h \"cat \\\"zzd x\\\"/zz", "dirs": ["zzd x"], "files": ["zzd x/zzin"], "rows": {"": {"line": "mssh h \"cat \\\"zzd x\\\"/zzin", "remote": ["cat", "zzd x/zzin"], "note": "quoted-directory"}, "$(": {"line": "$(mssh h \"cat \\\"zzd x\\\"/zzin", "remote": ["cat", "zzd x/zzin"], "note": "quoted-directory"}, "`": {"line": "`mssh h \"cat \\\"zzd x\\\"/zzin", "remote": ["cat", "zzd x/zzin"], "note": "quoted-directory"}}},
 {"id": "q94", "typed": "mssh h \"cat zzd\\ x/zz", "dirs": ["zzd x"], "files": ["zzd x/zzin"], "rows": {"": {"line": "mssh h \"cat zzd\\ x/zzin", "remote": ["cat", "zzd x/zzin"], "note": "typed-backslashes"}, "$(": {"line": "$(mssh h \"cat zzd\\ x/zzin", "remote": ["cat", "zzd x/zzin"], "note": "typed-backslashes"}, "`": {"line": "`mssh h \"cat zzd\\ x/zzin", "remote": ["cat", "zzd x/zzin"]}}},
 {"id": "q95", "typed": "mssh h \"cat zzd\\`:\\`/zz", "dirs": ["zzd`:`"], "files": ["zzd`:`/zzin"], "rows": {"": {"line": "mssh h \"cat zzd\\`:\\`/zz", "remote": ["cat", "zzd/zz"]}, "$(": {"line": "$(mssh h \"cat zzd\\`:\\`/zz", "remote": ["cat", "zzd/zz"]}, "`": {"line": "`mssh h \"cat zzd\\`:\\`/zz", "remote": ["cat", "zzd/zz"]}}},
-{"id": "q96", "typed": "mssh h \"cat zz{a,b}/zz", "files": ["zz{a,b}/zzin", "zza/zzother"], "rows": {"": {"line": "mssh h \"cat zz{a,b}/zz", "remote": ["cat", "zz{a,b}/zz"]}, "$(": {"line": "$(mssh h \"cat zz{a,b}/zz", "remote": ["cat", "zz{a,b}/zz"]}, "`": {"line": "`mssh h \"cat zz{a,b}/zz", "remote": ["cat", "zz{a,b}/zz"]}}},
+{"id": "q96", "typed": "mssh h \"cat zz{a,b}/zz", "files": ["zz{a,b}/zzin", "zza/zzother"], "rows": {"": {"line": "mssh h \"cat zz{a,b}/zz", "remote": null, "unpinned": "sh-brace"}, "$(": {"line": "$(mssh h \"cat zz{a,b}/zz", "remote": null, "unpinned": "sh-brace"}, "`": {"line": "`mssh h \"cat zz{a,b}/zz", "remote": null, "unpinned": "sh-brace"}}},
 {"id": "q97", "typed": "mssh h \"cat zz[ab]x/zz", "files": ["zz[ab]x/zzin", "zzax/zzother"], "rows": {"": {"line": "mssh h \"cat zz[ab]x/zz", "remote": ["cat", "zz[ab]x/zz"]}, "$(": {"line": "$(mssh h \"cat zz[ab]x/zz", "remote": ["cat", "zz[ab]x/zz"]}, "`": {"line": "`mssh h \"cat zz[ab]x/zz", "remote": ["cat", "zz[ab]x/zz"]}}},
 {"id": "q98", "typed": "mssh h \"cat zz*x/zz", "files": ["zz*x/zzin", "zzax/zzother"], "rows": {"": {"line": "mssh h \"cat zz*x/zz", "remote": ["cat", "zz*x/zz"]}, "$(": {"line": "$(mssh h \"cat zz*x/zz", "remote": ["cat", "zz*x/zz"]}, "`": {"line": "`mssh h \"cat zz*x/zz", "remote": ["cat", "zz*x/zz"]}}},
 {"id": "q99", "typed": "mssh h \"cat zz?x/zz", "files": ["zz?x/zzin", "zzax/zzother"], "rows": {"": {"line": "mssh h \"cat zz?x/zz", "remote": ["cat", "zz?x/zz"]}, "$(": {"line": "$(mssh h \"cat zz?x/zz", "remote": ["cat", "zz?x/zz"]}, "`": {"line": "`mssh h \"cat zz?x/zz", "remote": ["cat", "zz?x/zz"]}}},
