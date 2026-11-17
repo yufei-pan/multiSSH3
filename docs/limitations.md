@@ -811,7 +811,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   the remote shell needs, and the remote shell gets `-Izz\$v/`, a name with a stray backslash. As in 6.46. With a quote after the `=`
   (`CFLAGS="-Izz`) the remote shell gets `-Izz$v/`.
 - Why: not traced yet; the quote after the `=` writes the names for the remote shell, which the unquoted word does not get.
-- Revisit when: 6.48, with the value of a quote at an `=` above.
+- Revisit when: 6.48: write the names for the remote shell in the unquoted word too, as after a quote at an `=`.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
 ### bash: a directory holding a `$` is left bare
