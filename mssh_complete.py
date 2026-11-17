@@ -21,7 +21,7 @@ try:
 except ImportError:  # not POSIX: the shells are, so nothing starts the detached processes there
 	fcntl = None
 
-version = '0.19'
+version = '0.20'
 __version__ = version
 PROTOCOL = 'MSSHC1'
 MSSH_NAMES = ('mssh', 'mssh3', 'multissh', 'multissh3', 'multiSSH3')
@@ -7265,11 +7265,11 @@ _mssh() {
 	_mssh_complete_compsys_options=("${(@kv)options}")
 	emulate -L zsh
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_flags _mssh_complete_resp _mssh_complete_chunk _mssh_complete_locale
-	local _mssh_complete_line _mssh_complete_item _mssh_complete_name _mssh_complete_qfd _mssh_complete_kind _mssh_complete_rest _mssh_complete_read _mssh_complete_value
+	local _mssh_complete_line _mssh_complete_item _mssh_complete_name _mssh_complete_qfd _mssh_complete_kind _mssh_complete_rest _mssh_complete_read _mssh_complete_value _mssh_complete_inq
 	local -F _mssh_complete_end
 	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0 _mssh_complete_qcommand=0 _mssh_complete_inquote=0
 	local -i _mssh_complete_dcword _mssh_complete_offset _mssh_complete_matches=$compstate[nmatches] _mssh_complete_remoting=0
-	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_textopts _mssh_complete_dq_parts
+	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_textopts _mssh_complete_dq_parts _mssh_complete_split _mssh_complete_split_seen
 	# a double-quoted word holding an expansion: zsh keeps no quote for it (compstate[quote] empty, PREFIX the whole text with
 	# its spaces backslashed), and what goes in replaces the word from its opening quote. The word is read from the line as
 	# typed: the quote goes in IPREFIX, so it stays there, and every word goes in as in an open quote
@@ -7277,7 +7277,10 @@ _mssh() {
 	# (after the = of an option too: mssh --file="$PWD/zz, the option its own part of the line)
 	# (inside backticks zsh gives the backtick as the open quote, also for a word of no quote of its own: it is the command's, not the word's)
 	local _mssh_complete_open=${compstate[quote]:#\`} _mssh_complete_lead= _mssh_complete_word=$words[CURRENT]
-	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches]
+	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches] _mssh_complete_qkept=0
+	local -i _mssh_complete_texts_beside=0
+	local _mssh_complete_texts_typed= _mssh_complete_texts_read= _mssh_complete_tilde= _mssh_complete_split_typed= _mssh_complete_typed_last=
+	local _mssh_complete_dq_quote= _mssh_complete_dq_typed=
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7297,6 +7300,10 @@ _mssh() {
 	else
 		_mssh_complete_lead=
 	fi
+	# (inside $( ) with bang_hist on, a ! that goes in a double quote goes in outside it: _mssh_complete_banged. Not when the text typed
+	# holds one: zsh writes such a word again from its quote on, as it reads it)
+	local -i _mssh_complete_bang=0
+	[[ $_mssh_complete_compsys_options[banghist] == on && $PREFIX != *\!* ]] && _mssh_complete_paren_open "$LBUFFER" && _mssh_complete_bang=1
 	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} $_mssh_complete_lead${_mssh_complete_open}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
 	_mssh_complete_read_locale
@@ -7374,17 +7381,44 @@ _mssh() {
 		[[ $options[$_mssh_complete_name] == $_mssh_complete_compsys_options[$_mssh_complete_name] ]] ||
 			options[$_mssh_complete_name]=$_mssh_complete_compsys_options[$_mssh_complete_name]
 	done
+	# a double-quoted command whose quote zsh keeps is split here too, as one holding an expansion is (_mssh_complete_in_word), not by
+	# compset -q, which reads a double quote's backslashes wrong: after a \" the name went in after the word typed (zzfilezz), a \\&
+	# split the word, and the directory of a \\\$ came back changed. zsh keeps its quote (_mssh_complete_qkept): it is not in IPREFIX,
+	# the completion reads the word as written for it, and the quote stays open after a name, as compset -q left it. Not with the
+	# cursor inside the word. Not when the command's own word at the cursor is inside a quote it opened (mssh h "cat 'zz, "cat \"zz,
+	# "echo \`cat zz): that stays with compset -q, which reads that quote
+	_mssh_complete_texts_read=$PREFIX
+	if (( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ $_mssh_complete_open == \" && -z $SUFFIX ]]; then
+		_mssh_complete_read=$PREFIX
+		(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
+		_mssh_complete_dq_read "$_mssh_complete_read"
+		if ! _mssh_complete_inner_quote "$_mssh_complete_read"; then
+			_mssh_complete_dq=1
+			_mssh_complete_qkept=1
+			_mssh_complete_textopts=(-Q -S '" ')
+			# (with bang_hist on zsh gives PREFIX with each \! read as !, zsh 5.5.1 and later: the words before the one at the cursor go back
+			# into the line from it, so they are taken from the line as typed, and the engine's words are compared with PREFIX as it read it.
+			# A \! typed stays; the bang fix inside $( ) does not wait for a text with none)
+			# (only where backslashes are the one difference: a word that closes and reopens the quote, "zz"\!"x, zsh writes again itself)
+			if [[ $_mssh_complete_compsys_options[banghist] == on && $_mssh_complete_word == \"* && ${${_mssh_complete_word#\"}//\\/} == "${PREFIX//\\/}" ]]; then
+				PREFIX=${_mssh_complete_word#\"}
+				(( _mssh_complete_bang )) || ! _mssh_complete_paren_open "$LBUFFER" || _mssh_complete_bang=1
+			fi
+		fi
+	fi
 	# (mssh's own words go in as the double quote has them, as zsh does where it keeps the quote and this goes in with -Q: the
 	# part typed (PREFIX) as it was, its $PWD this shell's, and the rest quoted: a history word's " or $HOME is the remote command's)
+	_mssh_complete_texts_typed=$PREFIX
 	if (( _mssh_complete_dq )); then
 		for (( _mssh_complete_offset = 1; _mssh_complete_offset <= $#_mssh_complete_texts; _mssh_complete_offset++ )); do
 			_mssh_complete_item=$_mssh_complete_texts[_mssh_complete_offset]
 			_mssh_complete_name=
-			if [[ $_mssh_complete_item == "$PREFIX"* ]]; then
+			if [[ $_mssh_complete_item == "$_mssh_complete_texts_read"* ]]; then
 				_mssh_complete_name=$PREFIX
-				_mssh_complete_item=${_mssh_complete_item[$#PREFIX+1,-1]}
+				_mssh_complete_item=${_mssh_complete_item[$#_mssh_complete_texts_read+1,-1]}
 			fi
-			_mssh_complete_texts[_mssh_complete_offset]=$_mssh_complete_name${${(qqq)_mssh_complete_item}[2,-2]}
+			_mssh_complete_quote_in "$_mssh_complete_item"
+			_mssh_complete_texts[_mssh_complete_offset]=$_mssh_complete_name$_mssh_complete_inq
 		done
 	fi
 	# (an option's value in a quote, mssh --file="$PWD/zz, is mssh's own word. The word of a remote command that starts with one,
@@ -7392,6 +7426,7 @@ _mssh() {
 	# quote (_mssh_complete_compadd), and is a word of a line, whose whitespace mssh would run as a command of its own, whatever the quote)
 	if (( _mssh_complete_delegating )) && [[ -n $_mssh_complete_lead ]]; then
 		_mssh_complete_value=$PREFIX
+		_mssh_complete_split_typed=$PREFIX
 		IPREFIX=$_mssh_complete_was_ipre
 		PREFIX=$_mssh_complete_was_pre
 		_mssh_complete_dq=0
@@ -7399,10 +7434,13 @@ _mssh() {
 		_mssh_complete_remoting=1
 	fi
 	# while the remote command's completion runs, the file names of a word in the double quote that zsh keeps no quote for
-	# (_mssh_complete_dq), and any names inside backticks (mssh's own file options' too: _mssh_complete_tick), compadd is
-	# _mssh_complete_compadd, which hands on to the compadd there was (fzf-tab's, the builtin).
-	# Left in place by a completion cut short, it hands on as it is outside _mssh
-	if (( _mssh_complete_delegating || _mssh_complete_dq || _mssh_complete_ticked )) && [[ $functions[compadd] != $functions[_mssh_complete_compadd] ]]; then
+	# (_mssh_complete_dq), any names inside backticks (mssh's own file options' too: _mssh_complete_tick), and with bang_hist on
+	# any in a double quote (_mssh_complete_banged), compadd is _mssh_complete_compadd, which hands on to the compadd there was
+	# (fzf-tab's, the builtin). Left in place by a completion cut short, it hands on as it is outside _mssh
+	local -i _mssh_complete_wrap=0
+	(( _mssh_complete_delegating || _mssh_complete_dq || _mssh_complete_ticked )) && _mssh_complete_wrap=1
+	(( _mssh_complete_bang )) && [[ $_mssh_complete_open == \" ]] && _mssh_complete_wrap=1
+	if (( _mssh_complete_wrap )) && [[ $functions[compadd] != $functions[_mssh_complete_compadd] ]]; then
 		unfunction _mssh_complete_saved_compadd 2>/dev/null
 		(( ${+functions[compadd]} )) && functions[_mssh_complete_saved_compadd]=$functions[compadd]
 		functions[compadd]=$functions[_mssh_complete_compadd]
@@ -7414,12 +7452,13 @@ _mssh() {
 		# (how many names there are with mssh's own words in: _mssh_complete_compadd leaves out a split value's beside them)
 		_mssh_complete_texts_in=$compstate[nmatches]
 		_mssh_complete_in_word names
+		(( $#_mssh_complete_split )) && _mssh_complete_add_split
 		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts after
 		# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
 		# -o default), unless the engine said there is nothing to offer here (nodefault: a password)
 		(( compstate[nmatches] > _mssh_complete_matches || _mssh_complete_nodefault )) || _mssh_complete_in_word default "$@"
 	} always {
-		if (( _mssh_complete_delegating || _mssh_complete_dq || _mssh_complete_ticked )); then
+		if (( _mssh_complete_wrap )); then
 			if (( ${+functions[_mssh_complete_saved_compadd]} )); then
 				functions[compadd]=$functions[_mssh_complete_saved_compadd]
 				unfunction _mssh_complete_saved_compadd
@@ -7447,7 +7486,7 @@ _mssh_complete_add_texts() {
 		PREFIX=$_mssh_complete_value
 	fi
 	local _mssh_complete_head=${(M)PREFIX##*[/[:blank:]]} _mssh_complete_read _mssh_complete_text _mssh_complete_word _mssh_complete_inq
-	local -a _mssh_complete_shown _mssh_complete_whole _mssh_complete_whole_shown
+	local -a _mssh_complete_shown _mssh_complete_whole _mssh_complete_whole_shown _mssh_complete_bwords _mssh_complete_bshown
 	local -i _mssh_complete_at _mssh_complete_split=0
 	if [[ $1 == first ]]; then
 		[[ $PREFIX == */* ]] && return 0
@@ -7486,7 +7525,54 @@ _mssh_complete_add_texts() {
 			_mssh_complete_whole[_mssh_complete_at]=$_mssh_complete_word
 		done
 	fi
+	# (with bang_hist on, a ! that goes in a double quote goes in outside it, _mssh_complete_banged: the words zsh would write for the
+	# quote that hold one are written here, in a call of their own)
+	if (( _mssh_complete_bang && ! $#_mssh_complete_textopts )) && [[ $_mssh_complete_open == \" ]]; then
+		for (( _mssh_complete_at = $#_mssh_complete_whole; _mssh_complete_at >= 1; _mssh_complete_at-- )); do
+			[[ $_mssh_complete_whole[_mssh_complete_at] == *\!* ]] || continue
+			_mssh_complete_quote_in "$_mssh_complete_whole[_mssh_complete_at]"
+			_mssh_complete_bwords=("$_mssh_complete_inq" "${_mssh_complete_bwords[@]}")
+			_mssh_complete_bshown=("$_mssh_complete_whole_shown[_mssh_complete_at]" "${_mssh_complete_bshown[@]}")
+			_mssh_complete_whole[_mssh_complete_at]=()
+			_mssh_complete_whole_shown[_mssh_complete_at]=()
+		done
+		(( $#_mssh_complete_bwords )) && _mssh_complete_next_compadd -V mssh -l -d _mssh_complete_bshown -Q -- "${_mssh_complete_bwords[@]}"
+	fi
 	_mssh_complete_next_compadd -V mssh -l -d _mssh_complete_whole_shown "${_mssh_complete_textopts[@]}" -- "${_mssh_complete_whole[@]}"
+}
+
+_mssh_complete_add_split() {
+	# the names of a value the command split after a quote at an = (_mssh_complete_split, from _mssh_complete_compadd: for each call the
+	# place of its descriptions among its options, its options, its names, written for the quote already, and its descriptions), in that
+	# quote: the lead, the quote and the words typed before the one at the cursor as typed, then the names. The quote stays open after
+	# them, as in a quoted command: the value may go on
+	local -i _mssh_complete_at=1 _mssh_complete_shown_in _mssh_complete_count
+	local -a _mssh_complete_given _mssh_complete_written _mssh_complete_shown
+	local _mssh_complete_word
+	local _mssh_complete_head=${(M)_mssh_complete_split_typed##*[[:blank:]]}
+	IPREFIX=$_mssh_complete_lead\"$_mssh_complete_head
+	PREFIX=${_mssh_complete_split_typed#"$_mssh_complete_head"}
+	while (( _mssh_complete_at <= $#_mssh_complete_split )); do
+		_mssh_complete_shown_in=$_mssh_complete_split[_mssh_complete_at]
+		_mssh_complete_count=$_mssh_complete_split[_mssh_complete_at+1]
+		_mssh_complete_given=("${(@)_mssh_complete_split[_mssh_complete_at+2,_mssh_complete_at+1+_mssh_complete_count]}")
+		(( _mssh_complete_at += _mssh_complete_count + 2 ))
+		_mssh_complete_count=$_mssh_complete_split[_mssh_complete_at]
+		_mssh_complete_written=("${(@)_mssh_complete_split[_mssh_complete_at+1,_mssh_complete_at+_mssh_complete_count]}")
+		(( _mssh_complete_at += _mssh_complete_count + 1 ))
+		_mssh_complete_count=$_mssh_complete_split[_mssh_complete_at]
+		_mssh_complete_shown=("${(@)_mssh_complete_split[_mssh_complete_at+1,_mssh_complete_at+_mssh_complete_count]}")
+		(( _mssh_complete_at += _mssh_complete_count + 1 ))
+		(( _mssh_complete_shown_in )) && _mssh_complete_given[_mssh_complete_shown_in]=_mssh_complete_shown
+		# (inside backticks written once more, but the part typed, which zsh matches the names with)
+		if (( _mssh_complete_ticked )); then
+			for (( _mssh_complete_count = 1; _mssh_complete_count <= $#_mssh_complete_written; _mssh_complete_count++ )); do
+				_mssh_complete_tick written "$_mssh_complete_written[_mssh_complete_count]"
+				_mssh_complete_written[_mssh_complete_count]=$_mssh_complete_word
+			done
+		fi
+		_mssh_complete_next_compadd "${_mssh_complete_given[@]}" -Q - "${_mssh_complete_written[@]}"
+	done
 }
 
 _mssh_complete_in_word() {
@@ -7497,16 +7583,41 @@ _mssh_complete_in_word() {
 	# (a file name after an option's =: the name alone is the word)
 	(( _mssh_complete_delegating )) || [[ $PREFIX != -*=* ]] || compset -P 1 '*='
 	# (a quoted command's words are the ones inside its quote; a quoted argument is a word of the line's)
-	(( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ -n $_mssh_complete_open ]] && compset -q
+	if (( _mssh_complete_delegating && _mssh_complete_qcommand && ! _mssh_complete_dq )) && [[ -n $_mssh_complete_open ]]; then
+		# (zsh's own compset -q (5.0.2 to 5.9) writes outside its memory for a double-quoted word that holds a backslash inside a quote of
+		# its own, "grep 'a\.b or "cat \"a\\b, with or without mssh, and the shell can end there (5.9: malloc(): invalid size). Nothing is
+		# offered where the text holds a backslash after such a quote, other than the one of \$, \` or \", which zsh reads. Coarser than
+		# zsh's fault: "cat 'a' b\\c 'zz is declined too)
+		if [[ $_mssh_complete_open == \" ]]; then
+			_mssh_complete_read=${${PREFIX//\\[\$\`]}//\\\"/\'}
+			[[ $_mssh_complete_read == *\'*\\* ]] && return 0
+		fi
+		compset -q
+	fi
 	# (inside backticks, a word whose directories hold a backslash is read once more first, as this shell will read the line:
 	# zzd\\\&x/ is the zzd\\&x/ of $( ), where the completion finds the directory zzd&x. The directories as typed go back in front of
 	# each name, as for a double-quoted word (_mssh_complete_dq_parts, _mssh_complete_compadd). Here, not in a function: zsh puts PREFIX
 	# back when one returns). Not after a quote at an = (zsh holds that word written for no quote, not as typed)
 	if (( _mssh_complete_ticked && ! _mssh_complete_dq )) && [[ -z $_mssh_complete_lead && $PREFIX == */* && ${PREFIX%/*} == *\\* ]]; then
 		_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
-		_mssh_complete_dq_ipre=$#IPREFIX
+		_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX ))
 		_mssh_complete_tick_read "$PREFIX"
 		PREFIX=$_mssh_complete_read
+	elif (( _mssh_complete_ticked )) && [[ -n $_mssh_complete_lead && $_mssh_complete_word == \"*/* && ${_mssh_complete_word%/*} == *\\* ]]; then
+		# (after a quote at an =: a remote command's value zsh holds read by the double quote alone, written for no quote; mssh's own,
+		# as typed. The text typed is read once more, for backticks, by both; a remote command's value then by the double quote, and
+		# written for no quote again, as zsh holds it in $( ); mssh's own option's is left as read by the backticks, which the
+		# completion of its file names takes. The directories typed go back in front, after the lead and the quote)
+		_mssh_complete_dq_parts=("${(@s:/:)${_mssh_complete_word#\"}}")
+		_mssh_complete_tick_read "${_mssh_complete_word#\"}"
+		if (( _mssh_complete_delegating )); then
+			_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX + $#_mssh_complete_lead + 1 ))
+			_mssh_complete_dq_read "$_mssh_complete_read"
+			PREFIX=$_mssh_complete_lead${(q)_mssh_complete_read}
+		else
+			_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX ))
+			PREFIX=$_mssh_complete_read
+		fi
 	fi
 	[[ $_mssh_complete_what == names ]] && (( _mssh_complete_files )) && _files
 	if (( _mssh_complete_delegating )); then
@@ -7514,28 +7625,80 @@ _mssh_complete_in_word() {
 			# (what compset -q does, for the text as typed.) zsh keeps no quote here, so the completion below would read the text
 			# as a word of no quote: it is read as the double quote reads it, the remote shell's text (zzd\\ x/in as zzd\ x/in, a
 			# directory zzd x), and the directories keep the text typed (_mssh_complete_dq_parts, _mssh_complete_compadd)
-			_mssh_complete_dq_read "$PREFIX"
+			# (inside backticks read once more first, as this shell will: zzd\\\\&x is zzd\\&x there, one word)
+			_mssh_complete_read=$PREFIX
+			(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$_mssh_complete_read"
+			_mssh_complete_dq_read "$_mssh_complete_read"
 			if (( _mssh_complete_qcommand )); then
 				_mssh_complete_fields=("${(z)_mssh_complete_read}")
 				[[ $PREFIX == *[[:space:]] ]] && _mssh_complete_fields+=('')
+				# (with interactive_comments on, a word before the one at the cursor that starts with a # begins a comment, as for compset -q, which
+				# reads the line as the shell does: nothing to offer. (z) reads a # as an ordinary character)
+				[[ $_mssh_complete_compsys_options[interactivecomments] == on && -n ${(M)_mssh_complete_fields[1,-2]:#\#*} ]] && return 0
 				words=("${_mssh_complete_fields[@]}")
 				CURRENT=$#words
-				# (where it starts as typed: the end of the text that reads as this word)
+				# (where it starts as typed: the end of the text that reads as this word, not after a backslash, which \\~zz needs whole)
 				_mssh_complete_item=$words[CURRENT]
 				for (( _mssh_complete_offset = $#_mssh_complete_item; _mssh_complete_offset < $#PREFIX; _mssh_complete_offset++ )); do
-					_mssh_complete_dq_read "${PREFIX[$#PREFIX-_mssh_complete_offset+1,-1]}"
+					[[ ${PREFIX[$#PREFIX-_mssh_complete_offset]} == \\ ]] && continue
+					_mssh_complete_read=${PREFIX[$#PREFIX-_mssh_complete_offset+1,-1]}
+					(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$_mssh_complete_read"
+					_mssh_complete_dq_read "$_mssh_complete_read"
 					[[ $_mssh_complete_read == "$_mssh_complete_item" ]] && break
 				done
 				IPREFIX+=${PREFIX[1,$#PREFIX-_mssh_complete_offset]}
 				PREFIX=${PREFIX[$#PREFIX-_mssh_complete_offset+1,-1]}
 			fi
 			_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
-			_mssh_complete_dq_ipre=$#IPREFIX
+			_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX ))
+			_mssh_complete_typed_last=$PREFIX
+			# (the text typed from the quote zsh keeps to the cursor, for _mssh_complete_compadd)
+			_mssh_complete_dq_quote=$QIPREFIX
+			_mssh_complete_dq_typed=$IPREFIX$PREFIX
 			# (inside backticks read once more first, as above)
 			_mssh_complete_read=$PREFIX
 			(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
 			_mssh_complete_dq_read "$_mssh_complete_read"
 			PREFIX=$_mssh_complete_read
+			# (where zsh keeps the double quote, the completion reads the word as written for that quote: the remote shell's word, written as a
+			# name. Two rules for what the remote shell would read in it otherwise)
+			if (( _mssh_complete_qkept )); then
+				# (1. what the remote shell expands and this machine cannot: a $, a backtick, a brace, a parenthesis, and a pattern character
+				# unless the completion matches patterns itself (glob_complete), left in the directories typed once the escaped characters are
+				# taken off. The names of another directory would go in, so nothing is offered, as for a directory typed bare (limitations,
+				# "a directory the remote shell would read otherwise"). A < or > is no part of a word here: the split ends it there)
+				_mssh_complete_item=$PREFIX
+				if [[ $PREFIX == */* ]]; then
+					_mssh_complete_read=${${PREFIX%/*}//\\?}
+					[[ $_mssh_complete_read == *[\$\`\{\(\)]* || -z $compstate[pattern_match] && $_mssh_complete_read == *[\*\?\[]* ]] && return 0
+					# (and directories that leave a quote open, 'zzd/zz': the directories go back as typed, the name without the quote's end)
+					_mssh_complete_inner_quote "${PREFIX%/*}" && return 0
+				fi
+				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
+				# (the command's own compset -q (gcc's, sh -c's) reads this word in the double quote, where the remote shell's \' and \" are
+				# quotes of its own: the same fault as above for a backslash after one, so the same test)
+				[[ ${${PREFIX//\\[\$\`]}//\\\"/\'} == *\'*\\* ]] && return 0
+				# (2. the ~ that zsh's completion expands where a file name starts, as it did in 6.46: at the word's start, after the = of an
+				# option or a value, after a one-letter option. Whether the remote shell expands it there is its own (bash does after a name's =,
+				# dd's if=~/, not after -I or an option's =; dash and zsh do not): it stays as typed. zsh's completion reads no ~ in a double
+				# quote, so a ~/, ~name/, ~+/ or a named directory goes as a parameter holding its directory, which it does expand, and the
+				# directories typed go back in front of each name (~alice/ stays as typed).
+				# A name that is none stays: a user of the hosts, not of this machine, which zsh's nomatch makes an error that aborts the
+				# completion. A ~ that the remote shell reads as written (\~, '~') is a name at the word's start, which zsh reads so there;
+				# after an = nothing is offered: dd's completion (_tilde_files) expands a ~ in any quote, and would write this machine's home
+				# into the remote command)
+				local -a match mbegin mend
+				if [[ $PREFIX == (#b)(|[^=/[:space:]]##=|-[[:alpha:]])(\~[^/]#)(|/*) ]]; then
+					if [[ $_mssh_complete_item == "$match[1]$match[2]"* ]]; then
+						if [[ -n $match[3] ]]; then
+							() { setopt local_options no_nomatch; _mssh_complete_tilde=${~match[2]} }
+							[[ $_mssh_complete_tilde == "$match[2]" ]] || PREFIX=$match[1]\$_mssh_complete_tilde${PREFIX#"$match[1]$match[2]"}
+						fi
+					elif [[ $match[1] == *= ]]; then
+						return 0
+					fi
+				fi
+			fi
 		fi
 		(( _mssh_complete_offset = CURRENT - _mssh_complete_dcword ))
 		if (( _mssh_complete_offset >= 1 )); then
@@ -7613,6 +7776,31 @@ _mssh_complete_tick_read() {
 	_mssh_complete_read=${1//(#b)\\([\\\`\$])/$match[1]}
 }
 
+_mssh_complete_inner_quote() {
+	# whether $1, a quoted command's text as the remote shell reads it, ends inside a quote of its own: ', ", $'...' or a backtick. A
+	# backslash takes the next character (outside single quotes); inside backticks only a backslash and the next backtick count
+	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
+	local _mssh_complete_quote= _mssh_complete_nul=$'\0'
+	local -a _mssh_complete_parts
+	local -i _mssh_complete_at
+	[[ $1 == *[\'\"\`]* ]] || return 1
+	_mssh_complete_parts=("${(@ps:\0:)${1//(#m)[\\\"\'\`\$]/$_mssh_complete_nul$MATCH$_mssh_complete_nul}}")
+	for (( _mssh_complete_at = 2; _mssh_complete_at <= $#_mssh_complete_parts; _mssh_complete_at += 2 )); do
+		case $_mssh_complete_quote$_mssh_complete_parts[_mssh_complete_at] in
+			(s\'|c\'|d\"|o\`) _mssh_complete_quote= ;;
+			(\\|[cdo]\\) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] && (( _mssh_complete_at += 2 )) ;;
+			(\") _mssh_complete_quote=d ;;
+			(\') _mssh_complete_quote=s ;;
+			(\`|d\`) _mssh_complete_quote=o ;;
+			(\$) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] && $_mssh_complete_parts[_mssh_complete_at+2] == \' ]] &&
+				_mssh_complete_quote=c && (( _mssh_complete_at += 2 )) ;;
+		esac
+	done
+	[[ -n $_mssh_complete_quote ]]
+}
+
 _mssh_complete_dq_read() {
 	# $1, text typed in a double quote, as that quote reads it, into _mssh_complete_read of _mssh; a $ or a backtick stays
 	emulate -L zsh
@@ -7622,12 +7810,35 @@ _mssh_complete_dq_read() {
 
 _mssh_complete_quote_in() {
 	# $1 quoted as a word of -Q goes in, into _mssh_complete_inq of _mssh_complete_compadd: for the quote open in the word (a
-	# quoted argument), else with backslashes
+	# quoted argument), else with backslashes. In a double quote with bang_hist on (_mssh_complete_banging of _mssh_complete_compadd,
+	# _mssh_complete_bang of _mssh) each ! goes outside it: _mssh_complete_banged
 	case $_mssh_complete_open in
-		(\") _mssh_complete_inq=${${(qqq)1}[2,-2]} ;;
+		(\")
+			_mssh_complete_inq=${${(qqq)1}[2,-2]}
+			(( ${_mssh_complete_banging-${_mssh_complete_bang:-0}} )) && [[ $_mssh_complete_inq == *\!* ]] && _mssh_complete_banged
+			;;
 		(\') _mssh_complete_inq=${${(qq)1}[2,-2]} ;;
 		(*) _mssh_complete_inq=${(q)1} ;;
 	esac
+}
+
+_mssh_complete_split_keep() {
+	# for _mssh_complete_compadd, one call's names of a value the command split after a quote at an =, for _mssh_complete_add_split: $1 the
+	# suffix they get (- for the call's own), $2 and $3 the names of the arrays of its names and of their descriptions. Each set once: a
+	# command's completion that asks for the same names again, _files for another tag, gave them twice, and zsh then found no start they share
+	local -a _mssh_complete_kept_given _mssh_complete_kept_names _mssh_complete_kept_shown
+	local _mssh_complete_kept_key
+	_mssh_complete_kept_names=("${(@P)2}")
+	_mssh_complete_kept_shown=("${(@P)3}")
+	(( $#_mssh_complete_kept_names )) || return 0
+	_mssh_complete_kept_given=("${_mssh_complete_bare[@]}")
+	(( _mssh_complete_hidden_bare )) && _mssh_complete_kept_given[_mssh_complete_hidden_bare]=
+	[[ $1 == - ]] || _mssh_complete_kept_given+=(-S "$1")
+	_mssh_complete_kept_key=${(pj:\1:)_mssh_complete_kept_given}$'\1'${(pj:\1:)_mssh_complete_kept_names}
+	(( ${_mssh_complete_split_seen[(Ie)$_mssh_complete_kept_key]} )) && return 0
+	_mssh_complete_split_seen+=("$_mssh_complete_kept_key")
+	_mssh_complete_split+=("$_mssh_complete_shown_bare" "$#_mssh_complete_kept_given" "${_mssh_complete_kept_given[@]}" "$#_mssh_complete_kept_names"
+		"${_mssh_complete_kept_names[@]}" "$#_mssh_complete_kept_shown" "${_mssh_complete_kept_shown[@]}")
 }
 
 _mssh_complete_compadd() {
@@ -7646,7 +7857,8 @@ _mssh_complete_compadd() {
 	# mssh's own names too. The words of -a and -k are taken from their arrays. A call storing its matches (-O, -A)
 	# goes on as it came, as every call does outside _mssh: what it stores reaches the line only through another call
 	# (compadd -a), which comes here. Then the compadd there was: fzf-tab's, the builtin
-	if (( ! ${_mssh_complete_delegating:-0} && ! ${_mssh_complete_dq:-0} && ! ${_mssh_complete_ticked:-0} )); then
+	if (( ! ${_mssh_complete_delegating:-0} && ! ${_mssh_complete_dq:-0} && ! ${_mssh_complete_ticked:-0} )) &&
+		[[ ${_mssh_complete_bang:-0} == 0 || ${_mssh_complete_open-} != \" ]]; then
 		_mssh_complete_next_compadd "$@"
 		return
 	fi
@@ -7655,12 +7867,26 @@ _mssh_complete_compadd() {
 	local MATCH MBEGIN MEND
 	local -i _mssh_complete_dq=${_mssh_complete_dq:-0} _mssh_complete_ticked=${_mssh_complete_ticked:-0}
 	local _mssh_complete_open=${_mssh_complete_open-}
+	# (a compset -q of the command's own, _gcc's for make CFLAGS=, _cmdstring's for sh -c: QIPREFIX has grown since the glue's split. zsh
+	# then holds two quote levels, the command's and the double quote's, and the remote shell's, which the glue stands for, lies between
+	# them: only text that reads the same at every level goes in. The text the command moved to QIPREFIX, which zsh writes back as it is,
+	# must be the text typed (CFLAGS=-O2 for a typed CFLAGS=-O2\\ is not), and a name must need no quoting (below); otherwise nothing goes
+	# in, and zsh's default file names, which would stand in for what was left out as a plain word, do not either
+	# (_mssh_complete_nodefault of _mssh). Only where zsh keeps the quote (_mssh_complete_qkept): there the command is given the word
+	# written as a name, its blank bare. In a word holding an expansion it is given the double quote's reading, a blank still escaped,
+	# which goes back as the same word, as in 6.46)
+	local -i _mssh_complete_nested=0
+	(( ${_mssh_complete_qkept:-0} )) && [[ -n ${_mssh_complete_dq_typed-} && $QIPREFIX != "$_mssh_complete_dq_quote" ]] && _mssh_complete_nested=1
+	if (( _mssh_complete_nested )) && [[ $_mssh_complete_dq_typed != "${QIPREFIX#"$_mssh_complete_dq_quote"}$IPREFIX"* ]]; then
+		_mssh_complete_nodefault=1
+		return 1
+	fi
 	local -a _mssh_complete_opts _mssh_complete_bare _mssh_complete_in _mssh_complete_out _mssh_complete_changed _mssh_complete_dirs
 	local -a _mssh_complete_shown _mssh_complete_kept _mssh_complete_parts _mssh_complete_typed
 	local _mssh_complete_arg _mssh_complete_letter _mssh_complete_name _mssh_complete_value _mssh_complete_prefix= _mssh_complete_word
 	local _mssh_complete_flags _mssh_complete_plainflags _mssh_complete_inq _mssh_complete_moved
 	local -i _mssh_complete_at=1 _mssh_complete_char _mssh_complete_quoted=0 _mssh_complete_arrays=0 _mssh_complete_filter=0
-	local -i _mssh_complete_plain=0 _mssh_complete_file=0 _mssh_complete_shown_at=0 _mssh_complete_hidden_at=0 _mssh_complete_index
+	local -i _mssh_complete_plain=0 _mssh_complete_file=0 _mssh_complete_shown_at=0 _mssh_complete_shown_bare=0 _mssh_complete_hidden_at=0 _mssh_complete_index
 	local -i _mssh_complete_hidden_bare=0 _mssh_complete_rc=1 _mssh_complete_keys=0 _mssh_complete_suffixed=0 _mssh_complete_listing=0 _mssh_complete_atcommand=0
 	local -i _mssh_complete_at_equals=0
 	[[ $curcontext == *:-command-:* ]] && _mssh_complete_atcommand=1
@@ -7695,7 +7921,10 @@ _mssh_complete_compadd() {
 				_mssh_complete_opts+=("$_mssh_complete_flags$_mssh_complete_letter" "$_mssh_complete_value")
 				_mssh_complete_bare+=("$_mssh_complete_plainflags$_mssh_complete_letter" "$_mssh_complete_value")
 				_mssh_complete_flags=
-				[[ $_mssh_complete_letter == d ]] && _mssh_complete_shown_at=$#_mssh_complete_opts
+				if [[ $_mssh_complete_letter == d ]]; then
+					_mssh_complete_shown_at=$#_mssh_complete_opts
+					_mssh_complete_shown_bare=$#_mssh_complete_bare
+				fi
 				if [[ $_mssh_complete_letter == p ]]; then
 					_mssh_complete_hidden_at=$#_mssh_complete_opts
 					_mssh_complete_hidden_bare=$#_mssh_complete_bare
@@ -7732,6 +7961,12 @@ _mssh_complete_compadd() {
 	# an expansion stays as typed, $HOME this shell's, as without TAB),
 	# or the history names beside, which have it, kept only --format= of the line. Not where the quote is there already, mssh's own
 	# --file=")
+	# (a ~/ typed at the start of a value after an =, quoted or not, that the command's completion expanded in front, dd if=~/zz: back as
+	# typed, as without TAB; it went in as this machine's home, and in a quote the remote shell got that path)
+	if (( ! ${_mssh_complete_dq:-0} )) && [[ ${_mssh_complete_was_ipre-}${_mssh_complete_was_pre-} == [^=]#=(\"|)\~/* && -n $HOME &&
+		$IPREFIX == [^=]#="$HOME"/* ]]; then
+		IPREFIX=${IPREFIX%%=*}=\~${IPREFIX#*=$HOME}
+	fi
 	if (( ! _mssh_complete_filter )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX == *"$_mssh_complete_lead"* && $IPREFIX != *"$_mssh_complete_lead"\"* ]]; then
 		_mssh_complete_moved=${IPREFIX##*"$_mssh_complete_lead"}
 		IPREFIX=${IPREFIX%"$_mssh_complete_moved"}\"${_mssh_complete_moved//(#m)\\?/${${MATCH[2]:#[\\\$\`\"\!]}:-$MATCH}}
@@ -7746,10 +7981,17 @@ _mssh_complete_compadd() {
 	if (( ${_mssh_complete_texts_in:-0} > ${_mssh_complete_matches:-0} )) && [[ $IPREFIX != *"${_mssh_complete_lead-}"* ]]; then
 		return 1
 	fi
-	(( _mssh_complete_dq )) && _mssh_complete_closing_opts=(-S '" ')
+	# (what closes a word of the double quote: the quote and a space, or nothing where zsh keeps the quote of a quoted command)
+	local _mssh_complete_close='" '
+	(( ${_mssh_complete_qkept:-0} )) && _mssh_complete_close=
+	(( _mssh_complete_dq )) && _mssh_complete_closing_opts=(-S "$_mssh_complete_close")
 	# (in a quoted command's double quote zsh writes a word of -Q for that quote still: a \ is doubled, and the word is raw)
 	(( _mssh_complete_quoted || _mssh_complete_dq )) && _mssh_complete_tickas=written
 	(( ${_mssh_complete_qcommand:-0} && ! _mssh_complete_dq )) && [[ $_mssh_complete_open == \" ]] && _mssh_complete_tickas=raw
+	# (with bang_hist on, a word holding a ! that goes in a double quote goes in written here, the ! outside the quote:
+	# _mssh_complete_banged. Not where zsh writes the words for a quote itself, a quoted command's after compset -q)
+	local -i _mssh_complete_banging=0
+	(( ${_mssh_complete_bang:-0} && ! ( ${_mssh_complete_qcommand:-0} && ! _mssh_complete_dq ) )) && [[ $_mssh_complete_open == \" ]] && _mssh_complete_banging=1
 	if (( _mssh_complete_plain )); then
 		_mssh_complete_next_compadd "$@"
 		return
@@ -7766,15 +8008,57 @@ _mssh_complete_compadd() {
 	else
 		_mssh_complete_in=("${(@)argv[_mssh_complete_at,-1]}")
 	fi
+	# (a value after a quote at an = that the command's completion split into words of its own (compset -q, as _gcc does for make
+	# CFLAGS="-O): its names reach here without the lead and the quote, and zsh would write them CFLAGS=-ggdb, the quote gone, and
+	# quote them again for the double quote. Each call is kept for _mssh (_mssh_complete_add_split), which puts the names in the quote
+	# typed, with its own options (its matcher: -M of _gcc makes -Wno-unused-par -Wunused-parameter; its suffix: -qS= of -march=): the
+	# names written for the remote shell, as a word typed as words is (the blank and the quoting below), and for the quote. Beside
+	# mssh's own words the names are left out, above)
+	if (( ! _mssh_complete_filter && ${+_mssh_complete_split} )) && [[ -n ${_mssh_complete_lead-} && $IPREFIX != *"$_mssh_complete_lead"* ]]; then
+		# (a call whose IPREFIX and PREFIX are not the end of the value typed, _arguments': IPREFIX -march= for the typed -marc, gave names
+		# that zsh does not match to the word, native: they stay out, as for zsh, and not as -march=native, which they would be here)
+		[[ $_mssh_complete_split_typed == *"${(Q)IPREFIX}$PREFIX" ]] || return 1
+		local _mssh_complete_dirpart= _mssh_complete_ipre=${(Q)IPREFIX} _mssh_complete_remote _mssh_complete_unwritten
+		local -a _mssh_complete_written _mssh_complete_written_shown _mssh_complete_subdirs _mssh_complete_subdirs_shown
+		(( _mssh_complete_hidden_at )) && _mssh_complete_dirpart=${(Q)_mssh_complete_opts[_mssh_complete_hidden_at]}
+		(( _mssh_complete_shown_at )) && _mssh_complete_shown=("${(@P)_mssh_complete_opts[_mssh_complete_shown_at]}")
+		_mssh_complete_open=\"
+		_mssh_complete_banging=${_mssh_complete_bang:-0}
+		for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_in; _mssh_complete_index++ )); do
+			_mssh_complete_word=$_mssh_complete_in[_mssh_complete_index]
+			(( _mssh_complete_quoted )) && _mssh_complete_word=${(Q)_mssh_complete_word}
+			_mssh_complete_unwritten=$_mssh_complete_word
+			_mssh_complete_name=$_mssh_complete_ipre$_mssh_complete_dirpart$_mssh_complete_word
+			_mssh_complete_blank "$_mssh_complete_name" && continue
+			_mssh_complete_remote=${_mssh_complete_name//(#m)[][\"\'\\\$\`\|\&\;\<\>\(\)\!\*\?\{\}\#]/\\$MATCH}
+			[[ $_mssh_complete_remote == '~'* ]] && _mssh_complete_remote=\\$_mssh_complete_remote
+			_mssh_complete_quote_in "$_mssh_complete_remote"
+			_mssh_complete_word=${_mssh_complete_inq//\\\\\\!/\\!}
+			# (a directory goes in with its own suffix, a /, as the others do: with it in the name, two directories had no common start)
+			if (( _mssh_complete_file && ! _mssh_complete_suffixed )) && [[ -d $_mssh_complete_prefix$_mssh_complete_unwritten ]]; then
+				_mssh_complete_subdirs+=("$_mssh_complete_word")
+				(( _mssh_complete_shown_at )) && _mssh_complete_subdirs_shown+=("$_mssh_complete_shown[_mssh_complete_index]")
+			else
+				_mssh_complete_written+=("$_mssh_complete_word")
+				(( _mssh_complete_shown_at )) && _mssh_complete_written_shown+=("$_mssh_complete_shown[_mssh_complete_index]")
+			fi
+		done
+		(( _mssh_complete_suffixed )) && _mssh_complete_name=- || _mssh_complete_name=
+		_mssh_complete_split_keep "$_mssh_complete_name" _mssh_complete_written _mssh_complete_written_shown
+		_mssh_complete_split_keep / _mssh_complete_subdirs _mssh_complete_subdirs_shown
+		return 1
+	fi
 	# directories read from the double quote (_mssh_complete_dq_parts of _mssh) and left as they are: their text as typed goes in front,
 	# for this call (zsh puts both back when this function returns). -p must start the word, which holds them as read: written for the
 	# quote, zsh matched no name (a $, a backtick, a ")
 	if (( _mssh_complete_hidden_at && $#_mssh_complete_dq_parts )) && [[ -n $_mssh_complete_opts[_mssh_complete_hidden_at] ]] &&
 		_mssh_complete_typed_dirs "$_mssh_complete_opts[_mssh_complete_hidden_at]"; then
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
-		# (less what the command's own compset has moved to IPREFIX since: dd's if=, ssh's -i)
-		_mssh_complete_item=${(j:/:)_mssh_complete_dq_parts[1,$#_mssh_complete_parts-1]}
-		IPREFIX+=${_mssh_complete_item#"${IPREFIX[_mssh_complete_dq_ipre+1,-1]}"}/
+		# (less what the command's own compset has moved to IPREFIX since: dd's if=, ssh's -i. The directories of -p are the last ones typed:
+		# the ones before are in IPREFIX, dd's if=~/ with them, which a ~ restored there made twice. Counted with QIPREFIX: a compset -q of the
+		# command's own, _gcc's for make CFLAGS=, moves IPREFIX there)
+		_mssh_complete_item=${(j:/:)_mssh_complete_dq_parts[-$#_mssh_complete_parts,-2]}
+		IPREFIX+=${_mssh_complete_item#"${${:-$QIPREFIX$IPREFIX}[_mssh_complete_dq_ipre+1,-1]}"}/
 		PREFIX=${(j:/:)${(@s:/:)PREFIX}[$#_mssh_complete_parts,-1]}
 		_mssh_complete_opts[_mssh_complete_hidden_at]=
 		_mssh_complete_bare[_mssh_complete_hidden_bare]=
@@ -7809,11 +8093,41 @@ _mssh_complete_compadd() {
 			_mssh_complete_bare[_mssh_complete_hidden_bare]=
 		fi
 	fi
+	# (where zsh keeps the double quote of a quoted command, it matches a word of -Q with PREFIX as it stands: PREFIX is written as the
+	# words are, so that a name typed otherwise, \~zz for ~zzt, is found)
+	if (( ${_mssh_complete_qkept:-0} && ! _mssh_complete_filter )) && [[ -n $PREFIX && $PREFIX != */* ]]; then
+		_mssh_complete_quote_in "${(q)${(Q)PREFIX}}"
+		PREFIX=$_mssh_complete_inq
+		# (inside backticks, a word typed written for them already, as the names go in, is that: a later TAB on zzs\\\\\\\$v, which read
+		# zzs\$v, matched no name, and the \\ of its names stood alone. One typed otherwise, \~zz, is read as the double quote has it)
+		if (( _mssh_complete_ticked )); then
+			_mssh_complete_value=$PREFIX
+			PREFIX=
+			_mssh_complete_tick written "$_mssh_complete_value"
+			PREFIX=$_mssh_complete_value
+			[[ $_mssh_complete_typed_last == "$_mssh_complete_word" ]] && PREFIX=$_mssh_complete_word
+		fi
+	fi
 	(( _mssh_complete_shown_at )) && _mssh_complete_shown=("${(@P)_mssh_complete_opts[_mssh_complete_shown_at]}")
 	for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_in; _mssh_complete_index++ )); do
 		_mssh_complete_word=$_mssh_complete_in[_mssh_complete_index]
 		_mssh_complete_name=$_mssh_complete_word
 		(( _mssh_complete_quoted )) && _mssh_complete_name=${(Q)_mssh_complete_word}
+		# (where zsh keeps the double quote the word is written for it, \!, \", \$ and \` read as the quote reads them: (Q) stops at a ' that
+		# is not closed, and zz'\!x went in as zz'\\\!x)
+		(( _mssh_complete_quoted && ${_mssh_complete_qkept:-0} )) && _mssh_complete_name=${_mssh_complete_word//(#m)\\[\\\!\$\`\"]/${MATCH[2]}}
+		# (in a word the command split itself, above: a name that (q) changes has a spelling for each level and went in written twice,
+		# sub/zz\\\\\\\\\\\\ x for a directory "zz x"; it is left out)
+		if (( _mssh_complete_nested && ! _mssh_complete_filter )) && [[ ${(q)_mssh_complete_name} != "$_mssh_complete_name" ]]; then
+			_mssh_complete_nodefault=1
+			continue
+		fi
+		# (a word of -Q for the double quote zsh keeps, as _files writes them: its ! outside the quote)
+		if (( _mssh_complete_banging && _mssh_complete_quoted && ! _mssh_complete_dq )) && [[ $_mssh_complete_word == *\!* ]]; then
+			_mssh_complete_inq=$_mssh_complete_word
+			_mssh_complete_banged
+			_mssh_complete_word=$_mssh_complete_inq
+		fi
 		# (only the words of a command's name: _normal's list of the functions, or whatever a call at a command's place gives. A
 		# remote command's own words stay, a file here too)
 		if (( ! _mssh_complete_filter && ( _mssh_complete_listing || _mssh_complete_atcommand ) && ${+functions[$_mssh_complete_name]} && ! ${+commands[$_mssh_complete_name]} )) &&
@@ -7829,12 +8143,13 @@ _mssh_complete_compadd() {
 			# zsh would for any word that is no name; for mssh's own file names, the name. Then for the double quote)
 			_mssh_complete_value=$_mssh_complete_name
 			if (( _mssh_complete_delegating )); then
-				(( _mssh_complete_quoted )) && _mssh_complete_value=$_mssh_complete_word || _mssh_complete_value=${(q)_mssh_complete_name}
+				# (where zsh keeps the quote, a word of -Q is written for it, not for the remote shell)
+				(( _mssh_complete_quoted && ! ${_mssh_complete_qkept:-0} )) && _mssh_complete_value=$_mssh_complete_word || _mssh_complete_value=${(q)_mssh_complete_name}
 			fi
 			_mssh_complete_quote_in "$_mssh_complete_value"
 			_mssh_complete_word=$_mssh_complete_inq
 			# (a command's word, written \! by zsh for the remote shell, is \! here once; mssh's own names keep the \! zsh's history takes off)
-			(( _mssh_complete_delegating )) && _mssh_complete_word=${_mssh_complete_inq//\\\!/\!}
+			(( _mssh_complete_delegating && ! _mssh_complete_banging )) && _mssh_complete_word=${_mssh_complete_inq//\\\!/\!}
 			# (a directory whose word changed: zsh's mark looks for the word as written and finds no directory: its / here, quote open)
 			if (( _mssh_complete_file && ! _mssh_complete_shown_at )) && [[ $_mssh_complete_word != "$_mssh_complete_name" && -d $_mssh_complete_prefix$_mssh_complete_name ]]; then
 				(( _mssh_complete_ticked )) && _mssh_complete_tick $_mssh_complete_tickas "$_mssh_complete_word"
@@ -7889,15 +8204,38 @@ _mssh_complete_compadd() {
 				continue
 			fi
 		fi
+		# (with bang_hist, a word holding a ! goes in written here, the ! outside the double quote, without -f, as a changed word above)
+		if (( _mssh_complete_banging && ! _mssh_complete_filter && ! _mssh_complete_shown_at )) && [[ $_mssh_complete_word == *\!* ]]; then
+			if (( _mssh_complete_file )) && [[ -d $_mssh_complete_prefix$_mssh_complete_name ]]; then
+				_mssh_complete_dirs+=("$_mssh_complete_word")
+			else
+				_mssh_complete_changed+=("$_mssh_complete_word")
+			fi
+			continue
+		fi
 		_mssh_complete_out+=("$_mssh_complete_word")
 		(( _mssh_complete_shown_at )) && _mssh_complete_kept+=("$_mssh_complete_shown[_mssh_complete_index]")
 	done
+	if (( _mssh_complete_banging )); then
+		# (words zsh would write for the double quote are written here, with a ! outside it)
+		if (( ! _mssh_complete_quoted && ! _mssh_complete_dq )); then
+			for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_changed; _mssh_complete_index++ )); do
+				_mssh_complete_quote_in "$_mssh_complete_changed[_mssh_complete_index]"
+				_mssh_complete_changed[_mssh_complete_index]=$_mssh_complete_inq
+			done
+			for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_dirs; _mssh_complete_index++ )); do
+				_mssh_complete_quote_in "$_mssh_complete_dirs[_mssh_complete_index]"
+				_mssh_complete_dirs[_mssh_complete_index]=$_mssh_complete_inq
+			done
+			_mssh_complete_bare+=(-Q)
+		fi
+	fi
 	(( _mssh_complete_shown_at )) && _mssh_complete_opts[_mssh_complete_shown_at]=_mssh_complete_kept
 	# (every word of the double quote goes in as written here)
 	(( _mssh_complete_dq && ! _mssh_complete_quoted && ! _mssh_complete_filter )) && _mssh_complete_opts=(-Q "${_mssh_complete_opts[@]}")
 	# (a call with descriptions keeps its words in one call, which closes the quote as the others: its words left open the quote,
 	# with a space after it. Not with a suffix of its own, nor file names, some of which are directories)
-	(( _mssh_complete_dq && _mssh_complete_shown_at && ! _mssh_complete_suffixed && ! _mssh_complete_file && ! _mssh_complete_filter )) && _mssh_complete_opts=("${_mssh_complete_opts[@]}" -S '" ')
+	(( _mssh_complete_dq && _mssh_complete_shown_at && ! _mssh_complete_suffixed && ! _mssh_complete_file && ! _mssh_complete_filter )) && _mssh_complete_opts=("${_mssh_complete_opts[@]}" -S "$_mssh_complete_close")
 	# a filter's call runs even for no words (it empties the array); the others add only what they have
 	if (( _mssh_complete_dq )); then
 		_mssh_complete_bare+=(-Q)
@@ -7909,7 +8247,36 @@ _mssh_complete_compadd() {
 	fi
 	(( $#_mssh_complete_changed )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" "${_mssh_complete_closing_opts[@]}" - "${_mssh_complete_changed[@]}" && _mssh_complete_rc=0
 	(( $#_mssh_complete_dirs )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" -S / - "${_mssh_complete_dirs[@]}" && _mssh_complete_rc=0
+	# mssh's history names beside the command's file names, in a word holding a / where the glue split a double quote or zsh keeps
+	# none (_mssh_complete_dq: a quoted command, a double-quoted word holding an expansion, after a quote at an =) or after compset -q
+	# (a single-quoted command): in the call that adds those names, once a TAB, with its IPREFIX, PREFIX and -p, each less the text
+	# typed up to its last / or blank, which those stand for (whole beside them zsh cut the line back: mssh h "/.zzr). They are written
+	# for the quote already (_mssh), or after compset -q the remote shell's text, which zsh writes for the quote
+	if (( _mssh_complete_file && ! _mssh_complete_filter && ! ${_mssh_complete_texts_beside-1} && ( _mssh_complete_dq || ${_mssh_complete_qcommand:-0} ) )) &&
+		[[ ${_mssh_complete_texts_typed-} == */* ]]; then
+		_mssh_complete_texts_beside=1
+		local _mssh_complete_head=${(M)_mssh_complete_texts_typed##*[/[:blank:]]}
+		local -a _mssh_complete_beside _mssh_complete_beside_shown
+		for (( _mssh_complete_index = 1; _mssh_complete_index <= $#_mssh_complete_texts; _mssh_complete_index++ )); do
+			[[ $_mssh_complete_texts[_mssh_complete_index] == "$_mssh_complete_head"?* ]] || continue
+			_mssh_complete_word=${_mssh_complete_texts[_mssh_complete_index]#"$_mssh_complete_head"}
+			(( _mssh_complete_ticked )) && _mssh_complete_tick written "$_mssh_complete_word"
+			_mssh_complete_beside+=("$_mssh_complete_word")
+			_mssh_complete_beside_shown+=("$_mssh_complete_listed[_mssh_complete_index]")
+		done
+		(( $#_mssh_complete_beside )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" -Q "${_mssh_complete_closing_opts[@]}" -l -d _mssh_complete_beside_shown - "${_mssh_complete_beside[@]}" && _mssh_complete_rc=0
+	fi
 	return $_mssh_complete_rc
+}
+
+_mssh_complete_banged() {
+	# _mssh_complete_inq of _mssh_complete_quote_in, written for a double quote, with each ! outside it: "zz"\!"x". zsh writes it \!
+	# (bang_hist), whose backslash stays inside $( ) (zsh reads the text in it again later, with no history), and a plain one is a
+	# history event there; "\!" reads as ! on the line, inside $( ) and inside backticks alike
+	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
+	_mssh_complete_inq=${_mssh_complete_inq//(#m)(\\?|\!)/${${MATCH:#(\\\!|\!)}:-\"\\!\"}}
 }
 
 _mssh_complete_tick() {
@@ -8013,6 +8380,48 @@ _mssh_complete_tick_open() {
 	_mssh_complete_line=${(j::)_mssh_complete_parts[_mssh_complete_open+1,-1]}
 }
 
+_mssh_complete_paren_open() {
+	# whether the outermost substitution still open at the end of $1 is a $( ), <( ) or >( ), read as zsh reads the line
+	# (_mssh_complete_tick_open): zsh reads the text in it again when it runs, with no history then, and a double quote's \! keeps its
+	# backslash there. Backticks around it are read with the line, \! and all. A ( ) inside counts only to find the close (a case
+	# pattern's ) closes it too: the line is then read as one with none open)
+	emulate -L zsh; setopt extended_glob
+	# (the names (#m) sets stay this function's: stock zsh leaves none in the shell)
+	local MATCH MBEGIN MEND
+	local _mssh_complete_quote= _mssh_complete_nul=$'\0' _mssh_complete_one
+	local -a _mssh_complete_parts _mssh_complete_stack
+	local -i _mssh_complete_at
+	[[ $1 == *[\$\<\>]\(* ]] || return 1
+	# (the runs between them at the odd places, maybe empty, and the characters that count at the even ones)
+	_mssh_complete_parts=("${(@ps:\0:)${1//(#m)[\\\"\'\`\$\<\>\(\)]/$_mssh_complete_nul$MATCH$_mssh_complete_nul}}")
+	for (( _mssh_complete_at = 2; _mssh_complete_at <= $#_mssh_complete_parts; _mssh_complete_at += 2 )); do
+		_mssh_complete_one=$_mssh_complete_parts[_mssh_complete_at]
+		# (the quote open as in _mssh_complete_tick_open; each opener on the stack keeps the quote it was opened in)
+		case $_mssh_complete_quote$_mssh_complete_one in
+			(s\'|c\'|d\") _mssh_complete_quote= ;;
+			(\\|[cdo]\\) [[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] && (( _mssh_complete_at += 2 )) ;;
+			(\") _mssh_complete_quote=d ;;
+			(\') _mssh_complete_quote=s ;;
+			(\`|d\`) _mssh_complete_stack+=(\`$_mssh_complete_quote); _mssh_complete_quote=o ;;
+			(o\`) _mssh_complete_quote=${_mssh_complete_stack[-1][2,-1]}; _mssh_complete_stack[-1]=() ;;
+			([\$\<\>]|d\$)
+				[[ -z $_mssh_complete_parts[_mssh_complete_at+1] ]] || continue
+				if [[ $_mssh_complete_parts[_mssh_complete_at+2] == \( ]]; then
+					_mssh_complete_stack+=(p$_mssh_complete_quote)
+					_mssh_complete_quote=
+					(( _mssh_complete_at += 2 ))
+				elif [[ $_mssh_complete_quote$_mssh_complete_one == \$ && $_mssh_complete_parts[_mssh_complete_at+2] == \' ]]; then
+					_mssh_complete_quote=c
+					(( _mssh_complete_at += 2 ))
+				fi
+				;;
+			(\() _mssh_complete_stack+=('(') ;;
+			(\)) (( $#_mssh_complete_stack )) && _mssh_complete_quote=${_mssh_complete_stack[-1][2,-1]} && _mssh_complete_stack[-1]=() ;;
+		esac
+	done
+	[[ $_mssh_complete_stack[1] == p* ]]
+}
+
 _mssh_complete_in_mssh() {
 	# whether the cursor is in the arguments of an mssh command, wherever that starts on the line, read as zsh reads it: from the
 	# last separator on, every word before the one at the cursor (a word before the cursor and a blank, the word touching it), with
@@ -8041,12 +8450,12 @@ _mssh_complete_in_mssh() {
 				(( _mssh_complete_at-- ))
 			fi
 		done
-		# (a $( still open: zsh reads the rest of the line as one word, and the cursor's command starts inside it. A closed one is
-		# a word of the command it is in)
+		# (a $( still open, or a <( or >( : zsh reads the rest of the line as one word, and the cursor's command starts inside it. A
+		# closed one is a word of the command it is in)
 		# and a backtick still open: the command after the last one
 		_mssh_complete_tick_open "$_mssh_complete_words[-1]" && continue
-		[[ $_mssh_complete_words[-1] == *\$\(* ]] || return 1
-		_mssh_complete_line=${_mssh_complete_words[-1]#*\$\(}
+		[[ $_mssh_complete_words[-1] == *[\$\<\>]\(* ]] || return 1
+		_mssh_complete_line=${_mssh_complete_words[-1]#*[\$\<\>]\(}
 	done
 }
 
