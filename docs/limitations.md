@@ -739,6 +739,18 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   `"` or puts the closing quote after the space, and zsh 5.0.2 leaves the quote open.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
+### zsh: TAB inside a command substitution expands a bare `!b` from history
+- Kind: known limitation
+- What the operator sees: in zsh with `bang_hist` on (the default), a TAB inside an open `$( )` expands the history references typed
+  inside it, with any command, with or without mssh, and completes nothing: `$(mssh h "echo a!b zz<TAB>` becomes `$(mssh h "echo azz`
+  when no history line begins with `b`, and `$(mssh h "echo abfoo bar zz` when `bfoo bar` is one. Outside `$( )` the `!b` stays
+  until Enter. `setopt no_bang_hist` keeps it.
+- Why: zsh itself does it before any completion function runs (stock zsh 5.0.2, 5.5.1 and 5.9 do the same without `compinit`); the
+  glue cannot get back what is gone.
+- Revisit when: zsh fixes it (a report to the zsh maintainers is drafted, not posted), or an operator needs `!` inside `$( )`.
+- Approved: 2026-11-16, chief's decision C61 (the user's desk session; not the user's words): "(a) approve it as a known limitation,
+  with an upstream zsh report drafted for you to send".
+
 ### zsh 5.0.2: after a `\!` typed earlier in a double-quoted command, no history names
 - Kind: deferred (6.48)
 - What the operator sees: in zsh 5.0.2 (EL7), with `bang_hist` on, `mssh h "echo a\!b zz<TAB>` with `echo a!b zzhist` in history offers
