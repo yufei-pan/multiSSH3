@@ -7280,6 +7280,7 @@ _mssh() {
 	local -i _mssh_complete_dq=0 _mssh_complete_dq_ipre=0 _mssh_complete_ticked=0 _mssh_complete_texts_in=$compstate[nmatches] _mssh_complete_qkept=0
 	local -i _mssh_complete_texts_beside=0
 	local _mssh_complete_texts_typed= _mssh_complete_texts_read= _mssh_complete_tilde= _mssh_complete_split_typed= _mssh_complete_typed_last=
+	local _mssh_complete_dq_quote= _mssh_complete_dq_typed=
 	# (inside backticks a line is read once more than in $( ): see _mssh_complete_tick)
 	_mssh_complete_tick_open "$LBUFFER" && _mssh_complete_ticked=1
 	local _mssh_complete_was_ipre=$IPREFIX _mssh_complete_was_pre=$PREFIX
@@ -7589,7 +7590,7 @@ _mssh_complete_in_word() {
 	# back when one returns). Not after a quote at an = (zsh holds that word written for no quote, not as typed)
 	if (( _mssh_complete_ticked && ! _mssh_complete_dq )) && [[ -z $_mssh_complete_lead && $PREFIX == */* && ${PREFIX%/*} == *\\* ]]; then
 		_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
-		_mssh_complete_dq_ipre=$#IPREFIX
+		_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX ))
 		_mssh_complete_tick_read "$PREFIX"
 		PREFIX=$_mssh_complete_read
 	elif (( _mssh_complete_ticked )) && [[ -n $_mssh_complete_lead && $_mssh_complete_word == \"*/* && ${_mssh_complete_word%/*} == *\\* ]]; then
@@ -7600,11 +7601,11 @@ _mssh_complete_in_word() {
 		_mssh_complete_dq_parts=("${(@s:/:)${_mssh_complete_word#\"}}")
 		_mssh_complete_tick_read "${_mssh_complete_word#\"}"
 		if (( _mssh_complete_delegating )); then
-			_mssh_complete_dq_ipre=$(( $#IPREFIX + $#_mssh_complete_lead + 1 ))
+			_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX + $#_mssh_complete_lead + 1 ))
 			_mssh_complete_dq_read "$_mssh_complete_read"
 			PREFIX=$_mssh_complete_lead${(q)_mssh_complete_read}
 		else
-			_mssh_complete_dq_ipre=$#IPREFIX
+			_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX ))
 			PREFIX=$_mssh_complete_read
 		fi
 	fi
@@ -7639,8 +7640,11 @@ _mssh_complete_in_word() {
 				PREFIX=${PREFIX[$#PREFIX-_mssh_complete_offset+1,-1]}
 			fi
 			_mssh_complete_dq_parts=("${(@s:/:)PREFIX}")
-			_mssh_complete_dq_ipre=$#IPREFIX
+			_mssh_complete_dq_ipre=$(( $#QIPREFIX + $#IPREFIX ))
 			_mssh_complete_typed_last=$PREFIX
+			# (the text typed from the quote zsh keeps to the cursor, for _mssh_complete_compadd)
+			_mssh_complete_dq_quote=$QIPREFIX
+			_mssh_complete_dq_typed=$IPREFIX$PREFIX
 			# (inside backticks read once more first, as above)
 			_mssh_complete_read=$PREFIX
 			(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
@@ -7657,6 +7661,8 @@ _mssh_complete_in_word() {
 				if [[ $PREFIX == */* ]]; then
 					_mssh_complete_read=${${PREFIX%/*}//\\?}
 					[[ $_mssh_complete_read == *[\$\`\{\(\)]* || -z $compstate[pattern_match] && $_mssh_complete_read == *[\*\?\[]* ]] && return 0
+					# (and directories that leave a quote open, 'zzd/zz': the directories go back as typed, the name without the quote's end)
+					_mssh_complete_inner_quote "${PREFIX%/*}" && return 0
 				fi
 				PREFIX=${${(qqq)${(Q)PREFIX}}[2,-2]}
 				# (2. the ~ that both shells expand, where a file name starts: at the word's start, after the = of an option or a value, after a
@@ -7846,6 +7852,14 @@ _mssh_complete_compadd() {
 	local MATCH MBEGIN MEND
 	local -i _mssh_complete_dq=${_mssh_complete_dq:-0} _mssh_complete_ticked=${_mssh_complete_ticked:-0}
 	local _mssh_complete_open=${_mssh_complete_open-}
+	# (a compset -q of the command's own, _gcc's for make CFLAGS=, moves the text before its word to QIPREFIX, which zsh writes back as it
+	# is: where that is not the text typed, the word as read, CFLAGS=-O2 for CFLAGS=-O2\\ , nothing goes in. Only where zsh keeps the quote
+	# (_mssh_complete_qkept): there the command is given the word written as a name, its blank bare. In a word holding an expansion it
+	# is given the double quote's reading, a blank still escaped, which goes back as the same word (as in 6.46))
+	if (( ${_mssh_complete_qkept:-0} )) && [[ -n ${_mssh_complete_dq_typed-} && $QIPREFIX != "$_mssh_complete_dq_quote" &&
+		$_mssh_complete_dq_typed != "${QIPREFIX#"$_mssh_complete_dq_quote"}$IPREFIX"* ]]; then
+		return 1
+	fi
 	local -a _mssh_complete_opts _mssh_complete_bare _mssh_complete_in _mssh_complete_out _mssh_complete_changed _mssh_complete_dirs
 	local -a _mssh_complete_shown _mssh_complete_kept _mssh_complete_parts _mssh_complete_typed
 	local _mssh_complete_arg _mssh_complete_letter _mssh_complete_name _mssh_complete_value _mssh_complete_prefix= _mssh_complete_word
@@ -8020,9 +8034,10 @@ _mssh_complete_compadd() {
 		_mssh_complete_typed_dirs "$_mssh_complete_opts[_mssh_complete_hidden_at]"; then
 		_mssh_complete_parts=("${(@s:/:)_mssh_complete_opts[_mssh_complete_hidden_at]}")
 		# (less what the command's own compset has moved to IPREFIX since: dd's if=, ssh's -i. The directories of -p are the last ones typed:
-		# the ones before are in IPREFIX, dd's if=~/ with them, which a ~ restored there made twice)
+		# the ones before are in IPREFIX, dd's if=~/ with them, which a ~ restored there made twice. Counted with QIPREFIX: a compset -q of the
+		# command's own, _gcc's for make CFLAGS=, moves IPREFIX there)
 		_mssh_complete_item=${(j:/:)_mssh_complete_dq_parts[-$#_mssh_complete_parts,-2]}
-		IPREFIX+=${_mssh_complete_item#"${IPREFIX[_mssh_complete_dq_ipre+1,-1]}"}/
+		IPREFIX+=${_mssh_complete_item#"${${:-$QIPREFIX$IPREFIX}[_mssh_complete_dq_ipre+1,-1]}"}/
 		PREFIX=${(j:/:)${(@s:/:)PREFIX}[$#_mssh_complete_parts,-1]}
 		_mssh_complete_opts[_mssh_complete_hidden_at]=
 		_mssh_complete_bare[_mssh_complete_hidden_bare]=
