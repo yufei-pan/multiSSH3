@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import platform
 import pwd
 import re
 import shlex
@@ -860,17 +861,19 @@ REMOTE_HOME = '/zzremote-home'
 
 
 def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=(), home_dirs=(), steps=(), executables=(),
-		bash_completion=False, engine=ENGINE, history=(), keys='\t', pre='', terminal=None):
+		bash_completion=False, engine=ENGINE, history=(), keys='\t', pre='', terminal=None, environment=None):
 	"""The line after TAB at the end of typed (then the keys of each of steps, the last one's line), and the words the remote
 	shell gets for it (the line read by this shell, its open quote closed, then mssh's command read by sh with HOME at
 	REMOTE_HOME, as a remote shell has its own), in a new session of shell (readline: bash, ble, zsh; bash and ble.sh with
 	bash-completion loaded when bash_completion) in a directory holding files, dirs and executables, and HOME holding
 	zzhplain, home_files and home_dirs; extra runs after the glue; engine: the glue's engine command; history: commands of
 	mssh's history (for the host h; one holding a tab is a line of the history file); keys: the key pressed after typed (TAB); pre runs before the glue;
-	terminal: a list that gets what the shell wrote to the terminal from the first key on (an error printed over the prompt shows only there)."""
+	terminal: a list that gets what the shell wrote to the terminal from the first key on (an error printed over the prompt shows only there);
+	environment: variables the session's shell gets besides the test's own."""
 	# (a history entry holding a tab is a whole line of the history file)
 	env, home = make_home(tmp_path, [command if '\t' in command else '1790000000\t/x/multiSSH3.py\t-su\th\t' + command for command in history])
 	build_index(env)
+	env.update(environment or {})
 	work = tmp_path / 'work'
 	work.mkdir()
 	for base, names in ((work, dirs), (home, home_dirs)):
@@ -2028,6 +2031,45 @@ def test_zsh_an_escaped_blank_in_a_value_the_command_splits_goes_in_as_in_6_46_i
 	typed = opener + 'mssh h "echo $USER; make CFLAGS=-O2\\\\ -ggd'
 	line, _ = review_line(tmp_path, 'zsh', typed, pre='mssh() { :; }')
 	assert line.startswith(opener + 'mssh h "echo $USER; make CFLAGS=-O2\\ -ggdb'), line
+
+
+def malloc_checker():
+	"""The variables that make glibc end a process at the first free of memory it does not own, with a message: MALLOC_CHECK_=3 with
+	libc_malloc_debug.so.0 preloaded (glibc 2.34 and later, where the file is there; el10's image has none), MALLOC_CHECK_=3 alone before
+	glibc 2.34. None where there is no checker: off Linux or glibc, or a glibc 2.34 or later without that file."""
+	if platform.system() != 'Linux':
+		return None
+	# (env, not sh: a builtin true would load nothing)
+	if not subprocess.run(['env', 'LD_PRELOAD=libc_malloc_debug.so.0', 'true'], stderr=subprocess.PIPE, timeout=30).stderr:
+		return {'MALLOC_CHECK_': '3', 'LD_PRELOAD': 'libc_malloc_debug.so.0'}
+	try:
+		glibc = re.match(r'glibc 2\.(\d+)', os.confstr('CS_GNU_LIBC_VERSION'))
+	except (ValueError, OSError):
+		glibc = None
+	return {'MALLOC_CHECK_': '3'} if glibc and int(glibc.group(1)) < 34 else None
+
+
+# (what glibc's checker, and the shell after it, print when memory is freed that was not allocated)
+MALLOC_FAULTS = ('free(): invalid', 'malloc(): ', 'corrupted ', 'double free', 'munmap_chunk', 'malloc_consolidate', 'Segmentation fault', 'Aborted')
+
+
+@pytest.mark.parametrize('opener', ['', '$('], ids=['line', 'dollar-paren'])
+@pytest.mark.parametrize('typed, dirs, files', [
+	('mssh h "grep \'a\\\\.b', [], ['zzfile']),
+	('mssh h "cat \'zzd\\\\&x/zz', ['zzd&x'], ['zzd&x/zzin']),
+	('mssh h "make CFLAGS=\'-Izzd\\\\\\&x/zz', ['zzd&x/zzlocal'], []),
+], ids=['grep', 'cat', 'make'])
+def test_zsh_a_double_quoted_command_with_a_backslash_in_a_quote_of_its_own_does_not_reach_zsh_s_compset_q(tmp_path, opener, typed, dirs, files):
+	# zsh's own compset -q (the command's completion: _grep, _gcc) writes outside its memory for a double-quoted word that holds a backslash
+	# after a quote of its own (zsh 5.9, 5.5.1 and 5.0.2, with no mssh; with 5.9 the shell can end, "malloc(): invalid size"). Whether the
+	# shell ends depends on what lies next to the block, so the session runs under glibc's malloc checker, which ends it at the free
+	checker = malloc_checker()
+	if checker is None:
+		pytest.skip('no malloc checker here: it needs glibc, with libc_malloc_debug.so.0 from 2.34 on')
+	terminal = []
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=dirs, files=files, pre='mssh() { :; }', terminal=terminal, environment=checker)
+	assert not [fault for fault in MALLOC_FAULTS if fault in terminal[0]], terminal[0][-300:]
+	assert line == opener + typed, line
 
 
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)
