@@ -8,7 +8,7 @@ double-quoted word holding a backslash inside a quote of its own". Checked 2026-
 
 ---
 
-Subject: compset -q calls free() on an invalid pointer for a double-quoted word with a backslash inside a single quote
+Subject: compset -q calls free() on an invalid pointer for a double-quoted word with a backslash inside a quote of its own
 
 Hello,
 
@@ -26,7 +26,7 @@ To reproduce, in an empty directory holding one file `zzfile`, with no rc files:
     % zzq "cat 'a\\b' zz<TAB>
 
 With `MALLOC_CHECK_=3` (and `LD_PRELOAD=libc_malloc_debug.so.0` where glibc is 2.34 or later), zsh prints
-`free(): invalid pointer`, a backtrace, and ends.
+`free(): invalid pointer` and ends (CentOS 7 also prints a backtrace).
 
 Which words do it (typed after `zzq `, then TAB; every line here is a double-quoted word that `compset -q` splits):
 

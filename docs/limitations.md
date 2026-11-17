@@ -373,7 +373,7 @@ each entry).
   the remote shell would read `a` and `b/...`), and, in a quoted command, one typed bare (`mssh h "cat a&b/zz<TAB>`) or
   holding an expansion the remote shell makes (`mssh h "cat zzd\$x/zz<TAB>`, where the remote shell reads the variable `x`;
   also a backtick, a brace, a parenthesis, a redirect or, unless `glob_complete` is set, a pattern character). bash: [its own entry](#bash-a-directory-holding-a--is-left-bare).
-  Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`, `"cat zzd\\\$x/`), the names inside it complete. A directory
+  Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`, `"cat zzd\\\$x/`), the names inside it complete, outside backticks. A directory
   completed by TAB goes on completing, except one whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
   to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line. (In a double-quoted command, `"ls zzd<TAB>`
@@ -381,7 +381,8 @@ each entry).
   whose name holds a `\`.)
 - Revisit when: an operator types such directories in zsh and misses the names.
 - Approved: 2026-11-03, the user chose "Accept (Recommended)"; the quoted command added the same day, "Extend the Accept
-  (Recommended)".
+  (Recommended)". The further characters (an expansion such as `$`, a backtick, a brace, a parenthesis, a redirect, a pattern character
+  unless `glob_complete` is set): 2026-11-17, chief's decision C86 (the user's desk session; not the user's words).
 
 ### ble.sh: a name holding a brace is not offered for a remote command typed as words
 - Kind: known limitation
@@ -693,7 +694,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   Beside file names they are offered (6.47), but not beside a directory the command's completion gives with an option's text, quoted or
   not (as in 6.46): `mssh h make CFLAGS="-Isub/zz<TAB>` and `CFLAGS=-Isub/zz<TAB>` with a directory `sub/zzlocal` and `make CFLAGS=-Isub/zzhist`
   in history give `-Isub/zzlocal/` alone. When the command offers nothing they go in, as before. Beside file names they are offered when the
-  history entry is a quoted argument (`mssh h "cat sub/zzremote"`), not when it is typed as words (`cat sub/zzremote`, `dd if=sub/zzremote`).
+  history entry is a quoted argument (`mssh h dd if="sub/zzr<TAB>` with `mssh h "dd if=sub/zzremote"` in history), not when it is typed as
+  words (`dd if=sub/zzremote`).
 - Why: 6.47 puts them in the call that adds the command's file names, with its IPREFIX, PREFIX and `-p`. Put in the first call of any
   kind whose PREFIX they start with, they made zsh drop the quote (`mssh h ls /etc --col`), so 6.47 keeps them to file names.
 - Revisit when: 6.48: find which call took the quote (one with `-P`, `-S` or a description), and add history names in a call of their
@@ -798,54 +800,51 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - What the operator sees: in zsh, in a double-quoted command, a word that the command's own completion splits itself (gcc's, for a
   `CFLAGS=` value; `LESS=`; the command string of `sh -c`, `bash -c`, `su -c` and the like) gets no names where 6.46 completed them,
   and the line stays as typed, in two cases. Once it holds an escaped blank: `mssh h "make CFLAGS=-O2\\ -ggd<TAB>`,
-  `"make CFLAGS=-O2\\ -Isub/zz<TAB>`, `"sh -c ls\\ zz<TAB>`. For a name that needs quoting (a blank, a quote, a glob, `&`, `~`, `#`, `$`,
-  a backtick, `\`, `"` or `!`): `mssh h "make CFLAGS=-Isub/zz<TAB>` with a directory `zz x`, `mssh h "su -c ./lzz<TAB>` with a file
-  `lzz x`. A plain name beside such a one completes alone (`sub/zzlocal` beside `sub/zz x` gives `zzlocal/`). In a double-quoted command
-  holding an expansion an escaped-blank value completes as in 6.46 (a `\$` in it, or a directory after the blank, still comes out wrong
-  there, as in 6.46: `mssh h "echo $USER; make CFLAGS=-O2\\ -Isub/zz<TAB>` writes the text twice).
+  `"make CFLAGS=-O2\\ -Isub/zz<TAB>`, `"sh -c ls\\ zz<TAB>`. For a name that needs quoting (one holding a character a shell reads: a
+  blank, a quote, a glob, `$`, `\`, `!`, `&`, `;` and the like, or starting with `=`): `mssh h "make CFLAGS=-Isub/zz<TAB>` with a
+  directory `zz x`, `mssh h "su -c ./lzz<TAB>` with a file `lzz x`, `"make CFLAGS=-Isub/<TAB>` with a file `sub/=x`. A plain name beside
+  such a one completes alone (`sub/zzlocal` beside `sub/zz x` gives `zzlocal/`). On zsh 5.0.2 (EL7) a plain name after `sh -c`, `su -c` or
+  `bash -c` is also left out (`mssh h "sh -c ./zz<TAB>` with a file `zzplain`): the command names offered there that need quoting (`[`,
+  `{`, `}`, `!`, `[[`) keep zsh's default file names off, and on 5.0.2 the plain name comes from them. Where the command offers nothing
+  for the part after an escaped blank, zsh's default file names can still stand in, as in 6.46: `mssh h "su -c ./lzz\\ x<TAB>` with a file
+  `lzz xy` writes `./lzz\\ xy`, which runs `./lzz` with `xy`; 6.47 does it inside backticks too. In a double-quoted command holding an
+  expansion an escaped-blank value completes as in 6.46 (a `\$` in it, or a directory after the blank, still comes out wrong there, as in
+  6.46: `mssh h "echo $USER; make CFLAGS=-O2\\ -Isub/zz<TAB>` writes the text twice).
 - Why: the glue gives the command the word as the remote shell reads it, the blank bare; the command's `compset -q` splits it there and
   moves the text before it to `QIPREFIX`, which zsh writes back as it is, with the blank unescaped (the remote shell would then split the
   value), and the glue cannot change it. zsh then holds two quote levels, the command's own and the double quote's, with the remote
   shell's, which the glue stands for, between them: a name that needs quoting would go in written for each, and the remote shell would
   read a wrong word. The glue offers nothing where the text moved is not the text typed or a name needs quoting, and zsh's default file
-  names do not stand in for it.
+  names do not stand in for it, where the command offered a name.
 - Revisit when: 6.48: when the first pass leaves nothing, hand such a word to zsh's own `compset -q` in a second pass, as 6.46 did, and
   keep the glue's split for the words before the cursor, behind the workaround of the `compset -q` entry below. That gives 6.46's
   completions back, with its misreadings (a `\"` earlier in the command; on zsh 5.0.2 and 5.5.1, nothing after `;`, `&&` or `|`), so it is
-  weighed against them. In a double-quoted command holding an expansion: offer nothing where the double quote reads the text the command's
-  `compset -q` moved otherwise than the text typed (`\$` written back for a typed `\\\$`), and take that text off the directories typed by
-  its reading, not its spelling.
+  weighed against them. Default names there only for a command with no completion of its own. In a double-quoted command holding an
+  expansion: offer nothing where the double quote reads the text the command's `compset -q` moved otherwise than the text typed (`\$`
+  written back for a typed `\\\$`), and take that text off the directories typed by its reading, not its spelling.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; widened 2026-11-17 by the second design check.
-
-### zsh: an unquoted `CFLAGS=-Izz` value with a directory holding `$` is written for a second shell
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, `mssh h make CFLAGS=-Izz<TAB>` with a directory `zz$v` writes the name as zsh's own completion of a
-  `CFLAGS` value does, and the remote shell gets `-Izz\$v/`: stock zsh's `make CFLAGS=-Izz<TAB>` gives a local `make` the same word, which a
-  recipe's shell reads again as `-Izz$v/`. With a quote after the `=` (`CFLAGS="-Izz`) the remote shell gets `-Izz$v/`. As in 6.46.
-- Why: gcc's completion writes a `CFLAGS` value for a second reading; the quote after the `=` writes the name for the remote shell alone.
-- Revisit when: 6.48: decide which reading an operator wants for the unquoted value. For a `make` recipe the word is right as it is; for a
-  value read once it has a stray backslash.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; reworded 2026-11-17 to what stock zsh writes.
 
 ### zsh: inside backticks, a single-quoted command's value that the command splits gets its text twice
 - Kind: deferred (6.48)
 - What the operator sees: in zsh, inside backticks, `` `mssh h 'make CFLAGS=-Izzd\\\&x/zz<TAB> `` with a directory `zzd&x` writes
-  `CFLAGS=-Izzd\\\&x/zz-ICFLAGS=-Izzd\\\&x/zzlocal/`; `CFLAGS=-O2\ -Izzd\\\&x/zz` does the same. Without the backslash, outside backticks or in
-  a double-quoted command it is right or offers nothing. As in 6.46.
+  `CFLAGS=-Izzd\\\&x/zz-ICFLAGS=-Izzd\\\&x/zzlocal/`; `CFLAGS=-O2\ -Izzd\\\&x/zz` writes it twice too, the first copy cut at the
+  blank. Without the backslash, outside backticks or in a double-quoted command it is right or offers nothing. As in 6.46.
 - Why: not traced yet; it is the backticks' put-back after the glue's own `compset -q` of a single quote.
 - Revisit when: 6.48, with the backticks work: offer nothing where the put-back cannot find the text the command moved.
 - Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked.
 
 ### zsh: compset -q writes outside its memory for a double-quoted word holding a backslash inside a quote of its own
 - Kind: deferred (6.48)
-- What the operator sees: in zsh 5.0.2 to 5.9, with or without mssh, the command's own completion (`compset -q`, which `grep`, `sed`,
-  `make CFLAGS=`, `sh -c` and others run) writes outside its memory for a double-quoted word that holds a backslash inside a quote of its
-  own (`mssh h "grep 'a\\.b<TAB>`, `"sed -e 's/a\\/b/' zz<TAB>`), and zsh 5.9 can end (`malloc(): invalid size`). 6.46 ran into it for every such
-  command, wherever the cursor was. 6.47 splits the command itself unless the cursor is inside a quote of its own, so it could meet the fault
-  only there, and offers nothing there instead, so the shell does not end; that includes `"cat 'a' b\\c 'zz`, which zsh reads fine.
-- Why: zsh's own fault: stock zsh does it with no mssh (`_zzq() { compset -q; _files }; compdef _zzq zzq`, then `zzq "cat 'a\\b' zz<TAB>`,
-  under glibc's `MALLOC_CHECK_=3`). Whether the shell ends depends on what lies next to the block, so any change to the glue could turn it
-  on or off. The report to the zsh maintainers is drafted (docs/progress/zsh-compset-q-report.md), not posted.
+- What the operator sees: in zsh 5.0.2 to 5.9, zsh's own `compset -q` writes outside its memory for a double-quoted word that holds a
+  backslash inside a quote of its own, with or without mssh, and zsh 5.9 can end (`malloc(): invalid size`). 6.46 ran it on every quoted
+  command, so it met the fault for every such command (`mssh h "grep 'a\\.b' zz<TAB>`). 6.47 splits the command itself and offers nothing
+  where `compset -q` would still meet it: the cursor inside such a quote (`mssh h "grep 'a\\.b<TAB>`), and a word that the command's own
+  completion splits after the remote shell's `\'` or `\"` and a backslash (`mssh h "make CFLAGS=-DFMT=\\\"%s\\\\n\\\"<TAB>`). That includes
+  `"cat 'a' b\\c 'zz`, which zsh reads fine.
+- Why: zsh's own fault: stock zsh does it with no mssh (`_zzq() { compset -q; _files }; compdef _zzq zzq`, then `zzq "cat 'a\\b' zz<TAB>`),
+  which under glibc's malloc checker (`MALLOC_CHECK_=3`, with `LD_PRELOAD=libc_malloc_debug.so.0` from glibc 2.34 on) prints
+  `free(): invalid pointer` and ends. Whether the shell ends without the checker depends on what lies next to the block, so any change to
+  the glue could turn it on or off. The report to the zsh maintainers is drafted (docs/progress/zsh-compset-q-report.md), not posted.
 - Revisit when: zsh fixes it, or 6.48 runs `compset -q` again (the escaped-blank entry above): read the quote state at each backslash, so
   that `"cat 'a' b\\c 'zz` completes again.
 - Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked; the report is the user's to send.
