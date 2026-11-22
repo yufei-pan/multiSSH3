@@ -858,6 +858,22 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: 6.48: write the `$` escaped, as the `&` is.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
+### macOS: the test suite does not finish with the stock shells
+- Kind: deferred (6.48)
+- What the operator sees: `python -m pytest -q` on macOS, with only Apple's `/bin/bash` 3.2 and zsh 5.9, never ends, on 6.46 as on
+  6.47. The bash tests drive bash 3.2 through a pty although the glue registers nothing there, and stall with their children stuck
+  exiting. With bash off the PATH, `test_complete_terminal.py` still hangs on
+  `test_the_picker_cancels_on_esc_ctrl_g_and_ctrl_c_however_they_are_sent[\x1b]`, and zsh tests in `test_complete_cli`, `_index`,
+  `_keys`, `_picker`, `_shells`, `_zsh_options` and `test_hosts_file` fail with 6.46's code as with 6.47's: the line after TAB, or the
+  remote words, differ from the rows written in the Linux containers' zsh (one row loses the last typed letter: `.../bin/ba` for
+  `.../bin/bas`).
+- Why: CI has no macOS job, and the rows and pty timings were written against the Linux containers' shells. Found by the week-48
+  cas-toolbox gate (2026-11-22), run per file with a timeout instead.
+- Revisit when: 6.48: skip bash older than the glue supports in `require_shell('bash')`; find whether the lone-Esc picker test hangs in
+  the test or in the picker on macOS, and whether the zsh rows differ in the test's data or in what Apple's zsh gives an operator (a lost
+  letter would be a code bug); bound the pty tests so a hang fails one test, not the run.
+- Noted: 2026-11-22, the user's standing rule that deferrals are noted, not asked.
+
 ### The centos7 test image patches ble.sh's conditional-sync
 - Kind: deferred
 - What the operator sees: nothing from mssh; the test matrix's centos7 image (bash 4.2) runs a ble.sh whose `conditional-sync` sends its own
