@@ -372,7 +372,7 @@ each entry).
   otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
   the remote shell would read `a` and `b/...`), and, in a quoted command, one typed bare (`mssh h "cat a&b/zz<TAB>`) or
   holding an expansion the remote shell makes (`mssh h "cat zzd\$x/zz<TAB>`, where the remote shell reads the variable `x`;
-  also a backtick, a brace, a parenthesis, a redirect or, unless `glob_complete` is set, a pattern character). bash: [its own entry](#bash-a-directory-holding-a--is-left-bare).
+  also a backtick, a brace, a parenthesis, a redirect or, unless `glob_complete` is set, a pattern character). bash writes such a directory as the remote shell's word.
   Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`, `"cat zzd\\\$x/`), the names inside it complete, outside backticks. A directory
   completed by TAB goes on completing, except one whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
@@ -848,15 +848,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: zsh fixes it, or 6.48 runs `compset -q` again (the escaped-blank entry above): read the quote state at each backslash, so
   that `"cat 'a' b\\c 'zz` completes again.
 - Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked; the report is the user's to send.
-
-### bash: a directory holding a `$` is left bare
-- Kind: deferred (6.48)
-- What the operator sees: in bash, `mssh h cat zzd$x/zz<TAB>` and `mssh h "cat zzd\$x/zz<TAB>` with a directory `zzd$x` complete it with the
-  `$` bare (`zzd$x/zzin`, `zzd\$x/zzin`), which the remote shell reads as the variable `x` (`zzd/zzin`). As in 6.46. A directory holding a `&` (`mssh h cat a\&b/zz<TAB>`) goes in written
-  as the remote shell's word (`a\\\&b/`). zsh offers no names inside such a directory ([the zsh entry](#zsh-a-directory-the-remote-shell-would-read-otherwise-gets-no-names)).
-- Why: not traced yet; bash's completion leaves the `$` of a typed directory as typed.
-- Revisit when: 6.48: write the `$` escaped, as the `&` is.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
 
 ### macOS: the test suite does not finish with the stock shells
 - Kind: deferred (6.48)

@@ -2873,6 +2873,25 @@ def test_a_typed_directory_the_remote_shell_reads_otherwise_is_written_as_its_wo
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+@pytest.mark.parametrize('typed, name', [
+	('mssh h cat zzd$x/zz', 'zzd$x/zzin'),
+	('mssh h cat zzd\\$x/zz', 'zzd$x/zzin'),
+	('mssh h "cat zzd\\$x/zz', 'zzd$x/zzin'),
+])
+def test_a_typed_directory_holding_a_dollar_that_is_there_as_written_reaches_the_remote_shell_as_named(tmp_path, shell, typed, name):
+	# bash's completion reads a typed directory as written when one is there by that name (zzd$x/, not zzd/ and the variable x), and
+	# the glue kept the $ as typed in front of its names, an expansion: this shell or the remote shell read the variable, and cat got
+	# zzd/zzin. The directory goes in written as the remote shell's word, as one holding a & does
+	line, remote = review_line(tmp_path, shell, typed, dirs=[name.split('/')[0]], files=[name])
+	if shell == 'zsh' or shell == 'ble' and (bash_version() < (4, 3) or typed.startswith('mssh h cat zzd$')):
+		# (zsh offers nothing in such a directory: the approved limitation "a directory the remote shell would read otherwise gets no
+		# names"; ble.sh before bash 4.3 neither (the test above); ble.sh hands the glue a bare $x read as this shell's variable)
+		assert line == typed, line
+	else:
+		assert remote == ['cat', name], line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
 @pytest.mark.parametrize('typed, name', [('mssh h ls $HOME/zzq', 'zzq&x'), ('mssh h ls $HOME/zzd', 'zzdir')])
 def test_a_directory_under_a_typed_home_gets_its_slash(tmp_path, shell, typed, name):
 	# readline tested the name it wrote, $HOME/zzq&x, as a path here (a literal $HOME): no /, and a space after it
