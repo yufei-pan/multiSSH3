@@ -709,8 +709,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   (`mssh h cat zzd\\\&x/zz<TAB>`) they are offered for a history entry whose command is a quoted argument (`mssh h "cat zzd\\&x/zzremote"`),
   not for one typed as words ([the entry above](#zsh-no-history-name-beside-a-directory-a-command-gives-with-an-options-text-nor-from-a-command-typed-as-words)).
   As in 6.47.
-- Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it (inside
-  backticks it also counts the remote command's words otherwise, so the glue's split of a quoted command finds no command word); in a
+- Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it; in a
   quoted command the head typed and the names' head read differ in the backslashes.
 - Revisit when: 6.49: inside backticks, send the engine the line read once more (`_mssh_complete_tick_read`), and read the head the same
   way in `_mssh_complete_add_texts`; in a quoted command read it as the double quote does.
