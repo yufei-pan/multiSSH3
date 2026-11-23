@@ -7491,9 +7491,9 @@ _mssh() {
 		_mssh_complete_in_word names
 		# (a word of a quoted command whose quote zsh keeps, which the command's completion splits itself with its own compset -q (_gcc's for
 		# make CFLAGS=, _cmdstring's for sh -c), or which holds an escaped blank: zsh then holds two quote levels, the command's and the double
-		# quote, and the remote shell's, which the glue stands for, would lie between them. The first pass adds nothing there; with nothing
-		# else in, the word goes through compset -q in a second pass, as in 6.46, the words before it as the glue split them, so zsh reads and
-		# writes every level itself (_mssh_complete_in_word))
+		# quote, and the remote shell's, which the glue stands for, would lie between them. Where the second pass may take the word
+		# (_mssh_complete_pass2) the first pass adds nothing there; with nothing else in, the word goes through compset -q in a second pass,
+		# as in 6.46, the words before it as the glue split them, so zsh reads and writes every level itself (_mssh_complete_in_word))
 		if (( _mssh_complete_resplit == 1 && compstate[nmatches] == _mssh_complete_texts_in )); then
 			_mssh_complete_resplit=2
 			_mssh_complete_dq_parts=()
