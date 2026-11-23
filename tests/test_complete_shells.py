@@ -2154,6 +2154,9 @@ SHAPES_PINNED = [
 	('`mssh h cat "zz', {'history': ['"cat zz!x"']}, '`mssh h cat "zz\\!x" '),
 	# (inside backticks, a single-quoted directory holding a backslash: written as it is, with its /)
 	("`mssh -f 'zz", {'dirs': ['zzc\\d']}, "`mssh -f 'zzc\\d/"),
+	# (a word ending in an escaped blank, as TAB writes the start two names share, sub/zz x and sub/zz y: the glue's split took the blank for
+	# the end of the word, and the command's names for an empty word went in after it, -Isub/zz\\\\\\ sub/)
+	('mssh h "make CFLAGS=-Isub/zz\\\\\\\\\\\\ ', {'dirs': ['sub/zz x', 'sub/zz y']}, 'mssh h "make CFLAGS=-Isub/zz\\\\\\\\\\\\ '),
 	# (inside backticks, a single-quoted command's value that the command splits: the text it moved is the whole word, which went in again
 	# after the word typed; nothing goes in)
 	("`mssh h 'make CFLAGS=-Izzd\\\\\\&x/zz", {'dirs': ['zzd&x/zzlocal']}, "`mssh h 'make CFLAGS=-Izzd\\\\\\&x/zz"),

@@ -7692,7 +7692,9 @@ _mssh_complete_in_word() {
 			_mssh_complete_dq_read "$_mssh_complete_read"
 			if (( _mssh_complete_qcommand )); then
 				_mssh_complete_fields=("${(z)_mssh_complete_read}")
-				[[ $PREFIX == *[[:space:]] ]] && _mssh_complete_fields+=('')
+				# (a blank at the end starts a new word, unless it is escaped: then it ends the last word, which (z) keeps it in, CFLAGS=-Isub/zz\\\ ,
+				# and the command's names for an empty word went in after it)
+				[[ $PREFIX == *[[:space:]] && $_mssh_complete_fields[-1] != *[[:space:]] ]] && _mssh_complete_fields+=('')
 				# (with interactive_comments on, a word before the one at the cursor that starts with a # begins a comment, as for compset -q, which
 				# reads the line as the shell does: nothing to offer. (z) reads a # as an ordinary character)
 				[[ $_mssh_complete_compsys_options[interactivecomments] == on && -n ${(M)_mssh_complete_fields[1,-2]:#\#*} ]] && return 0
