@@ -826,14 +826,16 @@ def test_a_local_file_name_holding_whitespace_is_not_offered_for_a_remote_comman
 	assert remote_names_line(tmp_path, 'others', shell, 'mssh h cat zzpl') == 'mssh h cat zzplain '
 
 
-# The environment the shells that read a typed line run in: USER empty, as in the containers the tests run in as nobody, so that
-# a row typing $USER (q117) pins the same words on a CI runner, which has USER=runner.
-LINE_ENV = dict(os.environ, USER='')
+def line_env(**changes):
+	"""The environment the shells that read a typed line run in: the test's own, read now (a test that sets ZZN for the line's
+	$ZZN), with USER empty, as in the containers the tests run in as nobody, so that a row typing $USER (q117) pins the same words
+	on a CI runner, which has USER=runner; then changes."""
+	return dict(os.environ, USER='', **changes)
 
 
 def local_words(shell, line, home=None):
 	"""The words shell (bash or zsh) makes of line, its open quote closed (with HOME home when given)."""
-	env = dict(LINE_ENV, HOME=str(home)) if home else LINE_ENV
+	env = line_env(HOME=str(home)) if home else line_env()
 	for close in ('', '"', "'"):
 		output = subprocess.run([require_shell(shell), '-c', 'eval "set -- $1" 2>/dev/null || exit 3; printf "%s\\0" "$@"', 'sh', line + close],
 			stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, env=env)
@@ -917,7 +919,7 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 		session.close()
 	local = local_words('zsh' if shell == 'zsh' else 'bash', line, home) if line else None
 	output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(local[2:])],
-		stdout=subprocess.PIPE, timeout=30, env=dict(LINE_ENV, HOME=REMOTE_HOME), cwd='/') if local else None
+		stdout=subprocess.PIPE, timeout=30, env=line_env(HOME=REMOTE_HOME), cwd='/') if local else None
 	return line, output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1] if output else None
 
 
@@ -1564,7 +1566,7 @@ def substituted_words(line, cwd):
 	closing = '`' if line.startswith('`') else ')'
 	for close in ('', '"', "'"):
 		output = subprocess.run([require_shell('zsh'), '-fc', 'mssh() { printf "%s\\0" "$@" }; eval "x=$1" 2>/dev/null || exit 3; print -rn -- "$x"', 'zsh',
-			line + close + closing], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, cwd=str(cwd), env=LINE_ENV)
+			line + close + closing], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, cwd=str(cwd), env=line_env())
 		if output.returncode == 0:
 			return output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 	return None
@@ -1577,7 +1579,7 @@ def substituted_remote(line, cwd):
 	if words is None:
 		return None
 	remote = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(words[1:])],
-		stdout=subprocess.PIPE, timeout=30, env=dict(LINE_ENV, HOME=REMOTE_HOME), cwd='/')
+		stdout=subprocess.PIPE, timeout=30, env=line_env(HOME=REMOTE_HOME), cwd='/')
 	return remote.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 
 
