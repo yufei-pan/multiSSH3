@@ -472,6 +472,20 @@ def start_on_a_terminal(args, data, env, listening, command=None, stderr=None):
 	return process, master, read_end
 
 
+def wait_reading(process, master, seconds=10):
+	'''
+	process.wait(seconds), reading what it draws on the terminal meanwhile, as a terminal emulator does: macOS holds only 1024 bytes of a
+	pty's output, and a process waits for the terminal to take what it wrote (a picker's drawing, when it restores the terminal as it ends).
+	'''
+	import subprocess
+	end = time.monotonic() + seconds
+	while process.poll() is None:
+		if time.monotonic() > end:
+			raise subprocess.TimeoutExpired(process.args, seconds)
+		terminal_output(master, 0.05)
+	return process.returncode
+
+
 def terminal_output(fd, seconds, until=None):
 	'''What the program wrote to fd (the terminal, or a pipe) in that many seconds, or until it wrote until.'''
 	import os
@@ -506,7 +520,7 @@ def test_pick_and_edit_say_ready_before_they_take_the_terminal(tmp_path, args, d
 		drawn = terminal_output(master, 5.0, until=expected)
 		assert first == b'ready\n' and expected in drawn
 		os.write(master, b'\x1b' if args[0] == 'pick' else b'\r')
-		assert process.wait(10) in (0, 1)
+		assert wait_reading(process, master) in (0, 1)
 	finally:
 		process.kill()
 		close_terminal(master)
@@ -578,7 +592,7 @@ def test_pick_claims_the_terminal_before_it_takes_it(tmp_path):
 		assert claim.is_dir()
 		assert b'type to filter' in terminal_output(master, 5.0, until=b'type to filter')
 		os.write(master, b'\x1b')
-		assert process.wait(10) == 1
+		assert wait_reading(process, master) == 1
 	finally:
 		process.kill()
 		close_terminal(master)

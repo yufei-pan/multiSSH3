@@ -313,6 +313,32 @@ def restore_module_globals():
 	_clear_expand_caches()
 
 
+# A test that hangs (a shell that never answers, a write to a pty nobody reads, a child stuck exiting: macOS lets all three happen) fails
+# alone with a traceback of where it waits, instead of stopping the run (no pytest-timeout: CI installs pytest and nothing else).
+# 900 s: the longest a passing test may wait is ble.sh's two starts of 240 s each (complete_shell_harness.blesh_session), on a loaded
+# machine; the slowest test that passed on the Mac took 41 s. MSSH_TEST_TIME_LIMIT sets it in seconds (0: none, for a debugger).
+TEST_TIME_LIMIT = int(os.environ.get("MSSH_TEST_TIME_LIMIT", "900"))
+
+
+@pytest.fixture(autouse=True)
+def one_hanging_test_fails_alone():
+	import signal
+	if not TEST_TIME_LIMIT or not hasattr(signal, "SIGALRM"):
+		yield
+		return
+
+	def over(number, frame):
+		pytest.fail("the test ran over {} s (MSSH_TEST_TIME_LIMIT): it hangs".format(TEST_TIME_LIMIT), pytrace=True)
+
+	saved = signal.signal(signal.SIGALRM, over)
+	signal.alarm(TEST_TIME_LIMIT)
+	try:
+		yield
+	finally:
+		signal.alarm(0)
+		signal.signal(signal.SIGALRM, saved)
+
+
 @pytest.fixture(autouse=True)
 def restore_signal_handlers():
 	"""main() and process_args install mssh's handlers for Ctrl C, SIGTERM, SIGHUP and SIGQUIT: keep them out of pytest."""

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import mssh_complete as mc
-from complete_shell_harness import (ENGINE, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
+from complete_shell_harness import (ENGINE, GNU_TOOLS, LINUX_FILES, REPO, WITH_AND_WITHOUT_DEBUG_LOG, aged, bash_locale, bash_session, blesh_session, build_index,
 	debug_log_size, fish_complete, fish_session, hold_lock, make_home, require_shell, with_debug_log, without_command, zsh_session, zsh_version)
 
 HISTORY = [
@@ -751,9 +751,14 @@ def remote_args(line):
 	return remote_shell_args(' '.join(words(line)[2:]))
 
 
+# The words sh makes of a command (globs off), none when it cannot read it: dash ends at a syntax error in eval, and bash run as sh
+# (macOS's sh is bash 3.2) goes on, and printed the command itself as the one word, so it is parsed first (-n)
+SH_READ_WORDS = 'set -f; sh -nc "set -- $1" 2>/dev/null || exit 3; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"'
+
+
 def remote_shell_args(command):
 	"""The words of the first command sh runs for command (globs off)."""
-	output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', command],
+	output = subprocess.run(['sh', '-c', SH_READ_WORDS, 'sh', command],
 		stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, cwd='/')
 	return output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 
@@ -918,7 +923,7 @@ def review_line(tmp_path, shell, typed, files=(), extra='', dirs=(), home_files=
 			terminal.append(session.output[start:].decode('utf-8', 'replace'))
 		session.close()
 	local = local_words('zsh' if shell == 'zsh' else 'bash', line, home) if line else None
-	output = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(local[2:])],
+	output = subprocess.run(['sh', '-c', SH_READ_WORDS, 'sh', ' '.join(local[2:])],
 		stdout=subprocess.PIPE, timeout=30, env=line_env(HOME=REMOTE_HOME), cwd='/') if local else None
 	return line, output.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1] if output else None
 
@@ -1125,13 +1130,14 @@ def test_bash_below_4_registers_nothing(tmp_path):
 	# macOS's /bin/bash is 3.2: the glue needs mapfile, local -A and ${var,,}, and printed "mapfile: command not found" four
 	# times at the first prompt. It stays silent and registers nothing. (Runs where bash is older than 4: the matrix's bash3.2 image,
 	# where a newer bash fails it)
-	if subprocess.run([require_shell('bash'), '-c', '(( BASH_VERSINFO[0] < 4 ))']).returncode:
+	bash = require_shell('bash', old_bash=True)
+	if subprocess.run([bash, '-c', '(( BASH_VERSINFO[0] < 4 ))']).returncode:
 		if 'bash3' in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(','):
 			pytest.fail('bash older than 4 is required here (MSSH_REQUIRE_SHELLS) but bash is 4 or newer')
 		pytest.skip('bash is 4 or newer')
 	env, home = make_home(tmp_path, [])
 	glue = glue_file(home, 'bash')
-	output = subprocess.run([require_shell('bash'), '--norc', '--noprofile', '-i', '-c', '. {}; complete -p mssh 2>&1; echo done'.format(glue)],
+	output = subprocess.run([bash, '--norc', '--noprofile', '-i', '-c', '. {}; complete -p mssh 2>&1; echo done'.format(glue)],
 		stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=60, stdin=subprocess.DEVNULL).stdout.decode()
 	assert 'command not found' not in output and 'invalid option' not in output and 'complete: mssh: no completion' in output, output
 
@@ -1578,7 +1584,7 @@ def substituted_remote(line, cwd):
 	words = substituted_words(line, cwd)
 	if words is None:
 		return None
-	remote = subprocess.run(['sh', '-c', 'set -f; eval "set -- $1" 2>/dev/null; printf "%s\\0" "$@"', 'sh', ' '.join(words[1:])],
+	remote = subprocess.run(['sh', '-c', SH_READ_WORDS, 'sh', ' '.join(words[1:])],
 		stdout=subprocess.PIPE, timeout=30, env=line_env(HOME=REMOTE_HOME), cwd='/')
 	return remote.stdout.decode('utf-8', 'surrogateescape').split('\0')[:-1]
 
@@ -1835,6 +1841,7 @@ LIST_VALUES = [
 ]
 
 
+@GNU_TOOLS
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed, history, split_line, split_remote, whole_line, whole_remote', LIST_VALUES, ids=[case[0] + ('-history' if case[1] else '') for case in LIST_VALUES])
 def test_zsh_a_list_value_after_a_quote_at_an_equals_sign_keeps_what_was_typed(tmp_path, opener, typed, history, split_line, split_remote, whole_line, whole_remote):
@@ -2012,8 +2019,14 @@ def test_zsh_a_double_quoted_shape_row_has_a_note_exactly_when_it_differs_from_t
 	assert not set(QUOTED_SHAPES['omitted']) & {case['id'] for case in QUOTED_SHAPES['cases']}
 
 
+# the shapes written where zsh completes ls --color=, cp --target-directory= and su -c as the GNU tools have them (GNU_TOOLS), and where
+# user bin has /bin for its home, root has /root and /etc holds host.conf and hostname beside hosts (LINUX_FILES)
+SHAPE_MARKS = dict.fromkeys(['q14', 'q14b', 'q107', 'q123'], GNU_TOOLS)
+SHAPE_MARKS.update(dict.fromkeys(['q45', 'q45b', 'q46', 'q105', 'q106'], LINUX_FILES))
+
+
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
-@pytest.mark.parametrize('case', QUOTED_SHAPES['cases'], ids=[case['id'] for case in QUOTED_SHAPES['cases']])
+@pytest.mark.parametrize('case', [pytest.param(case, id=case['id'], marks=SHAPE_MARKS.get(case['id'], ())) for case in QUOTED_SHAPES['cases']])
 def test_zsh_a_double_quoted_command_goes_in_as_in_6_46_but_for_the_rows_that_say_why_not(tmp_path, opener, case):
 	row = case['rows'].get(opener)
 	if row is None:
@@ -2238,8 +2251,8 @@ SLASH_HISTORY = [
 
 
 # (a ~ on the line alone: in a command substitution the remote words would hold the HOME the line is read with)
-@pytest.mark.parametrize('opener, typed, files, history, steps, expected, remote', [(opener,) + case for case in SLASH_HISTORY for opener in ('', '$(', '`')
-	if not opener or '~' not in case[0]])
+@pytest.mark.parametrize('opener, typed, files, history, steps, expected, remote', [pytest.param(opener, *case, marks=LINUX_FILES if '/etc/os-' in case[0] else ())
+	for case in SLASH_HISTORY for opener in ('', '$(', '`') if not opener or '~' not in case[0]])
 def test_zsh_a_history_name_holding_a_slash_stands_beside_the_command_s_names(tmp_path, opener, typed, files, history, steps, expected, remote):
 	# 6.45 left history's names out once the command's completion offered one in a word holding a /: whole beside a name of _files
 	# they cut the line back. They go in behind the directory typed, as _files puts in its names
@@ -2324,18 +2337,19 @@ def test_zsh_tab_never_takes_back_what_was_typed_in_an_option_word(tmp_path, sha
 		session.close()
 
 
-@pytest.mark.parametrize('prefix', ['mssh h tar --directory=', 'mssh h sort --output=', 'mssh h grep --file=', 'mssh h git --git-dir=', 'mssh h cp --target-directory=',
-	'sudo mssh h tar --directory='])
+@pytest.mark.parametrize('prefix', [pytest.param('mssh h tar --directory=', marks=GNU_TOOLS), 'mssh h sort --output=', pytest.param('mssh h grep --file=', marks=GNU_TOOLS),
+	'mssh h git --git-dir=', pytest.param('mssh h cp --target-directory=', marks=GNU_TOOLS), pytest.param('sudo mssh h tar --directory=', marks=GNU_TOOLS)])
 def test_zsh_a_quote_opened_after_a_remote_option_s_equals_sign_does_not_lose_what_was_typed(tmp_path, prefix):
 	# the word was erased (mssh h tar ), or gained its directory twice (--target-directory="$PWD/zzd/innzzd/)
 	line, _ = review_line(tmp_path, 'zsh', prefix + '"$PWD/zzd/inn', dirs=['zzd/inner-dir', 'zzd/inner2-dir'], files=['zzplain', 'zzd/inner.txt'], pre='mssh() { :; }')
 	assert line.startswith(prefix) and line.endswith('$PWD/zzd/inner'), line
 
 
-@pytest.mark.parametrize('typed, expected', [('mssh h ls --color="au', 'mssh h ls --color="auto" '), ('mssh h ls --sort="ti', 'mssh h ls --sort="time" '),
+@pytest.mark.parametrize('typed, expected', [pytest.param('mssh h ls --color="au', 'mssh h ls --color="auto" ', marks=GNU_TOOLS),
+	pytest.param('mssh h ls --sort="ti', 'mssh h ls --sort="time" ', marks=GNU_TOOLS),
 	# (and the same option with no quote: the = is the completion's, not the glue's)
-	('mssh h ls --color=au', 'mssh h ls --color=auto '), ('mssh h sort --output=zzpl', 'mssh h sort --output=zzplain '),
-	('mssh h grep --file=zzpl', 'mssh h grep --file=zzplain ')])
+	pytest.param('mssh h ls --color=au', 'mssh h ls --color=auto ', marks=GNU_TOOLS), ('mssh h sort --output=zzpl', 'mssh h sort --output=zzplain '),
+	pytest.param('mssh h grep --file=zzpl', 'mssh h grep --file=zzplain ', marks=GNU_TOOLS)])
 def test_zsh_a_remote_option_s_value_completes_with_and_without_a_quote_after_the_equals_sign(tmp_path, typed, expected):
 	line, _ = review_line(tmp_path, 'zsh', typed, files=['zzplain'], pre='mssh() { :; }')
 	assert line == expected, line
@@ -2350,6 +2364,7 @@ def test_zsh_mssh_s_own_option_keeps_the_quote_opened_after_its_equals_sign(tmp_
 	assert line == expected, line
 
 
+@GNU_TOOLS
 @pytest.mark.parametrize('typed, expected', [('mssh h tar --file="zza', 'mssh h tar --file="zza\\\\&b" '), ('mssh h tar --file=zza', 'mssh h tar --file=zza\\\\\\&b ')])
 def test_zsh_a_name_needing_quotes_after_a_remote_option_s_equals_sign_reaches_the_remote_shell_as_named(tmp_path, typed, expected):
 	# with or without the quote opened after the =, written for that quote and then for the remote shell
@@ -2359,12 +2374,12 @@ def test_zsh_a_name_needing_quotes_after_a_remote_option_s_equals_sign_reaches_t
 
 
 @pytest.mark.parametrize('typed, steps, expected, name', [
-	('mssh h tar --file="zzd', ['\t'], 'mssh h tar --file="zzd\\\\&x/zzin" ', 'zzd&x/zzin'),
-	('mssh h tar --file="zzd\\\\&x/zz', [], 'mssh h tar --file="zzd\\\\&x/zzin" ', 'zzd&x/zzin'),
-	('mssh h tar --file="$PWD/zzd', ['\t'], 'mssh h tar --file="$PWD/zzd\\\\&x/zzin" ', None),
+	pytest.param('mssh h tar --file="zzd', ['\t'], 'mssh h tar --file="zzd\\\\&x/zzin" ', 'zzd&x/zzin', marks=GNU_TOOLS),
+	pytest.param('mssh h tar --file="zzd\\\\&x/zz', [], 'mssh h tar --file="zzd\\\\&x/zzin" ', 'zzd&x/zzin', marks=GNU_TOOLS),
+	pytest.param('mssh h tar --file="$PWD/zzd', ['\t'], 'mssh h tar --file="$PWD/zzd\\\\&x/zzin" ', None, marks=GNU_TOOLS),
 	('mssh h sort --output="zzd', ['\t'], 'mssh h sort --output="zzd\\\\&x/zzin" ', 'zzd&x/zzin'),
-	('mssh h tar --file="zzd', ['\t', '\t'], 'mssh h tar --file="zzd\\\\&x/sub\\\\&y/zzin" ', 'zzd&x/sub&y/zzin'),
-	('mssh h tar --file="zzd', ['\t'], 'mssh h tar --file="zzd\\\\\\$v/zzin" ', 'zzd$v/zzin'),
+	pytest.param('mssh h tar --file="zzd', ['\t', '\t'], 'mssh h tar --file="zzd\\\\&x/sub\\\\&y/zzin" ', 'zzd&x/sub&y/zzin', marks=GNU_TOOLS),
+	pytest.param('mssh h tar --file="zzd', ['\t'], 'mssh h tar --file="zzd\\\\\\$v/zzin" ', 'zzd$v/zzin', marks=GNU_TOOLS),
 ])
 def test_zsh_names_inside_a_directory_after_a_quote_at_a_remote_option_s_equals_sign(tmp_path, typed, steps, expected, name):
 	# the directory goes in as the remote shell's word in the quote (zzd\\&x/), and the next TAB went on into it: zsh reads the word for no
@@ -2384,7 +2399,7 @@ def test_zsh_names_inside_a_directory_after_a_quote_at_a_remote_option_s_equals_
 	('mssh h "ssh -i$PWD/zzd/inner.', 'mssh h "ssh -i$PWD/zzd/inner.txt" '),
 	('mssh h "gcc -I$PWD/zzd/inner-', 'mssh h "gcc -I$PWD/zzd/inner-dir/'),
 	('mssh h "sort --output=$PWD/zzd/inner.', 'mssh h "sort --output=$PWD/zzd/inner.txt" '),
-	('mssh h "tar --directory=$PWD/zzd/inner-', 'mssh h "tar --directory=$PWD/zzd/inner-dir/'),
+	pytest.param('mssh h "tar --directory=$PWD/zzd/inner-', 'mssh h "tar --directory=$PWD/zzd/inner-dir/', marks=GNU_TOOLS),
 	('mssh h "export X=$PWD/zzd/inner.', 'mssh h "export X=$PWD/zzd/inner.txt" '),
 	('mssh h "echo a; dd if=$PWD/zzd/inner.', 'mssh h "echo a; dd if=$PWD/zzd/inner.txt" '),
 ])
@@ -5626,6 +5641,8 @@ def test_an_rc_file_that_is_not_a_regular_file_is_left_alone(tmp_path, kind):
 @pytest.mark.parametrize('change', ['add', 'update', 'remove'])
 def test_a_failed_rc_write_leaves_the_rc_file_as_it_was(tmp_path, change):
 	# install after an upgrade rewrote ~/.bashrc in place: what did not fit on the disk was lost
+	if change == 'add' and sys.platform == 'darwin':
+		pytest.skip('macOS counts an O_APPEND write against the file size limit from the start of the file, not its end: the limit stops no append here')
 	env, home = make_home(tmp_path)
 	rc = home / '.bashrc'
 	rc.write_text(''.join('alias x{0}="echo {0}"  # user line {0}\n'.format(number) for number in range(6000)))

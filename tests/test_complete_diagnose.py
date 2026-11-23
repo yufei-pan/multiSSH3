@@ -2,7 +2,6 @@
 import contextlib
 import io
 import os
-import shutil
 import string
 import subprocess
 import sys
@@ -12,6 +11,7 @@ import pytest
 
 import multiSSH3
 import mssh_complete as mc
+from complete_shell_harness import require_shell
 
 SPEC = mc.spec_from_parser(multiSSH3.get_parser())
 NOW = 1790000000.0
@@ -179,14 +179,14 @@ def test_braces_the_shell_expands_make_mssh_run_a_host_as_the_command(engine, sh
 	assert mc.take_probe_queue(engine.directory) == []
 
 
-@pytest.mark.skipif(shutil.which('bash') is None, reason='needs bash')
+# (bash 4 and later: brace ranges keep their zeros there, and a bash before 4 skips the test)
 @pytest.mark.parametrize('word', ['node{1,2}', 'gpu{01..16}', 'node{1..16}', 'n{001..12}', 'n{10..8}', 'n{010..8}',
 	'rack[1-2]-n{1..3}', 'n{1,2}-{a,b}', 'a,n{1..3}', 'a,n{1,2}', 'a/n{1,2}'])
 def test_what_a_brace_warning_suggests_gives_mssh_the_hosts_the_shell_made(engine, tmp_path, word):
 	message, = [message for _, kind, message in warnings_if_all_unknown(engine, 'mssh {} uptime'.format(word)) if kind == 'range']
 	meant = message.rsplit('did you mean ', 1)[1][:-1]
 	# in an empty directory: no file names for the shell's globs
-	made = subprocess.run(['bash', '-c', 'printf "%s\\n" ' + word], cwd=str(tmp_path), stdout=subprocess.PIPE,
+	made = subprocess.run([require_shell('bash'), '-c', 'printf "%s\\n" ' + word], cwd=str(tmp_path), stdout=subprocess.PIPE,
 		universal_newlines=True, check=True).stdout.split()
 	assert len(made) > 1
 	assert sorted(multiSSH3.expand_hostnames_local([meant])[0]) == sorted(multiSSH3.expand_hostnames_local(made)[0])

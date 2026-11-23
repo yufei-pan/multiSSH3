@@ -2,6 +2,7 @@
 import fcntl
 import os
 import pty
+import select
 import signal
 import struct
 import termios
@@ -11,6 +12,7 @@ import time
 import pytest
 
 import mssh_complete as mc
+from complete_shell_harness import read_terminal
 from vt_grid import Grid
 
 
@@ -118,13 +120,41 @@ def test_ghost_style(term, style):
 	assert mc.ghost_style(term) == style
 
 
+class Pty(object):
+	'''A pseudo-terminal (unpacks as master, slave, path) whose master a process reads all the time (read_terminal); read_until gives what it read.'''
+	def __init__(self):
+		self.master, self.slave = pty.openpty()
+		self.path = os.ttyname(self.slave)
+		self._screen = read_terminal(self.master)
+		self.output = b''
+
+	def __iter__(self):
+		return iter((self.master, self.slave, self.path))
+
+	def read_until(self, marker, timeout=5.0):
+		'''Everything the pty has written so far, waiting up to timeout seconds for it to end with marker.'''
+		end = time.monotonic() + timeout
+		fd = self._screen.stdout.fileno()
+		while not self.output.endswith(marker) and time.monotonic() < end:
+			if select.select([fd], [], [], 0.05)[0]:
+				self.output += os.read(fd, 65536)
+		return self.output
+
+	def close(self):
+		self._screen.kill()
+		self._screen.wait()
+		self._screen.stdout.close()
+		os.close(self.master)
+		os.close(self.slave)
+
+
 @pytest.fixture
 def tty_pair():
-	master, slave = pty.openpty()
-	path = os.ttyname(slave)
-	yield master, slave, path
-	os.close(master)
-	os.close(slave)
+	pair = Pty()
+	try:
+		yield pair
+	finally:
+		pair.close()
 
 
 def test_terminal_keeps_keys_typed_before_it_started(tty_pair):
@@ -241,10 +271,15 @@ def test_terminal_reads_a_long_paste_whole_but_keeps_its_start(tty_pair):
 	# what is past the limit is read all the same: none of the paste may reach the shell as typed keys
 	master, slave, path = tty_pair
 	with mc.Terminal(path) as term:
-		os.write(master, b'\x1b[200~' + b'x\r' * 1000 + b'\x1b[201~Z')
-		assert term.read_key(timeout=1)[0] == 'paste'
-		assert term.read_paste(limit=10) == 'x\r' * 5
-		assert term.read_key(timeout=1) == ('Z', b'Z')
+		# from a thread: a write of more than the pty takes as input (1024 bytes on macOS) waits for the reads below
+		writer = threading.Thread(target=os.write, args=(master, b'\x1b[200~' + b'x\r' * 1000 + b'\x1b[201~Z'))
+		writer.start()
+		try:
+			assert term.read_key(timeout=1)[0] == 'paste'
+			assert term.read_paste(limit=10) == 'x\r' * 5
+			assert term.read_key(timeout=1) == ('Z', b'Z')
+		finally:
+			writer.join()
 
 
 def test_terminal_ends_a_paste_that_never_says_so(tty_pair):
@@ -284,14 +319,21 @@ def test_terminal_reads_line_breaks_as_sent(tty_pair):
 	assert termios.tcgetattr(slave)[0] & termios.INLCR
 
 
+def terminal_modes(fd):
+	'''The terminal's modes, the local flags without PENDIN: macOS sets it when ICANON comes back (to retype what is pending).'''
+	modes = termios.tcgetattr(fd)
+	modes[3] &= ~getattr(termios, 'PENDIN', 0)
+	return modes
+
+
 def test_terminal_restores_the_mode(tty_pair):
 	master, slave, path = tty_pair
-	before = termios.tcgetattr(slave)
+	before = terminal_modes(slave)
 	with mc.Terminal(path) as term:
 		assert not termios.tcgetattr(slave)[3] & termios.ICANON
 		term.write('drawn')
-	assert termios.tcgetattr(slave) == before
-	assert os.read(master, 100).endswith(b'drawn')
+	assert terminal_modes(slave) == before
+	assert tty_pair.read_until(b'drawn').endswith(b'drawn')
 
 
 def test_terminal_reads_its_size(tty_pair):

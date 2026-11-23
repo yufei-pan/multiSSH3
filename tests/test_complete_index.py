@@ -397,11 +397,12 @@ def test_a_query_answers_before_its_deadline_while_the_first_build_runs(home, mo
 def test_a_query_still_waits_for_a_first_build_that_ends_in_time(home, monkeypatch):
 	directory = mc.cache_dir()
 	held = hold_lock(os.path.join(directory, mc.LOCK_NAME))
-	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
 	# the running build: done shortly after the query starts
 	other = os.path.join(str(home), 'other')
 	os.mkdir(other)
 	built = mc.build_index(other, mssh=multiSSH3)
+	# (after the build above: on macOS it runs arp)
+	monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('started a second build'))
 	finish = threading.Timer(0.02, os.replace, (built, os.path.join(directory, mc.INDEX_NAME)))
 	finish.start()
 	try:
