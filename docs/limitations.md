@@ -686,64 +686,35 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: someone hits it.
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
 
-### zsh: in a quoted word holding a `/`, no history name beside a command's names that are no file names
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, in a quoted command, a double-quoted word holding an expansion or after a quote at an `=`, when the
-  word (or, in a quoted command, any word before it) holds a `/` and the command's completion offers names that are no file names,
-  mssh's history names are not offered beside them: `mssh h "ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
-  Beside file names they are offered (6.47), but not beside a directory the command's completion gives with an option's text, quoted or
-  not (as in 6.46): `mssh h make CFLAGS="-Isub/zz<TAB>` and `CFLAGS=-Isub/zz<TAB>` with a directory `sub/zzlocal` and `make CFLAGS=-Isub/zzhist`
-  in history give `-Isub/zzlocal/` alone. When the command offers nothing they go in, as before. Beside file names they are offered when the
-  history entry is a quoted argument (`mssh h dd if="sub/zzr<TAB>` with `mssh h "dd if=sub/zzremote"` in history), not when it is typed as
-  words (`dd if=sub/zzremote`).
-- Why: 6.47 puts them in the call that adds the command's file names, with its IPREFIX, PREFIX and `-p`. Put in the first call of any
-  kind whose PREFIX they start with, they made zsh drop the quote (`mssh h ls /etc --col`), so 6.47 keeps them to file names.
-- Revisit when: 6.48: find which call took the quote (one with `-P`, `-S` or a description), and add history names in a call of their
-  own after the command's names, with the IPREFIX the glue's split gives.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
+### zsh: no history name beside a directory a command gives with an option's text, nor from a command typed as words
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, mssh's history names are not offered beside a directory that the command's completion gives with an
+  option's text, after a quote at an `=` or unquoted: `mssh h make CFLAGS="-Isub/zz<TAB>` and `CFLAGS=-Isub/zz<TAB>` with a directory
+  `sub/zzlocal` and `make CFLAGS=-Isub/zzhist` in history give `-Isub/zzlocal/` alone (as in 6.46; in a quoted command, `"make CFLAGS=-Isub/zz`,
+  they are offered). Beside local file names in a word holding a `/`, a history entry typed as words (`mssh h cat sub/zzremote`, `dd if=sub/zzremote`)
+  is not offered, on the line, in a quoted command, inside `$( )` and backticks (as in 6.46 and 6.47); one whose command was a quoted argument
+  (`mssh h "cat sub/zzremote"`) is. When the command offers nothing they go in, as before.
+- Why: not traced; the engine returns no history name for a command typed as words there, and the glue adds none beside a call with `-P`.
+  (6.48 offers them beside a command's names that are no file names in a quoted command with a `/` before the word, `"ls /etc --col`: in a call
+  of their own with the command's matcher, without which zsh took the quote off the line.)
+- Revisit when: 6.49: find why the engine leaves out a command typed as words beside local names, and add history names beside a call with
+  `-P` in a call of their own, with its `-P` and `-p`.
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder).
 
 ### zsh: in a directory typed with backslashes, no history names beside the local ones
-- Kind: deferred (6.48)
+- Kind: deferred (6.49)
 - What the operator sees: in zsh, in a word whose typed directory holds backslashes the way TAB writes them, mssh's history names are
-  not offered beside the local ones. Inside backticks, with three backslashes (`` `mssh h cat zzd\\\&x/zz<TAB> `` for `zzd&x`) the local
-  names go in alone for a history entry typed as words (`cat zzd\&x/zzremote`); for a quoted-argument one (`mssh h "cat zzd\\&x/zzremote"`)
-  its name is listed beside them and the line stays. With one typed backslash (`` `mssh h cat zzd\&x/zz ``) or none nothing is offered,
-  local or history.
-  In a quoted command, with the two backslashes TAB writes (`mssh h "cat zzd\\&x/zz<TAB>`), the local names go in alone. On the line and in
-  `$( )` they are offered, with the spelling TAB writes there (three backslashes outside a quote), for a history entry whose command is a
-  quoted argument (`mssh h "cat zzd\\&x/zzremote"`); one typed as words (`cat zzd\&x/zzremote`) is not.
-- Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it (6.46's
-  entry blamed the glue's compare of the head; the engine returns none); in a quoted command the head typed and the names' head read
-  differ in the backslashes.
-- Revisit when: 6.48: inside backticks, send the engine the line read once more (`_mssh_complete_tick_read`), and read the head the same
+  not offered beside the local ones, which go in alone: inside backticks (`` `mssh h cat zzd\\\\\&x/zz<TAB> ``, the five backslashes TAB
+  writes there for `zzd&x`) for any history entry, and in a quoted command (`mssh h "cat zzd\\&x/zz<TAB>`). On the line and in `$( )`
+  (`mssh h cat zzd\\\&x/zz<TAB>`) they are offered for a history entry whose command is a quoted argument (`mssh h "cat zzd\\&x/zzremote"`),
+  not for one typed as words ([the entry above](#zsh-no-history-name-beside-a-directory-a-command-gives-with-an-options-text-nor-from-a-command-typed-as-words)).
+  As in 6.47.
+- Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it (inside
+  backticks it also counts the remote command's words otherwise, so the glue's split of a quoted command finds no command word); in a
+  quoted command the head typed and the names' head read differ in the backslashes.
+- Revisit when: 6.49: inside backticks, send the engine the line read once more (`_mssh_complete_tick_read`), and read the head the same
   way in `_mssh_complete_add_texts`; in a quoted command read it as the double quote does.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: a history name beside a directory stops TAB before its `/`
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, with a directory `zzdir` here and `mssh h "cat zzdir/zzremote"` in history, `mssh h cat zzd<TAB>` gives `zzdir`,
-  without the `/` the directory alone gets (`zzdir/`), and `zz<TAB>` after it finds nothing. In a quoted command, inside backticks and
-  inside `$( )` the same. A history entry typed as words (`cat zzdir/zzremote`) does not stop it. As in 6.46.
-- Why: not traced yet; the directory has its `/` as a suffix and the history name has none, so the two share only `zzdir`.
-- Revisit when: 6.48: give the history name's directory the same suffix, or add it after the directory's call.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: inside `$( )`, a name holding `!` reaches mssh with a backslash after more is typed behind it
-- Kind: deferred (6.48)
-- What the operator sees: in zsh with `bang_hist` on, inside `$( )`, `<( )` or `>( )`, the first TAB on a name holding `!` goes in right
-  (`"zz"\!"x"`): mssh gets `zz!x` for its own file option (`$(mssh -f "zz<TAB>`), and the remote shell reads `zz!x` for a remote command's word
-  (`$(mssh h cat "zz<TAB>`, `"cat zz`; the argument mssh gets holds `zz\!x`, which the remote shell reads that way). Also with several names
-  (`zz!x` and `zz!y` give `"zz"\!"`; 6.46 wrote `"zz\!`). That is the spelling for mssh's own option; a remote command's word
-  gets the backslash before the quote escaped (`"zz\\"\!"x"`, and `"zz\\"\!"` for several names). A letter typed behind that and a TAB
-  (`"zz"\!"` then `x<TAB>`) write the name as zsh does, `"zz\!x"`: mssh gets `zz\!x` (a remote command's word `zz\\!x`, which the remote shell reads as `zz\!x`). As in 6.46. In a quoted
-  command (`"cat zz`) the second TAB completes nothing, and the letter typed makes the word right (`"cat zz\\"\!"x`, `zz!x` for the remote shell). On zsh 5.0.2 a TAB in a later word writes such a name again with an extra backslash
-  (`$(mssh h "cat zzs<TAB> zzo<TAB>` for `zzs!x` and `zzother`).
-- Why: zsh writes the word again from its quote on, `\!` for each `!`, and keeps the backslash inside `$( )`; the glue cannot hand zsh text
-  that has the `"\!"` spelling for a later TAB.
-- Revisit when: 6.48: give zsh PREFIX and the words in the `zz"\!"x` spelling with `-Q`; in stock zsh 5.9 that should make the later TAB right
-  (untested: `$(zi "zz<TAB>y<TAB>` should give `"zz"\!"y" `). Its rough edges: with the cursor right after the reopened quote (`"zz"\!"<TAB>`) zsh adds a stray
-  `"` or puts the closing quote after the space, and zsh 5.0.2 leaves the quote open.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-23 (6.48 builder).
 
 ### zsh: TAB inside a command substitution expands a bare `!b` from history
 - Kind: known limitation
@@ -758,95 +729,29 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Approved: 2026-11-16, chief's decision C61 (the user's desk session; not the user's words): "(a) approve it as a known limitation,
   with an upstream zsh report drafted for you to send".
 
-### zsh 5.0.2: after a `\!` typed earlier in a double-quoted command, no history names
-- Kind: deferred (6.48)
-- What the operator sees: in zsh 5.0.2 (EL7), with `bang_hist` on, `mssh h "echo a\!b zz<TAB>` with `echo a!b zzhist` in history offers
-  nothing from history: the line stays as typed (6.46 the same), or takes the local names alone. zsh 5.5.1 and later offer the history name.
-- Why: 5.0.2 keeps the backslash in PREFIX (`a\!b`), so the words before the cursor, which the glue takes back from it, differ from the history
-  names' (`a!b`); not traced further.
-- Revisit when: 6.48: read the earlier words from PREFIX as 5.0.2 gives them, on the centos7 image (the strict xfail in
-  `test_zsh_a_bang_typed_earlier_in_a_double_quoted_command_stays_through_tab` shows when it works).
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh 5.0.2: inside `$( )`, a second TAB into a directory holding `!` finds nothing
-- Kind: deferred (6.48)
-- What the operator sees: in zsh 5.0.2 (EL7), `$(mssh h "cat zzd<TAB>zz<TAB>` with a directory `zzd!x`: the first TAB goes into the directory
-  (`zzd\\"\!"x/`), the second finds no name, and mssh gets `cat zzd\!x/zz`, which the remote shell reads as `zzd!x/zz` (6.46: `zzd\\!x/zz`, which the
-  remote shell reads as `zzd\!x/zz`). zsh 5.5.1 and later complete it.
-- Why: not traced; 5.0.2 keeps the backslash in PREFIX (the entry above), which the second TAB's match against the directory's name probably meets.
-- Revisit when: 6.48, with the entry above.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: inside backticks, no second TAB into a directory after `dd if="~/`
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, inside backticks, ``mssh h dd if="~/zzd<TAB>`` with a directory `zzd&x`, then `zz<TAB>`, completes nothing; with
-  no quote after the `=` (`if=~/zzd`) and on the line it goes on into the directory. The completions are as in 6.46; 6.46 also wrote this
-  machine's home into the line there, where 6.47 keeps the `~`.
-- Why: not traced yet; the same keys go on with the quote left out, and on the line and in `$( )`.
-- Revisit when: 6.48, with the other backticks work above.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: a quote opened inside a double-quoted word holding an expansion
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, `mssh h "echo $USER 'zz<TAB>` offers nothing (the quote the command opens is read by the glue's split of
-  the word holding an expansion). As in 6.46. In a double-quoted command with no expansion the glue leaves a quote opened inside it
-  to zsh's `compset -q`, which completes it as in 6.46.
-- Why: the split puts the whole word at the cursor, `'zz`, to the completion, which finds no name starting with a quote.
-- Revisit when: 6.48: read the inner quote in the split, into IPREFIX, with the names written for it, for both kinds of word.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked.
-
-### zsh: in a word the command splits itself, an escaped blank or a name that needs quoting gets no names
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, in a double-quoted command, a word that the command's own completion splits itself (gcc's, for a
-  `CFLAGS=` value; `LESS=`; the command string of `sh -c`, `bash -c`, `su -c` and the like) gets no names where 6.46 completed them,
-  and the line stays as typed, in two cases. Once it holds an escaped blank: `mssh h "make CFLAGS=-O2\\ -ggd<TAB>`,
-  `"make CFLAGS=-O2\\ -Isub/zz<TAB>`, `"sh -c ls\\ zz<TAB>`. For a name that needs quoting (one holding a character a shell reads: a
-  blank, a quote, a glob, `$`, `\`, `!`, `&`, `;` and the like, or starting with `=`): `mssh h "make CFLAGS=-Isub/zz<TAB>` with a
-  directory `zz x`, `mssh h "su -c ./lzz<TAB>` with a file `lzz x`, `"make CFLAGS=-Isub/<TAB>` with a file `sub/=x`. A plain name beside
-  such a one completes alone (`sub/zzlocal` beside `sub/zz x` gives `zzlocal/`). On zsh 5.0.2 (EL7) a plain name after `sh -c`, `su -c` or
-  `bash -c` is also left out (`mssh h "sh -c ./zz<TAB>` with a file `zzplain`): the command names offered there that need quoting (`[`,
-  `{`, `}`, `!`, `[[`) keep zsh's default file names off, and on 5.0.2 the plain name comes from them. Where the command offers nothing
-  for the part after an escaped blank, zsh's default file names can still stand in, as in 6.46: `mssh h "su -c ./lzz\\ x<TAB>` with a file
-  `lzz xy` writes `./lzz\\ xy`, which runs `./lzz` with `xy`; 6.47 does it inside backticks too. In a double-quoted command holding an
-  expansion an escaped-blank value completes as in 6.46 (a `\$` in it, or a directory after the blank, still comes out wrong there, as in
-  6.46: `mssh h "echo $USER; make CFLAGS=-O2\\ -Isub/zz<TAB>` writes the text twice).
-- Why: the glue gives the command the word as the remote shell reads it, the blank bare; the command's `compset -q` splits it there and
-  moves the text before it to `QIPREFIX`, which zsh writes back as it is, with the blank unescaped (the remote shell would then split the
-  value), and the glue cannot change it. zsh then holds two quote levels, the command's own and the double quote's, with the remote
-  shell's, which the glue stands for, between them: a name that needs quoting would go in written for each, and the remote shell would
-  read a wrong word. The glue offers nothing where the text moved is not the text typed or a name needs quoting, and zsh's default file
-  names do not stand in for it, where the command offered a name.
-- Revisit when: 6.48: when the first pass leaves nothing, hand such a word to zsh's own `compset -q` in a second pass, as 6.46 did, and
-  keep the glue's split for the words before the cursor, behind the workaround of the `compset -q` entry below. That gives 6.46's
-  completions back, with its misreadings (a `\"` earlier in the command; on zsh 5.0.2 and 5.5.1, nothing after `;`, `&&` or `|`), so it is
-  weighed against them. Default names there only for a command with no completion of its own. In a double-quoted command holding an
-  expansion: offer nothing where the double quote reads the text the command's `compset -q` moved otherwise than the text typed (`\$`
-  written back for a typed `\\\$`), and take that text off the directories typed by its reading, not its spelling.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; widened 2026-11-17 by the second design check.
-
-### zsh: inside backticks, a single-quoted command's value that the command splits gets its text twice
-- Kind: deferred (6.48)
-- What the operator sees: in zsh, inside backticks, `` `mssh h 'make CFLAGS=-Izzd\\\&x/zz<TAB> `` with a directory `zzd&x` writes
-  `CFLAGS=-Izzd\\\&x/zz-ICFLAGS=-Izzd\\\&x/zzlocal/`; `CFLAGS=-O2\ -Izzd\\\&x/zz` writes it twice too, the first copy cut at the
-  blank. Without the backslash, outside backticks or in a double-quoted command it is right or offers nothing. As in 6.46.
-- Why: not traced yet; it is the backticks' put-back after the glue's own `compset -q` of a single quote.
-- Revisit when: 6.48, with the backticks work: offer nothing where the put-back cannot find the text the command moved.
-- Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked.
+### zsh: a quote opened partway through a word of a double-quoted command holding an expansion
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, in a double-quoted command holding an expansion, a quote the command opens partway through the word at
+  the cursor offers nothing (`mssh h "echo $USER zz'a b<TAB>`), and so does a `\"` quote holding a `$`, a backtick or a backslash, which the
+  remote shell would read in it (`mssh h "echo $USER \"zz\\\$x`). A quote opened at the word's start completes (6.48: `"echo $USER 'zz<TAB>`).
+- Why: the glue reads a quote at the word's start into IPREFIX; one partway through needs the place in the typed text where the quote's
+  reading starts.
+- Revisit when: 6.49: map the quote's place in the text read back to the text typed, and read the part before it as the double quote does.
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder).
 
 ### zsh: compset -q writes outside its memory for a double-quoted word holding a backslash inside a quote of its own
-- Kind: deferred (6.48)
+- Kind: deferred
 - What the operator sees: in zsh 5.0.2 to 5.9, zsh's own `compset -q` writes outside its memory for a double-quoted word that holds a
   backslash inside a quote of its own, with or without mssh, and zsh 5.9 can end (`malloc(): invalid size`). 6.46 ran it on every quoted
-  command, so it met the fault for every such command (`mssh h "grep 'a\\.b' zz<TAB>`). 6.47 splits the command itself and offers nothing
-  where `compset -q` would still meet it: the cursor inside such a quote (`mssh h "grep 'a\\.b<TAB>`), and a word that the command's own
-  completion splits after the remote shell's `\'` or `\"` and a backslash (`mssh h "make CFLAGS=-DFMT=\\\"%s\\\\n\\\"<TAB>`). That includes
-  `"cat 'a' b\\c 'zz`, which zsh reads fine.
+  command, so it met the fault for every such command (`mssh h "grep 'a\\.b' zz<TAB>`). Since 6.47 the glue splits the command itself, and
+  offers nothing where `compset -q` would still meet it: the cursor inside such a quote (`mssh h "grep 'a\\.b<TAB>`), and a word that the
+  command's own completion splits after the remote shell's `\'` or `\"` and a backslash (`mssh h "make CFLAGS=-DFMT=\\\"%s\\\\n\\\"<TAB>`).
+  A backslash outside such a quote does not stop it (6.48: `"cat 'a' b\\c 'zz` completes).
 - Why: zsh's own fault: stock zsh does it with no mssh (`_zzq() { compset -q; _files }; compdef _zzq zzq`, then `zzq "cat 'a\\b' zz<TAB>`),
   which under glibc's malloc checker (`MALLOC_CHECK_=3`, with `LD_PRELOAD=libc_malloc_debug.so.0` from glibc 2.34 on) prints
   `free(): invalid pointer` and ends. Whether the shell ends without the checker depends on what lies next to the block, so any change to
   the glue could turn it on or off. The report to the zsh maintainers is drafted (docs/progress/zsh-compset-q-report.md), not posted.
-- Revisit when: zsh fixes it, or 6.48 runs `compset -q` again (the escaped-blank entry above): read the quote state at each backslash, so
-  that `"cat 'a' b\\c 'zz` completes again.
+- Revisit when: zsh fixes it: the glue's test (`_mssh_complete_qfault`) goes for the zsh versions with the fix.
 - Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked; the report is the user's to send.
 
 ### macOS: the test suite does not finish with the stock shells
