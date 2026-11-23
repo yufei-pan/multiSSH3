@@ -753,6 +753,15 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: zsh fixes it: the glue's test (`_mssh_complete_qfault`) goes for the zsh versions with the fix.
 - Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked; the report is the user's to send.
 
+### zsh: the start two names share, written for a double quote, can end inside an escape
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, in a double-quoted command holding an expansion, two names whose written words share a start that ends
+  inside an escape go in to that start: with files `zz$x` and `zz&y`, `mssh h "echo $USER zz<TAB>` gives `zz\\`, the remote shell's `zz\`.
+  The `&` typed next and a TAB complete `zz\\&y`, but a `$x` typed next is read by this shell as its variable. As in 6.46.
+- Why: zsh takes the start the words share as they are written (`-Q`), `zz\\\$x` and `zz\\&y`, not as the names they stand for.
+- Revisit when: 6.49: insert the written form of the start the names share (`zz`), as zsh does for the words it writes itself.
+- Noted: 2026-11-23, the user's standing rule that deferrals are noted, not asked (found by the 6.48 builder).
+
 ### macOS: the test suite does not finish with the stock shells
 - Kind: deferred (6.48)
 - What the operator sees: `python -m pytest -q` on macOS, with only Apple's `/bin/bash` 3.2 and zsh 5.9, never ends, on 6.46 as on
