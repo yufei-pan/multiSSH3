@@ -7320,6 +7320,15 @@ _mssh() {
 	# holds one: zsh writes such a word again from its quote on, as it reads it)
 	local -i _mssh_complete_bang=0
 	[[ $_mssh_complete_compsys_options[banghist] == on && $PREFIX != *\!* ]] && _mssh_complete_paren_open "$LBUFFER" && _mssh_complete_bang=1
+	# (a word typed so, its ! outside the double quote, "zz"\!"x, as a TAB before wrote it: zsh reads it zz!x, and wrote it again from its
+	# quote on as zz\!x, whose backslash stays inside $( ). Its names are written so too, and zsh matches them with PREFIX as typed
+	# (_mssh_complete_compadd). Not in a quoted command, nor in a word holding a /)
+	local _mssh_complete_bang_typed=
+	if (( ! _mssh_complete_bang && ! _mssh_complete_dq )) && [[ $_mssh_complete_compsys_options[banghist] == on && $_mssh_complete_open == \" &&
+		-z $SUFFIX && $_mssh_complete_word == \"*\"\\\!\"* && $_mssh_complete_word != */* ]] && _mssh_complete_paren_open "$LBUFFER"; then
+		_mssh_complete_bang=1
+		_mssh_complete_bang_typed=${_mssh_complete_word#\"}
+	fi
 	_mssh_complete_before="${(j: :)words[1,CURRENT-1]} $_mssh_complete_lead${_mssh_complete_open}$PREFIX"
 	_mssh_complete_after="$SUFFIX ${(j: :)words[CURRENT+1,-1]}"
 	_mssh_complete_read_locale
@@ -7391,6 +7400,10 @@ _mssh() {
 				;;
 		esac
 	done
+	if (( _mssh_complete_qcommand )) && [[ -n $_mssh_complete_bang_typed ]]; then
+		_mssh_complete_bang=0
+		_mssh_complete_bang_typed=
+	fi
 	# the completion functions below run in those options again: under zsh's defaults _arguments misreads
 	# its specs, and a glob in _files that matches nothing aborts the completion
 	for _mssh_complete_name in ${(k)_mssh_complete_compsys_options}; do
@@ -8417,6 +8430,8 @@ _mssh_complete_compadd() {
 		_mssh_complete_bare+=(-Q)
 		(( _mssh_complete_suffixed )) && _mssh_complete_closing_opts=()
 	fi
+	# (a word typed with its ! outside the double quote, _mssh_complete_bang_typed of _mssh: its words, written so, start with it as typed)
+	[[ -n ${_mssh_complete_bang_typed-} ]] && (( ! _mssh_complete_filter )) && PREFIX=$_mssh_complete_bang_typed
 	(( $#_mssh_complete_closing )) && _mssh_complete_next_compadd "${_mssh_complete_bare[@]}" "${_mssh_complete_closing_opts[@]}" - "${_mssh_complete_closing[@]}" && _mssh_complete_rc=0
 	if (( $#_mssh_complete_out || _mssh_complete_filter || ! $#_mssh_complete_closing && ! $#_mssh_complete_changed && ! $#_mssh_complete_dirs )); then
 		_mssh_complete_next_compadd "${_mssh_complete_opts[@]}" - "${_mssh_complete_out[@]}" && _mssh_complete_rc=0

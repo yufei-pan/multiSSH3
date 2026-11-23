@@ -2600,6 +2600,17 @@ def bang_words(got, whose):
 	return got if whose == 'mssh' else remote_shell_args(' '.join(got[1:]))
 
 
+@pytest.mark.parametrize('opener, closer', BANG_OPENERS[1:3], ids=['dollar-paren', 'process'])
+@pytest.mark.parametrize('typed, whose, expected', [('mssh -f "zz', 'mssh', ['-f', 'zz!x']), ('mssh h cat "zz', 'remote', ['cat', 'zz!x'])],
+	ids=['mssh', 'remote'])
+def test_zsh_inside_a_dollar_paren_a_letter_typed_behind_a_bang_written_outside_the_quote_completes_the_name_as_named(tmp_path, opener, closer,
+		typed, whose, expected):
+	# TAB wrote the start the names share with its ! outside the quote, "zz"\!"; a letter typed behind it and a TAB wrote the word again
+	# as zsh does, "zz\!x", whose backslash stays inside $( ): mssh got zz\!x. The names are written so too, with PREFIX as typed
+	line, got, event = zsh_enter(tmp_path, opener + typed, closer, files=['zz!x', 'zz!y'], steps=['x\t'])
+	assert not event and got and bang_words(got, whose) == expected, (line, got)
+
+
 @pytest.mark.parametrize('opener, closer', BANG_OPENERS, ids=['line', 'dollar-paren', 'process', 'backtick', 'backtick-in-dollar-paren'])
 @pytest.mark.parametrize('typed, files, history, whose, expected, quote', BANG_NAMES, ids=['{}-{}'.format(case[0], 'history' if case[2] else case[1][0] if case[1] else 'file') for case in BANG_NAMES])
 def test_zsh_a_name_holding_an_exclamation_mark_in_a_double_quote_reaches_mssh_as_named_inside_a_dollar_paren(tmp_path, opener, closer, typed, files,
