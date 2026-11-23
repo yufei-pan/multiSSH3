@@ -7735,8 +7735,7 @@ _mssh_complete_in_word() {
 					fi
 					[[ -n $_mssh_complete_pass2 && $PREFIX == *\\[[:blank:]]* ]] && _mssh_complete_resplit=1
 				fi
-				if (( _mssh_complete_resplit == 2 )) && [[ $_mssh_complete_what == names ]]; then
-					[[ -n $_mssh_complete_pass2 ]] || return 0
+				if (( _mssh_complete_resplit == 2 )); then
 					PREFIX=$_mssh_complete_pass2
 					# (zsh's default file names stand in for nothing then only for a command with no completion of its own: one that splits the
 					# word, su -c's, would read their word again, ./lzz\\ xy as ./lzz and xy)
