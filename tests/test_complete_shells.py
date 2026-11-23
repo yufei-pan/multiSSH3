@@ -2130,6 +2130,7 @@ def test_zsh_a_history_name_beside_a_directory_here_waits_for_the_directory_s_sl
 	assert line == opener + expected, line
 
 
+@GNU_TOOLS
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed, history, steps, expected', [
 	('mssh h "ls /etc --col', '"ls /etc --colzz"', [], 'mssh h "ls /etc --col'),
