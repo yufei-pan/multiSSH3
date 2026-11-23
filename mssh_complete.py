@@ -7712,17 +7712,25 @@ _mssh_complete_in_word() {
 				# (a word holding an escaped blank: the second pass may take it, _mssh)
 				(( _mssh_complete_qkept && ! _mssh_complete_resplit )) && [[ $PREFIX == *\\[[:blank:]]* ]] && _mssh_complete_resplit=1
 				if (( _mssh_complete_resplit == 2 )) && [[ $_mssh_complete_what == names ]]; then
-					# (only a word that reads the same at every level but for its escaped blanks, typed as zsh writes it: zsh writes the word back
-					# from its own reading, and where that is another spelling than the one typed, a \! or a \\\$, it went in after the word typed,
-					# the text twice. Inside backticks as zsh reads it, without their reading, which this shell gives the line after)
-					# (a ~ as any letter: (q) quotes it anywhere, zsh's own writing only where a name starts, -I~/zz)
-					_mssh_complete_value=${PREFIX//\~/x}
-					_mssh_complete_read=$_mssh_complete_value
-					(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$_mssh_complete_value"
+					# (only a word that reads the same at every level but for its escaped blanks: zsh writes the word back from its own reading,
+					# and where that is another spelling than the one typed, a \! or a \\\$, it went in after the word typed, the text twice. One
+					# that the double quote reads as zsh's spelling, a blank escaped with one backslash, is given to zsh in that spelling, which
+					# goes back on the line for it. A ~ as any letter: (q) quotes it anywhere, zsh's own writing only where a name starts,
+					# -I~/zz. Inside backticks as zsh reads it, without their reading, which this shell gives the line after)
+					_mssh_complete_read=$PREFIX
+					(( _mssh_complete_ticked )) && _mssh_complete_tick_read "$PREFIX"
 					_mssh_complete_dq_read "$_mssh_complete_read"
 					_mssh_complete_item=${(Q)_mssh_complete_read}
-					[[ ${(q)_mssh_complete_item} == "${_mssh_complete_item// /\\ }" &&
-						$_mssh_complete_value == "${${(qqq)${(q)_mssh_complete_item}}[2,-2]}" ]] || return 0
+					_mssh_complete_value=${${(q)_mssh_complete_item}//\\\~/\~}
+					[[ $PREFIX != *\!* && $_mssh_complete_value == "${_mssh_complete_item// /\\ }" ]] || return 0
+					_mssh_complete_value=${${(qqq)_mssh_complete_value}[2,-2]}
+					if [[ $PREFIX != "$_mssh_complete_value" ]]; then
+						_mssh_complete_dq_read "$PREFIX"
+						_mssh_complete_item=$_mssh_complete_read
+						_mssh_complete_dq_read "$_mssh_complete_value"
+						[[ $_mssh_complete_item == "$_mssh_complete_read" ]] || return 0
+						PREFIX=$_mssh_complete_value
+					fi
 					# (zsh's default file names stand in for nothing then only for a command with no completion of its own: one that splits the
 					# word, su -c's, would read their word again, ./lzz\\ xy as ./lzz and xy)
 					(( ${+_comps[$_mssh_complete_fields[1]]} )) && _mssh_complete_nodefault=1
