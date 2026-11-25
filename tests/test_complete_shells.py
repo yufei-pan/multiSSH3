@@ -2119,15 +2119,18 @@ def test_zsh_a_quote_opened_in_a_double_quoted_command_holding_an_expansion_gets
 	assert not event and got and remote_shell_args(' '.join(got[1:])) == remote, (line, got)
 
 
+# (strict: the run reports when 6.49 gets this fixed)
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='limitations: "zsh: a history name beside a directory stops TAB before its `/`" (deferred, 6.49): TAB gives zzdir, not zzdir/')
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed, steps, expected', [
 	('mssh h cat zzd', [], 'mssh h cat zzdir/'),
 	('mssh h cat zzd', ['zz\t', 'r\t'], 'mssh h cat zzdir/zzremote '),
 	('mssh h "cat zzd', [], 'mssh h "cat zzdir/'),
 ])
-def test_zsh_a_history_name_beside_a_directory_here_waits_for_the_directory_s_slash(tmp_path, opener, typed, steps, expected):
-	# with mssh h "cat zzdir/zzremote" in history and a directory zzdir here, the history name went in whole beside the directory, whose / is
-	# a suffix: the two shared only zzdir, and TAB stopped before the /, so the next letters went in after zzdir
+def test_zsh_a_history_name_beside_a_directory_here_does_not_stop_tab_before_the_directory_s_slash_deferred_to_6_49(tmp_path, opener, typed, steps, expected):
+	# with mssh h "cat zzdir/zzremote" in history and a directory zzdir here, the history name goes in whole beside the directory, whose / is
+	# a suffix: the two share only zzdir, and TAB stops before the /, so the next letters go in after zzdir (as in 6.46 and 6.47). 6.48's
+	# hold-back of the history name gave the line wanted here and was taken out again (its rounds' findings are in limitations: the entry)
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], files=['zzdir/zzlocal'], history=['"cat zzdir/zzremote"'],
 		steps=steps, pre='mssh() { :; }')
 	assert line == opener + expected, line
@@ -2147,31 +2150,46 @@ def test_zsh_a_word_su_c_splits_gets_no_default_names_whether_su_is_typed_by_its
 
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed, command, steps, expected', [
-	# (a command that offers a name and no directory: the history name is offered beside it, as in 6.47, and TAB stays at what they share)
+	# (a command that offers a name and no directory: the history name is offered beside it, and TAB stays at what they share)
 	('mssh h zzc zzd', 'compadd zzdfoo', [], 'mssh h zzc zzd'),
 	('mssh h zzc zzd', 'compadd zzdfoo', ['i\t'], 'mssh h zzc zzdir/zzremote '),
 	('mssh h "zzc zzd', 'compadd zzdfoo', [], 'mssh h "zzc zzd'),
 	('mssh h "zzc zzd', 'compadd zzdfoo', ['i\t'], 'mssh h "zzc zzdir/zzremote" '),
-	# (one that offers the directory too, as a directory: the history name is held back and TAB stays at what the names share, zzd. One that
-	# offers no name that matches: the history name goes in whole)
+	# (one that offers the directory too, as a directory: TAB stays at what the names share, zzd. One that offers no name that matches: the
+	# history name goes in whole)
 	('mssh h zzc zzd', 'compadd zzdfoo; compadd -S/ zzdir', [], 'mssh h zzc zzd'),
 	('mssh h zzc zzd', 'compadd zzother', [], 'mssh h zzc zzdir/zzremote '),
-	# (a name spelled like the directory that the command offers as a plain word, with a space after it: no hold, the line stays at zzdir and /zz
-	# picks the history name. A name added twice is what its first call made it, as zsh keeps the first: a plain word and then the file name,
-	# a plain word; a file name and then a plain word, the directory)
+	# (a name spelled like the directory that the command offers as a plain word, however many calls add it: the line stays at zzdir and /zz
+	# picks the history name. Not zzdir with a space after it, which hid the name: a plain word, then the file name; file names, then a plain word)
 	('mssh h zzc zzd', 'compadd zzdfoo zzdir', ['i\t', '/zz\t'], 'mssh h zzc zzdir/zzremote '),
 	('mssh h "zzc zzd', 'compadd zzdfoo zzdir', ['i\t', '/zz\t'], 'mssh h "zzc zzdir/zzremote" '),
 	('mssh h zzc zzd', 'compadd zzdir; compadd -f zzdir', ['/zz\t'], 'mssh h zzc zzdir/zzremote '),
 	('mssh h "zzc zzd', 'compadd zzdir; compadd -f zzdir', ['/zz\t'], 'mssh h "zzc zzdir/zzremote" '),
-	('mssh h zzc zzd', 'compadd -f zzdir; compadd zzdir', [], 'mssh h zzc zzdir/'),
-	('mssh h "zzc zzd', 'compadd -f zzdir; compadd zzdir', [], 'mssh h "zzc zzdir/'),
+	('mssh h zzc zzd', '_files; compadd zzdir', ['/zz\t'], 'mssh h zzc zzdir/zzremote '),
+	('mssh h "zzc zzd', '_files; compadd zzdir', ['/zz\t'], 'mssh h "zzc zzdir/zzremote" '),
 ])
-def test_zsh_a_history_name_in_a_directory_here_waits_only_where_the_command_offers_that_directory(tmp_path, opener, typed, command, steps, expected):
-	# the name waited for the command's names and went in only if it added none: beside a name that is no directory (a git branch, an image)
-	# TAB wrote that name alone, and the history name was lost until the directory was typed (6.48's first build). Beside a plain word spelled
-	# like the directory it waited too, and was never offered: "mssh h zzc zzdir " (rows f08 and mt2 of the re-review)
+def test_zsh_a_history_name_in_a_directory_here_is_offered_beside_the_command_s_names_whatever_they_are(tmp_path, opener, typed, command, steps, expected):
+	# 6.48's first builds held the name back while the command's names were not known, and wrote the command's name alone where it was no
+	# directory (a git branch, an image) or a plain word spelled like the directory: the history name was never offered ("mssh h zzc zzdir ").
+	# The hold is out (limitations: "zsh: a history name beside a directory stops TAB before its `/`", deferred, 6.49): these rows keep 6.47's
+	# lines, so that a fix of that entry that holds the name back again shows
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], history=['"zzc zzdir/zzremote"'], steps=steps, pre='mssh() { :; }',
 		extra='_zzc() {{ {} }}; compdef _zzc zzc'.format(command))
+	assert line == opener + expected, line
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('files, history, steps, expected', [
+	# (a local name sharing the start: TAB stays at zzd and the next TAB offers the history name in the menu, ahead of the local names)
+	(['zzdfile'], '"cat zzdir/zzremote"', ['\t'], 'mssh h cat zzdir/zzremote'),
+	# (a history name two levels down, where zzdir holds no sub: the third TAB reaches it)
+	(['zzdir/zzlocal'], '"cat zzdir/sub/zzremote"', ['\t', '\t'], 'mssh h cat zzdir/sub/zzremote'),
+])
+def test_zsh_tab_reaches_a_history_name_beside_a_directory_here_through_the_menu_as_in_6_47(tmp_path, opener, files, history, steps, expected):
+	# the history name stays in the list beside the local names, though TAB stops at zzdir before it (limitations: "zsh: a history name beside
+	# a directory stops TAB before its `/`", deferred, 6.49). 6.48's hold-back took it out of the list wherever another local name shared the
+	# start, and TAB never reached the name two levels down
+	line, _ = review_line(tmp_path, 'zsh', opener + 'mssh h cat zzd', dirs=['zzdir'], files=files, history=[history], steps=steps, pre='mssh() { :; }')
 	assert line == opener + expected, line
 
 
@@ -2183,8 +2201,8 @@ def test_zsh_a_history_name_in_a_directory_here_waits_only_where_the_command_off
 	('mssh h "make zzdi', ['/zz\t'], 'mssh h "make zzdir/zzremote" '),
 ])
 def test_zsh_a_make_target_spelled_like_a_directory_here_keeps_the_history_name_beside_it(tmp_path, opener, typed, steps, expected):
-	# make adds its targets, then the file names: zzdir twice, the first time as a plain word. 6.48 before this fix wrote "mssh h make zzdir "
-	# (the target, with a space) and the history name make zzdir/zzremote was never offered; 6.47 stayed at zzdir and /zz picked it
+	# make adds its targets, then the file names: zzdir twice, the first time as a plain word. 6.48's hold-back wrote "mssh h make zzdir "
+	# (the target, with a space) and the history name make zzdir/zzremote was never offered; 6.47 stays at zzdir and /zz picks it
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], files=['Makefile'], history=['"make zzdir/zzremote"'], steps=steps,
 		pre='mssh() { :; }', extra="printf 'zzdir:\\n\\ttrue\\nzzdfoo:\\n\\ttrue\\n' > Makefile")
 	assert line == opener + expected, line
