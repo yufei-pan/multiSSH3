@@ -372,7 +372,8 @@ each entry).
   otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
   the remote shell would read `a` and `b/...`), and, in a quoted command, one typed bare (`mssh h "cat a&b/zz<TAB>`) or
   holding an expansion the remote shell makes (`mssh h "cat zzd\$x/zz<TAB>`, where the remote shell reads the variable `x`;
-  also a backtick, a brace, a parenthesis, a redirect or, unless `glob_complete` is set, a pattern character). bash writes such a directory as the remote shell's word.
+  also a backtick, a brace, a parenthesis, a redirect or, unless `glob_complete` is set, a pattern character). bash (readline) writes a
+  directory holding a `$` or a backtick that is there by that name as the remote shell's word.
   Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`, `"cat zzd\\\$x/`), the names inside it complete, outside backticks. A directory
   completed by TAB goes on completing, except one whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue

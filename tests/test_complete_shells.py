@@ -2044,10 +2044,10 @@ def test_zsh_a_double_quoted_command_goes_in_as_in_6_46_but_for_the_rows_that_sa
 
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 def test_zsh_an_escaped_blank_in_a_value_the_command_splits_goes_in_as_in_6_46_in_a_quoted_command_holding_an_expansion(tmp_path, opener):
-	# (q120 pins the same value in a quoted command with no expansion, where it gets nothing: the command is given the blank bare there, and
-	# zsh would write it back unescaped. Where it is given the double quote's reading the blank stays escaped, and goes back as the same
-	# word: the glue offers nothing only where zsh keeps the quote. zsh 5.0.2 and 5.5.1 add the closing quote and a space after a name
-	# that is the only one, so the line is read to the name)
+	# (q120 pins the same value in a quoted command with no expansion, where the second pass completes it: the first pass gives the command
+	# the blank bare there, and zsh would write it back unescaped. Where it is given the double quote's reading the blank stays escaped, and
+	# goes back as the same word, with no second pass. zsh 5.0.2 and 5.5.1 add the closing quote and a space after a name that is the only
+	# one, so the line is read to the name)
 	typed = opener + 'mssh h "echo $USER; make CFLAGS=-O2\\\\ -ggd'
 	line, _ = review_line(tmp_path, 'zsh', typed, pre='mssh() { :; }')
 	assert line.startswith(opener + 'mssh h "echo $USER; make CFLAGS=-O2\\ -ggdb'), line
