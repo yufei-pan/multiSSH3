@@ -7743,8 +7743,9 @@ _mssh_complete_in_word() {
 				if (( _mssh_complete_resplit == 2 )); then
 					PREFIX=$_mssh_complete_pass2
 					# (zsh's default file names stand in for nothing then only for a command with no completion of its own: one that splits the
-					# word, su -c's, would read their word again, ./lzz\\ xy as ./lzz and xy)
-					(( ${+_comps[$_mssh_complete_fields[1]]} )) && _mssh_complete_nodefault=1
+					# word, su -c's, would read their word again, ./lzz\\ xy as ./lzz and xy. The command as typed, or its last path part, as
+					# zsh's _dispatch looks it up: /bin/su is su)
+					(( ${+_comps[$_mssh_complete_fields[1]]} || ${+_comps[${_mssh_complete_fields[1]:t}]} )) && _mssh_complete_nodefault=1
 					compset -q
 					words=("${(@)_mssh_complete_fields[1,-2]}" "${words[@]}")
 					(( CURRENT += $#_mssh_complete_fields - 1 ))

@@ -2133,6 +2133,18 @@ def test_zsh_a_history_name_beside_a_directory_here_waits_for_the_directory_s_sl
 	assert line == opener + expected, line
 
 
+@GNU_TOOLS
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('command', ['su', '/bin/su', './su'])
+def test_zsh_a_word_su_c_splits_gets_no_default_names_whether_su_is_typed_by_its_name_or_its_path(tmp_path, opener, command):
+	# the second pass keeps zsh's default file names out for a command that has a completion of its own: it looks the command up as typed,
+	# and by its last path part as zsh's _dispatch does. "/bin/su -c ./lzz\\ x with a file "lzz xy" wrote ./lzz\\ xy, which su -c
+	# splits as ./lzz and xy (6.47 did the same: a word of 6.47 that 6.48's first build left for a command typed by a path)
+	typed = opener + 'mssh h "' + command + ' -c ./lzz\\\\ x'
+	line, _ = review_line(tmp_path, 'zsh', typed, files=['lzz xy'], extra="chmod +x 'lzz xy'", pre='mssh() { :; }')
+	assert line == typed, line
+
+
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed, command, steps, expected', [
 	# (a command that offers a name and no directory: the history name is offered beside it, as in 6.47, and TAB stays at what they share)
