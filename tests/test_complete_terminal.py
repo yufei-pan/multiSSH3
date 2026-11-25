@@ -271,15 +271,17 @@ def test_terminal_reads_a_long_paste_whole_but_keeps_its_start(tty_pair):
 	# what is past the limit is read all the same: none of the paste may reach the shell as typed keys
 	master, slave, path = tty_pair
 	with mc.Terminal(path) as term:
-		# from a thread: a write of more than the pty takes as input (1024 bytes on macOS) waits for the reads below
-		writer = threading.Thread(target=os.write, args=(master, b'\x1b[200~' + b'x\r' * 1000 + b'\x1b[201~Z'))
+		# from a thread: a write of more than the pty takes as input (1024 bytes on macOS) waits for the reads below. A daemon, and joined for
+		# 5 s at most (the reads below take milliseconds): when an assert below fails the write is still waiting, and the test showed its
+		# 900 s limit, not the assert
+		writer = threading.Thread(target=os.write, args=(master, b'\x1b[200~' + b'x\r' * 1000 + b'\x1b[201~Z'), daemon=True)
 		writer.start()
 		try:
 			assert term.read_key(timeout=1)[0] == 'paste'
 			assert term.read_paste(limit=10) == 'x\r' * 5
 			assert term.read_key(timeout=1) == ('Z', b'Z')
 		finally:
-			writer.join()
+			writer.join(5)
 
 
 def test_terminal_ends_a_paste_that_never_says_so(tty_pair):

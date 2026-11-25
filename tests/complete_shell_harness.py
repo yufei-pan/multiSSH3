@@ -183,9 +183,15 @@ def without_command(env, name, directory):
 	return dict(env, PATH=str(directory))
 
 # (read and write, nothing else: busybox's cat, the one of the matrix's bash images, copies with sendfile, which holds the pipe's lock
-# while it waits for the terminal, and the test's read of the pipe waited for ever, uninterruptibly)
-_READ_TERMINAL = '''import os
-while True:
+# while it waits for the terminal, and the test's read of the pipe waited for ever, uninterruptibly. It ends when its parent, the test
+# process, is gone: it holds the terminal's master, and a test killed (the time limit, a stopped run) would leave this process and the
+# shell on the terminal, which gets no hangup while a master is open, running for ever. It looks every second: a killed test's shell
+# is gone one second after)
+_READ_TERMINAL = '''import os, select, sys
+parent = int(sys.argv[1])
+while os.getppid() == parent:
+	if not select.select([0], [], [], 1)[0]:
+		continue
 	try:
 		data = os.read(0, 65536)
 	except OSError:
@@ -202,7 +208,7 @@ def read_terminal(master):
 	that writes more waits for the test to read (a picker drawing its menu, between two keys), and one that ends waits for it
 	in tcsetattr(TCSADRAIN), for ever (Linux took 19600 bytes, and drains at once). Not a thread: tcsetattr holds the GIL while it waits.
 	'''
-	return subprocess.Popen([sys.executable, '-I', '-S', '-c', _READ_TERMINAL], stdin=master, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+	return subprocess.Popen([sys.executable, '-I', '-S', '-c', _READ_TERMINAL, str(os.getpid())], stdin=master, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 class Session(object):
 	'''An interactive shell on a pseudo-terminal. print_key makes the shell print its command line.'''
