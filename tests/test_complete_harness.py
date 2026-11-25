@@ -50,8 +50,18 @@ def test_read_until_stops_at_the_marker():
 
 
 def _gone(pid):
-	"""Whether the process is no more, or a zombie that only its parent has to reap."""
-	state = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30).stdout.decode().strip()
+	"""Whether the process is no more, or a zombie that only its parent has to reap. Where there is a /proc it says (as Session._busy reads it),
+	and elsewhere (macOS) ps does. A ps that cannot tell is no answer: busybox's, on the matrix's bash images, has no -p, printed its usage and
+	nothing else, and that was read as "gone", so the test passed with the leak back."""
+	if os.path.isdir('/proc/self'):
+		try:
+			with open('/proc/{}/stat'.format(pid)) as f:
+				return f.read().rsplit(')', 1)[1].split()[0] == 'Z'
+		except (FileNotFoundError, ProcessLookupError):
+			return True
+	done = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+	state = done.stdout.decode().strip()
+	assert state or not done.stderr, 'ps cannot tell whether {} is there: {}'.format(pid, done.stderr.decode(errors='replace').strip())
 	return not state or state[0] == 'Z'
 
 
