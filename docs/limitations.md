@@ -686,6 +686,22 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: someone hits it.
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
 
+### zsh: in a quoted word holding a `/`, no history name beside a command's names that are no file names
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, in a quoted command, a double-quoted word holding an expansion or after a quote at an `=`, when the
+  word (or, in a quoted command, any word before it) holds a `/` and the command's completion offers names that are no file names,
+  mssh's history names are not offered beside them: `mssh h "ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
+  When the command offers nothing they go in, as before. Beside file names, and beside a directory a command gives with an option's text,
+  see [the entry below](#zsh-no-history-name-beside-a-directory-a-command-gives-with-an-options-text-nor-from-a-command-typed-as-words).
+- Why: 6.47 puts them in the call that adds the command's file names, with its IPREFIX, PREFIX and `-p`. Put in the first call of any
+  kind whose PREFIX they start with, they made zsh drop the quote (`mssh h ls /etc --col`), so 6.47 keeps them to file names. 6.48 tried a
+  call of their own with the command's matcher: right for `ls`, but `ps` and `rsync` lost the quote and `df` lost the typed words (their
+  completions add names with other matchers and prefixes), so 6.48 took it out again.
+- Revisit when: 6.49: find which call took the quote (one with `-P`, `-S` or a description), and add history names in a call of their
+  own after the command's names, with the IPREFIX the glue's split gives; or decide that they cannot go in beside such names, as the
+  review of 6.48 asked.
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 fix round 1).
+
 ### zsh: no history name beside a directory a command gives with an option's text, nor from a command typed as words
 - Kind: deferred (6.49)
 - What the operator sees: in zsh, mssh's history names are not offered beside a directory that the command's completion gives with an
@@ -695,8 +711,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   is not offered, on the line, in a quoted command, inside `$( )` and backticks (as in 6.46 and 6.47); one whose command was a quoted argument
   (`mssh h "cat sub/zzremote"`) is. When the command offers nothing they go in, as before.
 - Why: not traced; the engine returns no history name for a command typed as words there, and the glue adds none beside a call with `-P`.
-  (6.48 offers them beside a command's names that are no file names in a quoted command with a `/` before the word, `"ls /etc --col`: in a call
-  of their own with the command's matcher, without which zsh took the quote off the line.)
 - Revisit when: 6.49: find why the engine leaves out a command typed as words beside local names, and add history names beside a call with
   `-P` in a call of their own, with its `-P` and `-p`.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder).

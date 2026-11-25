@@ -2130,19 +2130,23 @@ def test_zsh_a_history_name_beside_a_directory_here_waits_for_the_directory_s_sl
 	assert line == opener + expected, line
 
 
-@GNU_TOOLS
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
-@pytest.mark.parametrize('typed, history, steps, expected', [
-	('mssh h "ls /etc --col', '"ls /etc --colzz"', [], 'mssh h "ls /etc --col'),
-	('mssh h "ls /etc --col', '"ls /etc --colzz"', ['z\t'], 'mssh h "ls /etc --colzz" '),
-	('mssh h "echo $USER; ls /etc --col', '"echo $USER; ls /etc --colzz"', ['z\t'], 'mssh h "echo $USER; ls /etc --colzz" '),
-])
-def test_zsh_a_history_name_goes_in_beside_a_command_s_options_after_a_slash_typed_earlier_in_a_quoted_command(tmp_path, opener, typed, history,
-		steps, expected):
-	# with a / earlier in the command, mssh's history names went in only where the command offered nothing, or beside file names: ls's
-	# --color= went in alone. Beside them, in a call without the command's matcher, zsh took the quote off the line
-	line, _ = review_line(tmp_path, 'zsh', opener + typed, history=[history], steps=steps, pre='mssh() { :; }')
-	assert line == opener + expected, line
+@pytest.mark.parametrize('typed, history, extra', [
+	# (a completion that adds names with a matcher, then makes a call that adds none or other names without one: a call of mssh's own with
+	# the history names, after those, took the quote off the line (6.48's first build); stock ps, df and rsync do the same)
+	('mssh h "zzc /etc --col', '"zzc /etc --colzz"', "_zzc() { compadd -M 'r:|[_-]=* r:|=*' -- --color --columns; compadd -x 'a message' }; compdef _zzc zzc"),
+	('mssh h "zzc /etc --col', '"zzc /etc --colzz"', "_zzc() { compadd -M 'r:|[_-]=* r:|=*' -- --color --columns; compadd -- other }; compdef _zzc zzc"),
+	('mssh h "zzc /etc co_n', '"zzc /etc co_name_zz"', "_zzc() { compadd -M 'r:|[_-]=* r:|=*' -- co_name co_number; compadd -- other }; compdef _zzc zzc"),
+	('mssh h "ps -C a/b --for', '"ps -C a/b --format=pid"', ''),
+	('mssh h "df /etc --out', '"df /etc --output=source"', ''),
+	('mssh h "rsync -a /etc/ --exc', '"rsync -a /etc/ --exclude=x"', ''),
+], ids=['matcher-message', 'matcher-names', 'matcher-prefix', 'ps', 'df', 'rsync'])
+def test_zsh_tab_keeps_what_was_typed_beside_a_history_name_after_a_slash_in_a_quoted_command(tmp_path, opener, typed, history, extra):
+	# a history name beside a command's options is not offered there (the entry "zsh: in a quoted word holding a `/`, no history name beside a
+	# command's names that are no file names"), but TAB leaves the quote and the words typed on the line: with the names added in a call of
+	# their own, ps and rsync lost the quote (mssh h ps -C a/b --for) and df lost the words typed (mssh h "df )
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, history=[history], extra=extra, pre='mssh() { :; }')
+	assert line is not None and line.startswith(opener + typed), line
 
 
 # typed, what review_line gets, then the line after TAB (or after the keys of steps)
