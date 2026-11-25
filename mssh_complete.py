@@ -5977,10 +5977,11 @@ _mssh_complete_head() {
 	fi
 	# (a directory holding one; the word itself when it is one, a ~user or a $VAR being typed: a $ in a name is the name's.
 	# Not a $ or a backtick in directories that are there as written, zzd$x/: bash's completion reads them so whenever they
-	# are, and its names are of that directory, which goes in written as the remote shell's word, as one holding a & does)
+	# are, and its names are of that directory, which goes in written as the remote shell's word, as one holding a & does. A leading ~/
+	# is this shell's home, as the remote shell would read it)
 	local -i _mssh_complete_literal=0
 	_mssh_complete_unescape "${1%/*}"
-	[[ $1 == */* && -d $_mssh_complete_value ]] && _mssh_complete_literal=1
+	[[ $1 == */* && -d ${_mssh_complete_value/#'~/'/$HOME/} ]] && _mssh_complete_literal=1
 	while [[ $_mssh_complete_part == */* ]]; do
 		_mssh_complete_one=${_mssh_complete_part%%/*}
 		_mssh_complete_seen+=$_mssh_complete_one

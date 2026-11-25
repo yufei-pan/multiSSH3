@@ -3008,6 +3008,19 @@ def test_a_typed_directory_holding_a_dollar_that_is_there_as_written_reaches_the
 
 
 @pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
+def test_a_typed_directory_holding_a_dollar_under_the_home_reaches_the_remote_shell_as_named(tmp_path, shell):
+	# the directory is tested with the ~/ read as this shell's home, as the remote shell reads it: with the ~ as typed it was no directory
+	# here, and zzd$x/zzin went in bare (the remote shell read ~/zzd/zzin). zsh, and ble.sh with its bare $x, offer nothing (as above)
+	typed = 'mssh h cat ~/zzd$x/zz'
+	line, remote = review_line(tmp_path, shell, typed, home_dirs=['zzd$x'], home_files=['zzd$x/zzin'])
+	if shell == 'readline':
+		# (typed bare, the ~ is this shell's: mssh gets its home)
+		assert remote == ['cat', str(tmp_path / 'home') + '/zzd$x/zzin'], line
+	else:
+		assert line == typed, line
+
+
+@pytest.mark.parametrize('shell', ['readline', 'ble', 'zsh'])
 @pytest.mark.parametrize('typed, name', [('mssh h ls $HOME/zzq', 'zzq&x'), ('mssh h ls $HOME/zzd', 'zzdir')])
 def test_a_directory_under_a_typed_home_gets_its_slash(tmp_path, shell, typed, name):
 	# readline tested the name it wrote, $HOME/zzq&x, as a path here (a literal $HOME): no /, and a space after it
