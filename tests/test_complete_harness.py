@@ -68,7 +68,8 @@ def _gone(pid):
 def test_a_test_that_ends_without_closing_its_session_leaves_neither_the_shell_nor_the_terminal_reader():
 	# the reader holds the terminal's master: while it ran on after its test, a test killed (the time limit, a stopped run) or ended with
 	# os._exit left the reader and the shell, which gets no hangup while a master is open, running for ever. The child ends as that test does.
-	# (Not python -I: the harness imports pytest, which the matrix's python 3.6 images keep in the user's site, which -I leaves out)
+	# (Not python -I: the harness imports pytest, which the matrix's python 3.6 images keep in /usr/local/lib/python3.6/site-packages, a
+	# directory that CentOS's python reads only with the user site on, and -I turns that off)
 	script = ('import os, sys\nsys.path[:0] = sys.argv[1:]\nimport complete_shell_harness as h\n'
 		"session = h.Session([sys.executable, '-c', 'import time; time.sleep(600)'], dict(os.environ))\n"
 		'print(session.pid, session._screen.pid, flush=True)\nos._exit(0)\n')

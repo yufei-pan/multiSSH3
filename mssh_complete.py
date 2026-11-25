@@ -5978,7 +5978,7 @@ _mssh_complete_head() {
 	# (a directory holding one; the word itself when it is one, a ~user or a $VAR being typed: a $ in a name is the name's.
 	# Not a $ or a backtick in directories that are there as written, zzd$x/: bash's completion reads them so whenever they
 	# are, and its names are of that directory, which goes in written as the remote shell's word, as one holding a & does. A leading ~/
-	# is this shell's home, as the remote shell would read it)
+	# is tested as this shell's home: the names are this machine's)
 	local -i _mssh_complete_literal=0
 	_mssh_complete_unescape "${1%/*}"
 	[[ $1 == */* && -d ${_mssh_complete_value/#'~/'/$HOME/} ]] && _mssh_complete_literal=1

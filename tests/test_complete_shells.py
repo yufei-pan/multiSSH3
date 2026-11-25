@@ -2152,7 +2152,8 @@ def test_zsh_a_word_su_c_splits_gets_no_default_names_whether_su_is_typed_by_its
 	('mssh h zzc zzd', 'compadd zzdfoo', ['i\t'], 'mssh h zzc zzdir/zzremote '),
 	('mssh h "zzc zzd', 'compadd zzdfoo', [], 'mssh h "zzc zzd'),
 	('mssh h "zzc zzd', 'compadd zzdfoo', ['i\t'], 'mssh h "zzc zzdir/zzremote" '),
-	# (one that offers the directory too: the directory goes in alone, as for cat, and one that offers no name that matches: the history name whole)
+	# (one that offers the directory too, as a directory: the history name is held back and TAB stays at what the names share, zzd. One that
+	# offers no name that matches: the history name goes in whole)
 	('mssh h zzc zzd', 'compadd zzdfoo; compadd -S/ zzdir', [], 'mssh h zzc zzd'),
 	('mssh h zzc zzd', 'compadd zzother', [], 'mssh h zzc zzdir/zzremote '),
 	# (a name spelled like the directory that the command offers as a plain word, with a space after it: no hold, the line stays at zzdir and /zz

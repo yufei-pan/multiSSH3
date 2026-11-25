@@ -689,26 +689,26 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### zsh: in a quoted word holding a `/`, no history name beside a command's names that are no file names
 - Kind: deferred (6.49)
-- What the operator sees: in zsh, in a quoted command, a double-quoted word holding an expansion or after a quote at an `=`, when the
-  word (or, in a quoted command, any word before it) holds a `/` and the command's completion offers names that are no file names,
-  mssh's history names are not offered beside them: `mssh h "ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
+- What the operator sees: in zsh, in a quoted command with a `/` in the word or in a word before it, and in a double-quoted word holding an
+  expansion or after a quote at an `=` with a `/` in the word, when the command's completion offers names that are no file names, mssh's
+  history names are not offered beside them: `mssh h "ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
   When the command offers nothing they go in, as before. Beside file names, and beside a directory a command gives with an option's text,
   see [the entry below](#zsh-no-history-name-beside-a-directory-a-command-gives-with-an-options-text-nor-from-a-command-typed-as-words).
 - Why: 6.47 puts them in the call that adds the command's file names, with its IPREFIX, PREFIX and `-p`. Put in the first call of any
   kind whose PREFIX they start with, they made zsh drop the quote (`mssh h ls /etc --col`), so 6.47 keeps them to file names. 6.48 tried a
   call of their own with the command's matcher: right for `ls`, but `ps` and `rsync` lost the quote and `df` lost the typed words (their
   completions add names with other matchers and prefixes), so 6.48 took it out again.
-- Revisit when: 6.49: find which call took the quote (one with `-P`, `-S` or a description), and add history names in a call of their
-  own after the command's names, with the IPREFIX the glue's split gives; or decide that they cannot go in beside such names, as the
-  review of 6.48 asked.
+- Revisit when: 6.49, design first: whether history names can go in beside such names at all. 6.48's call of their own after the
+  command's names, with the command's matcher, took the quote off the line for `ps` and `rsync` and cut `df`'s line back.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 fix round 1).
 
 ### zsh: no history name beside a directory a command gives with an option's text, nor from a command typed as words
 - Kind: deferred (6.49)
 - What the operator sees: in zsh, mssh's history names are not offered beside a directory that the command's completion gives with an
-  option's text, after a quote at an `=` or unquoted: `mssh h make CFLAGS="-Isub/zz<TAB>` and `CFLAGS=-Isub/zz<TAB>` with a directory
-  `sub/zzlocal` and `make CFLAGS=-Isub/zzhist` in history give `-Isub/zzlocal/` alone (as in 6.46; in a quoted command, `"make CFLAGS=-Isub/zz`,
-  they are offered). Beside local file names in a word holding a `/`, a history entry typed as words (`mssh h cat sub/zzremote`, `dd if=sub/zzremote`)
+  option's text: `mssh h make CFLAGS="-Isub/zz<TAB>`, `make CFLAGS=-Isub/zz<TAB>` and `"make CFLAGS=-Isub/zz<TAB>` with a directory
+  `sub/zzlocal` and `make CFLAGS=-Isub/zzhist` typed as words in history give `-Isub/zzlocal/` alone (as in 6.46). A history entry that is
+  a quoted argument (`"make CFLAGS=-Isub/zzhist"`) is offered in the last two, not after the quote at the `=`. Beside local file names in a
+  word holding a `/`, a history entry typed as words (`mssh h cat sub/zzremote`, `dd if=sub/zzremote`)
   is not offered, on the line, in a quoted command, inside `$( )` and backticks (as in 6.46 and 6.47); one whose command was a quoted argument
   (`mssh h "cat sub/zzremote"`) is. When the command offers nothing they go in, as before.
 - Why: not traced; the engine returns no history name for a command typed as words there, and the glue adds none beside a call with `-P`.
@@ -747,7 +747,9 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Kind: deferred (6.49)
 - What the operator sees: in zsh, in a double-quoted command holding an expansion, a quote the command opens partway through the word at
   the cursor offers nothing (`mssh h "echo $USER zz'a b<TAB>`), and so does a `\"` quote holding a `$`, a backtick or a backslash, which the
-  remote shell would read in it (`mssh h "echo $USER \"zz\\\$x`). A quote opened at the word's start completes (6.48: `"echo $USER 'zz<TAB>`).
+  remote shell would read in it (`mssh h "echo $USER \"zz\\\$x`). So does the TAB after TAB wrote a name's start with its `!` outside the
+  double quote and a letter was typed behind it (bang_hist on): `\"zz"\!"x` or `'zz"\!"x` for files `zz!x` and `zz!y`, `\"zzd"\!"x/zz` for a
+  directory `zzd!x`. A quote opened at the word's start completes (6.48: `"echo $USER 'zz<TAB>`).
 - Why: the glue reads a quote at the word's start into IPREFIX; one partway through needs the place in the typed text where the quote's
   reading starts.
 - Revisit when: 6.49: map the quote's place in the text read back to the text typed, and read the part before it as the double quote does.
@@ -776,6 +778,33 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Why: zsh takes the start the words share as they are written (`-Q`), `zz\\\$x` and `zz\\&y`, not as the names they stand for.
 - Revisit when: 6.49: insert the written form of the start the names share (`zz`), as zsh does for the words it writes itself.
 - Noted: 2026-11-23, the user's standing rule that deferrals are noted, not asked (found by the 6.48 builder).
+
+### zsh: in a quoted command with a `/` before it, TAB on df's lone `-` cuts the line back
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, `mssh h "df /etc -<TAB>` leaves `mssh h "df `, the typed `/etc -` gone, with or without history (as in
+  6.47). `mssh h df /etc -<TAB>` and `mssh h "df -<TAB>` keep the line.
+- Why: not traced (found by the 6.48 fix round).
+- Revisit when: 6.49: find which of df's calls cuts the line back.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked.
+
+### zsh: a name holding `!` in a double quote that the remote command opens in a quoted command reaches it with a backslash
+- Kind: deferred (6.49)
+- What the operator sees: in zsh with bang_hist on, `mssh h "cat \"zz<TAB>` with a file `zz!x` gives `\"zz\\\!x\"`, and
+  `mssh h 'cat "zz<TAB>` gives `"zz\!x"`: the remote shell gets `zz\!x`. As in 6.47. `setopt no_bang_hist` avoids it.
+- Why: there zsh writes the word itself (`compset -q`), for its own double quote, where the `\!` is history's escape. The remote shell's
+  double quote keeps the backslash.
+- Revisit when: 6.49: put the `!` outside both quotes, as 6.48 does for a double-quoted command holding an expansion, or offer nothing
+  there with bang_hist on.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by the 6.48 fix round's review).
+
+### zsh: the start two names share is not put in when it ends in an escaped blank
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, with files `zz!x y` and `zz!x z`, `mssh h cat "zz<TAB>` and `mssh h cat zz<TAB>` leave the line at `zz`,
+  and a second TAB too: the start the two share, `zz\!x\ `, is not written, so a `y` typed next is `zzy` and completes nothing. As in
+  6.47, with `setopt no_bang_hist` too.
+- Why: not traced (found by the 6.48 final review).
+- Revisit when: 6.49: find where the start the names share is left out, with the entry above on the start that ends inside an escape.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked.
 
 ### The centos7 test image patches ble.sh's conditional-sync
 - Kind: deferred
