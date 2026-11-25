@@ -2155,12 +2155,37 @@ def test_zsh_a_word_su_c_splits_gets_no_default_names_whether_su_is_typed_by_its
 	# (one that offers the directory too: the directory goes in alone, as for cat, and one that offers no name that matches: the history name whole)
 	('mssh h zzc zzd', 'compadd zzdfoo; compadd -S/ zzdir', [], 'mssh h zzc zzd'),
 	('mssh h zzc zzd', 'compadd zzother', [], 'mssh h zzc zzdir/zzremote '),
+	# (a name spelled like the directory that the command offers as a plain word, with a space after it: no hold, the line stays at zzdir and /zz
+	# picks the history name. A name added twice is what its first call made it, as zsh keeps the first: a plain word and then the file name,
+	# a plain word; a file name and then a plain word, the directory)
+	('mssh h zzc zzd', 'compadd zzdfoo zzdir', ['i\t', '/zz\t'], 'mssh h zzc zzdir/zzremote '),
+	('mssh h "zzc zzd', 'compadd zzdfoo zzdir', ['i\t', '/zz\t'], 'mssh h "zzc zzdir/zzremote" '),
+	('mssh h zzc zzd', 'compadd zzdir; compadd -f zzdir', ['/zz\t'], 'mssh h zzc zzdir/zzremote '),
+	('mssh h "zzc zzd', 'compadd zzdir; compadd -f zzdir', ['/zz\t'], 'mssh h "zzc zzdir/zzremote" '),
+	('mssh h zzc zzd', 'compadd -f zzdir; compadd zzdir', [], 'mssh h zzc zzdir/'),
+	('mssh h "zzc zzd', 'compadd -f zzdir; compadd zzdir', [], 'mssh h "zzc zzdir/'),
 ])
 def test_zsh_a_history_name_in_a_directory_here_waits_only_where_the_command_offers_that_directory(tmp_path, opener, typed, command, steps, expected):
 	# the name waited for the command's names and went in only if it added none: beside a name that is no directory (a git branch, an image)
-	# TAB wrote that name alone, and the history name was lost until the directory was typed (6.48's first build)
+	# TAB wrote that name alone, and the history name was lost until the directory was typed (6.48's first build). Beside a plain word spelled
+	# like the directory it waited too, and was never offered: "mssh h zzc zzdir " (rows f08 and mt2 of the re-review)
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], history=['"zzc zzdir/zzremote"'], steps=steps, pre='mssh() { :; }',
 		extra='_zzc() {{ {} }}; compdef _zzc zzc'.format(command))
+	assert line == opener + expected, line
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, steps, expected', [
+	('mssh h make zzd', ['i\t', '/zz\t'], 'mssh h make zzdir/zzremote '),
+	('mssh h make zzdi', ['/zz\t'], 'mssh h make zzdir/zzremote '),
+	('mssh h "make zzd', ['i\t', '/zz\t'], 'mssh h "make zzdir/zzremote" '),
+	('mssh h "make zzdi', ['/zz\t'], 'mssh h "make zzdir/zzremote" '),
+])
+def test_zsh_a_make_target_spelled_like_a_directory_here_keeps_the_history_name_beside_it(tmp_path, opener, typed, steps, expected):
+	# make adds its targets, then the file names: zzdir twice, the first time as a plain word. 6.48 before this fix wrote "mssh h make zzdir "
+	# (the target, with a space) and the history name make zzdir/zzremote was never offered; 6.47 stayed at zzdir and /zz picked it
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], files=['Makefile'], history=['"make zzdir/zzremote"'], steps=steps,
+		pre='mssh() { :; }', extra="printf 'zzdir:\\n\\ttrue\\nzzdfoo:\\n\\ttrue\\n' > Makefile")
 	assert line == opener + expected, line
 
 
