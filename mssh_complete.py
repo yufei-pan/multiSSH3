@@ -7275,8 +7275,9 @@ _mssh() {
 	local -i _mssh_complete_remaining _mssh_complete_files=0 _mssh_complete_nodefault=0 _mssh_complete_delegating=0 _mssh_complete_qcommand=0 _mssh_complete_inquote=0
 	local -i _mssh_complete_dcword _mssh_complete_offset _mssh_complete_matches=$compstate[nmatches] _mssh_complete_remoting=0
 	local -a _mssh_complete_fields _mssh_complete_texts _mssh_complete_listed _mssh_complete_textopts _mssh_complete_dq_parts _mssh_complete_split _mssh_complete_split_seen
-	# (the places in _mssh_complete_texts of the words _mssh_complete_add_texts leaves for after the command's names)
-	local -a _mssh_complete_texts_later
+	# (the places in _mssh_complete_texts of the words _mssh_complete_add_texts leaves for after the command's names, each one's directory
+	# here, and the names the command added: _mssh_complete_compadd)
+	local -a _mssh_complete_texts_later _mssh_complete_texts_later_dirs _mssh_complete_cmd_names
 	# a double-quoted word holding an expansion: zsh keeps no quote for it (compstate[quote] empty, PREFIX the whole text with
 	# its spaces backslashed), and what goes in replaces the word from its opening quote. The word is read from the line as
 	# typed: the quote goes in IPREFIX, so it stays there, and every word goes in as in an open quote
@@ -7497,7 +7498,9 @@ _mssh() {
 			_mssh_complete_dq_parts=()
 			_mssh_complete_in_word names
 		fi
-		(( $#_mssh_complete_texts_later && compstate[nmatches] == _mssh_complete_texts_in )) && _mssh_complete_add_texts later
+		# (a word left for the command's names goes in beside them unless they include its directory. Where compadd is the shell's own, the names
+		# are not known: it goes in where the command added nothing)
+		(( $#_mssh_complete_texts_later && ( _mssh_complete_wrap || compstate[nmatches] == _mssh_complete_texts_in ) )) && _mssh_complete_add_texts later
 		(( $#_mssh_complete_split )) && _mssh_complete_add_split
 		(( ${#_mssh_complete_texts} )) && _mssh_complete_add_texts after
 		# nothing offered: what zsh offers for a command it has no completion for, file names (bash's
@@ -7533,23 +7536,27 @@ _mssh_complete_add_texts() {
 	fi
 	local _mssh_complete_head=${(M)PREFIX##*[/[:blank:]]} _mssh_complete_read _mssh_complete_text _mssh_complete_word _mssh_complete_inq
 	local -a _mssh_complete_shown _mssh_complete_whole _mssh_complete_whole_shown _mssh_complete_bwords _mssh_complete_bshown
-	local -i _mssh_complete_at _mssh_complete_split=0
+	local -i _mssh_complete_at _mssh_complete_split=0 _mssh_complete_nth
 	if [[ $1 == first ]]; then
 		[[ $PREFIX == */* ]] && return 0
 		# (not a word whose part after the text typed, to its first /, names a directory here, cat zzdir/zzremote for zzd: beside that
 		# directory, whose / is a suffix, the two shared only zzdir, and TAB stopped before the /. It waits for the command's names (later of
-		# _mssh): with none it goes in whole, else the directory goes in with its /, and the next TAB there offers it beside the names in it)
+		# _mssh): it goes in whole unless they include the directory, which goes in with its /, and the next TAB there offers the word beside
+		# the names in it)
 		for (( _mssh_complete_at = 1; _mssh_complete_at <= $#_mssh_complete_texts; _mssh_complete_at++ )); do
 			_mssh_complete_text=${_mssh_complete_was_texts[_mssh_complete_at]#"${(M)_mssh_complete_texts_read##*[[:blank:]]}"}
 			if [[ $_mssh_complete_text == */* && -d ${_mssh_complete_text%%/*} ]]; then
 				_mssh_complete_texts_later+=($_mssh_complete_at)
+				_mssh_complete_texts_later_dirs+=("${_mssh_complete_text%%/*}")
 			else
 				_mssh_complete_whole+=("$_mssh_complete_texts[_mssh_complete_at]")
 				_mssh_complete_whole_shown+=("$_mssh_complete_listed[_mssh_complete_at]")
 			fi
 		done
 	elif [[ $1 == later ]]; then
-		for _mssh_complete_at in $_mssh_complete_texts_later; do
+		for (( _mssh_complete_nth = 1; _mssh_complete_nth <= $#_mssh_complete_texts_later; _mssh_complete_nth++ )); do
+			(( ${_mssh_complete_cmd_names[(Ie)$_mssh_complete_texts_later_dirs[_mssh_complete_nth]]} )) && continue
+			_mssh_complete_at=$_mssh_complete_texts_later[_mssh_complete_nth]
 			_mssh_complete_whole+=("$_mssh_complete_texts[_mssh_complete_at]")
 			_mssh_complete_whole_shown+=("$_mssh_complete_listed[_mssh_complete_at]")
 		done
@@ -8165,6 +8172,8 @@ _mssh_complete_compadd() {
 	else
 		_mssh_complete_in=("${(@)argv[_mssh_complete_at,-1]}")
 	fi
+	# (the names the command adds, a directory with no / (a suffix or not), for _mssh's words left for after them: _mssh_complete_add_texts)
+	(( ! _mssh_complete_filter && $#_mssh_complete_texts_later )) && _mssh_complete_cmd_names+=("${(@)_mssh_complete_in%/}")
 	# (a value after a quote at an = that the command's completion split into words of its own (compset -q, as _gcc does for make
 	# CFLAGS="-O): its names reach here without the lead and the quote, and zsh would write them CFLAGS=-ggdb, the quote gone, and
 	# quote them again for the double quote. Each call is kept for _mssh (_mssh_complete_add_split), which puts the names in the quote

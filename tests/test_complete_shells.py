@@ -2134,6 +2134,25 @@ def test_zsh_a_history_name_beside_a_directory_here_waits_for_the_directory_s_sl
 
 
 @pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
+@pytest.mark.parametrize('typed, command, steps, expected', [
+	# (a command that offers a name and no directory: the history name is offered beside it, as in 6.47, and TAB stays at what they share)
+	('mssh h zzc zzd', 'compadd zzdfoo', [], 'mssh h zzc zzd'),
+	('mssh h zzc zzd', 'compadd zzdfoo', ['i\t'], 'mssh h zzc zzdir/zzremote '),
+	('mssh h "zzc zzd', 'compadd zzdfoo', [], 'mssh h "zzc zzd'),
+	('mssh h "zzc zzd', 'compadd zzdfoo', ['i\t'], 'mssh h "zzc zzdir/zzremote" '),
+	# (one that offers the directory too: the directory goes in alone, as for cat, and one that offers no name that matches: the history name whole)
+	('mssh h zzc zzd', 'compadd zzdfoo; compadd -S/ zzdir', [], 'mssh h zzc zzd'),
+	('mssh h zzc zzd', 'compadd zzother', [], 'mssh h zzc zzdir/zzremote '),
+])
+def test_zsh_a_history_name_in_a_directory_here_waits_only_where_the_command_offers_that_directory(tmp_path, opener, typed, command, steps, expected):
+	# the name waited for the command's names and went in only if it added none: beside a name that is no directory (a git branch, an image)
+	# TAB wrote that name alone, and the history name was lost until the directory was typed (6.48's first build)
+	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], history=['"zzc zzdir/zzremote"'], steps=steps, pre='mssh() { :; }',
+		extra='_zzc() {{ {} }}; compdef _zzc zzc'.format(command))
+	assert line == opener + expected, line
+
+
+@pytest.mark.parametrize('opener', ['', '$(', '`'], ids=['line', 'dollar-paren', 'backtick'])
 @pytest.mark.parametrize('typed, history, extra', [
 	# (a completion that adds names with a matcher, then makes a call that adds none or other names without one: a call of mssh's own with
 	# the history names, after those, took the quote off the line (6.48's first build); stock ps, df and rsync do the same)
