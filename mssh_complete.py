@@ -8330,7 +8330,12 @@ _mssh_complete_compadd() {
 				# (in a quote the command opened, the name as the remote shell reads it there: ' as '\'', and in a \" quote, which holds no
 				# expansion, a \\ and a " escaped, $ and ` too)
 				[[ ${_mssh_complete_inner-} == \' ]] && _mssh_complete_value=${_mssh_complete_name//\'/\'\\\'\'}
-				[[ ${_mssh_complete_inner-} == \" ]] && _mssh_complete_value=${${(qqq)_mssh_complete_name}[2,-2]}
+				if [[ ${_mssh_complete_inner-} == \" ]]; then
+					_mssh_complete_value=${${(qqq)_mssh_complete_name}[2,-2]}
+					# (with bang_hist on (qqq) writes each ! as \!, for zsh's history: here the remote shell reads it in its quote, where the
+					# backslash would stay, so a ! goes in bare, and goes outside the double quote below, as in a ' quote)
+					[[ ${_mssh_complete_compsys_options[banghist]-} == on ]] && _mssh_complete_value=${_mssh_complete_value//\\\!/\!}
+				fi
 			fi
 			_mssh_complete_quote_in "$_mssh_complete_value"
 			_mssh_complete_word=$_mssh_complete_inq

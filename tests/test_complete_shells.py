@@ -2108,6 +2108,9 @@ def test_zsh_a_word_the_command_splits_typed_otherwise_than_zsh_writes_it_gets_n
 	("mssh h \"echo $USER 'zz", ['zz!y'], ['echo', 'zz!y']),
 	("mssh h \"echo $USER 'zz", ['zz$v&w'], ['echo', 'zz$v&w']),
 	('mssh h "echo $USER \\"zz', ['zz x'], ['echo', 'zz x']),
+	# (the remote shell reads a \! in its double quote as it is: with bang_hist on the name went in written \\"\!"x, and it got zz\!x)
+	('mssh h "echo $USER \\"zz', ['zz!x'], ['echo', 'zz!x']),
+	('mssh h "echo $USER \\"zz', ['zz\\!x'], ['echo', 'zz\\!x']),
 ])
 def test_zsh_a_quote_opened_in_a_double_quoted_command_holding_an_expansion_gets_its_names(tmp_path, opener, closer, typed, files, remote):
 	# the glue's split put the word at the cursor with its quote, 'zz, to the completion, which found no name: nothing was offered (q134 to
