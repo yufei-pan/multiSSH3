@@ -618,6 +618,86 @@ def test_pick_leaves_the_terminal_alone_when_the_shell_claimed_it(tmp_path, take
 		os.close(read_end)
 
 
+EDIT_CLAIM = ['edit', '--claim', '--flags', 'utf8=1 turkic=0', '--', 'mssh ']
+
+
+def test_edit_claims_the_terminal_before_it_takes_it(tmp_path):
+	# bash's glue runs the editor through START_SCRIPT, as the pickers of every shell: edit --claim, MSSH_COMPLETE_CLAIM
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	claim = tmp_path / 'wait dir' / 'claim'
+	claim.parent.mkdir()
+	process, master, read_end = start_on_a_terminal(EDIT_CLAIM, b'', dict(env, MSSH_COMPLETE_CLAIM=str(claim)), listening=True)
+	try:
+		end = time.monotonic() + 10
+		while not claim.is_dir() and time.monotonic() < end and process.poll() is None:
+			time.sleep(0.02)
+		assert claim.is_dir()
+		assert b'mssh ' in terminal_output(master, 5.0, until=b'mssh ')
+		os.write(master, b'\r')
+		assert wait_reading(process, master) == 0
+		assert terminal_output(read_end, 5.0, until=b'E\n').startswith(b'MSSHC1\nL 5\tmssh \nK pass\t')
+	finally:
+		process.kill()
+		close_terminal(master)
+		os.close(read_end)
+
+
+@pytest.mark.parametrize('taken', ['by the shell', 'gone'])
+def test_edit_leaves_the_terminal_alone_when_the_shell_claimed_it(tmp_path, taken):
+	# START_SCRIPT stopped waiting (its time limit, a Ctrl-C) and claimed it first, or cleaned up its directory: 3, as when the
+	# editor cannot start, and the shell gives a space
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	claim = tmp_path / 'wait' / 'claim'
+	if taken == 'by the shell':
+		claim.mkdir(parents=True)
+	process, master, read_end = start_on_a_terminal(EDIT_CLAIM, b'', dict(env, MSSH_COMPLETE_CLAIM=str(claim)), listening=True)
+	try:
+		assert process.wait(10) == 3
+		assert terminal_output(master, 0.3) == b'' and terminal_output(read_end, 0.3) == b''
+	finally:
+		process.kill()
+		close_terminal(master)
+		os.close(read_end)
+
+
+@pytest.mark.parametrize('args, data, status, answer', [
+	(['pick'], CLAIM_PICK, 1, b''),
+	(EDIT_CLAIM, b'', 0, b'MSSHC1\nL 7\tmssh gp\nK pass\t\nE\n'),
+], ids=['pick', 'edit'])
+def test_pick_and_edit_give_the_terminal_back_after_the_idle_limit(tmp_path, args, data, status, answer):
+	# MSSH_COMPLETE_IDLE, the shell's TMOUT from the bash glue: bash before 5.1 logs an idle shell out only once they are done.
+	# A key starts the count again; then the picker ends as cancelled, the editor hands the line back as it stands
+	import os
+	from complete_shell_harness import make_home
+	env, _ = make_home(tmp_path, HISTORY)
+	process, master, read_end = start_on_a_terminal(args, data, dict(env, MSSH_COMPLETE_IDLE='3'), listening=True)
+	try:
+		drawn = b'type to filter' if args[0] == 'pick' else b'mssh '
+		assert drawn in terminal_output(master, 10.0, until=drawn)
+		terminal_output(master, 1.5)
+		assert process.poll() is None
+		os.write(master, b'gp')
+		# past 3 s from the first draw: the count started again at the key
+		terminal_output(master, 2.0)
+		assert process.poll() is None
+		assert wait_reading(process, master) == status
+		assert terminal_output(read_end, 2.0, until=b'E\n' if answer else None) == answer
+	finally:
+		process.kill()
+		close_terminal(master)
+		os.close(read_end)
+
+
+@pytest.mark.parametrize('value, limit', [('', None), ('300', 300.0), ('2.5', 2.5), ('0', None), ('-1', None), ('abc', None), ('inf', None), ('nan', None)])
+def test_the_idle_limit_is_a_number_of_seconds_above_0(monkeypatch, value, limit):
+	monkeypatch.setenv('MSSH_COMPLETE_IDLE', value)
+	assert mc.idle_limit() == limit
+
+
 @pytest.mark.parametrize('shell', ['zsh', 'fish'])
 def test_slot_items_inside_an_open_quote_in_every_shell(shell):
 	# zsh and fish send the word as typed, quote included: the picker must too (here it ends in a space)
@@ -721,7 +801,7 @@ def test_a_claim_that_failed_for_another_reason_does_not_blame_the_shell(tmp_pat
 	def refuse(*args):
 		raise error
 	monkeypatch.setattr(os, 'mkdir', refuse)
-	assert mc._claim_terminal() is False
+	assert mc._claim_terminal('pick') is False
 	assert len(logged) == 1 and 'went on' not in logged[0] and error.strerror in logged[0], logged
 
 
@@ -747,7 +827,7 @@ class _Steps(object):
 		steps = self
 
 		class FakeTerminal(object):
-			def __init__(self, *args):
+			def __init__(self, *args, **kwargs):
 				pass
 
 			def __enter__(self):

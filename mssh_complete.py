@@ -4477,23 +4477,42 @@ def ghost_style(term):
 # bytes of a paste kept at most: all of it is read (none may reach the shell as typed keys), the rest dropped
 PASTE_KEEP = 65536
 
+class Idle(Exception):
+	'''No key came for the terminal's idle limit (Terminal.read_key).'''
+
+def idle_limit():
+	'''
+	The seconds without a key after which the picker and the editor give the terminal back: MSSH_COMPLETE_IDLE, which
+	the bash glue sets to the shell's TMOUT (bash before 5.1 cannot log an idle shell out while they run); None when it
+	is not a number above 0.
+	'''
+	try:
+		limit = float(os.environ.get('MSSH_COMPLETE_IDLE', ''))
+	except ValueError:
+		return None
+	return limit if 0 < limit < float('inf') else None
+
 class Terminal(object):
 	'''
 	The controlling terminal in raw mode, for the picker and the editor. Restores the mode on exit and on
-	SIGTERM / SIGHUP; a resize (SIGWINCH) ends the wait for a key (read_key returns 'resize').
+	SIGTERM / SIGHUP; a resize (SIGWINCH) ends the wait for a key (read_key returns 'resize'). With idle
+	(seconds), read_key raises Idle once that long has passed without a key.
 	'''
-	def __init__(self, path='/dev/tty'):
+	def __init__(self, path='/dev/tty', idle=None):
 		self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
 		self._saved = None
 		self._handlers = {}
 		# a pipe the SIGWINCH handler writes to, so the wait for a key ends: Python would retry an
 		# interrupted select() after running the handler
 		self._resized = None
+		self.idle = idle
+		self._last_key = time.monotonic()
 
 	def __enter__(self):
 		import signal
 		import termios
 		import tty
+		self._last_key = time.monotonic()
 		self._saved = termios.tcgetattr(self.fd)
 		for number in (signal.SIGTERM, signal.SIGHUP):
 			self._handlers[number] = signal.signal(number, self._interrupted)
@@ -4600,11 +4619,15 @@ class Terminal(object):
 		changed size first (keys typed meanwhile stay for the next reads); None when timeout seconds
 		pass first (None: wait forever). Reads that key's bytes and no more: what was typed after it
 		stays in the terminal, in order, for whoever reads next (the shell, once the picker or the
-		editor is done).
+		editor is done). Raises Idle when the idle limit has passed since the last key.
 		'''
 		import select
 		waiting = [self.fd] + ([self._resized[0]] if self._resized else [])
-		ready = select.select(waiting, [], [], timeout)[0]
+		wait = timeout
+		if self.idle is not None:
+			left = max(self._last_key + self.idle - time.monotonic(), 0.0)
+			wait = left if timeout is None else min(timeout, left)
+		ready = select.select(waiting, [], [], wait)[0]
 		if self._resized and self._resized[0] in ready:
 			try:
 				# one report for all the resizes so far
@@ -4613,9 +4636,13 @@ class Terminal(object):
 			except OSError:
 				pass
 			return 'resize', b''
+		# (with no timeout of the caller's, only the idle limit ends the wait)
+		if not ready and self.idle is not None and (timeout is None or time.monotonic() - self._last_key >= self.idle):
+			raise Idle()
 		data = os.read(self.fd, 1) if ready else b''
 		if not data:
 			return None
+		self._last_key = time.monotonic()
 		if data == b'\x1b':
 			data += self._escape()
 		else:
@@ -10248,9 +10275,9 @@ def _prompt_from_flags(flags):
 
 def _ready():
 	'''
-	Say "ready" on stdout, just before taking the terminal (pick with ready=1, edit --ready): the shell
-	waits only so long for it. False when nobody reads any more: the shell went on without the picker
-	or the editor, and the terminal must be left alone.
+	Say "ready" on stdout, just before taking the terminal (pick with ready=1, edit --ready): the bash
+	glue of 6.48 and earlier waits only so long for it. False when nobody reads any more: the shell went
+	on without the picker or the editor, and the terminal must be left alone.
 	'''
 	try:
 		os.write(1, b'ready\n')
@@ -10258,14 +10285,16 @@ def _ready():
 	except OSError:
 		return False
 
-def _claim_terminal():
+def _claim_terminal(command):
 	'''
-	Create the directory MSSH_COMPLETE_CLAIM names (zsh and fish set it), just before taking the terminal.
+	Create the directory MSSH_COMPLETE_CLAIM names (START_SCRIPT sets it: the picker of every shell,
+	bash's editor), just before taking the terminal.
 
-	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker to take it, and creates
-	that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of the two
-	only, so a picker slow to start never draws after the shell went on. True when the terminal is
-	ours (also without MSSH_COMPLETE_CLAIM, as bash runs it).
+	The shell waits only so long (MSSH_COMPLETE_START_TIMEOUT) for the picker or the editor to take it,
+	and creates that directory itself when it stops waiting (also on Ctrl-C): mkdir succeeds for one of
+	the two only, so one slow to start never draws after the shell went on. True when the terminal is
+	ours (also without MSSH_COMPLETE_CLAIM, as the bash glue of 6.48 and earlier runs them). command
+	(pick, edit) starts the log line.
 	'''
 	path = os.environ.get('MSSH_COMPLETE_CLAIM')
 	if not path:
@@ -10276,9 +10305,9 @@ def _claim_terminal():
 	except OSError as e:
 		if isinstance(e, (FileExistsError, FileNotFoundError)):
 			# the shell claimed it first (its directory is there), or cleaned its directory up
-			_debug(lambda: 'pick: the shell went on before the claim: the terminal is left alone ({!r})'.format(e))
+			_debug(lambda: '{}: the shell went on before the claim: the terminal is left alone ({!r})'.format(command, e))
 		else:
-			_debug(lambda: 'pick: the claim on the terminal failed: the terminal is left alone ({!r})'.format(e))
+			_debug(lambda: '{}: the claim on the terminal failed: the terminal is left alone ({!r})'.format(command, e))
 		return False
 
 def _cmd_pick():
@@ -10308,16 +10337,19 @@ def _cmd_pick():
 		line = before = None
 		if prompt is not None:
 			line, before = prompt + request.before + request.after, prompt + request.before
-		# each check says itself why it failed (zsh and fish claim the terminal, bash asks for ready)
-		if not _claim_terminal():
+		# each check says itself why it failed (START_SCRIPT's claim; the bash glue of 6.48 and earlier asks for ready)
+		if not _claim_terminal('pick'):
 			return 2
 		if request.flags.get('ready') == '1' and not _ready():
 			_debug('pick: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 			return 2
-		with Terminal() as term:
+		with Terminal(idle=idle_limit()) as term:
 			# logged once the terminal is taken: "ready" comes just before that, nothing between
 			_debug('pick: ready {:.3f} s in'.format(time.monotonic() - started))
 			outcome = picker.run(term, line, before)
+	except Idle:
+		_debug('pick: no key for MSSH_COMPLETE_IDLE seconds: the terminal is given back, as cancelled')
+		return 1
 	except Exception as e:
 		_debug(lambda: 'pick failed: {!r}\n{}'.format(e, _traceback()))
 		return 2
@@ -10385,17 +10417,21 @@ def editor_completions(engine, before):
 
 def _cmd_edit(args):
 	'''
-	mssh-complete edit [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line (bash 4.4+).
+	mssh-complete edit [--claim] [--ready] [--flags FLAGS] TEXT: the plain-bash editor for an mssh line (bash 4.4+).
 
 	The prompt to redraw is in $MSSH_COMPLETE_PROMPT, expanded; stdin holds the
 	shell's history tail. Prints MSSHC1, L <cursor>\\t<line>, K <action>\\t<keys> (pass: readline
 	replays keys, written as a readline key sequence; abandon: drop the line), E. Exit 3 when the
-	editor cannot start; the shell then goes on as if it had not been asked. With --ready, "ready"
-	comes first, before the terminal is taken.
+	editor cannot start; the shell then goes on as if it had not been asked. With --claim, the editor
+	claims the terminal first (MSSH_COMPLETE_CLAIM, as pick does: START_SCRIPT); with --ready (bash glue
+	of 6.48 and earlier), "ready" comes first, before the terminal is taken.
 	'''
 	import argparse
 	parser = argparse.ArgumentParser(prog='mssh-complete edit')
 	parser.add_argument('--ready', action='store_true')
+	# an engine without it fails on the option, before it claims anything: START_SCRIPT would stop an editor that never
+	# claims at its time limit, terminal and all, so the bash glue then gives a space
+	parser.add_argument('--claim', action='store_true')
 	# taken and ignored: no released glue passes it (the editor needs bash 4.4, which expands PS1 itself)
 	parser.add_argument('--expand', action='store_true', help=argparse.SUPPRESS)
 	# request flags from bash's glue: the locale it measured in the shell (utf8, turkic)
@@ -10411,7 +10447,7 @@ def _cmd_edit(args):
 		history = [line for line in data.decode('utf-8', 'surrogateescape').split('\n') if line.strip()]
 	try:
 		engine = engine_for(Request('bash', options.text, '', '', flags=flags, history=history))
-		term = Terminal()
+		term = Terminal(idle=idle_limit())
 	except Exception as e:
 		_debug(lambda: 'editor cannot start: {!r}'.format(e))
 		return 3
@@ -10444,6 +10480,8 @@ def _cmd_edit(args):
 	# the suggestion and the warnings it opens with: asked before the shell hears "ready"
 	editor.refresh()
 	editor.refresh_warnings()
+	if options.claim and not _claim_terminal('edit'):
+		return 3
 	if options.ready and not _ready():
 		_debug('edit: the shell went on before it was ready, {:.3f} s in: the terminal is left alone'.format(time.monotonic() - started))
 		return 3
@@ -10451,7 +10489,13 @@ def _cmd_edit(args):
 		with term:
 			# logged once the terminal is taken, as pick does: keys typed before that are echoed by it
 			_debug(lambda: 'edit: ready {:.3f} s in'.format(time.monotonic() - started))
-			action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
+			try:
+				action, replay = editor.run(term, prompt, ghost_style(os.environ.get('TERM', '')))
+			except Idle:
+				# the line as it stands goes back to readline, as for a key the editor does not handle
+				_debug('edit: no key for MSSH_COMPLETE_IDLE seconds: the line is handed back')
+				editor.erase(term)
+				action, replay = 'pass', b''
 	except Exception as e:
 		_debug(lambda: 'editor failed: {!r}\n{}'.format(e, _traceback()))
 		action, replay = 'pass', b''
