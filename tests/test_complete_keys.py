@@ -15,7 +15,7 @@ import pytest
 
 import mssh_complete as mc
 from complete_shell_harness import (ENGINE, require_zsh_5_3, WITH_AND_WITHOUT_DEBUG_LOG, with_debug_log, aged, bash_locale, bash_session, blesh_session, build_index,
-	debug_log_size, fish_session, make_home, require_shell, without_command, zsh_session)
+	debug_log_size, fish_session, make_home, require_shell, Session, without_command, zsh_session)
 
 HISTORY = ['17900000{:02d}\t/x/multiSSH3.py\t-su\tgpu[01-16]\t"nvidia-smi"'.format(number) for number in range(6)] + [
 	'1790000100\t/x/multiSSH3.py\t-su -u=root\tstorage1\t"df -h /data"',
@@ -327,25 +327,97 @@ def test_bash_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
 
 
 def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
-	# at once, even when Ctrl-C does not stop the engine, which then leaves the terminal alone
+	# even when Ctrl-C would not stop the engine: it is a key while Ctrl-R works (no signal, which bash 4.3 to 5.0 cannot take in
+	# a binding), the picker's first, so the menu opens and closes, and the line stays
 	env, home = home
 	delay = 1.5
 	session = bash_session(home, env, glue_file(home, 'bash', command=slow_engine(home, delay, deaf=True)))
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
-		started = time.monotonic()
 		session.send('\x12')
 		time.sleep(0.3)
 		session.send('\x03')
-		session.read_until(b'@@READY@@ mssh gpu[01-16] ', 20)
-		assert time.monotonic() - started < delay
-		rows = [row for row in screen(session) if row]
-		assert rows == ['@@READY@@ mssh gpu[01-16]'], rows
-		# the engine is ready by now
-		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		assert 'type to filter' in session.read_until(b'type to filter', 20)
+		rows = settled(session)
+		assert [row for row in rows if row] == ['@@READY@@ mssh gpu[01-16]'], rows
+		assert termios.tcgetattr(session.fd)[3] & termios.ISIG
 		assert printed(session, 'x') == 'mssh gpu[01-16] x'
-		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+FAKE_SSH = 'ssh() { printf "@@RAN[ssh %s]@@\\n" "$*"; }'
+
+
+@pytest.mark.parametrize('how', ['ctrl-r then esc', 'ctrl-c in the menu', 'the editor then esc'])
+def test_bash_ctrl_c_after_the_picker_or_the_editor_drops_the_line(home, how):
+	# bash 4.3, 4.4 and 5.0 after an INT trap set and put back in a binding: Ctrl-C showed nothing, kept the line, and Enter ran it
+	# without its first letter (ssh h rm x)
+	env, home = home
+	if how == 'the editor then esc':
+		session = editor_session(env, home, extra=FAKE_SSH)
+	else:
+		session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + FAKE_SSH)
+	try:
+		if how == 'the editor then esc':
+			session.send('mssh ')
+			assert editor_has_the_terminal(env, session)
+			time.sleep(0.3)
+			session.send('h rm x')
+			time.sleep(0.5)
+			session.send('\x1b')
+		else:
+			session.send('mssh h rm x')
+			time.sleep(0.2)
+			session.send('\x12')
+			assert 'type to filter' in session.read_until(b'type to filter', 20)
+			time.sleep(0.3)
+			session.send('\x1b' if how == 'ctrl-r then esc' else '\x03')
+		time.sleep(1.0)
+		start = len(session.output)
+		session.send('\x03')
+		time.sleep(0.8)
+		assert printed(session, '') == ''
+		session.send('\r')
+		session.read_for(1.0)
+		assert '@@RAN[' not in session.output[start:].decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('how', ['ctrl-r then esc', 'the editor then esc'])
+def test_bash_a_command_ended_by_ctrl_c_after_the_picker_or_the_editor_gets_the_terminal_as_it_was(home, how):
+	# bash 4.2 to 5.1 save the terminal's mode after a plain foreground command of a binding (readline's, which a stty run so made
+	# them save) and put it back after the next command that a signal ends: every command after it ran with echo off and Enter as
+	# CR (no line for cat or read) until stty sane. The glue's stty calls run in command substitutions
+	env, home = home
+	if how == 'the editor then esc':
+		session = editor_session(env, home)
+	else:
+		session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		if how == 'the editor then esc':
+			session.send('mssh ')
+			assert editor_has_the_terminal(env, session)
+		else:
+			session.send('mssh h rm x')
+			time.sleep(0.2)
+			session.send('\x12')
+			assert 'type to filter' in session.read_until(b'type to filter', 20)
+		time.sleep(0.3)
+		session.send('\x1b')
+		time.sleep(1.0)
+		# (the editor gives Esc to readline, which takes the first Ctrl-U for a meta key)
+		# (the marker comes from the command itself: a Ctrl-C before bash has forked it is another case)
+		session.send("\x15\x15sh -c 'printf \"@@STARTED%s@@\\n\" 1; exec sleep 30'\r")
+		assert '@@STARTED1@@' in session.read_until(b'@@STARTED1@@', 10)
+		session.send('\x03')
+		assert '^C\n@@READY@@' in read_until_shown(session, '^C\n@@READY@@', 10)
+		session.send('cat\r')
+		time.sleep(0.6)
+		flags = termios.tcgetattr(session.fd)[3]
+		assert flags & termios.ICANON and flags & termios.ECHO, flags
 	finally:
 		session.close()
 
@@ -468,10 +540,23 @@ def test_bash_vi_mode_ctrl_r(home):
 
 # ---------------------------------------------------------------- plain bash: the mssh line editor
 
-def editor_session(env, home, command=ENGINE, **kwargs):
+def editor_session(env, home, command=ENGINE, extra='', **kwargs):
 	if bash_version(env) < 44:
 		pytest.skip('the mssh line editor needs bash 4.4 or later')
-	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH)
+	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH + '\n' + extra)
+
+
+def editor_has_the_terminal(env, session, timeout=20.0):
+	'''Whether the editor took the terminal within timeout seconds: its line "edit: ready" in the debug log (on in every shell test).'''
+	log = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
+	end = time.monotonic() + timeout
+	while time.monotonic() < end:
+		if os.path.exists(log):
+			with open(log, encoding='utf-8', errors='replace') as f:
+				if 'edit: ready' in f.read():
+					return True
+		session.read_for(0.1)
+	return False
 
 
 def test_taking_the_keys_leaves_the_operators_variables_alone(home):
@@ -787,168 +872,154 @@ def test_editor_goes_on_without_an_engine_slow_to_start(home):
 		session.close()
 
 
-def split_ready_engine(home, command):
-	"""
-	The engine, its "ready" for command (edit, pick) cut in two across the shell's 0.1 s waits for it, as
-	when the wait ends between two of the bytes bash reads one at a time: then "mssh split-ok" as the line.
-	"""
-	import shlex
-	path = home / 'split-engine'
-	path.write_text('#!/bin/sh\nif [ "$1" = {} ]; then\n\tcat >/dev/null\n\tprintf re; sleep 0.25; printf "ady\\n"\n'
-		'\tprintf "MSSHC1\\nL 13\\tmssh split-ok\\nK \\t\\nE\\n"\n\texit 0\nfi\nexec {} "$@"\n'.format(
-			command, ' '.join(shlex.quote(part) for part in ENGINE)))
-	path.chmod(0o755)
-	return [str(path)]
-
-
-def test_editor_ready_cut_by_the_wait_still_counts(home):
-	# bash 4.2 to 4.4 drop what a read that timed out had read, 5.0 and later keep it but the next read wrote over it:
-	# either way the answer was lost, and the line fell back to "mssh " with what was typed after it
+def test_bash_tab_gives_the_terminal_back_with_isig_on(home):
+	# bash 4.3 to 5.2: TAB's query runs with ISIG off (a Ctrl-C is a key until it is answered); once it is, readline has the
+	# terminal as before, and a Ctrl-C at the prompt is a signal again
 	env, home = home
-	session = editor_session(env, home, command=split_ready_engine(home, 'edit'))
+	if not 43 <= bash_version(env) < 53:
+		pytest.skip('only bash 4.3 to 5.2 turn ISIG off for TAB')
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 1, only='query')),
+		extra=FAKE_MSSH)
 	try:
-		session.send('mssh ')
-		time.sleep(1)
-		assert printed(session, '') == 'mssh split-ok'
+		session.send('mssh gp\t')
+		# the print key is read once TAB is done, and TAB completed the host
+		assert printed(session, '') == 'mssh gpu[01-16] '
+		assert termios.tcgetattr(session.fd)[3] & termios.ISIG
 	finally:
 		session.close()
 
 
-def test_picker_ready_cut_by_the_wait_still_counts(home):
+def test_bash_ctrl_c_during_tabs_query_never_runs_the_line_without_its_first_letter(home):
+	# bash 4.3 to 5.2 take no SIGINT in a completion function: ^C, no new prompt, and Enter ran `ssh h rm x` for `mssh h rm x`.
+	# There the Ctrl-C is now no signal until mssh's query is answered: the line stays as shown, and Enter runs it. On 4.2 and 5.3
+	# it drops the line, as bash does
 	env, home = home
-	session = bash_session(home, env, glue_file(home, 'bash', command=split_ready_engine(home, 'pick')))
+	version = bash_version(env)
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 1, only='query')),
+		extra=FAKE_MSSH + '\n' + FAKE_SSH)
+	try:
+		session.send('mssh h rm x\t')
+		time.sleep(0.3)
+		start = len(session.output)
+		session.send('\x03')
+		# the query answers a second after TAB
+		time.sleep(3.0)
+		session.send('\r')
+		session.read_until(b']@@', 3)
+		session.read_for(0.5)
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', session.output[start:].decode('utf-8', 'replace'))
+		assert ran == (['h rm x'] if 43 <= version < 53 else []), ran
+	finally:
+		session.close()
+
+
+# ---------------------------------------------------------------- plain bash: TMOUT with the picker or the editor
+
+def recording_engine_pids(home, command):
+	'''The engine, writing the pid of each run of command (pick, edit) to home/engine-pids first; returns (the command, the file).'''
+	pids = home / 'engine-pids'
+	path = home / 'recording-engine'
+	path.write_text('#!/bin/sh\n[ "$1" = {} ] && echo $$ >> {}\nexec {} "$@"\n'.format(command, shlex.quote(str(pids)), ' '.join(shlex.quote(part) for part in ENGINE)))
+	path.chmod(0o755)
+	return [str(path)], pids
+
+
+def running(pids):
+	'''Which of the pids in the file pids (one a line) still run: not gone, nor a zombie only its parent has to reap.'''
+	from test_complete_harness import _gone
+	return [pid for pid in (pids.read_text().split() if pids.exists() else []) if not _gone(int(pid))]
+
+
+def logged_out(session, timeout=30.0):
+	'''Whether the shell logged out by TMOUT ("auto-logout") within timeout seconds (also before: a read for something else may have read it).'''
+	if b'auto-logout' not in session.output:
+		session.read_until(b'auto-logout', timeout)
+	return b'auto-logout' in session.output
+
+
+@pytest.mark.parametrize('how', ['ctrl-r then esc', 'ctrl-r left open'])
+def test_bash_tmout_logs_out_after_ctrl_r(home, how):
+	# a read in the shell (the glue's wait for the picker's "ready") cancelled the alarm of the line's TMOUT before bash 5.2: walking
+	# away stayed logged in. With the menu left open, the picker gives the terminal back after TMOUT seconds without a key
+	# (MSSH_COMPLETE_IDLE), as bash before 5.1 logs out only once the binding is done
+	env, home = home
+	session = bash_session(home, env, glue_file(home, 'bash'), extra='TMOUT=3')
 	try:
 		session.send('mssh gpu[01-16] ')
-		time.sleep(0.3)
+		time.sleep(0.2)
 		session.send('\x12')
-		time.sleep(1)
-		assert printed(session, '') == 'mssh split-ok'
+		assert 'type to filter' in session.read_until(b'type to filter', 20)
+		if how == 'ctrl-r then esc':
+			session.send('\x1b')
+		assert logged_out(session)
 	finally:
 		session.close()
 
 
-READY_SWEEP = r'''
-. "$1" 2>/dev/null
-engine() { sleep "$delay"; printf 'ready\n'; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
-lost=0
-for ((step = 0; step < 250; step++)); do
-	delay=$(printf '0.%06d' $((99000 + step * 4)))
-	_mssh_complete_start engine
-	[[ $_mssh_complete_status == 0 && $_mssh_complete_resp == $'MSSHC1\nL 4\tmssh\nE' ]] || lost=$((lost + 1))
-done
-echo "lost=$lost"
-'''
-
-def run_glue_script(home, script):
-	'''Run script in a bash that has the glue (its path is $1), as (exit status, stdout, stderr).'''
+@pytest.mark.parametrize('how', ['left open', 'after esc', 'after its tab'])
+def test_editor_tmout_logs_out(home, how):
 	env, home = home
-	glue = glue_file(home, 'bash')
-	result = subprocess.run([require_shell('bash'), '-c', script, 'bash', str(glue)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-	return result.returncode, result.stdout.decode().strip(), result.stderr.decode()
-
-
-def test_ready_arriving_as_the_wait_ends_still_counts(home):
-	# the shell waits for "ready" in reads of 0.1 s; a byte that comes as one ends is read all the same (bash 5
-	# says the read timed out, and the next read wrote over the byte: the line was "eady", the answer dropped;
-	# bash 4.2 to 4.4 dropped the byte, and 4.2 and 4.3 could be killed by the timer's SIGALRM, rc 142).
-	# The engine says ready at delays around the read time, 4 microseconds apart: some meet the end of a wait
-	assert run_glue_script(home, READY_SWEEP) == (0, 'lost=0', '')
-
-
-def test_ready_missing_its_first_byte_still_counts(home):
-	# what bash 4.2 to 4.4 leave when a read times out as the byte comes: the loop read the second byte
-	script = r'''
-engine() { printf 'eady\nMSSHC1\nL 4\tmssh\nE\n'; }
-. "$1" 2>/dev/null
-_mssh_complete_start engine
-printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
-'''
-	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
-
-
-def test_ready_written_as_the_whole_wait_ends_is_taken(home):
-	# every read of the wait times out (the stub: as when the engine's byte meets the end of each) but the engine has
-	# written: the shell looks once more before it goes on without it, as the engine would otherwise take the terminal
-	# with nobody reading
-	script = r'''
-read() { if [[ $1 == -r && $2 == -t && $3 == 0.1 ]]; then sleep 0.1; return 142; fi; builtin read "$@"; }
-engine() { printf 'ready\nMSSHC1\nL 4\tmssh\nE\n'; }
-. "$1" 2>/dev/null
-MSSH_COMPLETE_START_TIMEOUT=0.3
-_mssh_complete_start engine
-printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
-'''
-	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
-
-
-def test_a_stray_alarm_while_the_glue_waits_ends_nothing(home):
-	# bash 4.2 and 4.3 ended the shell when a read's timer went off as the read ended ("Alarm clock"): SIGALRM is ignored
-	# during the wait (here sent while it waits without a timer: the shell used to be gone). Not in 4.4 and later, which
-	# leave it to readline and bash (TMOUT)
-	if bash_version(home[0]) >= 44:
-		pytest.skip('bash 4.4 and later do not end the shell, and the glue leaves SIGALRM to them')
-	script = r'''
-engine() { printf 'ready\n'; sleep 0.2; kill -ALRM $$; sleep 0.1; printf 'MSSHC1\nL 4\tmssh\nE\n'; }
-. "$1" 2>/dev/null
-_mssh_complete_start engine
-printf '%s|%s' "$_mssh_complete_status" "$_mssh_complete_resp"
-'''
-	assert run_glue_script(home, script) == (0, '0|MSSHC1\nL 4\tmssh\nE', '')
-
-
-def test_the_operators_alarm_trap_is_back_after_the_wait(home):
-	script = r'''
-engine() { printf 'ready\nMSSHC1\nL 4\tmssh\nE\n'; }
-. "$1" 2>/dev/null
-trap 'echo mine' ALRM
-_mssh_complete_start engine
-trap -p ALRM
-trap - ALRM
-_mssh_complete_start engine
-echo "[$(trap -p ALRM)]"
-TMOUT=5
-_mssh_complete_start engine
-echo "[$(trap -p ALRM)]"
-'''
-	assert run_glue_script(home, script) == (0, "trap -- 'echo mine' SIGALRM\n[]\n[]", '')
-
-
-def test_the_engine_does_not_inherit_an_ignored_alarm(home):
-	# bash 4.2 and 4.3 ignore SIGALRM during the wait: the engine, and what it starts, must not (a child keeps what its
-	# parent ignores). awk is the engine's child here: its SigIgn mask shows what it got
-	script = r'''
-engine() { printf 'ready\nMSSHC1\nL 4\tign=%s\nE\n' "$(( (16#$(awk '/^SigIgn/{print $2}' /proc/self/status) >> 13) & 1 ))"; }
-. "$1" 2>/dev/null
-_mssh_complete_start engine
-printf '%s' "$_mssh_complete_resp"
-'''
-	assert run_glue_script(home, script) == (0, 'MSSHC1\nL 4\tign=0\nE', '')
-
-
-def shell_ignores_alarm(session):
-	'''Whether the shell on session ignores SIGALRM, and its trap for it: ("0", "") when it does neither.'''
-	session.send('\x15')
-	time.sleep(0.3)
-	session.send('echo "@@D[$(( (16#$(awk \'/^SigIgn/{print $2}\' /proc/$$/status) >> 13) & 1 ))|$(trap -p ALRM)]@""@"\r')
-	found = re.findall(r'@@D\[(\d)\|(.*?)\]@@', session.read_until(b']@@'))
-	return found[-1] if found else None
-
-
-def test_tab_then_ctrl_c_while_the_engine_answers_leaves_sigalrm_alone(home):
-	# the TAB query ends at the end of its input: nothing in it ignores SIGALRM, which a Ctrl-C there would leave ignored
-	env, home = home
-	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 3, only='query')))
+	session = editor_session(env, home, TMOUT='3')
 	try:
-		before = shell_ignores_alarm(session)
-		assert before == ('0', '')
-		session.send('mssh gp\t')
-		time.sleep(0.8)
-		session.send('\x03')
-		time.sleep(3.5)
-		# the prompt after the engine is done (what was typed meanwhile is the shell's, not ours to look at)
-		session.send('\r')
-		time.sleep(0.5)
-		assert shell_ignores_alarm(session) == before
+		session.send('mssh ')
+		assert editor_has_the_terminal(env, session)
+		if how != 'left open':
+			time.sleep(0.3)
+			session.send('\x1b' if how == 'after esc' else 'gp\t')
+		assert logged_out(session)
+	finally:
+		session.close()
+
+
+def test_bash_tmout_with_the_menu_open_in_a_second_shell_leaves_the_first_one_working(home):
+	# as under sudo -i: the shell TMOUT logs out is not the terminal's first. A bash left waiting for the picker outlived it, and
+	# as it ended gave the terminal to the dead shell's process group, so the first shell read end-of-file and ended too; or the
+	# picker was left running until a key (bash 5.2 and 5.3)
+	env, home = home
+	command, pids = recording_engine_pids(home, 'pick')
+	inner = home / 'inner.bashrc'
+	inner.write_text(BASH_INNER_RC.format(glue=glue_file(home, 'bash', command=command)))
+	outer = home / 'outer.bashrc'
+	outer.write_text("PS1='@@OUTER@@ '\n")
+	session = Session([require_shell('bash'), '--noprofile', '--rcfile', str(outer), '-i'], env, cwd=home)
+	try:
+		session.read_until(b'@@OUTER@@', 20)
+		session.send('bash --noprofile --rcfile {} -i\r'.format(shlex.quote(str(inner))))
+		session.read_until(b'@@INNER@@', 20)
+		session.send('mssh gpu[01-16] ')
+		time.sleep(0.2)
+		session.send('\x12')
+		assert logged_out(session)
+		session.read_until(b'@@OUTER@@', 10)
+		# gone with no key typed: the picker of 6.48 waited for the next key (bash 5.2, 5.3), the idle limit ends it (3 s)
+		end = time.monotonic() + 15
+		while running(pids) and time.monotonic() < end:
+			session.read_for(0.2)
+		assert pids.exists() and not running(pids)
+		session.send('echo "@@O""K@@"\r')
+		assert '@@OK@@' in session.read_until(b'@@OK@@', 10)
+	finally:
+		session.close()
+
+
+BASH_INNER_RC = r'''
+PS1='@@INNER@@ '
+[ -r {glue} ] && . {glue} 2>/dev/null
+TMOUT=3
+'''
+
+
+def test_editor_beside_an_engine_without_claim_is_a_space(home):
+	# new glue, an engine from before 6.49 (its edit has no --claim, and fails on it): the space is a space, as for an editor that
+	# cannot start; the engine's own TAB and Ctrl-R still work
+	env, home = home
+	path = home / 'old-engine'
+	path.write_text('#!/bin/sh\nif [ "$1" = edit ]; then for word in "$@"; do [ "$word" = --claim ] && {{ echo "error: unrecognized arguments: --claim" >&2; exit 2; }}; done; fi\n'
+		'exec {} "$@"\n'.format(' '.join(shlex.quote(part) for part in ENGINE)))
+	path.chmod(0o755)
+	session = editor_session(env, home, command=[str(path)])
+	try:
+		assert printed(session, 'mssh h', wait=1.5) == 'mssh h'
 	finally:
 		session.close()
 

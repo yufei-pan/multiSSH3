@@ -519,56 +519,32 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: zsh-autosuggestions changes its async child (reported: https://github.com/zsh-users/zsh-autosuggestions/issues/861), or an operator hits it often.
 - Approved: 2026-11-04, the user chose "KL + draft report (Recommended)".
 
-### bash: the picker or the editor can come up with nothing reading its answer
+## Found in the glue's Ctrl-C and timed-read design (6.49)
+
+What is left of the bash entries the design pass closed in 6.49 (TMOUT after Ctrl-R or in the line editor, and a Ctrl-C after
+Ctrl-R or during TAB's query losing the line's first letter).
+
+### bash: a Ctrl-C in the first moment after TAB, Ctrl-R or the line editor's space
 - Kind: known limitation
-- What the operator sees: in bash, Ctrl-R's picker or the line editor now and then comes up after the glue has
-  stopped waiting for it, or after a Ctrl-C pressed just as it started: it draws on the terminal, but the choice made
-  in it is not applied, and the line stays as it was. Press Enter or Esc to close it and try again. In tests timed
-  at that moment on purpose: 1 in 250 to 300 tries; the window is tens of microseconds.
-- Why: the glue waits for the picker's "ready" at most MSSH_COMPLETE_START_TIMEOUT seconds (2) and checks once more
-  after the wait; between that check and its end of the pipe, the picker can still start. Closing it fully needs a
-  claim step (the picker taking the terminal only once the glue confirms it still waits), as the zsh and fish glue
-  have.
+- What the operator sees: in plain bash, a Ctrl-C within about one process start of the key (1 to 2 ms on an idle machine, longer on a
+  loaded one) after TAB on an mssh line (bash 4.3 to 5.2), Ctrl-R on an mssh line, or the space that opens the line editor is still a
+  signal: now and then it is lost, or the line is dropped and Ctrl-C only rings at the new prompt until the next Enter (bash 5.1
+  and 5.2), or a line is left that Enter runs without its first letter. After that moment a Ctrl-C is a key until the menu or the
+  editor closes or mssh's query is answered.
+- Why: bash has nothing that turns the signal off before a first command has run, and the glue's first command is the `stty -isig`
+  that does; an INT trap in its place was what made every later Ctrl-C on the line lose the first letter (bash 4.3 to 5.0).
 - Revisit when: an operator hits it.
-- Approved: 2026-11-04, the user chose "Known limitation (Recommended)".
+- Approved: 2026-11-25, chief's decision C245 (not the user's words).
 
-### TMOUT after Ctrl-R or in the line editor (bash before 5.2)
-- Kind: deferred
-- What the operator sees: on a host setting `TMOUT`, Ctrl-R on an mssh line and walking away leaves the shell logged in
-  until the next Enter. The same with the line editor (`MSSH_COMPLETE_EDITOR=1`) on bash 4.4, 5.0 and 5.1: `mssh h ` and
-  walking away stays logged in, also after Esc or a TAB in the editor; bash 5.2 logs out. Off mssh lines 6.43 logs out
-  (6.42 stayed logged in everywhere).
-- Why: moving the wait's read into `$( )` fixed nothing on any version (tested); it needs a design pass. The editor has
-  the same cause.
-- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred, design first (Recommended)", kept for Ctrl-R when they then picked "Fix TAB in 6.43 (Recommended)"; the line editor added the same day, "Add to the design pass (Recommended)".
-
-### Ctrl-C after Ctrl-R loses the first letter (bash 4.3, 4.4, 5.0)
-- Kind: deferred
-- What the operator sees: `mssh h rm x`, Ctrl-R, Esc, Ctrl-C shows nothing and the line stays on screen; Enter then runs
-  `ssh h rm x`.
-- Why: a bare binding doing `trap x INT; trap - INT` does it too (seen on 4.4 and 5.0), and having no INT trap on those
-  versions was not enough.
-- Also: since 6.43 puts the terminal's mode back after a Ctrl-C right after Ctrl-R, the terminal is still left cooked (the
-  line editor and Ctrl-U misbehave until the next Enter) in a small window around each 0.1 s read boundary: 2 of 480
-  tries (about 0.4%), measured in 6.43's second review. Short of CPU the window is far wider: on bash 5.0 in a container capped
-  at 0.4 of a processor, 8 of 40 tries on 6.43's glue and 12 of 40 on 6.44's, the same code, and a loaded host makes
-  test_bash_ctrl_c_right_after_ctrl_r_leaves_the_terminal_in_readline_s_mode fail for this cause. The idea to test in the design pass: `stty -isig`.
-- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the residual window added the same day, "Add to the design pass (Recommended)".
-
-### Ctrl-C during TAB's query loses the first letter (bash 4.3 to 5.2)
-- Kind: deferred
-- What the operator sees: `^C` with no new prompt; Enter then runs `ssh h rm x` for `mssh h rm x`, so a line that looks
-  cancelled runs. A second Ctrl-C gives a clean prompt (checked on 4.4, 5.0, 5.1, 5.2; 24 of 24 in 6.43's second review).
-  6.42 sometimes gave a clean prompt at once (6 of 24 tries on 4.4.23, 4 of 24 on 5.1.16, 2 of 24 on 5.0 and 5.2, 4 of 24
-  on EL9); 6.43's `$( )` for the query makes it 0 of 24 on 4.3, 4.4.20, 4.4.23, 5.0, 5.1.8, 5.1.16 and 5.2: the line always
-  stays. The window lasts only as long as the query.
-- Why: bash's bug, fixed in 5.3: a completion with no mssh glue does it. `$( )` does not cure it, and ignoring INT
-  during the query makes it worse: `trap - INT` then breaks every later Ctrl-C on that line before 5.3 (tested). Next
-  idea, untested: `stty -isig` during the query.
-- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the new evidence added the same day, "Keep deferred, release 6.43 (Recommended)".
+### bash 4.3 to 5.2: a Ctrl-C while a remote command's own completion works
+- Kind: known limitation
+- What the operator sees: `mssh h git chec<TAB>`, and a Ctrl-C after mssh's query is answered, while git's own completion works (or in
+  the glue's own last steps, a moment): `^C`, no new prompt, and Enter runs the line without its first letter (`ssh h git chec`). A second Ctrl-C gives a clean prompt. Any
+  command's completion does the same in these bash versions, with or without mssh.
+- Why: it is bash's own bug with any completion function, fixed in 5.3. Turning the signal off around another program's completion
+  would leave a hung one with no way out.
+- Revisit when: bash before 5.3 is no longer supported, or an operator hits it.
+- Approved: 2026-11-25, chief's decision C246 (not the user's words).
 
 ## Found in 6.43's review
 
@@ -691,7 +667,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Approved: 2026-11-06, the user chose "Known limitation (Recommended)".
 
 ### zsh: in a quoted word holding a `/`, no history name beside a command's names that are no file names
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, in a quoted command with a `/` in the word or in a word before it, and in a double-quoted word holding an
   expansion or after a quote at an `=` with a `/` in the word, when the command's completion offers names that are no file names, mssh's
   history names are not offered beside them: `mssh h "ls /etc --col<TAB>` gives `ls`'s `--color=`, not `--colzz` from history.
@@ -701,12 +677,12 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   kind whose PREFIX they start with, they made zsh drop the quote (`mssh h ls /etc --col`), so 6.47 keeps them to file names. 6.48 tried a
   call of their own with the command's matcher: right for `ls`, but `ps` and `rsync` lost the quote and `df` lost the typed words (their
   completions add names with other matchers and prefixes), so 6.48 took it out again.
-- Revisit when: 6.49, design first: whether history names can go in beside such names at all. 6.48's call of their own after the
+- Revisit when: 6.50, design first: whether history names can go in beside such names at all. 6.48's call of their own after the
   command's names, with the command's matcher, took the quote off the line for `ps` and `rsync` and cut `df`'s line back.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 fix round 1).
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 fix round 1); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: no history name beside a directory a command gives with an option's text, nor from a command typed as words
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, beside a directory that the command's completion gives with an option's text, a history entry typed as
   words is not offered: `mssh h make CFLAGS="-Isub/zz<TAB>`, `make CFLAGS=-Isub/zz<TAB>` and `"make CFLAGS=-Isub/zz<TAB>` with a directory
   `sub/zzlocal` and `make CFLAGS=-Isub/zzhist` in history give `-Isub/zzlocal/` alone (as in 6.46). A history entry that is
@@ -715,12 +691,12 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   is not offered, on the line, in a quoted command, inside `$( )` and backticks (as in 6.46 and 6.47); one whose command was a quoted argument
   (`mssh h "cat sub/zzremote"`) is.
 - Why: not traced; the engine returns no history name for a command typed as words there, and the glue adds none beside a call with `-P`.
-- Revisit when: 6.49: find why the engine leaves out a command typed as words beside local names, and add history names beside a call with
+- Revisit when: 6.50: find why the engine leaves out a command typed as words beside local names, and add history names beside a call with
   `-P` in a call of their own, with its `-P` and `-p`.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder).
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: in a directory typed with backslashes, no history names beside the local ones
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, in a word whose typed directory holds backslashes the way TAB writes them, mssh's history names are
   not offered beside the local ones, which go in alone: inside backticks (`` `mssh h cat zzd\\\\\&x/zz<TAB> ``, the five backslashes TAB
   writes there for `zzd&x`) for any history entry, and in a quoted command (`mssh h "cat zzd\\&x/zz<TAB>`). On the line and in `$( )`
@@ -729,9 +705,9 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   As in 6.47.
 - Why: the engine gets the word as typed, before the extra reading backticks get, and finds no history name starting with it; in a
   quoted command the head typed and the names' head read differ in the backslashes.
-- Revisit when: 6.49: inside backticks, send the engine the line read once more (`_mssh_complete_tick_read`), and read the head the same
+- Revisit when: 6.50: inside backticks, send the engine the line read once more (`_mssh_complete_tick_read`), and read the head the same
   way in `_mssh_complete_add_texts`; in a quoted command read it as the double quote does.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-23 (6.48 builder).
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-23 (6.48 builder); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: TAB inside a command substitution expands a bare `!b` from history
 - Kind: known limitation
@@ -747,7 +723,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   with an upstream zsh report drafted for you to send".
 
 ### zsh: a history name beside a directory stops TAB before its `/`
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, with a directory `zzdir` here and `mssh h "cat zzdir/zzremote"` in history, `mssh h cat zzd<TAB>` gives `zzdir`,
   without the `/` the directory alone gets (`zzdir/`), and `zz<TAB>` after it finds nothing: type the `/` first. In a quoted command, inside
   backticks and inside `$( )` the same. A history entry typed as words (`cat zzdir/zzremote`) does not stop it. As in 6.46 and 6.47.
@@ -755,33 +731,33 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   held the history name back where the command's own names include the directory. That needed a copy in the glue of the names the command
   adds and of which of two equal names zsh keeps, and each review found a completion where the copy and zsh differ; there TAB wrote the
   command's name alone and the history name was no longer offered. So 6.48 took it out again.
-- Revisit when: 6.49, design first: a route with no copy of the command's names. One tried: where a history name goes in beside it, the
+- Revisit when: 6.50, design first: a route with no copy of the command's names. One tried: where a history name goes in beside it, the
   command's directory goes in with the `/` in its name, so zsh finds `zzdir/` shared and keeps the history name in the list. Open there: a
   `/` typed after TAB doubles, a space typed after TAB keeps the `/`, and TAB then walks into
   [the entry below](#zsh-tab-in-a-directory-can-write-a-start-that-a-history-name-further-down-lacks) for a history name two levels down.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 design check).
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 design check); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: TAB in a directory can write a start that a history name further down lacks
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, with a file `zzdir/zzlocal` here and `mssh h "cat zzdir/sub/zzremote"` in history,
   `mssh h cat zzdir/<TAB>` gives `zzdir/zz`, which the history name does not start with, and the next TAB gives `zzdir/zzlocal `:
   the history name is offered again only when the `zz` is deleted (`zzdir/s<TAB>` gives it). In a quoted command the same. As in 6.47.
 - Why: not traced. The history name goes in as `sub/zzremote` behind the typed `zzdir/`, with a matcher that lets a typed part end
   at a `/`; zsh seems to take `sub/` as matched and write the `zz` that both names have after it.
-- Revisit when: 6.49, with the entry above, whose fix makes TAB walk into this one.
-- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by 6.48's last fix round).
+- Revisit when: 6.50, with the entry above, whose fix makes TAB walk into this one.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by 6.48's last fix round); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh 5.0.2: one TAB takes seconds when the command passes tens of thousands of names
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh 5.0.2 (EL7), when a remote command's completion passes every name of a large directory or list
   (`compadd -f -- *`, `compadd -a`), one TAB takes about 17 s at 40,000 names, where zsh without mssh takes about 1 s; zsh 5.5.1
   to 5.9 take about 3 s. `_files`, which passes only the matching names, takes about 1.5 s. As in 6.47.
 - Why: not traced: the glue's `compadd` wrapper reads each name the command passes in shell code, which zsh 5.0.2 runs far slower.
-- Revisit when: 6.49: find where 5.0.2 spends the time in `_mssh_complete_compadd`'s loop over the names.
-- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by 6.48's last fix round).
+- Revisit when: 6.50: find where 5.0.2 spends the time in `_mssh_complete_compadd`'s loop over the names.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by 6.48's last fix round); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: a quote opened partway through a word of a double-quoted command holding an expansion
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, in a double-quoted command holding an expansion, a quote the command opens partway through the word at
   the cursor offers nothing (`mssh h "echo $USER zz'a b<TAB>`), and so does a `\"` quote holding a `$`, a backtick or a backslash, which the
   remote shell would read in it (`mssh h "echo $USER \"zz\\\$x`). So does the TAB after TAB wrote a name's start with its `!` outside the
@@ -789,8 +765,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   directory `zzd!x`. A quote opened at the word's start completes (6.48: `"echo $USER 'zz<TAB>`).
 - Why: the glue reads a quote at the word's start into IPREFIX; one partway through needs the place in the typed text where the quote's
   reading starts.
-- Revisit when: 6.49: map the quote's place in the text read back to the text typed, and read the part before it as the double quote does.
-- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder).
+- Revisit when: 6.50: map the quote's place in the text read back to the text typed, and read the part before it as the double quote does.
+- Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: compset -q writes outside its memory for a double-quoted word holding a backslash inside a quote of its own
 - Kind: known limitation
@@ -819,32 +795,32 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Approved: 2026-11-25, chief's decision C247 (not the user's words).
 
 ### zsh: the start two names share, written for a double quote, can end inside an escape
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh, in a double-quoted command holding an expansion, two names whose written words share a start that ends
   inside an escape go in to that start: with files `zz$x` and `zz&y`, `mssh h "echo $USER zz<TAB>` gives `zz\\`, the remote shell's `zz\`.
   The `&` typed next and a TAB complete `zz\\&y`, but a `$x` typed next is read by this shell as its variable. As in 6.46.
 - Why: zsh takes the start the words share as they are written (`-Q`), `zz\\\$x` and `zz\\&y`, not as the names they stand for.
-- Revisit when: 6.49: insert the written form of the start the names share (`zz`), as zsh does for the words it writes itself.
-- Noted: 2026-11-23, the user's standing rule that deferrals are noted, not asked (found by the 6.48 builder).
+- Revisit when: 6.50: insert the written form of the start the names share (`zz`), as zsh does for the words it writes itself.
+- Noted: 2026-11-23, the user's standing rule that deferrals are noted, not asked (found by the 6.48 builder); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: in a quoted command, TAB on a word of df can take the words before it off the line
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh 5.5.1 to 5.9, with or without history, `mssh h "df /etc -<TAB>` and `mssh h "df -h -<TAB>` leave
   `mssh h "df `, and `mssh h "df /etc /<TAB>` leaves `mssh h "/` (as in 6.47; `'df` the same); with no history a lone `-` goes in
   any shape there (`mssh h df -<TAB>` gives `mssh h df `), as zsh's own df completion does without mssh. zsh 5.0.2 keeps the line.
 - Why: not traced (found by the 6.48 fix round).
-- Revisit when: 6.49: find which of df's calls takes the words before the cursor off the line in a quoted command.
-- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked.
+- Revisit when: 6.50: find which of df's calls takes the words before the cursor off the line in a quoted command.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked; moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### zsh: a name holding `!` in a double quote that the remote command opens in a quoted command reaches it with a backslash
-- Kind: deferred (6.49)
+- Kind: deferred (6.50)
 - What the operator sees: in zsh with bang_hist on, `mssh h "cat \"zz<TAB>` with a file `zz!x` gives `\"zz\\\!x\"`, and
   `mssh h 'cat "zz<TAB>` gives `"zz\!x"`: the remote shell gets `zz\!x`. As in 6.47. `setopt no_bang_hist` avoids it.
 - Why: there zsh writes the word itself (`compset -q`), for its own double quote, where the `\!` is history's escape. The remote shell's
   double quote keeps the backslash.
-- Revisit when: 6.49: put the `!` outside both quotes, as 6.48 does for a double-quoted command holding an expansion, or offer nothing
+- Revisit when: 6.50: put the `!` outside both quotes, as 6.48 does for a double-quoted command holding an expansion, or offer nothing
   there with bang_hist on.
-- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by the 6.48 fix round's review).
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by the 6.48 fix round's review); moved to 6.50 on 2026-11-26 (6.49 became the bash glue's Ctrl-C design).
 
 ### The centos7 test image patches ble.sh's conditional-sync
 - Kind: deferred

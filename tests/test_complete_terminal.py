@@ -308,6 +308,23 @@ def test_terminal_waits_for_input_when_asked(tty_pair):
 		assert term.has_input()
 
 
+def test_terminal_gives_up_after_its_idle_limit_without_a_key(tty_pair):
+	# the count starts at __enter__ and again at each key; a caller's shorter timeout still returns None
+	master, slave, path = tty_pair
+	with mc.Terminal(path, idle=1.0) as term:
+		assert term.read_key(timeout=0.3) is None
+		os.write(master, b'a')
+		assert term.read_key(timeout=1)[0] == 'a'
+		started = time.monotonic()
+		assert term.read_key(timeout=0.6) is None
+		with pytest.raises(mc.Idle):
+			term.read_key()
+		assert 0.9 <= time.monotonic() - started < 3
+	with mc.Terminal(path) as term:
+		# no limit: as before
+		assert term.read_key(timeout=0.3) is None and term.idle is None
+
+
 def test_terminal_reads_line_breaks_as_sent(tty_pair):
 	# zsh runs its widgets with INLCR and ICRNL on, and Python's raw mode before 3.12 kept INLCR:
 	# a CR LF Enter then came as CR CR (a paste's line breaks)
