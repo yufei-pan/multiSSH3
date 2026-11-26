@@ -6779,26 +6779,31 @@ _mssh_complete_started() {
 }
 
 _mssh_complete_start() {
-	# run "$@" (_mssh_complete_run_pick or _run_edit, which print the answer): sets _mssh_complete_resp to the answer and
-	# _mssh_complete_status to the exit status (_mssh_complete_started's). In a command substitution, with no read in this
-	# shell: before bash 5.2 a read with a timeout (also the one a read on a pipe takes from TMOUT) cancels the alarm of the
-	# line's TMOUT, and a menu or an editor left open stayed logged in
-	local _mssh_complete_trapped= _mssh_complete_tty=
-	if [[ -z ${BLE_VERSION-} ]]; then
-		# Ctrl-C while it starts: START_SCRIPT stops it (130), and the line stays; bash 4.3 to 5.0 would drop it, keeping its
-		# first letter for Enter. ble.sh reads Ctrl-C as a key
-		_mssh_complete_trapped=$(trap -p INT)
-		trap : INT
-		_mssh_complete_tty=$(stty -g 2>/dev/null) || _mssh_complete_tty=
-	fi
+	# run "$@" (_mssh_complete_run_pick or _run_edit, which print the answer), between _mssh_complete_signals_off and _back:
+	# sets _mssh_complete_resp to the answer and _mssh_complete_status to the exit status (_mssh_complete_started's). In a
+	# command substitution, with no read in this shell: before bash 5.2 a read with a timeout (also the one a read on a pipe
+	# takes from TMOUT) cancels the alarm of the line's TMOUT, and a menu or an editor left open stayed logged in
 	_mssh_complete_resp=$("$@") && _mssh_complete_status=0 || _mssh_complete_status=$?
-	if [[ -z ${BLE_VERSION-} ]]; then
-		if [[ -n $_mssh_complete_trapped ]]; then eval "$_mssh_complete_trapped"; else trap - INT; fi
-		# bash 4.3, 4.4 and 5.0, when the Ctrl-C ended the subshell before it started the engine, leave the terminal in the mode
-		# it had when bash runs a command, line by line, for this line: Ctrl-U no longer cleared it, until the next Enter
-		(( _mssh_complete_status != 130 )) || [[ -z $_mssh_complete_tty ]] || stty "$_mssh_complete_tty" 2>/dev/null || :
-	fi
 	return 0
+}
+
+_mssh_complete_signals_off() {
+	# Ctrl-C makes no signal until _mssh_complete_signals_back: it is a key, which the picker and the editor read as theirs (a
+	# Ctrl-C while they start is their first key), and readline after a TAB, as a key bound to nothing. A SIGINT while a binding
+	# or a completion function works is what bash before 5.3 cannot take: ^C or nothing shown, the line kept, and Enter runs it
+	# without its first letter (4.3 to 5.0 in a binding, 4.3 to 5.2 in a completion function); an INT trap set and put back in a
+	# binding does the same to every later Ctrl-C on that line (4.3 to 5.0). So no trap and no signal. stty first and alone (the
+	# mode read first took a process more): until it has run, a Ctrl-C is still a signal. Not under ble.sh, which reads Ctrl-C as
+	# a key itself. Sets the caller's _mssh_complete_signals
+	_mssh_complete_signals=
+	[[ -z ${BLE_VERSION-} ]] || return 0
+	command stty -isig 2>/dev/null && _mssh_complete_signals=1
+	return 0
+}
+
+_mssh_complete_signals_back() {
+	# ISIG on again after _mssh_complete_signals_off: readline's mode, which has it on whatever the terminal had before
+	[[ -z $_mssh_complete_signals ]] || command stty isig 2>/dev/null || :
 }
 
 _mssh_complete_run_pick() {
@@ -6815,13 +6820,15 @@ _mssh_complete_pick() {
 
 _mssh_complete_pick_now() {
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_ps1 _mssh_complete_resp _mssh_complete_status
-	local _mssh_complete_action _mssh_complete_keys
+	local _mssh_complete_action _mssh_complete_keys _mssh_complete_signals
+	_mssh_complete_signals_off
 	_mssh_complete_cut
 	_mssh_complete_prompt
 	_mssh_complete_start _mssh_complete_run_pick
+	_mssh_complete_signals_back
 	(( _mssh_complete_status == 0 )) && _mssh_complete_apply "$_mssh_complete_resp"
-	# cancelled, or Ctrl-C before it opened: the line stays as it is
-	(( _mssh_complete_status <= 1 || _mssh_complete_status == 130 ))
+	# cancelled (a Ctrl-C too, also one while it started): the line stays as it is
+	(( _mssh_complete_status <= 1 ))
 }
 
 _mssh_complete_ctrl_r() {
@@ -6924,21 +6931,17 @@ _mssh_complete_space() {
 
 _mssh_complete_space_key() {
 	# prefixed: the prompt's expansions run inside (_mssh_complete_prompt)
-	local _mssh_complete_shown _mssh_complete_ps1 _mssh_complete_action _mssh_complete_keys
+	local _mssh_complete_ps1 _mssh_complete_action _mssh_complete_keys _mssh_complete_signals
 	local _mssh_complete_before _mssh_complete_after _mssh_complete_resp _mssh_complete_status
 	bind -m emacs '"\C-x\C-y": ""'
 	case $READLINE_LINE in
 		mssh|mssh3|multissh|multissh3|multiSSH3)
 			if (( READLINE_POINT == ${#READLINE_LINE} )); then
+				# (a Ctrl-C while the editor starts is its first key: the line and ^C stay on screen, as for one in it)
+				_mssh_complete_signals_off
 				_mssh_complete_prompt
 				_mssh_complete_start _mssh_complete_run_edit
-				if (( _mssh_complete_status == 130 )); then
-					# Ctrl-C before the editor opened: as in the editor, the line and ^C stay on screen
-					_mssh_complete_shown=${_mssh_complete_ps1##*$'\n'}
-					printf '\r%s%s ^C\e[J\r\n' "${_mssh_complete_shown//[$'\001\002']/}" "$READLINE_LINE"
-					READLINE_LINE= READLINE_POINT=0
-					return 0
-				fi
+				_mssh_complete_signals_back
 				if (( _mssh_complete_status == 0 )) && _mssh_complete_apply "$_mssh_complete_resp"; then
 					case $_mssh_complete_action in
 						# the editor left the line and ^C on screen: readline draws a fresh prompt below

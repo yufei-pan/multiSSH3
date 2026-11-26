@@ -327,25 +327,61 @@ def test_bash_ctrl_r_goes_on_without_an_engine_slow_to_start(home):
 
 
 def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
-	# at once, even when Ctrl-C does not stop the engine, which then leaves the terminal alone
+	# even when Ctrl-C would not stop the engine: it is a key while Ctrl-R works (no signal, which bash 4.3 to 5.0 cannot take in
+	# a binding), the picker's first, so the menu opens and closes, and the line stays
 	env, home = home
 	delay = 1.5
 	session = bash_session(home, env, glue_file(home, 'bash', command=slow_engine(home, delay, deaf=True)))
 	try:
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.3)
-		started = time.monotonic()
 		session.send('\x12')
 		time.sleep(0.3)
 		session.send('\x03')
-		session.read_until(b'@@READY@@ mssh gpu[01-16] ', 20)
-		assert time.monotonic() - started < delay
-		rows = [row for row in screen(session) if row]
-		assert rows == ['@@READY@@ mssh gpu[01-16]'], rows
-		# the engine is ready by now
-		time.sleep(max(started + delay + 0.5 - time.monotonic(), 0))
+		session.read_until(b'type to filter', 20)
+		rows = settled(session)
+		assert [row for row in rows if row] == ['@@READY@@ mssh gpu[01-16]'], rows
+		assert termios.tcgetattr(session.fd)[3] & termios.ISIG
 		assert printed(session, 'x') == 'mssh gpu[01-16] x'
-		assert 'type to filter' not in session.output.decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+FAKE_SSH = 'ssh() { printf "@@RAN[ssh %s]@@\\n" "$*"; }'
+
+
+@pytest.mark.parametrize('how', ['ctrl-r then esc', 'ctrl-c in the menu', 'the editor then esc'])
+def test_bash_ctrl_c_after_the_picker_or_the_editor_drops_the_line(home, how):
+	# bash 4.3, 4.4 and 5.0 after an INT trap set and put back in a binding: Ctrl-C showed nothing, kept the line, and Enter ran it
+	# without its first letter (ssh h rm x)
+	env, home = home
+	if how == 'the editor then esc':
+		session = editor_session(env, home, extra=FAKE_SSH)
+	else:
+		session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH + '\n' + FAKE_SSH)
+	try:
+		if how == 'the editor then esc':
+			session.send('mssh ')
+			session.read_until(b'mssh ', 20)
+			time.sleep(0.3)
+			session.send('h rm x')
+			time.sleep(0.5)
+			session.send('\x1b')
+		else:
+			session.send('mssh h rm x')
+			time.sleep(0.2)
+			session.send('\x12')
+			session.read_until(b'type to filter', 20)
+			time.sleep(0.3)
+			session.send('\x1b' if how == 'ctrl-r then esc' else '\x03')
+		time.sleep(1.0)
+		start = len(session.output)
+		session.send('\x03')
+		time.sleep(0.8)
+		assert printed(session, '') == ''
+		session.send('\r')
+		session.read_for(1.0)
+		assert '@@RAN[' not in session.output[start:].decode('utf-8', 'replace')
 	finally:
 		session.close()
 
@@ -468,10 +504,10 @@ def test_bash_vi_mode_ctrl_r(home):
 
 # ---------------------------------------------------------------- plain bash: the mssh line editor
 
-def editor_session(env, home, command=ENGINE, **kwargs):
+def editor_session(env, home, command=ENGINE, extra='', **kwargs):
 	if bash_version(env) < 44:
 		pytest.skip('the mssh line editor needs bash 4.4 or later')
-	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH)
+	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH + '\n' + extra)
 
 
 def test_taking_the_keys_leaves_the_operators_variables_alone(home):
