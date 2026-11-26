@@ -366,7 +366,7 @@ each entry).
   fixed.
 - Approved: 2026-11-03, the user chose "Leave those names out (Recommended)".
 
-### zsh: a directory the remote shell would read otherwise gets no names
+### zsh and ble.sh: a directory the remote shell would read otherwise gets no names
 - Kind: known limitation
 - What the operator sees: in zsh, nothing is offered inside a directory typed so that the remote shell would read it
   otherwise: one typed with this shell's quoting alone (`mssh h cat a\&b/<TAB>`, which mssh would pass on as `a&b/`, so
@@ -376,6 +376,8 @@ each entry).
   directory holding a `$` or a backtick that is there by that name as the remote shell's word.
   Typed as the remote shell's word (`a\\\&b/`, `"cat a\\&b/`, `"cat zzd\\\$x/`), the names inside it complete, outside backticks. A directory
   completed by TAB goes on completing, except one whose name holds a `\` ([the backslash entry](#zsh-no-names-inside-a-directory-whose-name-holds-a-backslash)).
+  With ble.sh the same for a directory whose name holds a `$`, typed bare: with a directory `zzd$x` here, `mssh h cat zzd$x/zz<TAB>`
+  offers nothing (6.47 wrote `zzd/zzin`, which the remote shell reads as another path); typed `zzd\$x/zz` it completes.
 - Why: zsh keeps the directories typed before the word as typed (`compadd -p`); writing them again would need the glue
   to replace zsh's own prefix handling. Offering nothing puts nothing wrong on the line. (In a double-quoted command, `"ls zzd<TAB>`
   and then `in<TAB>` gave nothing in 6.46 for a directory whose name holds `$`, a backtick, `"`, `\` or `!`; from 6.47 only for one
@@ -383,7 +385,8 @@ each entry).
 - Revisit when: an operator types such directories in zsh and misses the names.
 - Approved: 2026-11-03, the user chose "Accept (Recommended)"; the quoted command added the same day, "Extend the Accept
   (Recommended)". The further characters (an expansion such as `$`, a backtick, a brace, a parenthesis, a redirect, a pattern character
-  unless `glob_complete` is set): 2026-11-17, chief's decision C86 (the user's desk session; not the user's words).
+  unless `glob_complete` is set): 2026-11-17, chief's decision C86 (the user's desk session; not the user's words). ble.sh's bare `$`:
+  2026-11-25, chief's decision C248 (not the user's words).
 
 ### ble.sh: a name holding a brace is not offered for a remote command typed as words
 - Kind: known limitation
@@ -790,7 +793,7 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; narrowed and moved to 6.49 on 2026-11-23 (6.48 builder).
 
 ### zsh: compset -q writes outside its memory for a double-quoted word holding a backslash inside a quote of its own
-- Kind: deferred
+- Kind: known limitation
 - What the operator sees: in zsh 5.0.2 to 5.9, zsh's own `compset -q` writes outside its memory for a double-quoted word that holds a
   backslash inside a quote of its own, with or without mssh, and zsh 5.9 can end (`malloc(): invalid size`). 6.46 ran it on every quoted
   command, so it met the fault for every such command (`mssh h "grep 'a\\.b' zz<TAB>`). Since 6.47 the glue splits the command itself, and
@@ -802,7 +805,18 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   `free(): invalid pointer` and ends. Whether the shell ends without the checker depends on what lies next to the block, so any change to
   the glue could turn it on or off. The report to the zsh maintainers is drafted (docs/progress/zsh-compset-q-report.md), not posted.
 - Revisit when: zsh fixes it: the glue's test (`_mssh_complete_qfault`) goes for the zsh versions with the fix.
-- Noted: 2026-11-17, the user's standing rule that deferrals are noted, not asked; the report is the user's to send.
+- Noted: 2026-11-17, as a deferral; the report is the user's to send.
+- Approved: 2026-11-25, chief's decision C247 (not the user's words).
+
+### zsh: no names for two words whose quoting the glue cannot read back the same at every level
+- Kind: known limitation
+- What the operator sees: in zsh, no names for an escaped blank beside a `\!` or a `\\\$` in a word the command splits itself
+  (`mssh h "make CFLAGS=-O2\\ -Izzd\\\$x/zz<TAB>`), and inside backticks for a single-quoted command's value the command splits
+  (`` `mssh h 'make CFLAGS=-Izzd\\\&x/zz<TAB> ``). 6.46 and 6.47 wrote a wrong word there.
+- Why: 6.47's step back settled that such words get nothing, or the second-pass design that 6.48 built, never one more rule; these
+  are the ones the second pass cannot take.
+- Revisit when: an operator needs names there.
+- Approved: 2026-11-25, chief's decision C247 (not the user's words).
 
 ### zsh: the start two names share, written for a double quote, can end inside an escape
 - Kind: deferred (6.49)
