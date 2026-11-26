@@ -522,6 +522,33 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: zsh-autosuggestions changes its async child (reported: https://github.com/zsh-users/zsh-autosuggestions/issues/861), or an operator hits it often.
 - Approved: 2026-11-04, the user chose "KL + draft report (Recommended)".
 
+## Found in the glue's Ctrl-C and timed-read design (6.49)
+
+What is left of the bash entries the design pass closed in 6.49 (TMOUT after Ctrl-R or in the line editor, and a Ctrl-C after
+Ctrl-R or during TAB's query losing the line's first letter).
+
+### bash: a Ctrl-C in the first moment after TAB, Ctrl-R or the line editor's space
+- Kind: known limitation
+- What the operator sees: in plain bash, a Ctrl-C within about one process start of the key (1 to 2 ms on an idle machine, longer on a
+  loaded one) after TAB on an mssh line (bash 4.3 to 5.2), Ctrl-R on an mssh line, or the space that opens the line editor is still a
+  signal: now and then it is lost, or leaves the terminal line by line (Ctrl-U not clearing the line) until the next Enter, or, mostly on
+  bash before 5.3, leaves a line that Enter runs without its first letter. A Ctrl-C after that moment is a key that the menu, the editor
+  or readline takes.
+- Why: bash has nothing that turns the signal off before a first command has run, and the glue's first command is the `stty -isig`
+  that does; an INT trap in its place was what made every later Ctrl-C on the line lose the first letter (bash 4.3 to 5.0).
+- Revisit when: an operator hits it.
+- Approved: 2026-11-25, chief's decision C245 (not the user's words).
+
+### bash 4.3 to 5.2: a Ctrl-C while a remote command's own completion works
+- Kind: known limitation
+- What the operator sees: `mssh h git chec<TAB>`, and a Ctrl-C while git's own completion works, after mssh's query is answered:
+  `^C`, no new prompt, and Enter runs the line without its first letter (`ssh h git chec`). A second Ctrl-C gives a clean prompt. Any
+  command's completion does the same in these bash versions, with or without mssh.
+- Why: it is bash's own bug with any completion function, fixed in 5.3. Turning the signal off around another program's completion
+  would leave a hung one with no way out.
+- Revisit when: bash before 5.3 is no longer supported, or an operator hits it.
+- Approved: 2026-11-25, chief's decision C246 (not the user's words).
+
 ## Found in 6.43's review
 
 ### zsh: a double-quoted expansion is still expanded where the completer is `_expand`
