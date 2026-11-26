@@ -6,7 +6,6 @@ so the engine's suggestion for "mssh gp" is the whole line u[01-16] "nvidia-smi"
 '''
 import os
 import re
-import select
 import shlex
 import subprocess
 import termios
@@ -1530,7 +1529,7 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line(hom
 		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		session.send(keys + '\r')
-		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(ran_line(session)))
 		assert len(ran) == 1, ran
 		line = ran[0].replace('\\', '')
 		# what was typed with the text of one answer at most, never a second one on top
@@ -1561,7 +1560,7 @@ def test_zsh_keys_arriving_together_do_not_take_grey_text_from_an_older_line_of_
 		session.read_until(b'nvidia-smi')
 		session.wait_idle(10)
 		session.send('x' + RIGHT + '\r')
-		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(ran_line(session)))
 		assert len(ran) == 1 and ran[0].replace('\\', '') == args, ran
 	finally:
 		session.close()
@@ -1594,7 +1593,7 @@ def test_zsh_keys_arriving_together_leave_the_grey_text_of_other_commands_to_zsh
 		session.wait_idle(10)
 		# (Left, then Right back to the end while more keys wait, then Right takes the grey text)
 		session.send(LEFT + RIGHT + RIGHT + '\r')
-		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(session.read_until(b'@@RAN[') + session.read_until(b']@@')))
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', plain(ran_line(session)))
 		assert ran == ['hello world'], ran
 	finally:
 		session.close()
@@ -1759,6 +1758,15 @@ ZSH_AUTOSUGGEST_STRATEGY=(slow)
 _zsh_autosuggest_strategy_slow() { zmodload zsh/zselect; zselect -t 100 }"""
 
 
+def ran_line(session):
+	"""What the shell printed up to the end of its @@RAN[...]@@ line: the marker's end is often in the chunk read with its start, and a second
+	wait for it found nothing more, for 40 s."""
+	text = session.read_until(b'@@RAN[')
+	if ']@@' not in text[text.find('@@RAN['):]:
+		text += session.read_until(b']@@')
+	return text
+
+
 def times_away(session, seconds):
 	'''
 	How often, sampled as fast as Python can for seconds, the terminal's foreground process group was not the
@@ -1769,9 +1777,7 @@ def times_away(session, seconds):
 	while time.monotonic() < end:
 		if os.tcgetpgrp(session.fd) != session.pid:
 			away += 1
-		ready, _, _ = select.select([session.fd], [], [], 0)
-		if ready:
-			session.output += os.read(session.fd, 65536)
+		session._read(0)
 	return away
 
 

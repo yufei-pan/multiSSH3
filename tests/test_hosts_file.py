@@ -1,4 +1,5 @@
 '''mssh's hosts file (/etc/hosts, or --host_file): read as hosts(5) is, and pointed out when it resolves nothing.'''
+import socket
 import threading
 import time
 
@@ -67,7 +68,13 @@ def test_an_ipv6_only_name_keeps_its_first_address(hosts_file):
 def test_lines_without_an_ip_address_are_skipped(hosts_file):
 	# as the C library skips them: no name may become another name's "address"
 	hosts_file('node1 node2\nlocalhost\n10.0.0.300 node3\nfe80::1%eth0 node4\n10.0.0.9 node9\n')
-	assert local('node1', 'node2', 'localhost', 'node3', 'node4', 'node9') == [None, None, None, None, None, '10.0.0.9']
+	# (an address with a zone id is one to the C library of macOS, and none to glibc's inet_pton)
+	try:
+		socket.inet_pton(socket.AF_INET6, 'fe80::1%eth0')
+		zoned = 'fe80::1%eth0'
+	except OSError:
+		zoned = None
+	assert local('node1', 'node2', 'localhost', 'node3', 'node4', 'node9') == [None, None, None, None, zoned, '10.0.0.9']
 
 
 def test_a_dict_put_in_etc_hosts_is_used_instead_of_the_file(hosts_file, monkeypatch):

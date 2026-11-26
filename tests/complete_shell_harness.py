@@ -1,5 +1,6 @@
 '''Drive real shells for the autocomplete tests: a pseudo-terminal session, or a direct call.'''
 import fcntl
+import functools
 import json
 import os
 import pty
@@ -9,6 +10,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 from pathlib import Path
@@ -37,15 +39,44 @@ def _aged_line(line):
 	stamp, tab, rest = line.partition('\t')
 	return '{}\t{}'.format(aged(stamp), rest) if tab and stamp.isdigit() else line
 
-def require_shell(name):
-	'''The path of shell name; skip the test if it is missing, unless MSSH_REQUIRE_SHELLS lists it.'''
+@functools.lru_cache(maxsize=None)
+def _bash_major(path):
+	'''The major version of the bash at path, as that bash says it (0 when it does not).'''
+	output = subprocess.run([path, '-c', 'echo ${BASH_VERSINFO[0]}'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30).stdout.strip()
+	return int(output) if output.isdigit() else 0
+
+def require_shell(name, old_bash=False):
+	'''
+	The path of shell name; skip the test if it is missing, unless MSSH_REQUIRE_SHELLS lists it. A bash older than 4
+	(macOS's /bin/bash is 3.2) counts as missing: the glue registers nothing there, so there is no completion to drive
+	(old_bash=True takes it, for the test that checks exactly that: MSSH_REQUIRE_SHELLS=bash3 asks for such a bash).
+	'''
+	required = [shell for shell in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(',') if shell]
 	path = shutil.which(name)
 	if path is None:
-		required = [shell for shell in os.environ.get('MSSH_REQUIRE_SHELLS', '').split(',') if shell]
 		if name in required:
 			pytest.fail('{} is required here (MSSH_REQUIRE_SHELLS) but not installed'.format(name))
 		pytest.skip('{} is not installed'.format(name))
+	if name == 'bash' and not old_bash and _bash_major(path) < 4:
+		if 'bash' in required and 'bash3' not in required:
+			pytest.fail('bash 4 or newer is required here (MSSH_REQUIRE_SHELLS) but {} is bash {}'.format(path, _bash_major(path)))
+		pytest.skip('{} is bash {}: the glue registers nothing before bash 4'.format(path, _bash_major(path)))
 	return path
+
+@functools.lru_cache(maxsize=None)
+def _gnu_userland():
+	'''Whether this machine's ls is GNU's (the others the rows name, cp, ps, tar, grep, su, come with it on the systems the tests run on).'''
+	try:
+		return b'GNU' in subprocess.run(['ls', '--version'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30).stdout
+	except OSError:
+		return False
+
+# For a row written where zsh completes the long options of ls, cp, ps, tar and grep, and su's -c, as the GNU tools have them: with the BSD
+# ones (macOS) Apple's zsh offers nothing for them, with no mssh at all (typed ls --color=, then TAB, the line stays)
+GNU_TOOLS = pytest.mark.skipif(not _gnu_userland(), reason="this machine's ls, cp, ps, tar, grep and su are not GNU's: zsh completes their long options by the GNU variant only")
+# For a row naming what a Linux system has: user bin (home /bin, holding bash, base64 and basename), root's home /root, /etc/host.conf,
+# /etc/hostname and /etc/os-release (macOS: no user bin, root is /var/root, /etc has hosts and no os-release)
+LINUX_FILES = pytest.mark.skipif(not sys.platform.startswith('linux'), reason="the row names the users and files of a Linux system")
 
 def zsh_version():
 	'''zsh's version as (major, minor).'''
@@ -151,6 +182,34 @@ def without_command(env, name, directory):
 			os.symlink(path, str(link))
 	return dict(env, PATH=str(directory))
 
+# (read and write, nothing else: busybox's cat, the one of the matrix's bash images, copies with sendfile, which holds the pipe's lock
+# while it waits for the terminal, and the test's read of the pipe waited for ever, uninterruptibly. It ends when its parent, the test
+# process, is gone: it holds the terminal's master, and a test killed (the time limit, a stopped run) would leave this process and the
+# shell on the terminal, which gets no hangup while a master is open, running for ever. It looks every second: a killed test's shell
+# is gone one second after)
+_READ_TERMINAL = '''import os, select, sys
+parent = int(sys.argv[1])
+while os.getppid() == parent:
+	if not select.select([0], [], [], 1)[0]:
+		continue
+	try:
+		data = os.read(0, 65536)
+	except OSError:
+		break
+	if not data:
+		break
+	os.write(1, data)
+'''
+
+def read_terminal(master):
+	'''
+	A process reading the master of a pseudo-terminal all the time, as the terminal emulator showing it does; its stdout is what it read.
+	macOS keeps what a program writes to its terminal in the pty until the master reads it, and holds 1024 bytes of it: a program
+	that writes more waits for the test to read (a picker drawing its menu, between two keys), and one that ends waits for it
+	in tcsetattr(TCSADRAIN), for ever (Linux took 19600 bytes, and drains at once). Not a thread: tcsetattr holds the GIL while it waits.
+	'''
+	return subprocess.Popen([sys.executable, '-I', '-S', '-c', _READ_TERMINAL, str(os.getpid())], stdin=master, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
 class Session(object):
 	'''An interactive shell on a pseudo-terminal. print_key makes the shell print its command line.'''
 	def __init__(self, argv, env, cwd=None, print_key='\x18\x10', settle=False):
@@ -167,14 +226,16 @@ class Session(object):
 		self.output = b''
 		# (where in output, rows, columns) for each resize
 		self.resizes = []
+		self._screen = read_terminal(self.fd)
 
 	def _read(self, wait):
 		'''Add what the shell wrote within wait seconds to output; False once it ended.'''
-		ready, _, _ = select.select([self.fd], [], [], wait)
+		screen = self._screen.stdout.fileno()
+		ready, _, _ = select.select([screen], [], [], wait)
 		if not ready:
 			return True
 		try:
-			chunk = os.read(self.fd, 65536)
+			chunk = os.read(screen, 65536)
 		except OSError:
 			return False
 		self.output += chunk
@@ -204,23 +265,34 @@ class Session(object):
 
 	def _busy(self):
 		'''
-		What the shell is doing, from /proc: (its state, the CPU ticks it used, whether it has children).
-		None where /proc cannot say.
+		What the shell is doing: (its state, the CPU time it used, whether it has children), from /proc, or from ps where
+		there is none (macOS). None where neither can say.
 		'''
 		try:
 			with open('/proc/{}/stat'.format(self.pid)) as f:
 				fields = f.read().rsplit(')', 1)[1].split()
 			with open('/proc/{}/task/{}/children'.format(self.pid, self.pid)) as f:
 				children = bool(f.read().split())
+			return fields[0], int(fields[11]) + int(fields[12]), children
 		except (OSError, IndexError):
+			pass
+		try:
+			rows = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,state=,cputime='], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+				timeout=10).stdout.decode('ascii', 'replace').splitlines()
+		except (OSError, subprocess.SubprocessError):
 			return None
-		return fields[0], int(fields[11]) + int(fields[12]), children
+		rows = [row.split() for row in rows]
+		mine = [row for row in rows if len(row) == 4 and row[0] == str(self.pid)]
+		if not mine:
+			return None
+		# (ps marks a process asleep for over 20 s I: still asleep)
+		return 'S' if mine[0][2][0] == 'I' else mine[0][2][0], mine[0][3], any(len(row) == 4 and row[1] == str(self.pid) for row in rows)
 
 	def wait_idle(self, timeout=10.0, window=0.2):
 		'''
 		Wait until the shell has done with what was typed: asleep (not running, not waiting for the CPU, which
 		a loaded host makes it do for long), with no child (an engine still answering) and no CPU used for
-		window seconds. Returns whether it did; without /proc, after a fixed 0.3 s. ble.sh gives up a completion
+		window seconds. Returns whether it did; where neither /proc nor ps says, after a fixed 0.3 s. ble.sh gives up a completion
 		when a key comes while it runs, so a key sent after a time that was long enough on an idle host
 		found the line as typed on a loaded one.
 		'''
@@ -263,10 +335,18 @@ class Session(object):
 	def close(self):
 		try:
 			os.kill(self.pid, signal.SIGKILL)
+		except OSError:
+			pass
+		# the masters before the wait: on macOS a killed shell stays in exit (state E) while what it wrote to the pty is unread,
+		# and only closing every master lets it go: waitpid(pid, 0) first waited for ever
+		self._screen.kill()
+		self._screen.wait()
+		self._screen.stdout.close()
+		os.close(self.fd)
+		try:
 			os.waitpid(self.pid, 0)
 		except OSError:
 			pass
-		os.close(self.fd)
 
 BASH_TEST_RC = r'''
 PS1='@@READY@@ '

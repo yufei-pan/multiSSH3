@@ -1,4 +1,5 @@
 '''The command lines of mssh-complete and mssh --completion: what they print, and how they end.'''
+import errno
 import io
 import os
 import shutil
@@ -11,9 +12,10 @@ import multiSSH3
 import mssh_complete as mc
 from complete_shell_harness import ENGINE, REPO, make_home, require_shell
 
-# -I as the engine is run, but mssh's entry point heeds PYTHONDONTWRITEBYTECODE, which -I drops: the glue it
-# prints carries -B then (module_command)
-MSSH = [sys.executable, '-I'] + (['-B'] if sys.dont_write_bytecode else []) + [str(REPO / 'multiSSH3.py')]
+# -I as the engine is run, but mssh's entry point heeds what -I drops, PYTHONDONTWRITEBYTECODE and a pycache_prefix (Apple's python3 has
+# one of its own, and with -I writes no bytecode without it): the glue it prints carries -B or -X pycache_prefix then (module_command)
+MSSH = ([sys.executable, '-I'] + (['-B'] if sys.dont_write_bytecode else [])
+	+ (['-X', 'pycache_prefix=' + os.path.abspath(sys.pycache_prefix)] if getattr(sys, 'pycache_prefix', None) else []) + [str(REPO / 'multiSSH3.py')])
 # what a shell reports for a command SIGPIPE ended (128 + 13), as for seq or cat piped into head
 SIGPIPE_STATUS = 141
 
@@ -259,7 +261,12 @@ def test_the_glue_runs_mssh_complete_when_it_is_on_path(tmp_path, monkeypatch):
 def _engine_copy(tmp_path, name):
 	'''mssh_complete.py copied alone into a new directory tmp_path/name (bytes, so as to be any name). Returns its path.'''
 	directory = os.path.join(os.fsencode(str(tmp_path)), name)
-	os.mkdir(directory)
+	try:
+		os.mkdir(directory)
+	except OSError as error:
+		if error.errno == errno.EILSEQ:
+			pytest.skip('this file system refuses a name that is not UTF-8 (APFS)')
+		raise
 	path = os.path.join(directory, b'mssh_complete.py')
 	shutil.copyfile(os.fsencode(str(REPO / 'mssh_complete.py')), path)
 	return os.fsdecode(path)
@@ -301,6 +308,8 @@ VERSION_LINE = 'mssh-complete {} (protocol {})\n'.format(mc.version, mc.PROTOCOL
 ], ids=['plain', 'non-ascii', 'non-ascii-c-locale', 'not-utf8'])
 def test_the_engine_runs_from_its_bytecode_cache(tmp_path, monkeypatch, name, c_locale):
 	# python compiles a script anew every time: run as one, the engine was compiled at every TAB
+	if subprocess.run([sys.executable, '-I', '-c', 'import sys; sys.exit(sys.dont_write_bytecode)'], timeout=30).returncode:
+		pytest.skip("this python, run with -I, writes no bytecode beside a file (Apple's python3 keeps it in a pycache_prefix: the test below)")
 	command = _module_command(monkeypatch, _engine_copy(tmp_path, name))
 	env = None
 	if c_locale:
@@ -309,6 +318,21 @@ def test_the_engine_runs_from_its_bytecode_cache(tmp_path, monkeypatch, name, c_
 
 	assert _version_from(command, env) == (0, VERSION_LINE, ['source'])
 	assert _version_from(command, env) == (0, VERSION_LINE, ['bytecode'])
+
+
+@pytest.mark.skipif(not hasattr(sys, 'pycache_prefix'), reason='-X pycache_prefix is Python 3.8 and later')
+def test_the_engine_runs_from_the_bytecode_cache_in_its_pythons_pycache_prefix(tmp_path, monkeypatch):
+	# Apple's python3 keeps bytecode in $HOME/Library/Caches/com.apple.python and with -I writes none: the glue's command gives the prefix
+	path = _engine_copy(tmp_path, b'lone')
+	prefix = str(tmp_path / 'prefix')
+	monkeypatch.setattr(sys, 'dont_write_bytecode', False)
+	monkeypatch.setattr(sys, 'pycache_prefix', prefix)
+	command = mc.module_command(path)
+
+	assert command[1:4] == ['-I', '-X', 'pycache_prefix=' + prefix]
+	assert _version_from(command) == (0, VERSION_LINE, ['source'])
+	assert _version_from(command) == (0, VERSION_LINE, ['bytecode'])
+	assert not os.path.exists(os.path.join(os.path.dirname(path), '__pycache__'))
 
 
 def test_the_engine_writes_no_bytecode_when_its_python_writes_none(tmp_path, monkeypatch):
