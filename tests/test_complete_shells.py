@@ -2201,8 +2201,8 @@ def test_zsh_tab_reaches_a_history_name_beside_a_directory_here_through_the_menu
 	('mssh h "make zzdi', ['/zz\t'], 'mssh h "make zzdir/zzremote" '),
 ])
 def test_zsh_a_make_target_spelled_like_a_directory_here_keeps_the_history_name_beside_it(tmp_path, opener, typed, steps, expected):
-	# make adds its targets, then the file names: zzdir twice, the first time as a plain word. 6.48's hold-back wrote "mssh h make zzdir "
-	# (the target, with a space) and the history name make zzdir/zzremote was never offered; 6.47 stays at zzdir and /zz picks it
+	# make adds its targets, then the file names: zzdir twice, the first time as a plain word. TAB stays at zzdir and /zz picks the
+	# history name make zzdir/zzremote, as in 6.47 (an early 6.48 build wrote "mssh h make zzdir ", the target with a space, and never offered it)
 	line, _ = review_line(tmp_path, 'zsh', opener + typed, dirs=['zzdir'], files=['Makefile'], history=['"make zzdir/zzremote"'], steps=steps,
 		pre='mssh() { :; }', extra="printf 'zzdir:\\n\\ttrue\\nzzdfoo:\\n\\ttrue\\n' > Makefile")
 	assert line == opener + expected, line

@@ -754,8 +754,28 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
   command's name alone and the history name was no longer offered. So 6.48 took it out again.
 - Revisit when: 6.49, design first: a route with no copy of the command's names. One tried: where a history name goes in beside it, the
   command's directory goes in with the `/` in its name, so zsh finds `zzdir/` shared and keeps the history name in the list. Open there: a
-  `/` typed after TAB doubles, and a space typed after TAB keeps the `/`.
+  `/` typed after TAB doubles, a space typed after TAB keeps the `/`, and TAB then walks into
+  [the entry below](#zsh-tab-in-a-directory-can-write-a-start-that-a-history-name-further-down-lacks) for a history name two levels down.
 - Noted: 2026-11-16, the user's standing rule that deferrals are noted, not asked; moved to 6.49 on 2026-11-25 (6.48 design check).
+
+### zsh: TAB in a directory can write a start that a history name further down lacks
+- Kind: deferred (6.49)
+- What the operator sees: in zsh, with a file `zzdir/zzlocal` here and `mssh h "cat zzdir/sub/zzremote"` in history,
+  `mssh h cat zzdir/<TAB>` gives `zzdir/zz`, which the history name does not start with, and the next TAB gives `zzdir/zzlocal `:
+  the history name is offered again only when the `zz` is deleted (`zzdir/s<TAB>` gives it). In a quoted command the same. As in 6.47.
+- Why: not traced. The history name goes in as `sub/zzremote` behind the typed `zzdir/`, with a matcher that lets a typed part end
+  at a `/`; zsh seems to take `sub/` as matched and write the `zz` that both names have after it.
+- Revisit when: 6.49, with the entry above, whose fix makes TAB walk into this one.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by 6.48's last fix round).
+
+### zsh 5.0.2: one TAB takes seconds when the command passes tens of thousands of names
+- Kind: deferred (6.49)
+- What the operator sees: in zsh 5.0.2 (EL7), when a remote command's completion passes every name of a large directory or list
+  (`compadd -f -- *`, `compadd -a`), one TAB takes about 17 s at 40,000 names, where zsh without mssh takes about 1 s; zsh 5.5.1
+  to 5.9 take about 3 s. `_files`, which passes only the matching names, takes about 1.5 s. As in 6.47.
+- Why: not traced: the glue's `compadd` wrapper reads each name the command passes in shell code, which zsh 5.0.2 runs far slower.
+- Revisit when: 6.49: find where 5.0.2 spends the time in `_mssh_complete_compadd`'s loop over the names.
+- Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked (found by 6.48's last fix round).
 
 ### zsh: a quote opened partway through a word of a double-quoted command holding an expansion
 - Kind: deferred (6.49)
@@ -796,8 +816,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 ### zsh: in a quoted command, TAB on a word of df can take the words before it off the line
 - Kind: deferred (6.49)
 - What the operator sees: in zsh 5.5.1 to 5.9, with or without history, `mssh h "df /etc -<TAB>` and `mssh h "df -h -<TAB>` leave
-  `mssh h "df `, and `mssh h "df /etc /<TAB>` leaves `mssh h "/` (as in 6.47; `'df` the same). zsh 5.0.2 keeps the line. With no
-  history a lone `-` goes in any shape (`mssh h df -<TAB>` gives `mssh h df `), as zsh's own df completion does without mssh.
+  `mssh h "df `, and `mssh h "df /etc /<TAB>` leaves `mssh h "/` (as in 6.47; `'df` the same); with no history a lone `-` goes in
+  any shape there (`mssh h df -<TAB>` gives `mssh h df `), as zsh's own df completion does without mssh. zsh 5.0.2 keeps the line.
 - Why: not traced (found by the 6.48 fix round).
 - Revisit when: 6.49: find which of df's calls takes the words before the cursor off the line in a quoted command.
 - Noted: 2026-11-25, the user's standing rule that deferrals are noted, not asked.
