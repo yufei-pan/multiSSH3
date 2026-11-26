@@ -1400,6 +1400,7 @@ Run `mssh --completion install` again (bash): the fixes below are in the new glu
 - Change (bash): a Ctrl-C while the Ctrl-R menu or the line editor opens is their first key: the menu opens and closes and the line stays; the editor shows `mssh ^C` and a fresh prompt. With an engine slow to start, that waits until it is up, or for `MSSH_COMPLETE_START_TIMEOUT` (2 s) at most. The menu or the editor no longer comes up now and then with nothing reading its answer.
 - Known (bash 4.3 to 5.2): a Ctrl-C while a remote command's own completion works, after mssh's query (`mssh h git chec<TAB>`), still shows `^C` with no new prompt, and Enter runs the line without its first letter: press Ctrl-C again. That is bash's own bug with any command's completion, fixed in bash 5.3 ([limitations](docs/limitations.md#bash-43-to-52-a-ctrl-c-while-a-remote-commands-own-completion-works)). A Ctrl-C in the first moment after TAB, Ctrl-R or the editor's space (a millisecond or two) can still go wrong ([limitations](docs/limitations.md#bash-a-ctrl-c-in-the-first-moment-after-tab-ctrl-r-or-the-line-editors-space)).
 - The new glue needs the new engine for the line editor: beside an engine before 6.49, space is a plain space.
+- Known (zsh): the entries 6.48 deferred to 6.49 move to 6.50; zsh is as in 6.48 ([limitations](docs/limitations.md)).
 
 ## Upgrading to 6.48 from 6.47
 
