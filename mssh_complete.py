@@ -6332,6 +6332,12 @@ _mssh_complete_in_quote() {
 }
 
 _mssh_complete_tab() {
+	# first: bash 4.3 to 5.2 take no SIGINT in a completion function (^C, no prompt, and Enter runs the line without its first
+	# letter), so until mssh's query is answered a Ctrl-C makes none (_mssh_complete_signals_off): readline reads it after the
+	# answer, as a key bound to nothing. On 4.2 and 5.3 it drops the line, as bash does. (Under ble.sh it does nothing: the
+	# returns of ble.sh's part below need no _back)
+	local _mssh_complete_signals= _mssh_complete_answered=0
+	(( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 403 && BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] < 503 )) && _mssh_complete_signals_off
 	# its variables are prefixed: a command's completion function runs below it (_mssh_complete_delegate)
 	local _mssh_complete_cur=$2 _mssh_complete_resp _mssh_complete_line _mssh_complete_item _mssh_complete_one _mssh_complete_flags
 	local _mssh_complete_ble=0 _mssh_complete_files=0 _mssh_complete_ended=0 _mssh_complete_delegating=0 _mssh_complete_trim=
@@ -6421,7 +6427,9 @@ _mssh_complete_tab() {
 			} | _mssh_complete_engine query 2>/dev/null || :
 		) || return 1
 		printf '%s' "$_mssh_complete_resp"
-	) || { _mssh_complete_unanswered; return 0; }
+	) && _mssh_complete_answered=1
+	_mssh_complete_signals_back
+	(( _mssh_complete_answered )) || { _mssh_complete_unanswered; return 0; }
 	[[ $_mssh_complete_resp == MSSHC1$'\n'* ]] || { _mssh_complete_unanswered; return 0; }
 	local -a _mssh_complete_lines=()
 	mapfile -t _mssh_complete_lines <<< "$_mssh_complete_resp"

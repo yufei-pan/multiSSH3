@@ -851,6 +851,30 @@ def test_tab_then_ctrl_c_while_the_engine_answers_leaves_sigalrm_alone(home):
 		session.close()
 
 
+def test_bash_ctrl_c_during_tabs_query_never_runs_the_line_without_its_first_letter(home):
+	# bash 4.3 to 5.2 take no SIGINT in a completion function: ^C, no new prompt, and Enter ran `ssh h rm x` for `mssh h rm x`.
+	# There the Ctrl-C is now no signal until mssh's query is answered: the line stays as shown, and Enter runs it. On 4.2 and 5.3
+	# it drops the line, as bash does
+	env, home = home
+	version = bash_version(env)
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 1, only='query')),
+		extra=FAKE_MSSH + '\n' + FAKE_SSH)
+	try:
+		session.send('mssh h rm x\t')
+		time.sleep(0.3)
+		start = len(session.output)
+		session.send('\x03')
+		# the query answers a second after TAB
+		time.sleep(3.0)
+		session.send('\r')
+		session.read_until(b']@@', 3)
+		session.read_for(0.5)
+		ran = re.findall(r'@@RAN\[(.*?)\]@@', session.output[start:].decode('utf-8', 'replace'))
+		assert ran == (['h rm x'] if 43 <= version < 53 else []), ran
+	finally:
+		session.close()
+
+
 # ---------------------------------------------------------------- plain bash: TMOUT with the picker or the editor
 
 def recording_engine_pids(home, command):
