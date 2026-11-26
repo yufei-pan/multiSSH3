@@ -111,5 +111,5 @@ entries go last, in the same commit as the change:
 ## 2026-11-25 multiSSH3: MSSH_COMPLETE_IDLE
 - Changed: the picker and the editor read `MSSH_COMPLETE_IDLE` (seconds, a number above 0) and give the terminal back after that long without a key: the picker as cancelled, the editor with the line as it stands. The bash glue sets it to the shell's `TMOUT`; zsh and fish do not set it.
 - Why we had to change: bash before 5.1 holds a `TMOUT` logout until a key binding returns, so a Ctrl-R menu or an editor left open kept an idle shell logged in, whatever the glue did with its own reads.
-- Original design was wrong because: the picker and the editor ran inside a binding as if the shell's idle rule did not apply to them, while the shell's own timer cannot act until they end.
+- Original design was wrong because: the picker and the editor ran inside a binding as if the shell's idle rule did not apply to them, while bash before 5.1 cannot act on its own timer until they end.
 - Lesson: a child that holds the terminal for a shell that cannot run its own timers meanwhile is given the shell's idle limit and gives the terminal back when it passes; the shell then acts on its own rule, and its timer is never re-armed from outside.

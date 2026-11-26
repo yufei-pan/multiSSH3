@@ -296,11 +296,8 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 ### With nocasematch on in bash, a Ctrl-C during a TAB can leave it off
 - Kind: known limitation
-- What the operator sees: with `shopt -s nocasematch` on in the interactive bash, a Ctrl-C while TAB is
-  working can leave nocasematch off until it is turned on again: on bash 4.2 and 5.3 at any point, on 4.3
-  to 5.2 once mssh's query is answered (a command's own completion function, bash-completion's loaders).
-  The same for Ctrl-R on other lines (the binding mssh took over), and for a Ctrl-C in the moment after
-  Ctrl-R or the line editor's space before the glue makes Ctrl-C a key. A command's
+- What the operator sees: with `shopt -s nocasematch` on in the interactive bash, a Ctrl-C while TAB, Ctrl-R
+  or the line editor is working can leave nocasematch off until it is turned on again. A command's
   completion function, bash-completion's loaders, a Ctrl-R binding mssh took over and PS1's command
   substitutions run with nocasematch off and bash's default IFS, not the shell's; a compspec's `-X` pattern
   does not follow the shell's nocasematch.
@@ -531,9 +528,9 @@ Ctrl-R or during TAB's query losing the line's first letter).
 - Kind: known limitation
 - What the operator sees: in plain bash, a Ctrl-C within about one process start of the key (1 to 2 ms on an idle machine, longer on a
   loaded one) after TAB on an mssh line (bash 4.3 to 5.2), Ctrl-R on an mssh line, or the space that opens the line editor is still a
-  signal: now and then it is lost, or leaves the terminal line by line (Ctrl-U not clearing the line) until the next Enter, or, mostly on
-  bash before 5.3, leaves a line that Enter runs without its first letter. A Ctrl-C after that moment is a key that the menu, the editor
-  or readline takes.
+  signal: now and then it is lost, or the line is dropped and Ctrl-C only rings at the new prompt until the next Enter (after Ctrl-R and the
+  editor's space on bash 5.1 and 5.2), or a line is left that Enter runs without its first letter. After that moment a Ctrl-C is a key
+  until the menu or the editor closes or mssh's query is answered.
 - Why: bash has nothing that turns the signal off before a first command has run, and the glue's first command is the `stty -isig`
   that does; an INT trap in its place was what made every later Ctrl-C on the line lose the first letter (bash 4.3 to 5.0).
 - Revisit when: an operator hits it.
@@ -541,8 +538,8 @@ Ctrl-R or during TAB's query losing the line's first letter).
 
 ### bash 4.3 to 5.2: a Ctrl-C while a remote command's own completion works
 - Kind: known limitation
-- What the operator sees: `mssh h git chec<TAB>`, and a Ctrl-C while git's own completion works, after mssh's query is answered:
-  `^C`, no new prompt, and Enter runs the line without its first letter (`ssh h git chec`). A second Ctrl-C gives a clean prompt. Any
+- What the operator sees: `mssh h git chec<TAB>`, and a Ctrl-C after mssh's query is answered, while git's own completion works (or in
+  the glue's own last steps, a moment): `^C`, no new prompt, and Enter runs the line without its first letter (`ssh h git chec`). A second Ctrl-C gives a clean prompt. Any
   command's completion does the same in these bash versions, with or without mssh.
 - Why: it is bash's own bug with any completion function, fixed in 5.3. Turning the signal off around another program's completion
   would leave a hung one with no way out.
@@ -616,8 +613,8 @@ Ctrl-R or during TAB's query losing the line's first letter).
 
 ### bash before 5.1: a Ctrl-C during TAB leaves posix mode off
 - Kind: known limitation
-- What the operator sees: in an interactive bash before 5.1 with posix mode on, a Ctrl-C that cuts a TAB short (on 4.2 at
-  any point, on 4.3 to 5.0 while a remote command's own completion function works, after mssh's query) leaves posix mode off, with `POSIXLY_CORRECT` gone from every child's environment, until the next TAB on an mssh line or
+- What the operator sees: in an interactive bash before 5.1 with posix mode on, a Ctrl-C that cuts a TAB short leaves
+  posix mode off, with `POSIXLY_CORRECT` gone from every child's environment, until the next TAB on an mssh line or
   Ctrl-R, however many prompts pass. On 4.2 a `set +o posix` typed in that window is undone by the next TAB, and an
   exported new value is replaced by the old one, staying exported.
 - Why: bash gives no way to tell the call was cut short, and a prompt hook adds a part for shells nobody is known to run.
