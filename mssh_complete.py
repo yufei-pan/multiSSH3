@@ -6802,16 +6802,19 @@ _mssh_complete_signals_off() {
 	# without its first letter (4.3 to 5.0 in a binding, 4.3 to 5.2 in a completion function); an INT trap set and put back in a
 	# binding does the same to every later Ctrl-C on that line (4.3 to 5.0). So no trap and no signal. stty first and alone (the
 	# mode read first took a process more): until it has run, a Ctrl-C is still a signal. Not under ble.sh, which reads Ctrl-C as
-	# a key itself. Sets the caller's _mssh_complete_signals
+	# a key itself. stty in a command substitution, exec (one process start), on every bash: a plain foreground command of a
+	# binding makes bash 4.2 to 5.1 save readline's mode after it and put it back after the next command that a signal ends
+	# (Ctrl-C on a sleep, Ctrl-Z, a pipe's SIGPIPE), which left echo off and Enter as CR. Sets the caller's _mssh_complete_signals
 	_mssh_complete_signals=
 	[[ -z ${BLE_VERSION-} ]] || return 0
-	command stty -isig 2>/dev/null && _mssh_complete_signals=1
+	_mssh_complete_signals=$(exec stty -isig 2>/dev/null) && _mssh_complete_signals=1 || _mssh_complete_signals=
 	return 0
 }
 
 _mssh_complete_signals_back() {
-	# ISIG on again after _mssh_complete_signals_off: readline's mode, which has it on whatever the terminal had before
-	[[ -z $_mssh_complete_signals ]] || command stty isig 2>/dev/null || :
+	# ISIG on again after _mssh_complete_signals_off: readline's mode, which has it on whatever the terminal had before. In a
+	# command substitution, as there
+	[[ -z $_mssh_complete_signals ]] || : "$(exec stty isig 2>/dev/null)"
 }
 
 _mssh_complete_run_pick() {
