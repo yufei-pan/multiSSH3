@@ -338,7 +338,7 @@ def test_bash_ctrl_c_while_the_picker_starts_keeps_the_line(home):
 		session.send('\x12')
 		time.sleep(0.3)
 		session.send('\x03')
-		session.read_until(b'type to filter', 20)
+		assert 'type to filter' in session.read_until(b'type to filter', 20)
 		rows = settled(session)
 		assert [row for row in rows if row] == ['@@READY@@ mssh gpu[01-16]'], rows
 		assert termios.tcgetattr(session.fd)[3] & termios.ISIG
@@ -362,7 +362,7 @@ def test_bash_ctrl_c_after_the_picker_or_the_editor_drops_the_line(home, how):
 	try:
 		if how == 'the editor then esc':
 			session.send('mssh ')
-			session.read_until(b'mssh ', 20)
+			assert editor_has_the_terminal(env, session)
 			time.sleep(0.3)
 			session.send('h rm x')
 			time.sleep(0.5)
@@ -371,7 +371,7 @@ def test_bash_ctrl_c_after_the_picker_or_the_editor_drops_the_line(home, how):
 			session.send('mssh h rm x')
 			time.sleep(0.2)
 			session.send('\x12')
-			session.read_until(b'type to filter', 20)
+			assert 'type to filter' in session.read_until(b'type to filter', 20)
 			time.sleep(0.3)
 			session.send('\x1b' if how == 'ctrl-r then esc' else '\x03')
 		time.sleep(1.0)
@@ -382,6 +382,42 @@ def test_bash_ctrl_c_after_the_picker_or_the_editor_drops_the_line(home, how):
 		session.send('\r')
 		session.read_for(1.0)
 		assert '@@RAN[' not in session.output[start:].decode('utf-8', 'replace')
+	finally:
+		session.close()
+
+
+@pytest.mark.parametrize('how', ['ctrl-r then esc', 'the editor then esc'])
+def test_bash_a_command_ended_by_ctrl_c_after_the_picker_or_the_editor_gets_the_terminal_as_it_was(home, how):
+	# bash 4.2 to 5.1 save the terminal's mode after a plain foreground command of a binding (readline's, which a stty run so made
+	# them save) and put it back after the next command that a signal ends: every command after it ran with echo off and Enter as
+	# CR (no line for cat or read) until stty sane. The glue's stty calls run in command substitutions
+	env, home = home
+	if how == 'the editor then esc':
+		session = editor_session(env, home)
+	else:
+		session = bash_session(home, env, glue_file(home, 'bash'), extra=FAKE_MSSH)
+	try:
+		if how == 'the editor then esc':
+			session.send('mssh ')
+			assert editor_has_the_terminal(env, session)
+		else:
+			session.send('mssh h rm x')
+			time.sleep(0.2)
+			session.send('\x12')
+			assert 'type to filter' in session.read_until(b'type to filter', 20)
+		time.sleep(0.3)
+		session.send('\x1b')
+		time.sleep(1.0)
+		# (the editor gives Esc to readline, which takes the first Ctrl-U for a meta key)
+		# (the marker comes from the command itself: a Ctrl-C before bash has forked it is another case)
+		session.send("\x15\x15sh -c 'printf \"@@STARTED%s@@\\n\" 1; exec sleep 30'\r")
+		assert '@@STARTED1@@' in session.read_until(b'@@STARTED1@@', 10)
+		session.send('\x03')
+		assert '^C\n@@READY@@' in read_until_shown(session, '^C\n@@READY@@', 10)
+		session.send('cat\r')
+		time.sleep(0.6)
+		flags = termios.tcgetattr(session.fd)[3]
+		assert flags & termios.ICANON and flags & termios.ECHO, flags
 	finally:
 		session.close()
 
@@ -508,6 +544,19 @@ def editor_session(env, home, command=ENGINE, extra='', **kwargs):
 	if bash_version(env) < 44:
 		pytest.skip('the mssh line editor needs bash 4.4 or later')
 	return bash_session(home, dict(env, MSSH_COMPLETE_EDITOR='1', **kwargs), glue_file(home, 'bash', command=command), extra=FAKE_MSSH + '\n' + extra)
+
+
+def editor_has_the_terminal(env, session, timeout=20.0):
+	'''Whether the editor took the terminal within timeout seconds: its line "edit: ready" in the debug log (on in every shell test).'''
+	log = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
+	end = time.monotonic() + timeout
+	while time.monotonic() < end:
+		if os.path.exists(log):
+			with open(log, encoding='utf-8', errors='replace') as f:
+				if 'edit: ready' in f.read():
+					return True
+		session.read_for(0.1)
+	return False
 
 
 def test_taking_the_keys_leaves_the_operators_variables_alone(home):
@@ -823,30 +872,19 @@ def test_editor_goes_on_without_an_engine_slow_to_start(home):
 		session.close()
 
 
-def shell_ignores_alarm(session):
-	'''Whether the shell on session ignores SIGALRM, and its trap for it: ("0", "") when it does neither.'''
-	session.send('\x15')
-	time.sleep(0.3)
-	session.send('echo "@@D[$(( (16#$(awk \'/^SigIgn/{print $2}\' /proc/$$/status) >> 13) & 1 ))|$(trap -p ALRM)]@""@"\r')
-	found = re.findall(r'@@D\[(\d)\|(.*?)\]@@', session.read_until(b']@@'))
-	return found[-1] if found else None
-
-
-def test_tab_then_ctrl_c_while_the_engine_answers_leaves_sigalrm_alone(home):
-	# the TAB query ends at the end of its input: nothing in it ignores SIGALRM, which a Ctrl-C there would leave ignored
+def test_bash_tab_gives_the_terminal_back_with_isig_on(home):
+	# bash 4.3 to 5.2: TAB's query runs with ISIG off (a Ctrl-C is a key until it is answered); once it is, readline has the
+	# terminal as before, and a Ctrl-C at the prompt is a signal again
 	env, home = home
-	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 3, only='query')))
+	if not 43 <= bash_version(env) < 53:
+		pytest.skip('only bash 4.3 to 5.2 turn ISIG off for TAB')
+	session = bash_session(home, dict(env, MSSH_COMPLETE_TIMEOUT='5'), glue_file(home, 'bash', command=slow_engine(home, 1, only='query')),
+		extra=FAKE_MSSH)
 	try:
-		before = shell_ignores_alarm(session)
-		assert before == ('0', '')
 		session.send('mssh gp\t')
-		time.sleep(0.8)
-		session.send('\x03')
-		time.sleep(3.5)
-		# the prompt after the engine is done (what was typed meanwhile is the shell's, not ours to look at)
-		session.send('\r')
-		time.sleep(0.5)
-		assert shell_ignores_alarm(session) == before
+		# the print key is read once TAB is done
+		assert printed(session, '') is not None
+		assert termios.tcgetattr(session.fd)[3] & termios.ISIG
 	finally:
 		session.close()
 
@@ -910,8 +948,8 @@ def test_bash_tmout_logs_out_after_ctrl_r(home, how):
 		session.send('mssh gpu[01-16] ')
 		time.sleep(0.2)
 		session.send('\x12')
+		assert 'type to filter' in session.read_until(b'type to filter', 20)
 		if how == 'ctrl-r then esc':
-			session.read_until(b'type to filter', 20)
 			session.send('\x1b')
 		assert logged_out(session)
 	finally:
@@ -924,8 +962,8 @@ def test_editor_tmout_logs_out(home, how):
 	session = editor_session(env, home, TMOUT='3')
 	try:
 		session.send('mssh ')
+		assert editor_has_the_terminal(env, session)
 		if how != 'left open':
-			session.read_until(b'mssh ', 20)
 			time.sleep(0.3)
 			session.send('\x1b' if how == 'after esc' else 'gp\t')
 		assert logged_out(session)
@@ -984,11 +1022,6 @@ def test_editor_beside_an_engine_without_claim_is_a_space(home):
 		assert printed(session, 'mssh h', wait=1.5) == 'mssh h'
 	finally:
 		session.close()
-	# (the editor logs "edit: ready" once it has the terminal: it never had it)
-	log = os.path.join(env['XDG_RUNTIME_DIR'], 'multiSSH3', 'complete.log')
-	if os.path.exists(log):
-		with open(log, encoding='utf-8', errors='replace') as f:
-			assert 'edit: ready' not in f.read()
 
 
 def test_editor_ctrl_c_while_it_starts_drops_the_line_as_bash_does(home):
