@@ -5501,14 +5501,14 @@ class LineEditor(object):
 				self.draw(term, prompt, style)
 
 #%% ------------ Shell glue ----------------
-# zsh and fish run the picker through this POSIX sh: sh -c START_SCRIPT sh SECONDS PICKER-COMMAND...
-# The picker creates MSSH_COMPLETE_CLAIM just before it takes the terminal (_claim_terminal). It is
+# Every shell's glue runs the picker through this POSIX sh, and bash's its line editor too: sh -c START_SCRIPT sh SECONDS
+# PICKER-COMMAND... The picker creates MSSH_COMPLETE_CLAIM just before it takes the terminal (_claim_terminal). It is
 # given SECONDS to do so: then, or on Ctrl-C while it starts, the script creates it first and stops the
 # picker, which has not touched the terminal (a hung file system can keep it from starting, deaf to
 # Ctrl-C). mkdir succeeds for one of the two only. Exit status: the picker's, 124 when it was too slow,
 # 130 on Ctrl-C. The picker runs in the background of this sh, in the shell's process group: it can
 # read the terminal. Its answer goes through a file: a process it leaves behind when stopped cannot
-# keep the shell's command substitution open. bash waits for its "ready" line instead (_mssh_complete_start).
+# keep the shell's command substitution open.
 START_SCRIPT = r"""limit=$1
 shift
 dir=$(mktemp -d 2>/dev/null) || exec "$@"
@@ -6750,109 +6750,62 @@ _mssh_complete_apply() {
 	_mssh_complete_action=
 	_mssh_complete_keys=
 	[[ $1 == MSSHC1$'\n'* && $1 == *$'\n'E ]] || return 1
-	while IFS= read -r _mssh_complete_line; do
+	# mapfile, no read: a read on a here string (a pipe on bash 5.1) takes TMOUT for its timeout and, before bash 5.2, cancels
+	# the alarm of the line's TMOUT (_mssh_complete_start)
+	local -a _mssh_complete_lines=()
+	mapfile -t _mssh_complete_lines <<< "$1"
+	for _mssh_complete_line in "${_mssh_complete_lines[@]}"; do
 		case ${_mssh_complete_line:0:2} in
 			'L ') _mssh_complete_cursor=${_mssh_complete_line:2}; _mssh_complete_cursor=${_mssh_complete_cursor%%$'\t'*}; _mssh_complete_text=${_mssh_complete_line#*$'\t'} ;;
 			'K ') _mssh_complete_action=${_mssh_complete_line:2}; _mssh_complete_action=${_mssh_complete_action%%$'\t'*}; _mssh_complete_keys=${_mssh_complete_line#*$'\t'} ;;
 		esac
-	done <<< "$1"
+	done
 	[[ $_mssh_complete_cursor =~ ^[0-9]+$ ]] || return 1
 	_mssh_complete_set "$_mssh_complete_text" "$_mssh_complete_cursor"
 }
 
-_mssh_complete_alrm_off() {
-	# for a timed read: bash 4.2 and 4.3 restore SIGALRM's handler before they cancel the read's timer, so the timer going
-	# off between the two (the byte came as it ran out) ended the shell with "Alarm clock"; ignored, it ends nothing (the
-	# read sets its own handler). Not in later bash, which has no such window: there readline's and bash's own handler
-	# for it (TMOUT) would be replaced by what trap puts back. The caller's _mssh_complete_alrm holds the operator's trap,
-	# or - when none is ignored
-	_mssh_complete_alrm=-
-	if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4 )); then
-		_mssh_complete_alrm=$(trap -p ALRM)
-		trap '' ALRM
-	fi
-}
+_mssh_complete_start_script=@START@
 
-_mssh_complete_alrm_on() {
-	# the operator's trap for SIGALRM back (_mssh_complete_alrm_off)
-	[[ $_mssh_complete_alrm == - ]] && return 0
-	if [[ -n $_mssh_complete_alrm ]]; then eval "$_mssh_complete_alrm"; else trap - ALRM; fi
+_mssh_complete_started() {
+	# the engine's picker or editor ("$@", its input on stdin) through START_SCRIPT, as zsh and fish run the picker:
+	# MSSH_COMPLETE_START_TIMEOUT seconds (2) at most to take the terminal (its claim), then as long as the operator takes. Its
+	# answer on stdout; 124 when it was too slow, 130 on Ctrl-C while it started. It replaces the shell that calls it (exec), the
+	# subshell of _mssh_complete_start's command substitution, so that no bash is left waiting for it: one left waiting outlived
+	# a bash 5.2 or 5.3 that TMOUT logged out with the menu open, and as it ended gave the terminal to that dead shell's process
+	# group, so a shell above it (sudo -i) read end-of-file and ended too
+	local _mssh_complete_limit=${MSSH_COMPLETE_START_TIMEOUT:-2}
+	[[ $_mssh_complete_limit =~ ^([0-9]+|[0-9]+\.[0-9]*|\.[0-9]+)$ ]] || _mssh_complete_limit=2
+	exec sh -c "$_mssh_complete_start_script" sh "$_mssh_complete_limit" @ENGINE@ "$@"
 }
 
 _mssh_complete_start() {
-	# run the engine's picker or editor ("$@" prints its answer and returns its exit status): wait
-	# MSSH_COMPLETE_START_TIMEOUT seconds (2) at most for it to say "ready", just before it takes the
-	# terminal, then as long as the operator takes. Sets _mssh_complete_resp to its answer and
-	# _mssh_complete_status to its exit status, 124 when it was not ready in time, 130 when Ctrl-C
-	# came first. An engine ready too late finds nobody reading and leaves the terminal alone.
-	local _mssh_complete_line= _mssh_complete_rest= _mssh_complete_got=142 _mssh_complete_waited=0 _mssh_complete_tenths=20 _mssh_complete_trapped= _mssh_complete_interrupted=0 _mssh_complete_alrm _mssh_complete_tty=
-	_mssh_complete_resp=
-	_mssh_complete_status=124
-	# in tenths of a second: bash counts in integers
-	[[ ${MSSH_COMPLETE_START_TIMEOUT:-2} =~ ^([0-9]*)\.?([0-9]?)[0-9]*$ ]] && _mssh_complete_tenths=$(( 10#0${BASH_REMATCH[1]} * 10 + 10#0${BASH_REMATCH[2]} ))
+	# run "$@" (_mssh_complete_run_pick or _run_edit, which print the answer): sets _mssh_complete_resp to the answer and
+	# _mssh_complete_status to the exit status (_mssh_complete_started's). In a command substitution, with no read in this
+	# shell: before bash 5.2 a read with a timeout (also the one a read on a pipe takes from TMOUT) cancels the alarm of the
+	# line's TMOUT, and a menu or an editor left open stayed logged in
+	local _mssh_complete_trapped= _mssh_complete_tty=
 	if [[ -z ${BLE_VERSION-} ]]; then
-		# Ctrl-C while waiting comes back here (bash would drop the line, and wait for an engine that
-		# does not die of it); ble.sh reads Ctrl-C as a key
+		# Ctrl-C while it starts: START_SCRIPT stops it (130), and the line stays; bash 4.3 to 5.0 would drop it, keeping its
+		# first letter for Enter. ble.sh reads Ctrl-C as a key
 		_mssh_complete_trapped=$(trap -p INT)
-		trap '_mssh_complete_interrupted=1' INT
+		trap : INT
 		_mssh_complete_tty=$(stty -g 2>/dev/null) || _mssh_complete_tty=
 	fi
-	_mssh_complete_alrm_off
-	{
-		# in short reads: a trapped Ctrl-C does not end a read. A byte at a time: bash reads a pipe one byte
-		# per call, and a read that times out partway through a line loses what it read of it (bash 4.2 to
-		# 4.4 drop it: they check the timer after the byte is read, before it is stored; 5.0 and later keep
-		# it in the variable, with the status of a timeout); the rest of the line, written with its first
-		# byte, is there without waiting. The byte that comes as the wait ends is such a partial read: the
-		# variable is emptied before each read, and a byte in it counts as read
-		while (( _mssh_complete_got > 128 && !_mssh_complete_interrupted && _mssh_complete_waited++ < _mssh_complete_tenths )); do
-			_mssh_complete_line=
-			IFS= read -r -t 0.1 -n 1 _mssh_complete_line && _mssh_complete_got=0 || _mssh_complete_got=$?
-			[[ -n $_mssh_complete_line ]] && _mssh_complete_got=0
-		done
-		# the wait ended with nothing read, but the engine wrote as it ended (read -t 0: is there input): its line is there
-		if { (( _mssh_complete_got == 0 )) && [[ -n $_mssh_complete_line ]]; } || { (( _mssh_complete_got > 128 )) && read -t 0; }; then
-			_mssh_complete_got=0
-			IFS= read -r _mssh_complete_rest || :
-			_mssh_complete_line+=$_mssh_complete_rest
-		fi
-		(( _mssh_complete_got > 128 )) || IFS= read -r -d '' _mssh_complete_rest || :
-	} < <(trap - ALRM; "$@" && status=0 || status=$?; trap '' PIPE; printf 'S %s\n' "$status" 2>/dev/null || :)
-	# first: a Ctrl-C after the INT trap is back would end this function with SIGALRM still ignored
-	_mssh_complete_alrm_on
+	_mssh_complete_resp=$("$@") && _mssh_complete_status=0 || _mssh_complete_status=$?
 	if [[ -z ${BLE_VERSION-} ]]; then
 		if [[ -n $_mssh_complete_trapped ]]; then eval "$_mssh_complete_trapped"; else trap - INT; fi
+		# bash 4.3, 4.4 and 5.0, when the Ctrl-C ended the subshell before it started the engine, leave the terminal in the mode
+		# it had when bash runs a command, line by line, for this line: Ctrl-U no longer cleared it, until the next Enter
+		(( _mssh_complete_status != 130 )) || [[ -z $_mssh_complete_tty ]] || stty "$_mssh_complete_tty" 2>/dev/null || :
 	fi
-	# eady: bash 4.2 to 4.4 dropped the r of ready (the loop stops at the first byte it reads: only that one)
-	if [[ $_mssh_complete_line == ready || $_mssh_complete_line == eady ]]; then
-		# it had the terminal: as cancelled unless it says otherwise
-		_mssh_complete_status=1
-	elif (( _mssh_complete_interrupted )); then
-		_mssh_complete_status=130
-		# bash 4.3, 4.4 and 5.0, when the Ctrl-C ended the subshell starting the engine, leave the terminal in the mode it had
-		# when bash runs a command, line by line, for this line: Ctrl-U no longer cleared it, until the next Enter
-		[[ -n $_mssh_complete_tty ]] && { stty "$_mssh_complete_tty" 2>/dev/null || :; }
-		return 0
-	elif (( _mssh_complete_got > 128 )); then
-		return 0
-	else
-		_mssh_complete_rest=$_mssh_complete_line$'\n'$_mssh_complete_rest
-	fi
-	_mssh_complete_rest=${_mssh_complete_rest%$'\n'}
-	_mssh_complete_line=${_mssh_complete_rest##*$'\n'}
-	if [[ $_mssh_complete_line =~ ^S\ ([0-9]+)$ ]]; then
-		_mssh_complete_status=${BASH_REMATCH[1]}
-		_mssh_complete_rest=${_mssh_complete_rest%"$_mssh_complete_line"}
-	fi
-	_mssh_complete_resp=${_mssh_complete_rest%$'\n'}
 	return 0
 }
 
 _mssh_complete_run_pick() {
-	# the picker, for _mssh_complete_start, on _mssh_complete_pick's line
-	_mssh_complete_request "pick=1 ready=1 redraw=1" "$_mssh_complete_before" "$_mssh_complete_after" |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine pick 2>/dev/null
-	return "${PIPESTATUS[1]}"
+	# the picker, for _mssh_complete_start, on _mssh_complete_pick's line; MSSH_COMPLETE_IDLE: it gives the terminal back after
+	# TMOUT seconds without a key, as bash before 5.1 logs an idle shell out only once the binding is done
+	MSSH_COMPLETE_IDLE=${TMOUT-} MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_started pick 2>/dev/null < <(
+		_mssh_complete_request "pick=1 redraw=1" "$_mssh_complete_before" "$_mssh_complete_after")
 }
 
 _mssh_complete_pick() {
@@ -6956,12 +6909,12 @@ _mssh_complete_previous() {
 }
 
 _mssh_complete_run_edit() {
-	# the editor, for _mssh_complete_start, on _mssh_complete_space's line, told the locale bash runs in
+	# the editor, for _mssh_complete_start, on _mssh_complete_space's line, told the locale bash runs in (MSSH_COMPLETE_IDLE: as
+	# for the picker). An engine before 6.49 fails on --claim: the space is then a space
 	local _mssh_complete_locale
 	_mssh_complete_read_locale
-	fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null |
-		MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_engine edit --ready --flags "$_mssh_complete_locale" -- "$READLINE_LINE " 2>/dev/null
-	return "${PIPESTATUS[1]}"
+	MSSH_COMPLETE_IDLE=${TMOUT-} MSSH_COMPLETE_PROMPT=$_mssh_complete_ps1 _mssh_complete_started edit --claim --flags "$_mssh_complete_locale" -- "$READLINE_LINE " 2>/dev/null < <(
+		fc -ln -"${MSSH_COMPLETE_SHELL_HISTORY:-1000}" 2>/dev/null)
 }
 
 _mssh_complete_space() {
