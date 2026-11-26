@@ -528,7 +528,7 @@ Ctrl-R or during TAB's query losing the line's first letter).
 - Kind: known limitation
 - What the operator sees: in plain bash, a Ctrl-C within about one process start of the key (1 to 2 ms on an idle machine, longer on a
   loaded one) after TAB on an mssh line (bash 4.3 to 5.2), Ctrl-R on an mssh line, or the space that opens the line editor is still a
-  signal: now and then it is lost, or the line is dropped and Ctrl-C only rings at the new prompt until the next Enter (after Ctrl-R, bash 5.1
+  signal: now and then it is lost, or the line is dropped and Ctrl-C only rings at the new prompt until the next Enter (bash 5.1
   and 5.2), or a line is left that Enter runs without its first letter. After that moment a Ctrl-C is a key until the menu or the
   editor closes or mssh's query is answered.
 - Why: bash has nothing that turns the signal off before a first command has run, and the glue's first command is the `stty -isig`

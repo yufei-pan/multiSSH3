@@ -882,8 +882,8 @@ def test_bash_tab_gives_the_terminal_back_with_isig_on(home):
 		extra=FAKE_MSSH)
 	try:
 		session.send('mssh gp\t')
-		# the print key is read once TAB is done
-		assert printed(session, '') is not None
+		# the print key is read once TAB is done, and TAB completed the host
+		assert printed(session, '') == 'mssh gpu[01-16] '
 		assert termios.tcgetattr(session.fd)[3] & termios.ISIG
 	finally:
 		session.close()
