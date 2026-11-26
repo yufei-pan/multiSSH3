@@ -893,8 +893,10 @@ def running(pids):
 
 
 def logged_out(session, timeout=30.0):
-	'''Whether the shell logged out by TMOUT ("auto-logout") within timeout seconds.'''
-	return 'auto-logout' in session.read_until(b'auto-logout', timeout)
+	'''Whether the shell logged out by TMOUT ("auto-logout") within timeout seconds (also before: a read for something else may have read it).'''
+	if b'auto-logout' not in session.output:
+		session.read_until(b'auto-logout', timeout)
+	return b'auto-logout' in session.output
 
 
 @pytest.mark.parametrize('how', ['ctrl-r then esc', 'ctrl-r left open'])
@@ -951,12 +953,13 @@ def test_bash_tmout_with_the_menu_open_in_a_second_shell_leaves_the_first_one_wo
 		session.send('\x12')
 		assert logged_out(session)
 		session.read_until(b'@@OUTER@@', 10)
+		# gone with no key typed: the picker of 6.48 waited for the next key (bash 5.2, 5.3), the idle limit ends it (3 s)
+		end = time.monotonic() + 15
+		while running(pids) and time.monotonic() < end:
+			session.read_for(0.2)
+		assert pids.exists() and not running(pids)
 		session.send('echo "@@O""K@@"\r')
 		assert '@@OK@@' in session.read_until(b'@@OK@@', 10)
-		end = time.monotonic() + 10
-		while running(pids) and time.monotonic() < end:
-			time.sleep(0.2)
-		assert pids.exists() and not running(pids)
 	finally:
 		session.close()
 
