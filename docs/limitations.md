@@ -296,8 +296,11 @@ Approved known limitations and deferrals. Reviewers: read this first, and don't 
 
 ### With nocasematch on in bash, a Ctrl-C during a TAB can leave it off
 - Kind: known limitation
-- What the operator sees: with `shopt -s nocasematch` on in the interactive bash, a Ctrl-C while TAB, Ctrl-R
-  or the line editor is working can leave nocasematch off until it is turned on again. A command's
+- What the operator sees: with `shopt -s nocasematch` on in the interactive bash, a Ctrl-C while TAB is
+  working can leave nocasematch off until it is turned on again: on bash 4.2 and 5.3 at any point, on 4.3
+  to 5.2 once mssh's query is answered (a command's own completion function, bash-completion's loaders).
+  The same for Ctrl-R on other lines (the binding mssh took over), and for a Ctrl-C in the moment after
+  Ctrl-R or the line editor's space before the glue makes Ctrl-C a key. A command's
   completion function, bash-completion's loaders, a Ctrl-R binding mssh took over and PS1's command
   substitutions run with nocasematch off and bash's default IFS, not the shell's; a compspec's `-X` pattern
   does not follow the shell's nocasematch.
@@ -516,57 +519,6 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 - Revisit when: zsh-autosuggestions changes its async child (reported: https://github.com/zsh-users/zsh-autosuggestions/issues/861), or an operator hits it often.
 - Approved: 2026-11-04, the user chose "KL + draft report (Recommended)".
 
-### bash: the picker or the editor can come up with nothing reading its answer
-- Kind: known limitation
-- What the operator sees: in bash, Ctrl-R's picker or the line editor now and then comes up after the glue has
-  stopped waiting for it, or after a Ctrl-C pressed just as it started: it draws on the terminal, but the choice made
-  in it is not applied, and the line stays as it was. Press Enter or Esc to close it and try again. In tests timed
-  at that moment on purpose: 1 in 250 to 300 tries; the window is tens of microseconds.
-- Why: the glue waits for the picker's "ready" at most MSSH_COMPLETE_START_TIMEOUT seconds (2) and checks once more
-  after the wait; between that check and its end of the pipe, the picker can still start. Closing it fully needs a
-  claim step (the picker taking the terminal only once the glue confirms it still waits), as the zsh and fish glue
-  have.
-- Revisit when: an operator hits it.
-- Approved: 2026-11-04, the user chose "Known limitation (Recommended)".
-
-### TMOUT after Ctrl-R or in the line editor (bash before 5.2)
-- Kind: deferred
-- What the operator sees: on a host setting `TMOUT`, Ctrl-R on an mssh line and walking away leaves the shell logged in
-  until the next Enter. The same with the line editor (`MSSH_COMPLETE_EDITOR=1`) on bash 4.4, 5.0 and 5.1: `mssh h ` and
-  walking away stays logged in, also after Esc or a TAB in the editor; bash 5.2 logs out. Off mssh lines 6.43 logs out
-  (6.42 stayed logged in everywhere).
-- Why: moving the wait's read into `$( )` fixed nothing on any version (tested); it needs a design pass. The editor has
-  the same cause.
-- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred, design first (Recommended)", kept for Ctrl-R when they then picked "Fix TAB in 6.43 (Recommended)"; the line editor added the same day, "Add to the design pass (Recommended)".
-
-### Ctrl-C after Ctrl-R loses the first letter (bash 4.3, 4.4, 5.0)
-- Kind: deferred
-- What the operator sees: `mssh h rm x`, Ctrl-R, Esc, Ctrl-C shows nothing and the line stays on screen; Enter then runs
-  `ssh h rm x`.
-- Why: a bare binding doing `trap x INT; trap - INT` does it too (seen on 4.4 and 5.0), and having no INT trap on those
-  versions was not enough.
-- Also: since 6.43 puts the terminal's mode back after a Ctrl-C right after Ctrl-R, the terminal is still left cooked (the
-  line editor and Ctrl-U misbehave until the next Enter) in a small window around each 0.1 s read boundary: 2 of 480
-  tries (about 0.4%), measured in 6.43's second review. Short of CPU the window is far wider: on bash 5.0 in a container capped
-  at 0.4 of a processor, 8 of 40 tries on 6.43's glue and 12 of 40 on 6.44's, the same code, and a loaded host makes
-  test_bash_ctrl_c_right_after_ctrl_r_leaves_the_terminal_in_readline_s_mode fail for this cause. The idea to test in the design pass: `stty -isig`.
-- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the residual window added the same day, "Add to the design pass (Recommended)".
-
-### Ctrl-C during TAB's query loses the first letter (bash 4.3 to 5.2)
-- Kind: deferred
-- What the operator sees: `^C` with no new prompt; Enter then runs `ssh h rm x` for `mssh h rm x`, so a line that looks
-  cancelled runs. A second Ctrl-C gives a clean prompt (checked on 4.4, 5.0, 5.1, 5.2; 24 of 24 in 6.43's second review).
-  6.42 sometimes gave a clean prompt at once (6 of 24 tries on 4.4.23, 4 of 24 on 5.1.16, 2 of 24 on 5.0 and 5.2, 4 of 24
-  on EL9); 6.43's `$( )` for the query makes it 0 of 24 on 4.3, 4.4.20, 4.4.23, 5.0, 5.1.8, 5.1.16 and 5.2: the line always
-  stays. The window lasts only as long as the query.
-- Why: bash's bug, fixed in 5.3: a completion with no mssh glue does it. `$( )` does not cure it, and ignoring INT
-  during the query makes it worse: `trap - INT` then breaks every later Ctrl-C on that line before 5.3 (tested). Next
-  idea, untested: `stty -isig` during the query.
-- Revisit when: the glue's Ctrl-C and timed-read design pass after 6.43.
-- Approved: 2026-11-05, the user chose "Deferred to design pass (Recommended)"; the new evidence added the same day, "Keep deferred, release 6.43 (Recommended)".
-
 ## Found in 6.43's review
 
 ### zsh: a double-quoted expansion is still expanded where the completer is `_expand`
@@ -634,8 +586,8 @@ Found while confirming and reviewing 6.42's fixes (the user's words are in each 
 
 ### bash before 5.1: a Ctrl-C during TAB leaves posix mode off
 - Kind: known limitation
-- What the operator sees: in an interactive bash before 5.1 with posix mode on, a Ctrl-C that cuts a TAB short leaves
-  posix mode off, with `POSIXLY_CORRECT` gone from every child's environment, until the next TAB on an mssh line or
+- What the operator sees: in an interactive bash before 5.1 with posix mode on, a Ctrl-C that cuts a TAB short (on 4.2 at
+  any point, on 4.3 to 5.0 while a remote command's own completion function works, after mssh's query) leaves posix mode off, with `POSIXLY_CORRECT` gone from every child's environment, until the next TAB on an mssh line or
   Ctrl-R, however many prompts pass. On 4.2 a `set +o posix` typed in that window is undone by the next TAB, and an
   exported new value is replaced by the old one, staying exported.
 - Why: bash gives no way to tell the call was cut short, and a prompt hook adds a part for shells nobody is known to run.
